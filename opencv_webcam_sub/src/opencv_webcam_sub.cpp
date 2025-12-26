@@ -14,9 +14,9 @@ class WebcamSubscriber : public rclcpp::Node
 public:
     WebcamSubscriber() : Node("opencv_webcam_sub")
     {
-        // CompressedImage 구독자 생성 (/image_raw/compressed)
+        // CompressedImage 구독자 생성 (/perception/debug_image/compressed)
         subscriber_ = this->create_subscription<sensor_msgs::msg::CompressedImage>(
-            "/image_raw/compressed", 
+            "/perception/debug_image/compressed", 
             10,
             std::bind(&WebcamSubscriber::imageCallback, this, _1));
 
