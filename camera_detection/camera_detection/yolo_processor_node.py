@@ -11,22 +11,20 @@ class YoloProcessorNode(Node):
     def __init__(self):
         super().__init__('yolo_processor_node')
 
-        # [구독] C++ 노드에서 넘어오는 압축 영상 수신
         self.subscription = self.create_subscription(
             CompressedImage,
             '/image_raw/compressed',
             self.image_callback,
             10)
         
-        # [발행 1] 타겟(사람)의 정규화된 좌표 (x, y: -0.5 ~ 0.5)
         self.target_pub = self.create_publisher(Point, '/perception/target_pos', 10)
         
-        # [발행 2] 디버깅용 결과 영상 (PC 전송용, 압축됨)
+        # 디버깅용 결과 영상 (PC 전송용, 압축됨)
         self.debug_image_pub = self.create_publisher(CompressedImage, '/perception/debug_image/compressed', 10)
 
         self.bridge = CvBridge()
         
-        self.model = YOLO("yolov8n.pt") 
+        self.model = YOLO("yolo11n.engine") 
         self.get_logger().info("YOLOv8 Processor Node Started. Waiting for images...")
 
     def image_callback(self, msg):
