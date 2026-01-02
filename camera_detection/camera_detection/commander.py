@@ -33,7 +33,6 @@ def main():
 
     try:
         while rclpy.ok():
-            # Get user input
             user_input = input("\nTarget ID >> ")
             
             if user_input.lower() == 'q':
@@ -43,17 +42,19 @@ def main():
                 continue
 
             try:
-                # Check if input is a valid integer
                 target_id = int(user_input)
                 node.send_id(target_id)
             except ValueError:
                 print(" [Error] Please enter a valid number.")
-
+    
     except KeyboardInterrupt:
-        pass
+        print("\n\nShutting down commander...")
+
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
+        print("Bye!")
 
 if __name__ == '__main__':
     main()

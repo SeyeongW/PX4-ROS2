@@ -96,16 +96,16 @@ class YoloTrackingNode(Node):
         self.debug_image_pub = self.create_publisher(CompressedImage, '/perception/debug_image/compressed', 10)
 
         # 4. YOLO Model Setup (Check Path!)
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        engine_path = os.path.join(current_dir, "yolo11n.engine")
-        yaml_path = os.path.join(current_dir, "bytetrack.yaml")
+        base_path = "/home/sw/ros2_ws/src/PX4-ROS2"
+        engine_path = os.path.join(base_path, "yolo11n.engine")
+        yaml_path = os.path.join(base_path, "bytetrack.yaml")
 
         if not os.path.exists(yaml_path):
             self.tracker_yaml = "bytetrack.yaml"
         else:
             self.tracker_yaml = yaml_path
         
-        self.model = YOLO(engine_path)
+        self.model = YOLO(engine_path, task='detect')
 
         # 5. Tracking Variables
         self.locked_id = None
@@ -206,9 +206,25 @@ class YoloTrackingNode(Node):
 def main(args=None):
     rclpy.init(args=args)
     node = YoloTrackingNode()
-    rclpy.spin(node)
-    node.destroy_node()
-    rclpy.shutdown()
+
+    try:
+        rclpy.spin(node)
+
+    except KeyboardInterrupt:
+        node.get_logger().info('Shutting down...')
+    
+    finally:
+        if node.gimbal:
+            try:
+                node.gimbal.send_speed(0, 0)
+                print("Gimbal stop.")
+            except:
+                pass
+
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+        print("Node exit.")
 
 if __name__ == '__main__':
     main()
