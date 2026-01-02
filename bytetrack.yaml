@@ -1,0 +1,7 @@
+tracker_type: bytetrack  # 트래커 종류
+track_high_thresh: 0.6   
+track_low_thresh: 0.1    
+new_track_thresh: 0.7    
+track_buffer: 60         # (핵심)60프레임(약 2초) 동안은 기억
+match_thresh: 0.8        # 매칭 민감도 
+gmc_method: sparseOptFlow # 카메라 움직임 보정
