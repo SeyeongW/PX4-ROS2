@@ -58,7 +58,7 @@ private:
 	bool landed_ = false;
 	bool command_in_flight_ = false;
 	bool command_result_ready_ = false;
-	uint8_t command_result_ = 0;
+	bool command_accepted_ = false;
 
 	static constexpr uint64_t kHoverTicks = 100;  // 10s at 100ms tick
 
@@ -111,7 +111,7 @@ private:
 			[this](rclcpp::Client<px4_msgs::srv::VehicleCommand>::SharedFuture future) {
 				if (future.wait_for(1s) == std::future_status::ready) {
 					auto reply = future.get()->reply;
-					command_result_ = reply.result;
+					command_accepted_ = (reply.result == reply.VEHICLE_CMD_RESULT_ACCEPTED);
 					command_result_ready_ = true;
 					command_in_flight_ = false;
 					if (reply.result != reply.VEHICLE_CMD_RESULT_ACCEPTED) {
@@ -130,7 +130,7 @@ private:
 		}
 
 		command_result_ready_ = false;
-		return command_result_ == px4_msgs::srv::VehicleCommand::Response::VEHICLE_CMD_RESULT_ACCEPTED;
+		return command_accepted_;
 	}
 
 	void advance_state_machine() {
