@@ -130,7 +130,7 @@ private:
 		}
 
 		command_result_ready_ = false;
-		return command_result_ == VehicleCommand::VEHICLE_CMD_RESULT_ACCEPTED;
+		return command_result_ == px4_msgs::srv::VehicleCommand::Response::VEHICLE_CMD_RESULT_ACCEPTED;
 	}
 
 	void advance_state_machine() {
