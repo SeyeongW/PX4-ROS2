@@ -42,7 +42,6 @@ private:
 		init,
 		offboard_requested,
 		arm_requested,
-		takeoff,
 		hover,
 		landing,
 		disarm_requested,
@@ -55,13 +54,13 @@ private:
 	rclcpp::Client<px4_msgs::srv::VehicleCommand>::SharedPtr vehicle_command_client_;
 	rclcpp::Subscription<px4_msgs::msg::VehicleLandDetected>::SharedPtr land_detected_subscription_;
 	Phase phase_ = Phase::init;
-	uint64_t ticks_in_phase_ = 0;
+	uint64_t hover_ticks_ = 0;
 	bool landed_ = false;
+	bool command_in_flight_ = false;
+	bool command_result_ready_ = false;
+	uint8_t command_result_ = 0;
 
-	static constexpr uint64_t kOffboardWarmupTicks = 10;
-	static constexpr uint64_t kArmDelayTicks = 10;
-	static constexpr uint64_t kTakeoffTicks = 50;
-	static constexpr uint64_t kHoverTicks = 50;  // 5s at 100ms tick
+	static constexpr uint64_t kHoverTicks = 100;  // 10s at 100ms tick
 
 	void publish_offboard_control_mode() {
 		OffboardControlMode msg{};
@@ -105,74 +104,80 @@ private:
 		msg.timestamp = this->get_clock()->now().nanoseconds() / 1000;
 		request->request = msg;
 
+		command_in_flight_ = true;
+		command_result_ready_ = false;
 		vehicle_command_client_->async_send_request(
 			request,
 			[this](rclcpp::Client<px4_msgs::srv::VehicleCommand>::SharedFuture future) {
 				if (future.wait_for(1s) == std::future_status::ready) {
 					auto reply = future.get()->reply;
+					command_result_ = reply.result;
+					command_result_ready_ = true;
+					command_in_flight_ = false;
 					if (reply.result != reply.VEHICLE_CMD_RESULT_ACCEPTED) {
 						RCLCPP_WARN(this->get_logger(), "Vehicle command rejected: %u", reply.result);
 					}
 				} else {
+					command_in_flight_ = false;
 					RCLCPP_WARN(this->get_logger(), "Vehicle command service timeout");
 				}
 			});
 	}
 
+	bool command_accepted() {
+		if (!command_result_ready_) {
+			return false;
+		}
+
+		command_result_ready_ = false;
+		return command_result_ == VehicleCommand::VEHICLE_CMD_RESULT_ACCEPTED;
+	}
+
 	void advance_state_machine() {
 		switch (phase_) {
 		case Phase::init:
-			if (++ticks_in_phase_ >= kOffboardWarmupTicks) {
+			if (!command_in_flight_) {
 				RCLCPP_INFO(this->get_logger(), "Switching to offboard mode");
 				request_vehicle_command(VehicleCommand::VEHICLE_CMD_DO_SET_MODE, 1.0f, 6.0f);
 				phase_ = Phase::offboard_requested;
-				ticks_in_phase_ = 0;
 			}
 			break;
 		case Phase::offboard_requested:
-			if (++ticks_in_phase_ >= kArmDelayTicks) {
+			if (command_accepted() && !command_in_flight_) {
 				RCLCPP_INFO(this->get_logger(), "Arming");
 				request_vehicle_command(VehicleCommand::VEHICLE_CMD_COMPONENT_ARM_DISARM, 1.0f);
 				phase_ = Phase::arm_requested;
-				ticks_in_phase_ = 0;
 			}
 			break;
 		case Phase::arm_requested:
-			if (++ticks_in_phase_ >= kArmDelayTicks) {
+			if (command_accepted()) {
 				RCLCPP_INFO(this->get_logger(), "Taking off to 10m");
-				phase_ = Phase::takeoff;
-				ticks_in_phase_ = 0;
-			}
-			break;
-		case Phase::takeoff:
-			if (++ticks_in_phase_ >= kTakeoffTicks) {
-				RCLCPP_INFO(this->get_logger(), "Hovering at 10m");
 				phase_ = Phase::hover;
-				ticks_in_phase_ = 0;
+				hover_ticks_ = 0;
 			}
 			break;
 		case Phase::hover:
-			if (++ticks_in_phase_ >= kHoverTicks) {
+			if (++hover_ticks_ >= kHoverTicks && !command_in_flight_) {
 				RCLCPP_INFO(this->get_logger(), "Landing");
 				landed_ = false;
 				request_vehicle_command(VehicleCommand::VEHICLE_CMD_NAV_LAND);
 				phase_ = Phase::landing;
-				ticks_in_phase_ = 0;
 			}
 			break;
 		case Phase::landing:
-			if (landed_) {
+			if (command_accepted()) {
+				RCLCPP_INFO(this->get_logger(), "Land command accepted, waiting for touchdown");
+			}
+			if (landed_ && !command_in_flight_) {
 				RCLCPP_INFO(this->get_logger(), "Disarming after landing");
 				request_vehicle_command(VehicleCommand::VEHICLE_CMD_COMPONENT_ARM_DISARM, 0.0f);
 				phase_ = Phase::disarm_requested;
-				ticks_in_phase_ = 0;
 			}
 			break;
 		case Phase::disarm_requested:
-			if (++ticks_in_phase_ >= kArmDelayTicks) {
+			if (command_accepted()) {
 				RCLCPP_INFO(this->get_logger(), "Mission complete");
 				phase_ = Phase::done;
-				ticks_in_phase_ = 0;
 				rclcpp::shutdown();
 			}
 			break;
