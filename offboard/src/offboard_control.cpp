@@ -5,6 +5,7 @@
 #include <px4_msgs/msg/vehicle_local_position.hpp>
 #include <px4_msgs/srv/vehicle_command.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <std_msgs/msg/empty.hpp>
 #include <chrono>
 
 using namespace std::chrono_literals;
@@ -16,6 +17,7 @@ public:
 		offboard_control_mode_publisher_ = this->create_publisher<OffboardControlMode>("/fmu/in/offboard_control_mode", 10);
 		trajectory_setpoint_publisher_ = this->create_publisher<TrajectorySetpoint>("/fmu/in/trajectory_setpoint", 10);
 		vehicle_command_client_ = this->create_client<px4_msgs::srv::VehicleCommand>("/fmu/vehicle_command");
+		gimbal_tilt_publisher_ = this->create_publisher<std_msgs::msg::Empty>("/gimbal/tilt_down", 10);
 		land_detected_subscription_ = this->create_subscription<px4_msgs::msg::VehicleLandDetected>(
 			"/fmu/out/vehicle_land_detected",
 			10,
@@ -62,6 +64,7 @@ private:
 	rclcpp::TimerBase::SharedPtr timer_;
 	rclcpp::Publisher<OffboardControlMode>::SharedPtr offboard_control_mode_publisher_;
 	rclcpp::Publisher<TrajectorySetpoint>::SharedPtr trajectory_setpoint_publisher_;
+	rclcpp::Publisher<std_msgs::msg::Empty>::SharedPtr gimbal_tilt_publisher_;
 	rclcpp::Client<px4_msgs::srv::VehicleCommand>::SharedPtr vehicle_command_client_;
 	rclcpp::Subscription<px4_msgs::msg::VehicleLandDetected>::SharedPtr land_detected_subscription_;
 	rclcpp::Subscription<px4_msgs::msg::VehicleLocalPosition>::SharedPtr local_position_subscription_;
@@ -168,6 +171,7 @@ private:
 		case Phase::arm_requested:
 			if (command_accepted()) {
 				RCLCPP_INFO(this->get_logger(), "Taking off to 10m");
+				gimbal_tilt_publisher_->publish(std_msgs::msg::Empty{});
 				phase_ = Phase::takeoff;
 			}
 			break;

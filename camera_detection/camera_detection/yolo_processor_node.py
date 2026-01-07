@@ -1,7 +1,7 @@
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import CompressedImage
-from std_msgs.msg import Int32
+from std_msgs.msg import Int32, Empty
 from ultralytics import YOLO
 import cv2
 import numpy as np
@@ -105,6 +105,8 @@ class YoloProcessorNode(Node):
 
         self.id_subscription = self.create_subscription(
             Int32, '/perception/set_target_id', self.target_id_callback, 10)
+        self.gimbal_tilt_subscription = self.create_subscription(
+            Empty, '/gimbal/tilt_down', self.gimbal_tilt_callback, 10)
 
         self.debug_image_pub = self.create_publisher(
             CompressedImage, '/image_raw/compressed', 10)
@@ -137,7 +139,12 @@ class YoloProcessorNode(Node):
         self.vx = 0
         self.vy = 0
 
-        self.timer = self.create_timer(0.033, self.timer_callback)
+        self.timer_period_s = 0.033
+        self.timer = self.create_timer(self.timer_period_s, self.timer_callback)
+
+        self.tilt_pitch_speed = -40
+        self.tilt_duration_s = 1.0
+        self.tilt_ticks_remaining = 0
 
         self.get_logger().info("YOLO Node Started.")
 
@@ -151,6 +158,10 @@ class YoloProcessorNode(Node):
         self.vx = 0
         self.vy = 0
         self.get_logger().info(f"Target Set: ID {self.locked_id}")
+
+    def gimbal_tilt_callback(self, msg):
+        self.tilt_ticks_remaining = max(1, int(self.tilt_duration_s / self.timer_period_s))
+        self.get_logger().info("Gimbal tilt down triggered")
 
     def calculate_iou(self, box1, box2):
         x1 = max(box1[0], box2[0])
@@ -166,6 +177,12 @@ class YoloProcessorNode(Node):
         return intersection / union if union > 0 else 0
 
     def timer_callback(self):
+        if self.tilt_ticks_remaining > 0:
+            self.gimbal.send_speed(0, self.tilt_pitch_speed)
+            self.tilt_ticks_remaining -= 1
+            if self.tilt_ticks_remaining == 0:
+                self.gimbal.send_speed(0, 0)
+            return
         ret, frame = self.cap.read()
         if not ret: return
         
