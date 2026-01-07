@@ -2,6 +2,7 @@
 #include <px4_msgs/msg/trajectory_setpoint.hpp>
 #include <px4_msgs/msg/vehicle_command.hpp>
 #include <px4_msgs/msg/vehicle_land_detected.hpp>
+#include <px4_msgs/msg/vehicle_local_position.hpp>
 #include <px4_msgs/srv/vehicle_command.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <chrono>
@@ -19,7 +20,16 @@ public:
 			"/fmu/out/vehicle_land_detected",
 			10,
 			[this](const px4_msgs::msg::VehicleLandDetected &msg) {
-				landed_ = msg.landed;
+				landed_ = msg.landed || msg.ground_contact;
+			});
+		local_position_subscription_ = this->create_subscription<px4_msgs::msg::VehicleLocalPosition>(
+			"/fmu/out/vehicle_local_position",
+			10,
+			[this](const px4_msgs::msg::VehicleLocalPosition &msg) {
+				if (msg.z_valid) {
+					altitude_m_ = -msg.z;
+					at_target_altitude_ = altitude_m_ >= kTargetAltitudeM - kAltitudeToleranceM;
+				}
 			});
 
 		while (!vehicle_command_client_->wait_for_service(1s)) {
@@ -42,6 +52,7 @@ private:
 		init,
 		offboard_requested,
 		arm_requested,
+		takeoff,
 		hover,
 		landing,
 		disarm_requested,
@@ -53,14 +64,19 @@ private:
 	rclcpp::Publisher<TrajectorySetpoint>::SharedPtr trajectory_setpoint_publisher_;
 	rclcpp::Client<px4_msgs::srv::VehicleCommand>::SharedPtr vehicle_command_client_;
 	rclcpp::Subscription<px4_msgs::msg::VehicleLandDetected>::SharedPtr land_detected_subscription_;
+	rclcpp::Subscription<px4_msgs::msg::VehicleLocalPosition>::SharedPtr local_position_subscription_;
 	Phase phase_ = Phase::init;
 	uint64_t hover_ticks_ = 0;
 	bool landed_ = false;
 	bool command_in_flight_ = false;
 	bool command_result_ready_ = false;
 	bool command_accepted_ = false;
+	float altitude_m_ = 0.0f;
+	bool at_target_altitude_ = false;
 
 	static constexpr uint64_t kHoverTicks = 100;  // 10s at 100ms tick
+	static constexpr float kTargetAltitudeM = 10.0f;
+	static constexpr float kAltitudeToleranceM = 0.5f;
 
 	void publish_offboard_control_mode() {
 		OffboardControlMode msg{};
@@ -86,7 +102,7 @@ private:
 		case Phase::done:
 			return 0.2f;
 		default:
-			return 10.0f;
+			return kTargetAltitudeM;
 		}
 	}
 
@@ -152,12 +168,21 @@ private:
 		case Phase::arm_requested:
 			if (command_accepted()) {
 				RCLCPP_INFO(this->get_logger(), "Taking off to 10m");
+				phase_ = Phase::takeoff;
+			}
+			break;
+		case Phase::takeoff:
+			if (at_target_altitude_) {
+				RCLCPP_INFO(this->get_logger(), "Hovering at 10m");
 				phase_ = Phase::hover;
 				hover_ticks_ = 0;
 			}
 			break;
 		case Phase::hover:
-			if (++hover_ticks_ >= kHoverTicks && !command_in_flight_) {
+			if (at_target_altitude_) {
+				++hover_ticks_;
+			}
+			if (hover_ticks_ >= kHoverTicks && !command_in_flight_) {
 				RCLCPP_INFO(this->get_logger(), "Landing");
 				landed_ = false;
 				request_vehicle_command(VehicleCommand::VEHICLE_CMD_NAV_LAND);
