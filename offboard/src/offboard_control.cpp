@@ -15,29 +15,36 @@ public:
 		vehicle_command_publisher_ = this->create_publisher<VehicleCommand>("/fmu/in/vehicle_command", 10);
 
 		timer_ = this->create_wall_timer(100ms, [this]() {
-			if (counter_ == 10) {
-				//publish_vehicle_command(VehicleCommand::VEHICLE_CMD_DO_SET_MODE, 1, 6);
-				publish_vehicle_command(VehicleCommand::VEHICLE_CMD_COMPONENT_ARM_DISARM, 1.0);
-			}
-            
-            if (counter_ == 60) {
-                publish_vehicle_command(VehicleCommand::VEHICLE_CMD_COMPONENT_ARM_DISARM, 0.0);
-                RCLCPP_INFO(this->get_logger(), "Safety Stop: Disarming!");
-                rclcpp::shutdown();
-            }
-
 			publish_offboard_control_mode();
 			publish_trajectory_setpoint();
-            counter_++;
+			advance_state_machine();
 		});
 	}
 
 private:
+	enum class Phase {
+		init,
+		offboard_requested,
+		arm_requested,
+		takeoff,
+		hover,
+		landing,
+		disarm_requested,
+		done
+	};
+
 	rclcpp::TimerBase::SharedPtr timer_;
 	rclcpp::Publisher<OffboardControlMode>::SharedPtr offboard_control_mode_publisher_;
 	rclcpp::Publisher<TrajectorySetpoint>::SharedPtr trajectory_setpoint_publisher_;
 	rclcpp::Publisher<VehicleCommand>::SharedPtr vehicle_command_publisher_;
-    uint64_t counter_ = 0;
+	Phase phase_ = Phase::init;
+	uint64_t ticks_in_phase_ = 0;
+
+	static constexpr uint64_t kOffboardWarmupTicks = 10;
+	static constexpr uint64_t kArmDelayTicks = 10;
+	static constexpr uint64_t kTakeoffTicks = 50;
+	static constexpr uint64_t kHoverTicks = 50;
+	static constexpr uint64_t kLandingTicks = 50;
 
 	void publish_offboard_control_mode() {
 		OffboardControlMode msg{};
@@ -50,13 +57,24 @@ private:
 
 	void publish_trajectory_setpoint() {
 		TrajectorySetpoint msg{};
-		msg.position = {0.0, 0.0, 0.0}; 
-		msg.yaw = -3.14; 
+		msg.position = {0.0f, 0.0f, -get_target_altitude_m()};
+		msg.yaw = -3.14f;
 		msg.timestamp = this->get_clock()->now().nanoseconds() / 1000;
 		trajectory_setpoint_publisher_->publish(msg);
 	}
 
-	void publish_vehicle_command(uint16_t command, float param1 = 0.0, float param2 = 0.0) {
+	float get_target_altitude_m() const {
+		switch (phase_) {
+		case Phase::landing:
+		case Phase::disarm_requested:
+		case Phase::done:
+			return 0.2f;
+		default:
+			return 10.0f;
+		}
+	}
+
+	void publish_vehicle_command(uint16_t command, float param1 = 0.0f, float param2 = 0.0f) {
 		VehicleCommand msg{};
 		msg.param1 = param1;
 		msg.param2 = param2;
@@ -68,6 +86,68 @@ private:
 		msg.from_external = true;
 		msg.timestamp = this->get_clock()->now().nanoseconds() / 1000;
 		vehicle_command_publisher_->publish(msg);
+	}
+
+	void advance_state_machine() {
+		switch (phase_) {
+		case Phase::init:
+			if (++ticks_in_phase_ >= kOffboardWarmupTicks) {
+				RCLCPP_INFO(this->get_logger(), "Switching to offboard mode");
+				publish_vehicle_command(VehicleCommand::VEHICLE_CMD_DO_SET_MODE, 1.0f, 6.0f);
+				phase_ = Phase::offboard_requested;
+				ticks_in_phase_ = 0;
+			}
+			break;
+		case Phase::offboard_requested:
+			if (++ticks_in_phase_ >= kArmDelayTicks) {
+				RCLCPP_INFO(this->get_logger(), "Arming");
+				publish_vehicle_command(VehicleCommand::VEHICLE_CMD_COMPONENT_ARM_DISARM, 1.0f);
+				phase_ = Phase::arm_requested;
+				ticks_in_phase_ = 0;
+			}
+			break;
+		case Phase::arm_requested:
+			if (++ticks_in_phase_ >= kArmDelayTicks) {
+				RCLCPP_INFO(this->get_logger(), "Taking off to 10m");
+				phase_ = Phase::takeoff;
+				ticks_in_phase_ = 0;
+			}
+			break;
+		case Phase::takeoff:
+			if (++ticks_in_phase_ >= kTakeoffTicks) {
+				RCLCPP_INFO(this->get_logger(), "Hovering at 10m");
+				phase_ = Phase::hover;
+				ticks_in_phase_ = 0;
+			}
+			break;
+		case Phase::hover:
+			if (++ticks_in_phase_ >= kHoverTicks) {
+				RCLCPP_INFO(this->get_logger(), "Landing");
+				publish_vehicle_command(VehicleCommand::VEHICLE_CMD_NAV_LAND);
+				phase_ = Phase::landing;
+				ticks_in_phase_ = 0;
+			}
+			break;
+		case Phase::landing:
+			if (++ticks_in_phase_ >= kLandingTicks) {
+				RCLCPP_INFO(this->get_logger(), "Disarming after landing");
+				publish_vehicle_command(VehicleCommand::VEHICLE_CMD_COMPONENT_ARM_DISARM, 0.0f);
+				phase_ = Phase::disarm_requested;
+				ticks_in_phase_ = 0;
+			}
+			break;
+		case Phase::disarm_requested:
+			if (++ticks_in_phase_ >= kArmDelayTicks) {
+				RCLCPP_INFO(this->get_logger(), "Mission complete");
+				phase_ = Phase::done;
+				ticks_in_phase_ = 0;
+				rclcpp::shutdown();
+			}
+			break;
+		case Phase::done:
+		default:
+			break;
+		}
 	}
 };
 
