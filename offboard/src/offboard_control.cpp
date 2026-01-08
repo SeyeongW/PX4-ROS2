@@ -32,6 +32,9 @@ public:
 				if (msg.z_valid || std::isfinite(msg.z)) {
 					altitude_m_ = -msg.z;
 					at_target_altitude_ = altitude_m_ >= kTargetAltitudeM - kAltitudeToleranceM;
+					if (at_target_altitude_) {
+						reached_target_altitude_ = true;
+					}
 				} else {
 					at_target_altitude_ = false;
 				}
@@ -79,6 +82,7 @@ private:
 	bool command_accepted_ = false;
 	float altitude_m_ = 0.0f;
 	bool at_target_altitude_ = false;
+	bool reached_target_altitude_ = false;
 
 	static constexpr uint64_t kHoverTicks = 100;  // 10s at 100ms tick
 	static constexpr float kTargetAltitudeM = 10.0f;
@@ -175,20 +179,19 @@ private:
 			if (command_accepted()) {
 				RCLCPP_INFO(this->get_logger(), "Taking off to 10m");
 				gimbal_tilt_publisher_->publish(std_msgs::msg::Empty{});
+				reached_target_altitude_ = false;
 				phase_ = Phase::takeoff;
 			}
 			break;
 		case Phase::takeoff:
-			if (at_target_altitude_) {
+			if (reached_target_altitude_) {
 				RCLCPP_INFO(this->get_logger(), "Hovering at 10m");
 				phase_ = Phase::hover;
 				hover_ticks_ = 0;
 			}
 			break;
 		case Phase::hover:
-			if (at_target_altitude_) {
-				++hover_ticks_;
-			}
+			++hover_ticks_;
 			if (hover_ticks_ >= kHoverTicks && !command_in_flight_) {
 				RCLCPP_INFO(this->get_logger(), "Landing");
 				landed_ = false;
