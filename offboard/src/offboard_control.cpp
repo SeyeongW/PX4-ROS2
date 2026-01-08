@@ -6,6 +6,7 @@
 #include <px4_msgs/srv/vehicle_command.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <std_msgs/msg/empty.hpp>
+#include <cmath>
 #include <chrono>
 
 using namespace std::chrono_literals;
@@ -28,9 +29,11 @@ public:
 			"/fmu/out/vehicle_local_position",
 			10,
 			[this](const px4_msgs::msg::VehicleLocalPosition &msg) {
-				if (msg.z_valid) {
+				if (msg.z_valid || std::isfinite(msg.z)) {
 					altitude_m_ = -msg.z;
 					at_target_altitude_ = altitude_m_ >= kTargetAltitudeM - kAltitudeToleranceM;
+				} else {
+					at_target_altitude_ = false;
 				}
 			});
 
