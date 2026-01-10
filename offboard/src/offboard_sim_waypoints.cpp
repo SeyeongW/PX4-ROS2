@@ -2,33 +2,36 @@
 #include <px4_msgs/msg/trajectory_setpoint.hpp>
 #include <px4_msgs/msg/vehicle_command.hpp>
 #include <px4_msgs/msg/vehicle_land_detected.hpp>
-#include <px4_msgs/msg/vehicle_local_position.hpp>
-#include <px4_msgs/msg/vehicle_status.hpp>
+#include <px4_msgs/msg/vehicle_odometry.hpp>
 #include <px4_msgs/srv/vehicle_command.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp/qos.hpp>
-#include <std_msgs/msg/empty.hpp>
-#include <cmath>
 #include <chrono>
+#include <cmath>
+#include <vector>
 
 using namespace std::chrono_literals;
 using namespace px4_msgs::msg;
 
-class OffboardControl : public rclcpp::Node {
+class OffboardSimWaypoints : public rclcpp::Node {
 public:
-	OffboardControl() : Node("offboard_control") {
+	OffboardSimWaypoints() : Node("offboard_sim_waypoints") {
 		auto qos_profile = rclcpp::SensorDataQoS();
 
 		offboard_control_mode_publisher_ = this->create_publisher<OffboardControlMode>("/fmu/in/offboard_control_mode", 10);
 		trajectory_setpoint_publisher_ = this->create_publisher<TrajectorySetpoint>("/fmu/in/trajectory_setpoint", 10);
 		vehicle_command_client_ = this->create_client<px4_msgs::srv::VehicleCommand>("/fmu/vehicle_command");
-		gimbal_tilt_publisher_ = this->create_publisher<std_msgs::msg::Empty>("/gimbal/tilt_down", 10);
 
-		vehicle_status_subscription_ = this->create_subscription<px4_msgs::msg::VehicleStatus>(
-			"/fmu/out/vehicle_status_v1",
+		odometry_subscription_ = this->create_subscription<px4_msgs::msg::VehicleOdometry>(
+			"/fmu/out/vehicle_odometry",
 			qos_profile,
-			[this](const px4_msgs::msg::VehicleStatus &msg) {
-				arming_state_ = msg.arming_state;
+			[this](const px4_msgs::msg::VehicleOdometry &msg) {
+				if (std::isfinite(msg.position[0]) && std::isfinite(msg.position[1]) && std::isfinite(msg.position[2])) {
+					current_position_[0] = msg.position[0];
+					current_position_[1] = msg.position[1];
+					current_position_[2] = msg.position[2];
+					position_valid_ = true;
+				}
 			});
 
 		land_detected_subscription_ = this->create_subscription<px4_msgs::msg::VehicleLandDetected>(
@@ -36,28 +39,6 @@ public:
 			qos_profile,
 			[this](const px4_msgs::msg::VehicleLandDetected &msg) {
 				landed_ = msg.landed || msg.ground_contact;
-			});
-
-		local_position_subscription_ = this->create_subscription<px4_msgs::msg::VehicleLocalPosition>(
-			"/fmu/out/vehicle_local_position",
-			qos_profile,
-			[this](const px4_msgs::msg::VehicleLocalPosition &msg) {
-				if (std::isfinite(msg.z)) {
-					altitude_m_ = -msg.z;
-
-					if (arming_state_ == 2) {
-						RCLCPP_INFO_THROTTLE(
-							this->get_logger(),
-							*this->get_clock(),
-							1000,
-							"Alt: %.2f m",
-							altitude_m_);
-					}
-
-					if (phase_ == Phase::takeoff && altitude_m_ >= kTargetAltitudeM - kAltitudeToleranceM) {
-						reached_target_altitude_ = true;
-					}
-				}
 			});
 
 		while (!vehicle_command_client_->wait_for_service(1s)) {
@@ -81,10 +62,8 @@ private:
 	enum class Phase {
 		init,
 		offboard_requested,
-		offboard_active,
 		arm_requested,
-		takeoff,
-		hover,
+		mission,
 		landing,
 		done
 	};
@@ -92,25 +71,29 @@ private:
 	rclcpp::TimerBase::SharedPtr timer_;
 	rclcpp::Publisher<OffboardControlMode>::SharedPtr offboard_control_mode_publisher_;
 	rclcpp::Publisher<TrajectorySetpoint>::SharedPtr trajectory_setpoint_publisher_;
-	rclcpp::Publisher<std_msgs::msg::Empty>::SharedPtr gimbal_tilt_publisher_;
 	rclcpp::Client<px4_msgs::srv::VehicleCommand>::SharedPtr vehicle_command_client_;
+	rclcpp::Subscription<px4_msgs::msg::VehicleOdometry>::SharedPtr odometry_subscription_;
 	rclcpp::Subscription<px4_msgs::msg::VehicleLandDetected>::SharedPtr land_detected_subscription_;
-	rclcpp::Subscription<px4_msgs::msg::VehicleLocalPosition>::SharedPtr local_position_subscription_;
-	rclcpp::Subscription<px4_msgs::msg::VehicleStatus>::SharedPtr vehicle_status_subscription_;
 
 	Phase phase_ = Phase::init;
-	uint64_t hover_ticks_ = 0;
-	bool landed_ = false;
+	uint64_t warmup_ticks_ = 0;
 	bool command_in_flight_ = false;
 	bool command_result_ready_ = false;
 	bool command_accepted_ = false;
-	float altitude_m_ = 0.0f;
-	bool reached_target_altitude_ = false;
-	uint8_t arming_state_ = 0;
+	bool landed_ = false;
+	bool position_valid_ = false;
+	std::array<float, 3> current_position_{0.0f, 0.0f, 0.0f};
+	std::vector<std::array<float, 3>> waypoints_{
+		{0.0f, 0.0f, -10.0f},
+		{5.0f, 0.0f, -10.0f},
+		{5.0f, 5.0f, -10.0f},
+		{0.0f, 5.0f, -10.0f},
+		{0.0f, 0.0f, -10.0f}
+	};
+	size_t current_waypoint_index_ = 0;
 
-	static constexpr uint64_t kHoverTicks = 100;
-	static constexpr float kTargetAltitudeM = 10.0f;
-	static constexpr float kAltitudeToleranceM = 0.5f;
+	static constexpr float kWaypointToleranceM = 0.5f;
+	static constexpr uint64_t kOffboardWarmupTicks = 10;
 
 	void publish_offboard_control_mode() {
 		OffboardControlMode msg{};
@@ -123,7 +106,8 @@ private:
 
 	void publish_trajectory_setpoint() {
 		TrajectorySetpoint msg{};
-		msg.position = {0.0f, 0.0f, -kTargetAltitudeM};
+		const auto &target = waypoints_[current_waypoint_index_];
+		msg.position = {target[0], target[1], target[2]};
 		msg.yaw = -3.14f;
 		msg.timestamp = this->get_clock()->now().nanoseconds() / 1000;
 		trajectory_setpoint_publisher_->publish(msg);
@@ -167,9 +151,25 @@ private:
 		return command_accepted_;
 	}
 
+	bool reached_waypoint() const {
+		if (!position_valid_) {
+			return false;
+		}
+		const auto &target = waypoints_[current_waypoint_index_];
+		const float dx = current_position_[0] - target[0];
+		const float dy = current_position_[1] - target[1];
+		const float dz = current_position_[2] - target[2];
+		const float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+		return dist <= kWaypointToleranceM;
+	}
+
 	void advance_state_machine() {
 		switch (phase_) {
 		case Phase::init:
+			if (warmup_ticks_ < kOffboardWarmupTicks) {
+				++warmup_ticks_;
+				break;
+			}
 			if (!command_in_flight_) {
 				RCLCPP_INFO(this->get_logger(), "Switching to offboard mode");
 				request_vehicle_command(VehicleCommand::VEHICLE_CMD_DO_SET_MODE, 1.0f, 6.0f);
@@ -177,12 +177,7 @@ private:
 			}
 			break;
 		case Phase::offboard_requested:
-			if (command_accepted()) {
-				phase_ = Phase::offboard_active;
-			}
-			break;
-		case Phase::offboard_active:
-			if (vehicle_status_.nav_state == VehicleStatus::NAVIGATION_STATE_OFFBOARD && !command_in_flight_) {
+			if (command_accepted() && !command_in_flight_) {
 				RCLCPP_INFO(this->get_logger(), "Arming");
 				request_vehicle_command(VehicleCommand::VEHICLE_CMD_COMPONENT_ARM_DISARM, 1.0f);
 				phase_ = Phase::arm_requested;
@@ -190,35 +185,32 @@ private:
 			break;
 		case Phase::arm_requested:
 			if (command_accepted()) {
-				RCLCPP_INFO(this->get_logger(), "Taking off to %.1fm", kTargetAltitudeM);
-				gimbal_tilt_publisher_->publish(std_msgs::msg::Empty{});
-				reached_target_altitude_ = false;
-				phase_ = Phase::takeoff;
+				RCLCPP_INFO(this->get_logger(), "Starting waypoint mission");
+				current_waypoint_index_ = 0;
+				phase_ = Phase::mission;
 			}
 			break;
-		case Phase::takeoff:
-			if (reached_target_altitude_) {
-				RCLCPP_INFO(this->get_logger(), "Hovering at %.1fm", kTargetAltitudeM);
-				phase_ = Phase::hover;
-				hover_ticks_ = 0;
-			}
-			break;
-		case Phase::hover:
-			++hover_ticks_;
-			if (hover_ticks_ >= kHoverTicks && !command_in_flight_) {
-				RCLCPP_INFO(this->get_logger(), "Switching to LAND mode");
-				request_vehicle_command(VehicleCommand::VEHICLE_CMD_NAV_LAND);
-				phase_ = Phase::landing;
+		case Phase::mission:
+			if (reached_waypoint()) {
+				if (current_waypoint_index_ + 1 < waypoints_.size()) {
+					++current_waypoint_index_;
+					RCLCPP_INFO(this->get_logger(), "Next waypoint %zu", current_waypoint_index_);
+				} else if (!command_in_flight_) {
+					RCLCPP_INFO(this->get_logger(), "All waypoints reached, landing");
+					request_vehicle_command(VehicleCommand::VEHICLE_CMD_NAV_LAND);
+					phase_ = Phase::landing;
+				}
 			}
 			break;
 		case Phase::landing:
-			if (arming_state_ == 1) {
-				RCLCPP_INFO(this->get_logger(), "Disarm confirmed. Shutting down node.");
+			if (landed_ && !command_in_flight_) {
+				RCLCPP_INFO(this->get_logger(), "Disarming after landing");
+				request_vehicle_command(VehicleCommand::VEHICLE_CMD_COMPONENT_ARM_DISARM, 0.0f);
 				phase_ = Phase::done;
-				rclcpp::shutdown();
 			}
 			break;
 		case Phase::done:
+			rclcpp::shutdown();
 			break;
 		default:
 			break;
@@ -228,7 +220,7 @@ private:
 
 int main(int argc, char *argv[]) {
 	rclcpp::init(argc, argv);
-	rclcpp::spin(std::make_shared<OffboardControl>());
+	rclcpp::spin(std::make_shared<OffboardSimWaypoints>());
 	rclcpp::shutdown();
 	return 0;
 }
