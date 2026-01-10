@@ -8,6 +8,7 @@
 #include <rclcpp/qos.hpp>
 #include <chrono>
 #include <cmath>
+#include <array>
 #include <vector>
 
 using namespace std::chrono_literals;
@@ -83,17 +84,21 @@ private:
 	bool landed_ = false;
 	bool position_valid_ = false;
 	std::array<float, 3> current_position_{0.0f, 0.0f, 0.0f};
+	std::array<float, 3> setpoint_position_{0.0f, 0.0f, 0.0f};
 	std::vector<std::array<float, 3>> waypoints_{
-		{0.0f, 0.0f, -10.0f},
-		{5.0f, 0.0f, -10.0f},
-		{5.0f, 5.0f, -10.0f},
-		{0.0f, 5.0f, -10.0f},
-		{0.0f, 0.0f, -10.0f}
+		{0.0f, 0.0f, -15.0f},
+		{5.0f, 0.0f, -15.0f},
+		{5.0f, 5.0f, -15.0f},
+		{0.0f, 5.0f, -15.0f},
+		{0.0f, 0.0f, -15.0f}
 	};
 	size_t current_waypoint_index_ = 0;
 
 	static constexpr float kWaypointToleranceM = 0.5f;
 	static constexpr uint64_t kOffboardWarmupTicks = 10;
+	static constexpr float kAcceptanceRadiusM = 0.2f;
+	static constexpr float kFlightSpeedMps = 1.5f;
+	static constexpr float kTimerPeriodS = 0.1f;
 
 	void publish_offboard_control_mode() {
 		OffboardControlMode msg{};
@@ -106,8 +111,17 @@ private:
 
 	void publish_trajectory_setpoint() {
 		TrajectorySetpoint msg{};
-		const auto &target = waypoints_[current_waypoint_index_];
-		msg.position = {target[0], target[1], target[2]};
+		if (phase_ == Phase::init || phase_ == Phase::offboard_requested) {
+			if (position_valid_) {
+				setpoint_position_ = current_position_;
+				if (setpoint_position_[2] > -0.5f) {
+					setpoint_position_[2] = -1.0f;
+				}
+			}
+			msg.position = {setpoint_position_[0], setpoint_position_[1], setpoint_position_[2]};
+		} else {
+			msg.position = {setpoint_position_[0], setpoint_position_[1], setpoint_position_[2]};
+		}
 		msg.yaw = -3.14f;
 		msg.timestamp = this->get_clock()->now().nanoseconds() / 1000;
 		trajectory_setpoint_publisher_->publish(msg);
@@ -163,6 +177,25 @@ private:
 		return dist <= kWaypointToleranceM;
 	}
 
+	void update_setpoint_toward_target() {
+		const auto &target = waypoints_[current_waypoint_index_];
+		const float dx = target[0] - setpoint_position_[0];
+		const float dy = target[1] - setpoint_position_[1];
+		const float dz = target[2] - setpoint_position_[2];
+		const float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+		if (dist <= kAcceptanceRadiusM) {
+			return;
+		}
+		float step = kFlightSpeedMps * kTimerPeriodS;
+		if (step > dist) {
+			step = dist;
+		}
+		const float scale = step / dist;
+		setpoint_position_[0] += dx * scale;
+		setpoint_position_[1] += dy * scale;
+		setpoint_position_[2] += dz * scale;
+	}
+
 	void advance_state_machine() {
 		switch (phase_) {
 		case Phase::init:
@@ -187,10 +220,12 @@ private:
 			if (command_accepted()) {
 				RCLCPP_INFO(this->get_logger(), "Starting waypoint mission");
 				current_waypoint_index_ = 0;
+				setpoint_position_ = current_position_;
 				phase_ = Phase::mission;
 			}
 			break;
 		case Phase::mission:
+			update_setpoint_toward_target();
 			if (reached_waypoint()) {
 				if (current_waypoint_index_ + 1 < waypoints_.size()) {
 					++current_waypoint_index_;
