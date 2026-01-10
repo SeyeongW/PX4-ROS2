@@ -130,10 +130,11 @@ private:
 		trajectory_setpoint_publisher_->publish(msg);
 	}
 
-	void request_vehicle_command(uint16_t command, float param1 = 0.0f, float param7 = 0.0f) {
+	void request_vehicle_command(uint16_t command, float param1 = 0.0f, float param2 = 0.0f, float param7 = 0.0f) {
 		auto request = std::make_shared<px4_msgs::srv::VehicleCommand::Request>();
 		VehicleCommand msg{};
 		msg.param1 = param1;
+		msg.param2 = param2;
 		msg.param7 = param7;
 		msg.command = command;
 		msg.target_system = 1;
@@ -190,7 +191,7 @@ private:
 			}
 			if (!command_in_flight_) {
 				RCLCPP_INFO(this->get_logger(), "Requesting Offboard Mode...");
-				request_vehicle_command(VehicleCommand::VEHICLE_CMD_DO_SET_MODE, 1.0f, 6.0f);
+				request_vehicle_command(VehicleCommand::VEHICLE_CMD_DO_SET_MODE, 1.0f, 6.0f, 0.0f);
 				phase_ = Phase::offboard_requested;
 			}
 			break;
@@ -198,7 +199,7 @@ private:
 		case Phase::offboard_requested:
 			if (command_accepted() && !command_in_flight_) {
 				RCLCPP_INFO(this->get_logger(), "Offboard Accepted. Requesting ARM...");
-				request_vehicle_command(VehicleCommand::VEHICLE_CMD_COMPONENT_ARM_DISARM, 1.0f);
+				request_vehicle_command(VehicleCommand::VEHICLE_CMD_COMPONENT_ARM_DISARM, 1.0f, 0.0f, 0.0f);
 				phase_ = Phase::arm_requested;
 			}
 			break;
@@ -206,7 +207,7 @@ private:
 		case Phase::arm_requested:
 			if (command_accepted()) {
 				RCLCPP_INFO(this->get_logger(), "Arming Accepted. Requesting Takeoff...");
-				request_vehicle_command(VehicleCommand::VEHICLE_CMD_NAV_TAKEOFF, NAN, takeoff_alt_);
+				request_vehicle_command(VehicleCommand::VEHICLE_CMD_NAV_TAKEOFF, NAN, NAN, takeoff_alt_);
 				phase_ = Phase::takeoff;
 			}
 			break;
@@ -214,7 +215,7 @@ private:
 		case Phase::takeoff:
 			if (current_position_[2] <= -(takeoff_alt_ * 0.9f)) {
 				RCLCPP_INFO(this->get_logger(), "Takeoff Complete. Switching to Mission.");
-				request_vehicle_command(VehicleCommand::VEHICLE_CMD_DO_SET_MODE, 1.0f, 6.0f);
+				request_vehicle_command(VehicleCommand::VEHICLE_CMD_DO_SET_MODE, 1.0f, 6.0f, 0.0f);
 				phase_ = Phase::switch_to_mission;
 			}
 			break;
@@ -248,7 +249,7 @@ private:
 					RCLCPP_INFO(this->get_logger(), "Reached WP %zu. Next...", wp_index_);
 				} else if (!command_in_flight_) {
 					RCLCPP_INFO(this->get_logger(), "Mission Done. Landing.");
-					request_vehicle_command(VehicleCommand::VEHICLE_CMD_NAV_LAND);
+					request_vehicle_command(VehicleCommand::VEHICLE_CMD_NAV_LAND, 0.0f, 0.0f, 0.0f);
 					phase_ = Phase::landing;
 				}
 			}
@@ -258,7 +259,7 @@ private:
 		case Phase::landing:
 			if (landed_ && !command_in_flight_) {
 				RCLCPP_INFO(this->get_logger(), "Landed. Disarming.");
-				request_vehicle_command(VehicleCommand::VEHICLE_CMD_COMPONENT_ARM_DISARM, 0.0f);
+				request_vehicle_command(VehicleCommand::VEHICLE_CMD_COMPONENT_ARM_DISARM, 0.0f, 0.0f, 0.0f);
 				phase_ = Phase::done;
 			}
 			break;
