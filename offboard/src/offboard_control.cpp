@@ -1,228 +1,396 @@
+#include <chrono>
+#include <cmath>
+#include <vector>
+#include <array>
+#include <cstdint>
+#include <algorithm>
+
+#include <rclcpp/rclcpp.hpp>
+#include <rclcpp/qos.hpp>
+
 #include <px4_msgs/msg/offboard_control_mode.hpp>
 #include <px4_msgs/msg/trajectory_setpoint.hpp>
 #include <px4_msgs/msg/vehicle_command.hpp>
-#include <px4_msgs/msg/vehicle_land_detected.hpp>
 #include <px4_msgs/msg/vehicle_local_position.hpp>
 #include <px4_msgs/msg/vehicle_status.hpp>
-#include <px4_msgs/srv/vehicle_command.hpp>
-#include <rclcpp/rclcpp.hpp>
-#include <rclcpp/qos.hpp>
-#include <std_msgs/msg/empty.hpp>
-#include <cmath>
-#include <chrono>
 
 using namespace std::chrono_literals;
 using namespace px4_msgs::msg;
 
 class OffboardControl : public rclcpp::Node {
 public:
-	OffboardControl() : Node("offboard_control") {
-		auto qos_profile = rclcpp::SensorDataQoS();
+    OffboardControl() : Node("offboard_control") {
+        auto qos_profile = rclcpp::SensorDataQoS();
 
-		offboard_control_mode_publisher_ = this->create_publisher<OffboardControlMode>("/fmu/in/offboard_control_mode", 10);
-		trajectory_setpoint_publisher_ = this->create_publisher<TrajectorySetpoint>("/fmu/in/trajectory_setpoint", 10);
-		vehicle_command_client_ = this->create_client<px4_msgs::srv::VehicleCommand>("/fmu/vehicle_command");
-		gimbal_tilt_publisher_ = this->create_publisher<std_msgs::msg::Empty>("/gimbal/tilt_down", 10);
+        offboard_control_mode_publisher_ =
+            this->create_publisher<OffboardControlMode>("/fmu/in/offboard_control_mode", 10);
+        trajectory_setpoint_publisher_ =
+            this->create_publisher<TrajectorySetpoint>("/fmu/in/trajectory_setpoint", 10);
+        vehicle_command_publisher_ =
+            this->create_publisher<VehicleCommand>("/fmu/in/vehicle_command", 10);
 
-		vehicle_status_subscription_ = this->create_subscription<px4_msgs::msg::VehicleStatus>(
-			"/fmu/out/vehicle_status_v1",
-			qos_profile,
-			[this](const px4_msgs::msg::VehicleStatus &msg) {
-				arming_state_ = msg.arming_state;
-			});
+        local_position_subscription_ = this->create_subscription<VehicleLocalPosition>(
+            "/fmu/out/vehicle_local_position", qos_profile,
+            [this](const VehicleLocalPosition &msg) {
+                current_pos_ = {msg.x, msg.y, msg.z};
 
-		land_detected_subscription_ = this->create_subscription<px4_msgs::msg::VehicleLandDetected>(
-			"/fmu/out/vehicle_land_detected",
-			qos_profile,
-			[this](const px4_msgs::msg::VehicleLandDetected &msg) {
-				landed_ = msg.landed || msg.ground_contact;
-			});
+                if (std::isfinite(msg.heading)) {
+                    current_yaw_meas_ = msg.heading;
 
-		local_position_subscription_ = this->create_subscription<px4_msgs::msg::VehicleLocalPosition>(
-			"/fmu/out/vehicle_local_position",
-			qos_profile,
-			[this](const px4_msgs::msg::VehicleLocalPosition &msg) {
-				if (std::isfinite(msg.z)) {
-					altitude_m_ = -msg.z;
+                    if (!yaw_initialized_) {
+                        current_yaw_sp_ = current_yaw_meas_;
+                        target_yaw_ = current_yaw_sp_;
+                        yaw_initialized_ = true;
+                    }
+                }
 
-					if (arming_state_ == 2) {
-						RCLCPP_INFO_THROTTLE(
-							this->get_logger(),
-							*this->get_clock(),
-							1000,
-							"Alt: %.2f m",
-							altitude_m_);
-					}
+                if (phase_ == Phase::warmup || phase_ == Phase::takeoff) {
+                    setpoint_pos_[0] = current_pos_[0];
+                    setpoint_pos_[1] = current_pos_[1];
+                }
+            });
 
-					if (phase_ == Phase::takeoff && altitude_m_ >= kTargetAltitudeM - kAltitudeToleranceM) {
-						reached_target_altitude_ = true;
-					}
-				}
-			});
+        status_subscription_ = this->create_subscription<VehicleStatus>(
+            "/fmu/out/vehicle_status", qos_profile,
+            [this](const VehicleStatus &msg) {
+                arming_state_ = msg.arming_state;
+                nav_state_ = msg.nav_state;
+            });
 
-		while (!vehicle_command_client_->wait_for_service(1s)) {
-			if (!rclcpp::ok()) {
-				RCLCPP_ERROR(this->get_logger(), "Interrupted while waiting for vehicle_command service.");
-				return;
-			}
-			RCLCPP_INFO(this->get_logger(), "vehicle_command service not available, waiting...");
-		}
+        timer_ = this->create_wall_timer(100ms, [this]() {
+            if (phase_ == Phase::landing) {
+                if (arming_state_ == VehicleStatus::ARMING_STATE_DISARMED) {
+                    RCLCPP_INFO(this->get_logger(),
+                                ">>> Disarm confirmed. Mission complete. Shutting down.");
+                    rclcpp::shutdown();
+                    return;
+                }
+            }
 
-		timer_ = this->create_wall_timer(100ms, [this]() {
-			if (phase_ != Phase::landing && phase_ != Phase::done) {
-				publish_offboard_control_mode();
-				publish_trajectory_setpoint();
-			}
-			advance_state_machine();
-		});
-	}
+            if (phase_ != Phase::landing) {
+                publish_offboard_control_mode();
+                publish_trajectory_setpoint();
+            }
+
+            manage_mission_flow();
+        });
+    }
 
 private:
-	enum class Phase {
-		init,
-		offboard_requested,
-		arm_requested,
-		takeoff,
-		hover,
-		landing,
-		done
-	};
+    enum class Phase { warmup, takeoff, yaw_align, move, landing };
 
-	rclcpp::TimerBase::SharedPtr timer_;
-	rclcpp::Publisher<OffboardControlMode>::SharedPtr offboard_control_mode_publisher_;
-	rclcpp::Publisher<TrajectorySetpoint>::SharedPtr trajectory_setpoint_publisher_;
-	rclcpp::Publisher<std_msgs::msg::Empty>::SharedPtr gimbal_tilt_publisher_;
-	rclcpp::Client<px4_msgs::srv::VehicleCommand>::SharedPtr vehicle_command_client_;
-	rclcpp::Subscription<px4_msgs::msg::VehicleLandDetected>::SharedPtr land_detected_subscription_;
-	rclcpp::Subscription<px4_msgs::msg::VehicleLocalPosition>::SharedPtr local_position_subscription_;
-	rclcpp::Subscription<px4_msgs::msg::VehicleStatus>::SharedPtr vehicle_status_subscription_;
+    rclcpp::TimerBase::SharedPtr timer_;
+    rclcpp::Publisher<OffboardControlMode>::SharedPtr offboard_control_mode_publisher_;
+    rclcpp::Publisher<TrajectorySetpoint>::SharedPtr trajectory_setpoint_publisher_;
+    rclcpp::Publisher<VehicleCommand>::SharedPtr vehicle_command_publisher_;
+    rclcpp::Subscription<VehicleLocalPosition>::SharedPtr local_position_subscription_;
+    rclcpp::Subscription<VehicleStatus>::SharedPtr status_subscription_;
 
-	Phase phase_ = Phase::init;
-	uint64_t hover_ticks_ = 0;
-	bool landed_ = false;
-	bool command_in_flight_ = false;
-	bool command_result_ready_ = false;
-	bool command_accepted_ = false;
-	float altitude_m_ = 0.0f;
-	bool reached_target_altitude_ = false;
-	uint8_t arming_state_ = 0;
+    Phase phase_ = Phase::warmup;
+    uint64_t ticks_ = 0;
+    uint64_t dbg_tick_ = 0;
 
-	static constexpr uint64_t kHoverTicks = 100;
-	static constexpr float kTargetAltitudeM = 10.0f;
-	static constexpr float kAltitudeToleranceM = 0.5f;
+    std::array<float, 3> current_pos_{0.0f, 0.0f, 0.0f};
+    std::array<float, 3> setpoint_pos_{0.0f, 0.0f, 0.0f};
 
-	void publish_offboard_control_mode() {
-		OffboardControlMode msg{};
-		msg.position = true;
-		msg.velocity = false;
-		msg.acceleration = false;
-		msg.timestamp = this->get_clock()->now().nanoseconds() / 1000;
-		offboard_control_mode_publisher_->publish(msg);
-	}
+    bool yaw_initialized_ = false;
+    float current_yaw_meas_ = 0.0f;
+    float current_yaw_sp_ = 0.0f;
+    float target_yaw_ = 0.0f;
 
-	void publish_trajectory_setpoint() {
-		TrajectorySetpoint msg{};
-		msg.position = {0.0f, 0.0f, -kTargetAltitudeM};
-		msg.yaw = -3.14f;
-		msg.timestamp = this->get_clock()->now().nanoseconds() / 1000;
-		trajectory_setpoint_publisher_->publish(msg);
-	}
+    uint8_t arming_state_ = 0;
+    uint8_t nav_state_ = 0;
 
-	void request_vehicle_command(uint16_t command, float param1 = 0.0f, float param2 = 0.0f) {
-		auto request = std::make_shared<px4_msgs::srv::VehicleCommand::Request>();
-		VehicleCommand msg{};
-		msg.param1 = param1;
-		msg.param2 = param2;
-		msg.command = command;
-		msg.target_system = 1;
-		msg.target_component = 1;
-		msg.source_system = 255;
-		msg.source_component = 1;
-		msg.from_external = true;
-		msg.timestamp = this->get_clock()->now().nanoseconds() / 1000;
-		request->request = msg;
+    const float dt_ = 0.1f;
+    const uint64_t warmup_armed_ticks_ = 50;
+    const uint64_t command_repeat_ticks_ = 10;
 
-		command_in_flight_ = true;
-		command_result_ready_ = false;
-		vehicle_command_client_->async_send_request(
-			request,
-			[this](rclcpp::Client<px4_msgs::srv::VehicleCommand>::SharedFuture future) {
-				if (future.wait_for(1s) == std::future_status::ready) {
-					auto reply = future.get()->reply;
-					command_accepted_ = (reply.result == reply.VEHICLE_CMD_RESULT_ACCEPTED);
-					command_result_ready_ = true;
-					command_in_flight_ = false;
-				} else {
-					command_in_flight_ = false;
-				}
-			});
-	}
+    const float flight_alt_ = 50.0f;
 
-	bool command_accepted() {
-		if (!command_result_ready_) {
-			return false;
-		}
-		command_result_ready_ = false;
-		return command_accepted_;
-	}
+    bool z_ramp_init_ = false;
+    float z_takeoff_start_ = 0.0f;
+    float z_sp_ = 0.0f;
+    float takeoff_elapsed_ = 0.0f;
+    const float takeoff_ramp_time_ = 4.0f;
 
-	void advance_state_machine() {
-		switch (phase_) {
-		case Phase::init:
-			if (!command_in_flight_) {
-				RCLCPP_INFO(this->get_logger(), "Switching to offboard mode");
-				request_vehicle_command(VehicleCommand::VEHICLE_CMD_DO_SET_MODE, 1.0f, 6.0f);
-				phase_ = Phase::offboard_requested;
-			}
-			break;
-		case Phase::offboard_requested:
-			if (command_accepted() && !command_in_flight_) {
-				RCLCPP_INFO(this->get_logger(), "Arming");
-				request_vehicle_command(VehicleCommand::VEHICLE_CMD_COMPONENT_ARM_DISARM, 1.0f);
-				phase_ = Phase::arm_requested;
-			}
-			break;
-		case Phase::arm_requested:
-			if (command_accepted()) {
-				RCLCPP_INFO(this->get_logger(), "Taking off to %.1fm", kTargetAltitudeM);
-				gimbal_tilt_publisher_->publish(std_msgs::msg::Empty{});
-				reached_target_altitude_ = false;
-				phase_ = Phase::takeoff;
-			}
-			break;
-		case Phase::takeoff:
-			if (reached_target_altitude_) {
-				RCLCPP_INFO(this->get_logger(), "Hovering at %.1fm", kTargetAltitudeM);
-				phase_ = Phase::hover;
-				hover_ticks_ = 0;
-			}
-			break;
-		case Phase::hover:
-			++hover_ticks_;
-			if (hover_ticks_ >= kHoverTicks && !command_in_flight_) {
-				RCLCPP_INFO(this->get_logger(), "Switching to LAND mode");
-				request_vehicle_command(VehicleCommand::VEHICLE_CMD_NAV_LAND);
-				phase_ = Phase::landing;
-			}
-			break;
-		case Phase::landing:
-			if (arming_state_ == 1) {
-				RCLCPP_INFO(this->get_logger(), "Disarm confirmed. Shutting down node.");
-				phase_ = Phase::done;
-				rclcpp::shutdown();
-			}
-			break;
-		case Phase::done:
-			break;
-		default:
-			break;
-		}
-	}
+    const float yaw_speed_ = 0.5f;
+
+    const float yaw_align_tol_rad_ = 0.10f;
+    const uint64_t yaw_align_timeout_ticks_ = 80;
+    uint64_t yaw_align_ticks_ = 0;
+
+    const float wp_switch_radius_ = 10.0f;
+
+    bool wp_initialized_ = false;
+    std::array<float, 2> start_xy_{0.0f, 0.0f};
+    std::vector<std::array<float, 2>> wp_abs_;
+    std::vector<std::array<float, 2>> wp_offsets_ = {
+        {0.0f,   0.0f},
+        {50.0f, 0.0f},
+        {50.0f, 50.0f},
+        {0.0f,   50.0f},
+        {0.0f,   0.0f}
+    };
+    size_t seg_index_ = 0;
+
+    const bool use_rtl_for_landing_ = true;
+    const bool use_home_xy_then_land_ = false;
+    const float home_xy_radius_ = 3.0f;
+
+    static float wrap_angle(float angle) {
+        while (angle > M_PI) angle -= 2.0f * M_PI;
+        while (angle < -M_PI) angle += 2.0f * M_PI;
+        return angle;
+    }
+
+    void update_yaw_smoothing() {
+        const float diff = wrap_angle(target_yaw_ - current_yaw_sp_);
+        const float step = yaw_speed_ * dt_;
+
+        if (std::abs(diff) < step) current_yaw_sp_ = target_yaw_;
+        else current_yaw_sp_ += (diff > 0.0f) ? step : -step;
+
+        current_yaw_sp_ = wrap_angle(current_yaw_sp_);
+    }
+
+    void update_takeoff_z_ramp() {
+        if (!z_ramp_init_) {
+            z_takeoff_start_ = current_pos_[2];
+            z_sp_ = z_takeoff_start_;
+            takeoff_elapsed_ = 0.0f;
+            z_ramp_init_ = true;
+        }
+
+        takeoff_elapsed_ += dt_;
+        const float s = std::min(1.0f, takeoff_elapsed_ / takeoff_ramp_time_);
+        z_sp_ = (1.0f - s) * z_takeoff_start_ + s * (-flight_alt_);
+    }
+
+    void publish_offboard_control_mode() {
+        OffboardControlMode msg{};
+        msg.position = true;
+        msg.velocity = false;
+        msg.acceleration = false;
+        msg.timestamp = this->get_clock()->now().nanoseconds() / 1000ULL;
+        offboard_control_mode_publisher_->publish(msg);
+    }
+
+    void publish_trajectory_setpoint() {
+        TrajectorySetpoint msg{};
+
+        msg.position[0] = setpoint_pos_[0];
+        msg.position[1] = setpoint_pos_[1];
+
+        if (phase_ == Phase::warmup) {
+            msg.position[2] = current_pos_[2];
+        } else {
+            msg.position[2] = z_sp_;
+        }
+
+        msg.yaw = current_yaw_sp_;
+        msg.timestamp = this->get_clock()->now().nanoseconds() / 1000ULL;
+        trajectory_setpoint_publisher_->publish(msg);
+    }
+
+    void publish_vehicle_command(uint16_t command, float param1 = 0.0f, float param2 = 0.0f) {
+        VehicleCommand msg{};
+        msg.param1 = param1;
+        msg.param2 = param2;
+        msg.command = command;
+        msg.target_system = 1;
+        msg.target_component = 1;
+        msg.source_system = 255;
+        msg.source_component = 1;
+        msg.from_external = true;
+        msg.timestamp = this->get_clock()->now().nanoseconds() / 1000ULL;
+        vehicle_command_publisher_->publish(msg);
+    }
+
+    void start_landing_sequence() {
+        if (use_rtl_for_landing_) {
+            RCLCPP_INFO(this->get_logger(), "Landing: RTL (Return-to-Launch).");
+            publish_vehicle_command(VehicleCommand::VEHICLE_CMD_NAV_RETURN_TO_LAUNCH);
+            phase_ = Phase::landing;
+            return;
+        }
+
+        if (use_home_xy_then_land_) {
+            RCLCPP_INFO(this->get_logger(), "Landing: go to home XY then LAND.");
+            publish_vehicle_command(VehicleCommand::VEHICLE_CMD_NAV_LAND);
+            phase_ = Phase::landing;
+            return;
+        }
+
+        RCLCPP_INFO(this->get_logger(), "Landing: NAV_LAND in place.");
+        publish_vehicle_command(VehicleCommand::VEHICLE_CMD_NAV_LAND);
+        phase_ = Phase::landing;
+    }
+
+    void manage_mission_flow() {
+        switch (phase_) {
+            case Phase::warmup: {
+                if (!yaw_initialized_) {
+                    if (++ticks_ % 10 == 0) {
+                        RCLCPP_INFO(this->get_logger(), "Waiting for local position heading...");
+                    }
+                    break;
+                }
+
+                if (nav_state_ != VehicleStatus::NAVIGATION_STATE_OFFBOARD &&
+                    ticks_ % command_repeat_ticks_ == 0) {
+                    publish_vehicle_command(VehicleCommand::VEHICLE_CMD_DO_SET_MODE, 1.0f, 6.0f);
+                    RCLCPP_INFO(this->get_logger(), "Offboard mode request sent.");
+                }
+
+                if (arming_state_ != VehicleStatus::ARMING_STATE_ARMED &&
+                    ticks_ % command_repeat_ticks_ == 0) {
+                    publish_vehicle_command(VehicleCommand::VEHICLE_CMD_COMPONENT_ARM_DISARM, 1.0f);
+                    RCLCPP_INFO(this->get_logger(), "Arm request sent.");
+                }
+
+                if (nav_state_ == VehicleStatus::NAVIGATION_STATE_OFFBOARD &&
+                    arming_state_ == VehicleStatus::ARMING_STATE_ARMED) {
+                    if (++ticks_ >= warmup_armed_ticks_) {
+                        phase_ = Phase::takeoff;
+                        ticks_ = 0;
+                        z_ramp_init_ = false;
+                    }
+                } else {
+                    ticks_ = 0;
+                }
+            } break;
+
+            case Phase::takeoff: {
+                update_takeoff_z_ramp();
+
+                if (++ticks_ % 10 == 0) {
+                    const float alt = std::abs(current_pos_[2]);
+                    RCLCPP_INFO(this->get_logger(), "Climbing alt=%.1f z_sp=%.1f", alt, z_sp_);
+                }
+
+                const float alt = std::abs(current_pos_[2]);
+                if (alt >= (flight_alt_ - 1.0f) && (takeoff_elapsed_ >= takeoff_ramp_time_ * 0.8f)) {
+                    RCLCPP_INFO(this->get_logger(), "Reached altitude. Initializing waypoints...");
+
+                    if (!wp_initialized_) {
+                        start_xy_ = {current_pos_[0], current_pos_[1]};
+                        wp_abs_.clear();
+                        for (const auto &w : wp_offsets_) {
+                            wp_abs_.push_back({start_xy_[0] + w[0], start_xy_[1] + w[1]});
+                        }
+                        wp_initialized_ = true;
+                        seg_index_ = 0;
+
+                        setpoint_pos_[0] = current_pos_[0];
+                        setpoint_pos_[1] = current_pos_[1];
+                    }
+
+                    yaw_align_ticks_ = 0;
+                    phase_ = Phase::yaw_align;
+                    ticks_ = 0;
+                    dbg_tick_ = 0;
+                }
+            } break;
+
+            case Phase::yaw_align: {
+                if (!wp_initialized_ || wp_abs_.size() < 2) {
+                    RCLCPP_ERROR(this->get_logger(), "Waypoints not initialized. Landing for safety.");
+                    start_landing_sequence();
+                    break;
+                }
+
+                setpoint_pos_[0] = current_pos_[0];
+                setpoint_pos_[1] = current_pos_[1];
+                setpoint_pos_[2] = z_sp_;
+
+                const auto &B = wp_abs_[1];
+                const float dx = B[0] - current_pos_[0];
+                const float dy = B[1] - current_pos_[1];
+
+                target_yaw_ = std::atan2(dy, dx);
+                update_yaw_smoothing();
+
+                const float yaw_err = std::abs(wrap_angle(target_yaw_ - current_yaw_sp_));
+                if (++yaw_align_ticks_ % 10 == 0) {
+                    RCLCPP_INFO(this->get_logger(), "Yaw-align: err=%.2f rad (%.1f deg)", yaw_err, yaw_err * 57.2958f);
+                }
+
+                if (yaw_err < yaw_align_tol_rad_) {
+                    RCLCPP_INFO(this->get_logger(), "Yaw aligned. Start moving to WP1.");
+                    phase_ = Phase::move;
+                    dbg_tick_ = 0;
+                } else if (yaw_align_ticks_ >= yaw_align_timeout_ticks_) {
+                    RCLCPP_WARN(this->get_logger(), "Yaw-align timeout. Start moving anyway.");
+                    phase_ = Phase::move;
+                    dbg_tick_ = 0;
+                }
+            } break;
+
+            case Phase::move: {
+                if (!wp_initialized_ || wp_abs_.size() < 2) {
+                    RCLCPP_ERROR(this->get_logger(), "Waypoints not initialized. Landing for safety.");
+                    start_landing_sequence();
+                    break;
+                }
+
+                if (seg_index_ + 1 >= wp_abs_.size()) {
+                    RCLCPP_INFO(this->get_logger(), "All segments done.");
+                    start_landing_sequence();
+                    break;
+                }
+
+                const std::array<float, 2> A = wp_abs_[seg_index_];
+                const std::array<float, 2> B = wp_abs_[seg_index_ + 1];
+                const std::array<float, 2> P = {current_pos_[0], current_pos_[1]};
+
+                const float dxB = B[0] - P[0];
+                const float dyB = B[1] - P[1];
+                const float dist_to_B = std::hypot(dxB, dyB);
+
+                const std::array<float, 2> AB = {B[0] - A[0], B[1] - A[1]};
+                const std::array<float, 2> PB = {P[0] - B[0], P[1] - B[1]};
+                const float passed_gate = PB[0] * AB[0] + PB[1] * AB[1];
+
+                if (dist_to_B < wp_switch_radius_ || passed_gate > 0.0f) {
+                    RCLCPP_INFO(this->get_logger(),
+                                "Switch seg: seg=%zu -> %zu (dist=%.1f passed_gate=%.2f)",
+                                seg_index_, seg_index_ + 1, dist_to_B, passed_gate);
+                    seg_index_++;
+
+                    if (seg_index_ + 1 >= wp_abs_.size()) {
+                        RCLCPP_INFO(this->get_logger(), "All segments done.");
+                        start_landing_sequence();
+                    }
+                    break;
+                }
+
+                setpoint_pos_[0] = B[0];
+                setpoint_pos_[1] = B[1];
+                setpoint_pos_[2] = z_sp_;
+
+                target_yaw_ = std::atan2(dyB, dxB);
+                update_yaw_smoothing();
+
+                if (++dbg_tick_ % 10 == 0) {
+                    RCLCPP_INFO(this->get_logger(),
+                                "seg=%zu P(%.1f,%.1f) B(%.1f,%.1f) dist=%.1f passed=%.2f yaw=%.2f->%.2f",
+                                seg_index_,
+                                P[0], P[1],
+                                B[0], B[1],
+                                dist_to_B, passed_gate,
+                                current_yaw_sp_, target_yaw_);
+                }
+            } break;
+
+            case Phase::landing:
+                break;
+        }
+    }
 };
 
 int main(int argc, char *argv[]) {
-	rclcpp::init(argc, argv);
-	rclcpp::spin(std::make_shared<OffboardControl>());
-	rclcpp::shutdown();
-	return 0;
+    rclcpp::init(argc, argv);
+    rclcpp::spin(std::make_shared<OffboardControl>());
+    rclcpp::shutdown();
+    return 0;
 }
