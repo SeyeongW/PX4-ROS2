@@ -1,4 +1,3 @@
-// [Header order: Standard -> ROS 2 -> PX4]
 #include <chrono>
 #include <cmath>
 #include <vector>
@@ -158,9 +157,9 @@ private:
     std::vector<std::array<float,2>> wp_abs_;
     std::vector<std::array<float,2>> wp_offsets_ = {
         {0.0f,   0.0f},
-        {100.0f, 0.0f},
-        {100.0f, 100.0f},
-        {0.0f,   100.0f},
+        {50.0f, 0.0f},
+        {50.0f, 50.0f},
+        {0.0f,   50.0f},
         {0.0f,   0.0f}
     };
     size_t seg_index_ = 0;
