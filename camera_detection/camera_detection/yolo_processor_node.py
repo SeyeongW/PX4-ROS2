@@ -3,6 +3,7 @@ from collections import defaultdict
 from rclpy.node import Node
 from sensor_msgs.msg import CompressedImage
 from std_msgs.msg import Bool, Int32
+from geometry_msgs.msg import PointStamped
 from cv_bridge import CvBridge
 from ultralytics import YOLO
 import cv2
@@ -38,6 +39,7 @@ class YoloProcessorRealNode(Node):
         # Publishers
         self.debug_image_pub = self.create_publisher(CompressedImage, '/image_raw/compressed', 10)
         self.person_detected_pub = self.create_publisher(Bool, '/perception/person_detected', 10)
+        self.target_center_pub = self.create_publisher(PointStamped, '/perception/target_center', 10)
         
         # Subscriber
         self.id_subscription = self.create_subscription(
@@ -114,12 +116,17 @@ class YoloProcessorRealNode(Node):
             self.person_detected_pub.publish(Bool(data=len(current_boxes) > 0))
 
             chosen_box = None
+            chosen_center = None
 
             # MANUAL TRACKING LOGIC (Only runs if locked_id is set)
             if self.locked_id is not None:
                 if self.locked_id in current_ids:
                     idx = np.where(current_ids == self.locked_id)[0][0]
                     chosen_box = current_boxes[idx]
+                    chosen_center = (
+                        float((chosen_box[0] + chosen_box[2]) / 2),
+                        float((chosen_box[1] + chosen_box[3]) / 2),
+                    )
 
                     # Velocity calculation
                     if self.last_known_box is not None:
@@ -163,12 +170,31 @@ class YoloProcessorRealNode(Node):
                                         best_score = size_sim
                                         best_id = current_ids[i]
                                         chosen_box = box
+                                        chosen_center = (
+                                            float((box[0] + box[2]) / 2),
+                                            float((box[1] + box[3]) / 2),
+                                        )
 
                             if best_score > 0.5:
                                 self.get_logger().warn(f"Re-locked: {self.locked_id} -> {best_id}")
                                 self.locked_id = best_id
                                 self.last_known_box = chosen_box
                                 self.lost_count = 0
+
+            if chosen_center is None and self.locked_id is not None and self.last_known_box is not None:
+                chosen_center = (
+                    float((self.last_known_box[0] + self.last_known_box[2]) / 2),
+                    float((self.last_known_box[1] + self.last_known_box[3]) / 2),
+                )
+
+            if chosen_center is not None:
+                center_msg = PointStamped()
+                center_msg.header.stamp = self.get_clock().now().to_msg()
+                center_msg.header.frame_id = "camera"
+                center_msg.point.x = chosen_center[0]
+                center_msg.point.y = chosen_center[1]
+                center_msg.point.z = 0.0
+                self.target_center_pub.publish(center_msg)
 
             # UI Overlays
             if chosen_box is not None:
