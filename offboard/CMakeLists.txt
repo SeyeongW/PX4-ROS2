@@ -16,9 +16,13 @@ ament_target_dependencies(offboard_control rclcpp px4_msgs std_msgs)
 add_executable(offboard_sim_waypoints src/offboard_sim_waypoints.cpp)
 ament_target_dependencies(offboard_sim_waypoints rclcpp px4_msgs)
 
+add_executable(offboard_sim_riul_rtl src/offboard_sim_riul_rtl.cpp)
+ament_target_dependencies(offboard_sim_riul_rtl rclcpp px4_msgs)
+
 install(TARGETS
   offboard_control
   offboard_sim_waypoints
+  offboard_sim_riul_rtl
   DESTINATION lib/${PROJECT_NAME}
 )
 
