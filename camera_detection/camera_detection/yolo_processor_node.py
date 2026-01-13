@@ -95,7 +95,7 @@ class YoloProcessorNode(Node):
 
         self.gimbal = SIYIGimbal('/dev/ttyUSB0')
 
-        self.cap = cv2.VideoCapture(1, cv2.CAP_V4L2)
+        self.cap = cv2.VideoCapture(0, cv2.CAP_V4L2)
         if not self.cap.isOpened():
             self.get_logger().error("Failed to open camera!")
         

@@ -35,7 +35,7 @@ class YoloProcessorSimNode(Node):
         self.person_detected_pub = self.create_publisher(
             Bool, '/perception/person_detected', 10)
 
-        model = YOLO("yolo11s.pt", task='detect')
+        self.model = YOLO("yolo11s.pt", task='detect')
 
         self.locked_id = None
         self.display_id = None
@@ -107,8 +107,7 @@ class YoloProcessorSimNode(Node):
 
             results = self.model.track(
                 source=frame, classes=[0], verbose=False, persist=True,
-                tracker="botsort.yaml", conf=0.30, iou=0.45, imgsz=640,
-                reid=self.enable_reid
+                tracker="botsort.yaml", conf=0.30, iou=0.45, imgsz=640
             )
 
             frame = results[0].plot()
