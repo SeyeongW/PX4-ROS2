@@ -4,6 +4,11 @@
 #include <array>
 #include <cstdint>
 #include <algorithm>
+#include <atomic>
+#include <cctype>
+#include <iostream>
+#include <string>
+#include <thread>
 
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp/qos.hpp>
@@ -13,6 +18,8 @@
 #include <px4_msgs/msg/vehicle_command.hpp>
 #include <px4_msgs/msg/vehicle_odometry.hpp>
 #include <px4_msgs/msg/vehicle_status.hpp>
+#include <std_msgs/msg/bool.hpp>
+#include <std_msgs/msg/int32.hpp>
 
 using namespace std::chrono_literals;
 using namespace px4_msgs::msg;
@@ -67,8 +74,35 @@ public:
                 arming_state_ = msg.arming_state;
             });
 
+        person_detected_subscription_ = this->create_subscription<std_msgs::msg::Bool>(
+            "/perception/person_detected", qos_profile,
+            [this](const std_msgs::msg::Bool &msg) {
+                person_detected_ = msg.data;
+                if (person_detected_ && !pause_inhibited_ && phase_ != Phase::landing) {
+                    enter_hover("Person detected");
+                } else if (!person_detected_) {
+                    pause_inhibited_ = false;
+                }
+            });
+
+        target_id_subscription_ = this->create_subscription<std_msgs::msg::Int32>(
+            "/perception/set_target_id", 10,
+            [this](const std_msgs::msg::Int32 &msg) {
+                if (msg.data == 0) {
+                    pause_inhibited_ = true;
+                    if (paused_) {
+                        exit_hover("Target cleared (ID 0)");
+                    }
+                }
+            });
+
         // Timer: 100ms (10Hz)
         timer_ = this->create_wall_timer(100ms, [this]() {
+            if (rtl_requested_.exchange(false)) {
+                RCLCPP_WARN(this->get_logger(), "RTL requested from terminal.");
+                start_landing_sequence();
+            }
+
             // End condition: landing phase and confirmed disarm
             if (phase_ == Phase::landing) {
                 if (arming_state_ == VehicleStatus::ARMING_STATE_DISARMED) {
@@ -85,8 +119,14 @@ public:
                 publish_trajectory_setpoint();
             }
 
-            manage_mission_flow();
+            if (!paused_) {
+                manage_mission_flow();
+            } else {
+                setpoint_pos_ = hover_pos_;
+            }
         });
+
+        start_command_listener();
     }
 
 private:
@@ -103,6 +143,8 @@ private:
     rclcpp::Publisher<VehicleCommand>::SharedPtr vehicle_command_publisher_;
     rclcpp::Subscription<VehicleOdometry>::SharedPtr odometry_subscription_;
     rclcpp::Subscription<VehicleStatus>::SharedPtr status_subscription_;
+    rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr person_detected_subscription_;
+    rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr target_id_subscription_;
 
     // Mission phase
     Phase phase_ = Phase::warmup;
@@ -125,6 +167,13 @@ private:
     uint8_t arming_state_ = 0;
     bool arm_sent_ = false;
     bool offboard_sent_ = false;
+    bool paused_ = false;
+    bool pause_inhibited_ = false;
+    bool person_detected_ = false;
+
+    std::array<float, 3> hover_pos_{0.0f, 0.0f, 0.0f};
+
+    std::atomic<bool> rtl_requested_{false};
 
     // Timing
     const float dt_ = 0.1f; // 10 Hz
@@ -182,6 +231,44 @@ private:
 
     static float clampf(float v, float lo, float hi) {
         return std::max(lo, std::min(v, hi));
+    }
+
+    void enter_hover(const std::string &reason) {
+        if (paused_) {
+            return;
+        }
+        hover_pos_ = current_pos_;
+        setpoint_pos_ = hover_pos_;
+        z_sp_ = current_pos_[2];
+        paused_ = true;
+        RCLCPP_WARN(this->get_logger(), "Hovering: %s", reason.c_str());
+    }
+
+    void exit_hover(const std::string &reason) {
+        if (!paused_) {
+            return;
+        }
+        paused_ = false;
+        RCLCPP_INFO(this->get_logger(), "Resuming mission: %s", reason.c_str());
+    }
+
+    void start_command_listener() {
+        std::thread([this]() {
+            std::string line;
+            while (std::getline(std::cin, line)) {
+                std::string cmd;
+                cmd.reserve(line.size());
+                for (char c : line) {
+                    cmd.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+                }
+
+                if (cmd == "rtl") {
+                    rtl_requested_ = true;
+                } else if (!cmd.empty()) {
+                    RCLCPP_INFO(this->get_logger(), "Unknown command: %s (supported: rtl)", cmd.c_str());
+                }
+            }
+        }).detach();
     }
 
     // =========================

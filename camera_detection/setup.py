@@ -25,6 +25,7 @@ setup(
     entry_points={
         'console_scripts': [
             'yolo_processor_node = camera_detection.yolo_processor_node:main',
+            'yolo_processor_sim_node = camera_detection.yolo_processor_sim_node:main',
             'commander = camera_detection.commander:main'
         ],
     },
