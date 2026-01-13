@@ -14,7 +14,7 @@ add_executable(offboard_control src/offboard_control.cpp)
 ament_target_dependencies(offboard_control rclcpp px4_msgs std_msgs)
 
 add_executable(offboard_sim_waypoints src/offboard_sim_waypoints.cpp)
-ament_target_dependencies(offboard_sim_waypoints rclcpp px4_msgs)
+ament_target_dependencies(offboard_sim_waypoints rclcpp px4_msgs std_msgs)
 
 install(TARGETS
   offboard_control
