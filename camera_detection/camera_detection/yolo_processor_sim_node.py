@@ -2,12 +2,13 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import CompressedImage, Image
 from std_msgs.msg import Bool, Int32
+from geometry_msgs.msg import Point
 from cv_bridge import CvBridge
 from ultralytics import YOLO
 import cv2
 import numpy as np
 import os
-
+from collections import defaultdict
 
 class YoloProcessorSimNode(Node):
     def __init__(self):
@@ -28,17 +29,19 @@ class YoloProcessorSimNode(Node):
             CompressedImage, '/image_raw/compressed', 10)
         self.person_detected_pub = self.create_publisher(
             Bool, '/perception/person_detected', 10)
+        
+        self.target_info_pub = self.create_publisher(
+            Point, '/perception/target_pos_info', 10)
 
-        base_path = "/home/sw/ros2_ws"
-        engine_path = os.path.join(base_path, "yolo11s.engine")
-        self.model = YOLO(engine_path, task='detect')
+        self.model = YOLO("yolo11s.pt") 
+
+        # [추가] 이동 경로(Trail) 저장을 위한 딕셔너리
+        self.track_history = defaultdict(lambda: [])
 
         self.locked_id = None
         self.display_id = None
 
-        self.lock_timeout_frames = 120
         self.lock_miss_count = 0
-
         self.frame_count = 0
 
         self.lost_count = 0
@@ -53,17 +56,20 @@ class YoloProcessorSimNode(Node):
         self.timer_period_s = 0.033
         self.timer = self.create_timer(self.timer_period_s, self.timer_callback)
 
-        self.get_logger().info("YOLO Sim Node Started.")
+        self.get_logger().info("YOLO Sim Node Started (with Tracking Trails).")
 
     def target_id_callback(self, msg):
         self.locked_id = msg.data
         self.display_id = msg.data
-
         self.lock_miss_count = 0
         self.lost_count = 0
         self.last_known_box = None
         self.vx = 0
         self.vy = 0
+        
+        # 타겟 변경 시 기존 경로 기록 초기화 (선택 사항)
+        self.track_history.clear()
+        
         self.get_logger().info(f"Target Set: ID {self.locked_id}")
 
     def image_callback(self, msg):
@@ -73,22 +79,8 @@ class YoloProcessorSimNode(Node):
             self.latest_frame = None
             self.get_logger().error(f"Image conversion failed: {e}")
 
-    def calculate_iou(self, box1, box2):
-        x1 = max(box1[0], box2[0])
-        y1 = max(box1[1], box2[1])
-        x2 = min(box1[2], box2[2])
-        y2 = min(box1[3], box2[3])
-
-        intersection = max(0, x2 - x1) * max(0, y2 - y1)
-        area1 = (box1[2] - box1[0]) * (box1[3] - box1[1])
-        area2 = (box2[2] - box2[0]) * (box2[3] - box2[1])
-
-        union = area1 + area2 - intersection
-        return intersection / union if union > 0 else 0
-
     def timer_callback(self):
         if self.latest_frame is None:
-            self.person_detected_pub.publish(Bool(data=False))
             return
 
         frame = self.latest_frame.copy()
@@ -96,43 +88,75 @@ class YoloProcessorSimNode(Node):
 
         try:
             h, w, _ = frame.shape
+            cx0, cy0 = w / 2.0, h / 2.0 
 
+            # [핵심] persist=True는 ID 유지를 위해 필수
             results = self.model.track(
                 source=frame, classes=[0], verbose=False, persist=True,
-                tracker="custom_botsort.yaml", conf=0.60, iou=0.45, imgsz=640
+                tracker="botsort.yaml", conf=0.10, iou=0.45, imgsz=640
             )
 
+            # YOLO 기본 박스 그리기
             frame = results[0].plot()
-
+            
             det = results[0]
             boxes = det.boxes
+            
             current_ids = []
             current_boxes = []
 
+            # ---------------------------------------------------------
+            # [추가] 이동 경로(Trail) 시각화 로직
+            # ---------------------------------------------------------
             if boxes.id is not None:
                 current_ids = boxes.id.cpu().numpy().astype(int)
                 current_boxes = boxes.xyxy.cpu().numpy()
+                
+                # 시각화: 과거 이동 경로 그리기
+                for box, track_id in zip(current_boxes, current_ids):
+                    x1, y1, x2, y2 = box
+                    track = self.track_history[track_id]
+                    
+                    # 현재 중심점 계산
+                    center_x = float((x1 + x2) / 2)
+                    center_y = float((y1 + y2) / 2) 
+                    
+                    track.append((center_x, center_y))
+                    
+                    if len(track) > 30:
+                        track.pop(0)
+
+                    # 선 그리기
+                    points = np.hstack(track).astype(np.int32).reshape((-1, 1, 2))
+                    
+                    # 타겟 ID면 빨간색 굵은 선, 아니면 얇은 초록선
+                    if track_id == self.locked_id:
+                        cv2.polylines(frame, [points], isClosed=False, color=(0, 0, 255), thickness=3)
+                    else:
+                        cv2.polylines(frame, [points], isClosed=False, color=(0, 255, 0), thickness=1)
+
             self.person_detected_pub.publish(Bool(data=len(current_boxes) > 0))
 
             chosen_box = None
 
+            # ---------------------------------------------------------
+            # 타겟 ID 잠금 및 추적
+            # ---------------------------------------------------------
             if self.locked_id is not None:
                 if self.locked_id in current_ids:
+                    # 1. 타겟 찾음
                     idx = np.where(current_ids == self.locked_id)[0][0]
                     chosen_box = current_boxes[idx]
 
                     if self.last_known_box is not None:
                         prev_cx = (self.last_known_box[0] + self.last_known_box[2]) / 2
                         prev_cy = (self.last_known_box[1] + self.last_known_box[3]) / 2
-
                         curr_cx = (chosen_box[0] + chosen_box[2]) / 2
                         curr_cy = (chosen_box[1] + chosen_box[3]) / 2
-
                         self.vx = (curr_cx - prev_cx)
                         self.vy = (curr_cy - prev_cy)
                     else:
-                        self.vx = 0
-                        self.vy = 0
+                        self.vx, self.vy = 0, 0
 
                     self.lock_miss_count = 0
                     self.lost_count = 0
@@ -140,101 +164,67 @@ class YoloProcessorSimNode(Node):
 
                 else:
                     self.lock_miss_count += 1
-
                     if self.last_known_box is not None:
                         lx1, ly1, lx2, ly2 = self.last_known_box
-
+                        
+                        # 관성 예측 적용
                         self.vx *= 0.95
                         self.vy *= 0.95
-
-                        lx1 += self.vx
-                        lx2 += self.vx
-                        ly1 += self.vy
-                        ly2 += self.vy
-
+                        lx1 += self.vx; lx2 += self.vx
+                        ly1 += self.vy; ly2 += self.vy
                         self.last_known_box = np.array([lx1, ly1, lx2, ly2])
 
-                        box_w = lx2 - lx1
-                        box_h = ly2 - ly1
-
-                        margin_x = box_w * 4.0
-                        margin_y = box_h * 4.0
-
-                        sx1 = max(0, lx1 - margin_x)
-                        sy1 = max(0, ly1 - margin_y)
-                        sx2 = min(w, lx2 + margin_x)
-                        sy2 = min(h, ly2 + margin_y)
-
-                        cv2.rectangle(frame, (int(sx1), int(sy1)), (int(sx2), int(sy2)), (0, 255, 255), 3)
-                        cv2.putText(frame, "PREDICTING PATH...", (int(sx1), int(sy1)-10),
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
-
-                        if len(current_boxes) > 0:
-                            best_score = 0
-                            best_id = None
-                            best_new_box = None
-                            last_area = box_w * box_h
-
-                            for i, box in enumerate(current_boxes):
-                                bx1, by1, bx2, by2 = box
-                                bcx = (bx1 + bx2) / 2
-                                bcy = (by1 + by2) / 2
-
-                                is_inside = (sx1 < bcx < sx2) and (sy1 < bcy < sy2)
-
-                                if is_inside:
-                                    curr_area = (bx2 - bx1) * (by2 - by1)
-                                    if last_area > 0 and curr_area > 0:
-                                        size_sim = min(last_area, curr_area) / max(last_area, curr_area)
-                                    else:
-                                        size_sim = 0
-
-                                    if size_sim > best_score:
-                                        best_score = size_sim
-                                        best_id = current_ids[i]
-                                        best_new_box = box
-
-                            if best_score > 0.5:
-                                self.get_logger().warn(f"Re-locked! Internal: {self.locked_id} -> {best_id}")
-                                self.locked_id = best_id
-                                chosen_box = best_new_box
-
-                                self.lock_miss_count = 0
-                                self.lost_count = 0
-                                self.last_known_box = chosen_box
-
+                        # 탐색 영역(Search Zone) 표시
+                        sx1 = max(0, lx1 - (lx2-lx1)*2)
+                        sy1 = max(0, ly1 - (ly2-ly1)*2)
+                        sx2 = min(w, lx2 + (lx2-lx1)*2)
+                        sy2 = min(h, ly2 + (ly2-ly1)*2)
+                        
+                        # 예측 중일 때는 노란색 박스
+                        cv2.rectangle(frame, (int(sx1), int(sy1)), (int(sx2), int(sy2)), (0, 255, 255), 2)
+                        cv2.putText(frame, "PREDICTING...", (int(sx1), int(sy1)-10), 
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+            
+            # ---------------------------------------------------------
+            # C++ 드론 제어 노드로 정보 전송
+            # ---------------------------------------------------------
+            target_msg = Point()
+            
             if chosen_box is not None:
-                self.lost_count = 0
                 x1, y1, x2, y2 = chosen_box
-                display_text = f"LOCK ID:{self.display_id}" if self.display_id is not None else "LOCK"
-                cv2.putText(frame, display_text, (int(x1), int(y1)-30),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
-            else:
-                if self.locked_id is not None:
-                    self.lost_count += 1
+                box_cx = (x1 + x2) / 2.0
+                box_cy = (y1 + y2) / 2.0
+                box_area = (x2 - x1) * (y2 - y1)
+                
+                error_x = (box_cx - cx0) / (w / 2.0)
+                error_y = (box_cy - cy0) / (h / 2.0)
+                area_ratio = box_area / (w * h)
 
-                    if self.lost_count > self.lost_threshold:
-                        self.last_known_box = None
-                    else:
-                        remain_time = self.wait_seconds - (self.lost_count / self.fps)
-                        cv2.putText(frame, f"SEARCHING... {remain_time:.1f}s", (20, 50),
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+                target_msg.x = float(error_x)
+                target_msg.y = float(error_y)
+                target_msg.z = float(area_ratio)
+
+                cv2.putText(frame, f"LOCK {self.locked_id}", (int(x1), int(y1)-10),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,0,255), 2)
+            else:
+                target_msg.x = 0.0
+                target_msg.y = 0.0
+                target_msg.z = 0.0
+
+            self.target_info_pub.publish(target_msg)
 
             if self.frame_count % 2 == 0:
                 encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 40]
                 _, encoded_img = cv2.imencode('.jpg', frame, encode_param)
-
                 debug_msg = CompressedImage()
                 debug_msg.header.stamp = self.get_clock().now().to_msg()
                 debug_msg.header.frame_id = "camera_link"
                 debug_msg.format = "jpeg"
                 debug_msg.data = encoded_img.tobytes()
-
                 self.debug_image_pub.publish(debug_msg)
 
         except Exception as e:
             self.get_logger().error(f"Processing Error: {e}")
-
 
 def main(args=None):
     rclpy.init(args=args)
@@ -246,7 +236,6 @@ def main(args=None):
     finally:
         node.destroy_node()
         rclpy.shutdown()
-
 
 if __name__ == '__main__':
     main()

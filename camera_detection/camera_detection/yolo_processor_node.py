@@ -3,6 +3,8 @@ from rclpy.node import Node
 from sensor_msgs.msg import CompressedImage
 from std_msgs.msg import Int32, Empty
 from ultralytics import YOLO
+from sensor_msgs.msg import Image
+from cv_bridge import CvBridge
 import cv2
 import numpy as np
 import os
@@ -95,7 +97,7 @@ class YoloProcessorNode(Node):
 
         self.gimbal = SIYIGimbal('/dev/ttyUSB0')
 
-        self.cap = cv2.VideoCapture(1, cv2.CAP_V4L2)
+        self.cap = cv2.VideoCapture(0, cv2.CAP_V4L2)
         if not self.cap.isOpened():
             self.get_logger().error("Failed to open camera!")
         
