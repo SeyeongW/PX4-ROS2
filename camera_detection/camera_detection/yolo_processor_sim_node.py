@@ -51,6 +51,7 @@ class YoloProcessorSimNode(Node):
 
         self.initial_locked_id = None
         self.locked_id = None
+        self.locked_track_id = None
         self.pending_lock_id = None
         self.last_known_box = None
         self.vx = 0.0
@@ -96,8 +97,9 @@ class YoloProcessorSimNode(Node):
             self.get_logger().info("Target Unlock.")
             return
 
-        self.pending_lock_id = msg.data
+        self.locked_id = msg.data
         self.initial_locked_id = msg.data
+        self.pending_lock_id = msg.data
         self.lost_count = 0
         self.last_known_box = None
         self.vx = 0.0
@@ -107,6 +109,7 @@ class YoloProcessorSimNode(Node):
     def clear_lock(self):
         self.locked_id = None
         self.initial_locked_id = None
+        self.locked_track_id = None
         self.pending_lock_id = None
         self.lost_count = 0
         self.last_known_box = None
@@ -154,28 +157,32 @@ class YoloProcessorSimNode(Node):
             if len(self.track_history[track_id]) > self.track_history_len:
                 self.track_history[track_id].pop(0)
 
-            if track_id != self.locked_id and self.publish_debug:
+            if track_id != self.locked_track_id and self.publish_debug:
                 self.draw_styled_box(frame, box, track_id, current_confs[i], (255, 0, 0))
 
-        if self.pending_lock_id is not None and self.locked_id is None and len(current_ids) > 0:
+        if (
+            self.pending_lock_id is not None
+            and self.locked_track_id is None
+            and len(current_ids) > 0
+        ):
             best_idx = int(np.argmax(current_confs))
-            self.locked_id = int(current_ids[best_idx])
+            self.locked_track_id = int(current_ids[best_idx])
             self.pending_lock_id = None
             self.lost_count = 0
             self.last_known_box = None
             self.vx = 0.0
             self.vy = 0.0
             self.get_logger().info(
-                f"Target Locked: display_id={self.initial_locked_id} track_id={self.locked_id}"
+                f"Target Locked: display_id={self.initial_locked_id} track_id={self.locked_track_id}"
             )
 
         target_box = None
         target_found = False
         target_conf = 0.0
 
-        if self.locked_id is not None:
-            if self.locked_id in current_ids:
-                idx = int(np.where(current_ids == self.locked_id)[0][0])
+        if self.locked_track_id is not None:
+            if self.locked_track_id in current_ids:
+                idx = int(np.where(current_ids == self.locked_track_id)[0][0])
                 target_box = current_boxes[idx]
                 target_conf = float(current_confs[idx])
 
@@ -199,7 +206,7 @@ class YoloProcessorSimNode(Node):
                         target_conf,
                         (0, 0, 255),
                         is_locked=True,
-                        real_id=self.locked_id,
+                        real_id=self.locked_track_id,
                     )
             else:
                 self.lost_count += 1
@@ -246,9 +253,9 @@ class YoloProcessorSimNode(Node):
 
                         if best_score > 0.5 and best_id is not None:
                             self.get_logger().warn(
-                                f"Re-locked: {self.locked_id} -> {best_id}"
+                                f"Re-locked: {self.locked_track_id} -> {best_id}"
                             )
-                            self.locked_id = best_id
+                            self.locked_track_id = best_id
                             target_box = best_box
                             target_conf = best_conf
                             self.last_known_box = target_box
@@ -263,7 +270,7 @@ class YoloProcessorSimNode(Node):
                                     target_conf,
                                     (0, 0, 255),
                                     is_locked=True,
-                                    real_id=self.locked_id,
+                                    real_id=self.locked_track_id,
                                 )
                 elif self.lost_count > self.lost_threshold:
                     self.clear_lock()
