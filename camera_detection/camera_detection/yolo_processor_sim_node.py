@@ -8,7 +8,7 @@ from cv_bridge import CvBridge
 from geometry_msgs.msg import Point
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
-from sensor_msgs.msg import CompressedImage
+from sensor_msgs.msg import Image, CompressedImage
 from std_msgs.msg import Bool, Int32
 from ultralytics import YOLO
 
@@ -17,7 +17,7 @@ class YoloProcessorSimNode(Node):
     def __init__(self):
         super().__init__("yolo_processor_sim_node")
 
-        self.declare_parameter("image_topic", "/image_raw/compressed")
+        self.declare_parameter("image_topic", "/camera/image_raw")
         self.declare_parameter("debug_image_topic", "/perception/debug_image/compressed")
         self.declare_parameter("command_topic", "/perception/set_target_id")
         self.declare_parameter("model_path", "yolo11s.pt")
@@ -66,7 +66,7 @@ class YoloProcessorSimNode(Node):
         qos_profile.reliability = ReliabilityPolicy.BEST_EFFORT
 
         self.image_subscription = self.create_subscription(
-            CompressedImage,
+            Image,
             image_topic,
             self.image_callback,
             qos_profile,
@@ -116,10 +116,9 @@ class YoloProcessorSimNode(Node):
         self.vx = 0.0
         self.vy = 0.0
 
-    def image_callback(self, msg: CompressedImage):
+    def image_callback(self, msg: Image):
         try:
-            np_arr = np.frombuffer(msg.data, dtype=np.uint8)
-            frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+            frame = self.bridge.imgmsg_to_cv2(msg, "bgr8")
         except Exception as exc:
             self.get_logger().error(f"Image decode failed: {exc}")
             return
@@ -299,7 +298,7 @@ class YoloProcessorSimNode(Node):
             self.target_center_pub.publish(pt_msg)
 
         if self.publish_debug:
-            self.publish_debug_image(frame, msg)
+            self.publish_debug_image(frame, msg.header)
 
     def draw_styled_box(self, frame, box, display_id, conf, color, is_locked=False, real_id=None):
         x1, y1, x2, y2 = [int(v) for v in box]
@@ -326,12 +325,12 @@ class YoloProcessorSimNode(Node):
                 pts = np.array(self.track_history[track_key], dtype=np.int32).reshape((-1, 1, 2))
                 cv2.polylines(frame, [pts], False, (0, 255, 0), 2)
 
-    def publish_debug_image(self, frame, msg: CompressedImage):
+    def publish_debug_image(self, frame, header):
         success, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 50])
         if not success:
             return
         debug_msg = CompressedImage()
-        debug_msg.header = msg.header
+        debug_msg.header = header
         debug_msg.format = "jpeg"
         debug_msg.data = encoded.tobytes()
         self.debug_image_pub.publish(debug_msg)
