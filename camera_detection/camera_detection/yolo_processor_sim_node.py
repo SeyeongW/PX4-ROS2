@@ -16,9 +16,9 @@ class YoloProcessorSimNode(Node):
     def __init__(self):
         super().__init__("yolo_processor_sim_node")
 
-        self.declare_parameter("image_topic", "/camera/image_raw/compressed")
+        self.declare_parameter("image_topic", "/image_raw/compressed")
         self.declare_parameter("debug_image_topic", "/perception/debug_image/compressed")
-        self.declare_parameter("model_path", "yolo11n.engine")
+        self.declare_parameter("model_path", "yolo11s.pt")
         self.declare_parameter("conf_thres", 0.3)
         self.declare_parameter("iou_thres", 0.45)
         self.declare_parameter("publish_debug", True)
