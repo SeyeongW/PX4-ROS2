@@ -39,7 +39,7 @@ public:
             });
 
         status_subscription_ = this->create_subscription<VehicleStatus>(
-            "/fmu/out/vehicle_status_v1", qos_profile,
+            "/fmu/out/vehicle_status", qos_profile,
             [this](const VehicleStatus &msg) { arming_state_ = msg.arming_state; });
 
         timer_ = this->create_wall_timer(100ms, [this]() {
