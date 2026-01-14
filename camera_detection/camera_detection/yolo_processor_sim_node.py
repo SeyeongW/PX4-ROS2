@@ -51,6 +51,7 @@ class YoloProcessorSimNode(Node):
 
         self.initial_locked_id = None
         self.locked_id = None
+        self.pending_lock_id = None
         self.last_known_box = None
         self.vx = 0.0
         self.vy = 0.0
@@ -86,32 +87,31 @@ class YoloProcessorSimNode(Node):
     def command_callback(self, msg: Int32):
         self.get_logger().info(f"Command Received: {msg.data}")
         if msg.data <= -1:
-            self.locked_id = None
-            self.initial_locked_id = None
-            self.lost_count = 0
-            self.last_known_box = None
-            self.vx = 0.0
-            self.vy = 0.0
+            self.clear_lock()
             self.get_logger().info("Target Unlock.")
             return
 
         if msg.data <= 0:
-            self.locked_id = None
-            self.initial_locked_id = None
-            self.lost_count = 0
-            self.last_known_box = None
-            self.vx = 0.0
-            self.vy = 0.0
+            self.clear_lock()
             self.get_logger().info("Target Unlock.")
             return
 
-        self.locked_id = msg.data
+        self.pending_lock_id = msg.data
         self.initial_locked_id = msg.data
         self.lost_count = 0
         self.last_known_box = None
         self.vx = 0.0
         self.vy = 0.0
-        self.get_logger().info(f"Target Locked: {self.locked_id}")
+        self.get_logger().info(f"Target Lock Requested: {self.pending_lock_id}")
+
+    def clear_lock(self):
+        self.locked_id = None
+        self.initial_locked_id = None
+        self.pending_lock_id = None
+        self.lost_count = 0
+        self.last_known_box = None
+        self.vx = 0.0
+        self.vy = 0.0
 
     def image_callback(self, msg: CompressedImage):
         try:
@@ -156,6 +156,18 @@ class YoloProcessorSimNode(Node):
 
             if track_id != self.locked_id and self.publish_debug:
                 self.draw_styled_box(frame, box, track_id, current_confs[i], (255, 0, 0))
+
+        if self.pending_lock_id is not None and self.locked_id is None and len(current_ids) > 0:
+            best_idx = int(np.argmax(current_confs))
+            self.locked_id = int(current_ids[best_idx])
+            self.pending_lock_id = None
+            self.lost_count = 0
+            self.last_known_box = None
+            self.vx = 0.0
+            self.vy = 0.0
+            self.get_logger().info(
+                f"Target Locked: display_id={self.initial_locked_id} track_id={self.locked_id}"
+            )
 
         target_box = None
         target_found = False
@@ -254,9 +266,7 @@ class YoloProcessorSimNode(Node):
                                     real_id=self.locked_id,
                                 )
                 elif self.lost_count > self.lost_threshold:
-                    self.locked_id = None
-                    self.initial_locked_id = None
-                    self.last_known_box = None
+                    self.clear_lock()
 
         if target_found and target_box is not None:
             cx = (target_box[0] + target_box[2]) / 2.0
