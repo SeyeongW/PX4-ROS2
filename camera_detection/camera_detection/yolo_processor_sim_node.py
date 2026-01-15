@@ -1,9 +1,6 @@
 import os
 from collections import defaultdict
-<<<<<<< HEAD
-=======
 import time
->>>>>>> 59cb5cf (feat(camera_detection): add launch file for combined execution of MicroXRCEAgent, PX4 SITL, and YOLO processor)
 
 import cv2
 import numpy as np
