@@ -1,27 +1,31 @@
-import rclpy
-from collections import defaultdict
-from rclpy.node import Node
-from sensor_msgs.msg import CompressedImage
-from std_msgs.msg import Bool, Int32
-from cv_bridge import CvBridge
-from ultralytics import YOLO
+import os
+import time
 import cv2
 import numpy as np
-import os
+import rclpy
+from collections import defaultdict
+from cv_bridge import CvBridge
+from geometry_msgs.msg import Point
+from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy
+from sensor_msgs.msg import CompressedImage
+from std_msgs.msg import Bool, Int32
+from ultralytics import YOLO
 
 class YoloProcessorRealNode(Node):
     def __init__(self):
-        super().__init__('yolo_processor_real_node')
+        super().__init__("yolo_processor_real_node")
 
         # Parameters
-        self.declare_parameter('device_id', 0)
-        self.declare_parameter('track_history_len', 30)
-        
-        self.device_id = self.get_parameter('device_id').get_parameter_value().integer_value
-        self.track_history_len = self.get_parameter('track_history_len').get_parameter_value().integer_value
-        
-        # Model path
-        self.model_path = "/home/sw/ros2_ws/yolo11s.engine"
+        self.declare_parameter("device_id", 0)
+        self.declare_parameter("model_path", "/home/sw/ros2_ws/yolo11s.engine")
+        self.declare_parameter("track_history_len", 30)
+        self.declare_parameter("deadzone", 0.08)
+
+        self.device_id = self.get_parameter("device_id").get_parameter_value().integer_value
+        self.model_path = self.get_parameter("model_path").get_parameter_value().string_value
+        self.track_history_len = self.get_parameter("track_history_len").get_parameter_value().integer_value
+        self.deadzone = self.get_parameter("deadzone").get_parameter_value().double_value
 
         # Camera Setup
         self.cap = cv2.VideoCapture(self.device_id)
@@ -35,177 +39,148 @@ class YoloProcessorRealNode(Node):
         self.bridge = CvBridge()
         self.track_history = defaultdict(list)
 
-        # Publishers
-        self.debug_image_pub = self.create_publisher(CompressedImage, '/image_raw/compressed', 10)
-        self.person_detected_pub = self.create_publisher(Bool, '/perception/person_detected', 10)
-        
-        # Subscriber
-        self.id_subscription = self.create_subscription(
-            Int32, '/perception/set_target_id', self.target_id_callback, 10)
-
-        # Load TensorRT Engine
         if not os.path.exists(self.model_path):
             self.get_logger().error(f"Engine file not found: {self.model_path}")
             raise FileNotFoundError(f"Missing: {self.model_path}")
-            
-        self.model = YOLO(self.model_path, task='detect')
+        self.model = YOLO(self.model_path, task="detect")
 
-        # Logic States
-        self.locked_id = None  # Only tracks when this is not None
-        self.frame_count = 0
-        self.lost_count = 0
-        self.fps = 30
-        self.wait_seconds = 3.0
-        self.lost_threshold = self.fps * self.wait_seconds
+        self.target_center_pub = self.create_publisher(Point, "/perception/target_center", 10)
+        self.target_found_pub = self.create_publisher(Bool, "/perception/target_found", 10)
+        self.debug_image_pub = self.create_publisher(CompressedImage, "/image_raw/compressed", 10)
+
+        # Subscriber
+        self.command_subscription = self.create_subscription(
+            Int32, "/perception/set_target_id", self.command_callback, 10
+        )
+
+        # States
+        self.locked_track_id = None
+        self.pending_lock_id = None
+        self.pending_start_time = 0.0
+        self.pending_timeout = 3.0
+
         self.last_known_box = None
-        self.vx = 0
-        self.vy = 0
+        self.vx, self.vy = 0.0, 0.0
+        self.lost_count = 0
+        self.fps = 30.0
+        self.lost_threshold = self.fps * 3.0 
 
-        # Processing Timer
-        self.timer = self.create_timer(0.033, self.timer_callback)
-        self.get_logger().info("YOLO Real Node Started. Waiting for manual Target ID...")
+        # Timer (30fps)
+        self.timer = self.create_timer(1.0 / self.fps, self.timer_callback)
+        self.get_logger().info("YOLO Real-Time Node Started with Robust Locking.")
 
-    def target_id_callback(self, msg):
-        # If ID is 0 or negative, release the lock
+    def command_callback(self, msg: Int32):
         if msg.data <= 0:
-            self.locked_id = None
-            self.get_logger().info("Target Released.")
-        else:
-            self.locked_id = msg.data
-            self.get_logger().info(f"Target Locked: ID {self.locked_id}")
+            self.clear_lock()
+            self.get_logger().info("Target Unlock.")
+            return
 
+        self.pending_lock_id = msg.data
+        self.pending_start_time = time.time()
+        self.locked_track_id = None
         self.lost_count = 0
         self.last_known_box = None
-        self.vx = 0
-        self.vy = 0
+        self.get_logger().info(f"Searching for ID {self.pending_lock_id}...")
+
+    def clear_lock(self):
+        self.locked_track_id = None
+        self.pending_lock_id = None
+        self.lost_count = 0
+        self.last_known_box = None
+        self.vx, self.vy = 0.0, 0.0
 
     def timer_callback(self):
         ret, frame = self.cap.read()
-        if not ret:
-            return
+        if not ret: return
 
-        self.frame_count += 1
+        h, w, _ = frame.shape
+        results = self.model.track(
+            source=frame, persist=True, classes=[0], tracker="botsort.yaml",
+            conf=0.3, iou=0.45, imgsz=640, verbose=False
+        )
 
-        try:
-            h, w, _ = frame.shape
+        current_ids = []
+        current_boxes = []
+        if results and results[0].boxes.id is not None:
+            current_ids = results[0].boxes.id.cpu().numpy().astype(int)
+            current_boxes = results[0].boxes.xyxy.cpu().numpy()
 
-            # Inference using TensorRT
-            results = self.model.track(
-                source=frame, classes=[0], verbose=False, persist=True,
-                tracker="botsort.yaml", conf=0.30, iou=0.45, imgsz=640
-            )
+        # [1] Pending Lock Logic
+        if self.pending_lock_id is not None:
+            if self.pending_lock_id in current_ids:
+                self.locked_track_id = int(self.pending_lock_id)
+                self.pending_lock_id = None
+                self.get_logger().info(f">>> LOCKED SUCCESS: ID {self.locked_track_id}")
+            elif time.time() - self.pending_start_time > self.pending_timeout:
+                self.get_logger().warn(f"Lock Timeout for ID {self.pending_lock_id}")
+                self.pending_lock_id = None
 
-            frame_plot = results[0].plot()
-            det = results[0]
-            boxes = det.boxes
-            current_ids = []
-            current_boxes = []
+        # [2] Tracking & Control Logic
+        target_box = None
+        target_found = False
 
-            if boxes.id is not None:
-                current_ids = boxes.id.cpu().numpy().astype(int)
-                current_boxes = boxes.xyxy.cpu().numpy()
-                for track_id, box in zip(current_ids, current_boxes):
-                    cx = (box[0] + box[2]) / 2
-                    cy = (box[1] + box[3]) / 2
-                    self.track_history[track_id].append((float(cx), float(cy)))
-                    if len(self.track_history[track_id]) > self.track_history_len:
-                        self.track_history[track_id].pop(0)
-
-            self.person_detected_pub.publish(Bool(data=len(current_boxes) > 0))
-
-            chosen_box = None
-
-            # MANUAL TRACKING LOGIC (Only runs if locked_id is set)
-            if self.locked_id is not None:
-                if self.locked_id in current_ids:
-                    idx = np.where(current_ids == self.locked_id)[0][0]
-                    chosen_box = current_boxes[idx]
-
-                    # Velocity calculation
-                    if self.last_known_box is not None:
-                        curr_cx = (chosen_box[0] + chosen_box[2]) / 2
-                        curr_cy = (chosen_box[1] + chosen_box[3]) / 2
-                        prev_cx = (self.last_known_box[0] + self.last_known_box[2]) / 2
-                        prev_cy = (self.last_known_box[1] + self.last_known_box[3]) / 2
-                        self.vx, self.vy = (curr_cx - prev_cx), (curr_cy - prev_cy)
-                    
-                    self.lost_count = 0
-                    self.last_known_box = chosen_box
-                else:
-                    # Prediction when target is lost
-                    if self.last_known_box is not None:
-                        lx1, ly1, lx2, ly2 = self.last_known_box
-                        self.vx *= 0.95
-                        self.vy *= 0.95
-                        lx1 += self.vx; lx2 += self.vx
-                        ly1 += self.vy; ly2 += self.vy
-                        self.last_known_box = np.array([lx1, ly1, lx2, ly2])
-
-                        box_w, box_h = lx2 - lx1, ly2 - ly1
-                        margin_x, margin_y = box_w * 4.0, box_h * 4.0
-                        sx1, sy1 = max(0, lx1 - margin_x), max(0, ly1 - margin_y)
-                        sx2, sy2 = min(w, lx2 + margin_x), min(h, ly2 + margin_y)
-
-                        cv2.rectangle(frame_plot, (int(sx1), int(sy1)), (int(sx2), int(sy2)), (0, 255, 255), 3)
-                        cv2.putText(frame_plot, f"LOST ID:{self.locked_id} - PREDICTING", (int(sx1), int(sy1)-10),
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
-
-                        # Re-lock logic
-                        if len(current_boxes) > 0:
-                            best_score = 0
-                            best_id = None
-                            for i, box in enumerate(current_boxes):
-                                bcx, bcy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
-                                if (sx1 < bcx < sx2) and (sy1 < bcy < sy2):
-                                    curr_area = (box[2] - box[0]) * (box[3] - box[1])
-                                    size_sim = min(box_w*box_h, curr_area) / max(box_w*box_h, curr_area)
-                                    if size_sim > best_score:
-                                        best_score = size_sim
-                                        best_id = current_ids[i]
-                                        chosen_box = box
-
-                            if best_score > 0.5:
-                                self.get_logger().warn(f"Re-locked: {self.locked_id} -> {best_id}")
-                                self.locked_id = best_id
-                                self.last_known_box = chosen_box
-                                self.lost_count = 0
-
-            # UI Overlays
-            if chosen_box is not None:
-                self.lost_count = 0
-                x1, y1, x2, y2 = chosen_box
-                # Path history
-                if self.locked_id in self.track_history:
-                    pts = np.array(self.track_history[self.locked_id], dtype=np.int32).reshape((-1, 1, 2))
-                    cv2.polylines(frame_plot, [pts], False, (0, 255, 0), 2)
+        if self.locked_track_id is not None:
+            if self.locked_track_id in current_ids:
+                idx = int(np.where(current_ids == self.locked_track_id)[0][0])
+                target_box = current_boxes[idx]
                 
-                cv2.putText(frame_plot, f"LOCKED ID:{self.locked_id}", (int(x1), int(y1)-30), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+                if self.last_known_box is not None:
+                    self.vx = ((target_box[0]+target_box[2])/2) - ((self.last_known_box[0]+self.last_known_box[2])/2)
+                    self.vy = ((target_box[1]+target_box[3])/2) - ((self.last_known_box[1]+self.last_known_box[3])/2)
+
+                self.last_known_box = target_box
+                self.lost_count = 0
+                target_found = True
             else:
-                if self.locked_id is not None:
-                    self.lost_count += 1
-                    if self.lost_count > self.lost_threshold:
-                        self.locked_id = None # Give up after timeout
-                        self.last_known_box = None
-                    else:
-                        remain = self.wait_seconds - (self.lost_count / self.fps)
-                        cv2.putText(frame_plot, f"SEARCHING ID:{self.locked_id}... {remain:.1f}s", 
-                                    (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+                self.lost_count += 1
+                if self.lost_count <= self.lost_threshold and self.last_known_box is not None:
+                    self.last_known_box += [self.vx, self.vy, self.vx, self.vy]
+                    self.vx *= 0.95; self.vy *= 0.95
+                    
+                    if len(current_boxes) > 0:
+                        for i, box in enumerate(current_boxes):
+                            bcx, bcy = (box[0]+box[2])/2, (box[1]+box[3])/2
+                            if self.last_known_box[0] < bcx < self.last_known_box[2]:
+                                self.locked_track_id = int(current_ids[i])
+                                self.get_logger().warn(f"Re-locked to ID {self.locked_track_id}")
+                                break
+                else:
+                    self.clear_lock()
 
-            # Debug Image Publish
-            if self.frame_count % 2 == 0:
-                _, encoded = cv2.imencode('.jpg', frame_plot, [int(cv2.IMWRITE_JPEG_QUALITY), 40])
-                debug_msg = CompressedImage()
-                debug_msg.header.stamp = self.get_clock().now().to_msg()
-                debug_msg.format = "jpeg"
-                debug_msg.data = encoded.tobytes()
-                self.debug_image_pub.publish(debug_msg)
+        # [3] Publish Results
+        if target_found and target_box is not None:
+            cx, cy = (target_box[0]+target_box[2])/2.0, (target_box[1]+target_box[3])/2.0
+            err_x = (cx - (w/2.0)) / (w/2.0)
+            err_y = (cy - (h/2.0)) / (h/2.0)
+            
+            if abs(err_x) < self.deadzone: err_x = 0.0
+            if abs(err_y) < self.deadzone: err_y = 0.0
 
-        except Exception as e:
-            self.get_logger().error(f"Error: {e}")
+            self.target_center_pub.publish(Point(x=float(err_x), y=float(err_y), z=0.0))
+            self.target_found_pub.publish(Bool(data=True))
+            
+            cv2.rectangle(frame, (int(target_box[0]), int(target_box[1])), 
+                          (int(target_box[2]), int(target_box[3])), (0, 0, 255), 3)
+            cv2.putText(frame, f"LOCKED ID:{self.locked_track_id}", (int(target_box[0]), int(target_box[1])-10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        else:
+            self.target_found_pub.publish(Bool(data=False))
+            self.target_center_pub.publish(Point(x=float('nan'), y=float('nan'), z=0.0))
+
+        # [4] Debug Image (Compressed)
+        if self.pending_lock_id is not None:
+            cv2.putText(frame, f"SEARCHING ID {self.pending_lock_id}...", (20, 50), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+
+        _, encoded = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 50])
+        msg_img = CompressedImage()
+        msg_img.header.stamp = self.get_clock().now().to_msg()
+        msg_img.format = "jpeg"
+        msg_img.data = encoded.tobytes()
+        self.debug_image_pub.publish(msg_img)
 
     def __del__(self):
-        if hasattr(self, 'cap') and self.cap.isOpened():
+        if self.cap.isOpened():
             self.cap.release()
 
 def main(args=None):
@@ -219,5 +194,5 @@ def main(args=None):
         node.destroy_node()
         rclpy.shutdown()
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
