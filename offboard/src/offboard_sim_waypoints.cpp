@@ -132,23 +132,37 @@ private:
     }
 
     void update_hover_tracking() {
-        const auto now = this->get_clock()->now();
-        const bool target_fresh = target_valid_ && (now - last_target_time_).seconds() <= 1.0;
+    const auto now = this->get_clock()->now();
+    const bool target_fresh = target_valid_ && (now - last_target_time_).seconds() <= 1.0;
 
-        if (locked_id_ > 0 && target_fresh) {
-            // [방향 반전 반영] 
-            // 1. 앞뒤: y 오차가 양수(타겟이 아래)일 때 뒤로 간다면 -> 부호를 -로 변경
-            float step_f = std::clamp(target_offset_y_ * gain_forward_m_, -max_step_m_, max_step_m_);
-            
-            // 2. 좌우: x 오차가 양수(타겟이 오른쪽)일 때 왼쪽으로 간다면 -> 부호를 +로 변경
-            float step_r = std::clamp(target_offset_x_ * gain_right_m_, -max_step_m_, max_step_m_);
+    if (locked_id_ > 0 && target_fresh) {
+        // 1. 카메라 좌표계에서의 이동량 계산 (Body Frame 개념)
+        // 화면 아래(y>0)가 전진, 화면 오른쪽(x>0)이 우측 이동
+        float body_x = -target_offset_y_ * gain_forward_m_;
+        float body_y = target_offset_x_ * gain_right_m_;
 
-            setpoint_pos_[0] = (1.0f - ema_alpha_) * setpoint_pos_[0] + ema_alpha_ * (current_pos_[0] + step_f);
-            setpoint_pos_[1] = (1.0f - ema_alpha_) * setpoint_pos_[1] + ema_alpha_ * (current_pos_[1] + step_r);
-            hover_xy_ = {setpoint_pos_[0], setpoint_pos_[1]};
-        } else {
-            setpoint_pos_[0] = (1.0f - ema_alpha_) * setpoint_pos_[0] + ema_alpha_ * hover_xy_[0];
-            setpoint_pos_[1] = (1.0f - ema_alpha_) * setpoint_pos_[1] + ema_alpha_ * hover_xy_[1];
+        // 2. 현재 드론이 바라보는 Yaw 각도를 반영하여 월드 좌표계(NED)로 변환
+        // 회전 행렬 적용: 
+        // world_x = body_x * cos(yaw) - body_y * sin(yaw)
+        // world_y = body_x * sin(yaw) + body_y * cos(yaw)
+        float cos_y = std::cos(current_yaw_meas_);
+        float sin_y = std::sin(current_yaw_meas_);
+
+        float world_step_x = body_x * cos_y - body_y * sin_y;
+        float world_step_y = body_x * sin_y + body_y * cos_y;
+
+        // 3. 변환된 좌표에 최대 보폭 제한(Clamp) 적용
+        world_step_x = std::clamp(world_step_x, -max_step_m_, max_step_m_);
+        world_step_y = std::clamp(world_step_y, -max_step_m_, max_step_m_);
+
+        // 4. EMA 필터로 부드럽게 업데이트
+        setpoint_pos_[0] = (1.0f - ema_alpha_) * setpoint_pos_[0] + ema_alpha_ * (current_pos_[0] + world_step_x);
+        setpoint_pos_[1] = (1.0f - ema_alpha_) * setpoint_pos_[1] + ema_alpha_ * (current_pos_[1] + world_step_y);
+        
+        hover_xy_ = {setpoint_pos_[0], setpoint_pos_[1]};
+        }else {
+        setpoint_pos_[0] = (1.0f - 0.1f) * setpoint_pos_[0] + 0.1f * hover_xy_[0];
+        setpoint_pos_[1] = (1.0f - 0.1f) * setpoint_pos_[1] + 0.1f * hover_xy_[1];
         }
     }
 
