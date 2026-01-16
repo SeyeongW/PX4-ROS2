@@ -79,7 +79,7 @@ class YoloProcessorRealNode(Node):
         now = time.time()
         if now - self.last_log_time >= 1.0:
             if self.locked_track_id: self.get_logger().info(f"LOCKED: ID {self.locked_track_id}")
-            else: self.get_logger().info(f"Scanning... IDs: {current_ids.tolist()}")
+            else: self.get_logger().info(f"Scanning... IDs: {list(current_ids)}")
             self.last_log_time = now
 
         # Lock 로직
