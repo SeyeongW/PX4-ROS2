@@ -16,7 +16,7 @@ public:
         rclcpp::SensorDataQoS qos_profile;
 
         subscriber_ = this->create_subscription<sensor_msgs::msg::CompressedImage>(
-            "/image_raw/compressed", 
+            "/perception/yolo_result/compressed", 
             qos_profile, 
             std::bind(&WebcamSubscriber::imageCallback, this, _1));
 
