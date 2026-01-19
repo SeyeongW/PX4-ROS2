@@ -40,7 +40,16 @@ public:
             [this](const VehicleLocalPosition &msg) {
                 current_pos_ = {msg.x, msg.y, msg.z};
                 current_yaw_meas_ = msg.heading;
-                if (!yaw_init_) { current_yaw_sp_ = current_yaw_meas_; yaw_init_ = true; }
+                if (!yaw_init_) {
+                    current_yaw_sp_ = current_yaw_meas_;
+                    yaw_init_ = true;
+                }
+                if (!local_pos_ready_) {
+                    local_pos_ready_ = true;
+                    setpoint_pos_ = current_pos_;
+                    hover_xy_ = {current_pos_[0], current_pos_[1]};
+                    z_sp_ = current_pos_[2];
+                }
             });
 
         status_sub_ = this->create_subscription<VehicleStatus>("/fmu/out/vehicle_status", qos,
@@ -80,10 +89,14 @@ private:
     enum class Phase { warmup, takeoff, hold, track, landing };
     Phase phase_ = Phase::warmup;
 
-    std::array<float, 3> current_pos_, setpoint_pos_{0,0,0};
+    std::array<float, 3> current_pos_{0.0f, 0.0f, 0.0f};
+    std::array<float, 3> setpoint_pos_{0,0,0};
     float current_yaw_meas_ = 0, current_yaw_sp_ = 0, z_sp_ = 0;
     bool yaw_init_ = false, t_valid_ = false;
     uint64_t ticks_ = 0;
+    uint64_t offboard_setpoint_counter_ = 0;
+    uint64_t command_retry_ticks_ = 0;
+    bool local_pos_ready_ = false;
     uint8_t arming_state_ = 0;
     float t_off_x_, t_off_z_;
     int32_t locked_id_ = 0;
@@ -92,18 +105,33 @@ private:
     float flight_alt_, takeoff_ramp_time_, gain_lateral_, gain_dist_, max_step_m_, yaw_speed_;
     float takeoff_elapsed_ = 0;
     std::array<float, 2> hover_xy_;
+    static constexpr uint64_t kOffboardSetpointRequired = 20;
+    static constexpr uint64_t kCommandRetryIntervalTicks = 10;
 
     void manage_mission_flow() {
         switch (phase_) {
             case Phase::warmup:
-                if (yaw_init_ && ++ticks_ >= 20) {
+                if (!local_pos_ready_) {
+                    break;
+                }
+                ++ticks_;
+                ++offboard_setpoint_counter_;
+                if (offboard_setpoint_counter_ >= kOffboardSetpointRequired &&
+                    (command_retry_ticks_ == 0 || (ticks_ % kCommandRetryIntervalTicks) == 0)) {
                     publish_cmd(VehicleCommand::VEHICLE_CMD_DO_SET_MODE, 1.0f, 6.0f);
                     publish_cmd(VehicleCommand::VEHICLE_CMD_COMPONENT_ARM_DISARM, 1.0f);
+                    command_retry_ticks_ = ticks_;
+                }
+                if (arming_state_ == VehicleStatus::ARMING_STATE_ARMED) {
                     phase_ = Phase::takeoff;
+                    takeoff_elapsed_ = 0.0f;
                 }
                 break;
 
             case Phase::takeoff:
+                if (!local_pos_ready_) {
+                    break;
+                }
                 takeoff_elapsed_ += 0.1f;
                 {
                     float s = std::min(1.0f, takeoff_elapsed_ / takeoff_ramp_time_);
