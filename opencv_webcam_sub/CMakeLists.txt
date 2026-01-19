@@ -14,7 +14,7 @@ find_package(cv_bridge REQUIRED)
 find_package(OpenCV REQUIRED)
 
 # 실행 파일 생성 (노드)
-add_executable(opencv_webcam_sub src/opencv_webcam_sub.cpp)
+add_executable(opencv_webcam_sub /home/sw/ros2_ws/src/PX4-ROS2/opencv_webcam_sub/src/opencv_webcam_sub.cpp)
 
 # ROS 2 패키지 의존성 링크
 ament_target_dependencies(opencv_webcam_sub 
