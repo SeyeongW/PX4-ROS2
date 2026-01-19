@@ -2,6 +2,7 @@
 #include <cmath>
 #include <vector>
 #include <array>
+#include <sstream>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp/qos.hpp>
 #include <geometry_msgs/msg/point.hpp>
@@ -11,6 +12,7 @@
 #include <px4_msgs/msg/vehicle_local_position.hpp>
 #include <px4_msgs/msg/vehicle_status.hpp>
 #include <std_msgs/msg/int32.hpp>
+#include <std_msgs/msg/string.hpp>
 
 using namespace std::chrono_literals;
 using namespace px4_msgs::msg;
@@ -76,6 +78,8 @@ public:
                 locked_id_ = msg.data;
             });
 
+        debug_pub_ = this->create_publisher<std_msgs::msg::String>("/offboard_tracking/debug", 10);
+
         timer_ = this->create_wall_timer(100ms, [this]() {
             if (phase_ != Phase::landing) {
                 publish_offboard_control_mode();
@@ -83,6 +87,8 @@ public:
             }
             manage_mission_flow();
         });
+
+        debug_timer_ = this->create_wall_timer(1s, [this]() { publish_debug(); });
     }
 
 private:
@@ -97,6 +103,7 @@ private:
     uint64_t offboard_setpoint_counter_ = 0;
     uint64_t command_retry_ticks_ = 0;
     bool local_pos_ready_ = false;
+    bool tracking_active_ = false;
     uint8_t arming_state_ = 0;
     float t_off_x_, t_off_z_;
     int32_t locked_id_ = 0;
@@ -166,6 +173,10 @@ private:
     void execute_tracking() {
         bool fresh = t_valid_ && (this->get_clock()->now() - last_t_time_).seconds() <= 0.8;
         if (locked_id_ > 0 && fresh) {
+            if (!tracking_active_) {
+                RCLCPP_INFO(this->get_logger(), ">>> TARGET TRACKING ACTIVE");
+                tracking_active_ = true;
+            }
             // 1. 위치 추적 (Body Frame 오차 -> World Frame 변환)
             float b_forward = (0.45f - t_off_z_) * gain_dist_;
             float b_lateral = t_off_x_ * gain_lateral_;
@@ -192,6 +203,13 @@ private:
             else current_yaw_sp_ += (diff > 0.0f) ? yaw_speed_ : -yaw_speed_;
 
         } else {
+            if (tracking_active_) {
+                RCLCPP_WARN(this->get_logger(), ">>> TARGET LOST: clearing lock and holding position");
+                tracking_active_ = false;
+            }
+            locked_id_ = 0;
+            t_valid_ = false;
+            hover_xy_ = {current_pos_[0], current_pos_[1]};
             setpoint_pos_[0] = hover_xy_[0];
             setpoint_pos_[1] = hover_xy_[1];
             // 타겟 유실 시 Yaw는 현재 유지
@@ -220,14 +238,40 @@ private:
         vehicle_command_pub_->publish(msg);
     }
 
+    void publish_debug() {
+        std_msgs::msg::String msg{};
+        const auto now = this->get_clock()->now();
+        const double target_age = t_valid_ ? (now - last_t_time_).seconds() : -1.0;
+        const bool fresh = t_valid_ && target_age <= 0.8;
+
+        std::ostringstream oss;
+        oss << "phase=" << static_cast<int>(phase_)
+            << " armed=" << static_cast<int>(arming_state_)
+            << " locked_id=" << locked_id_
+            << " tracking=" << (tracking_active_ ? "1" : "0")
+            << " target_valid=" << (t_valid_ ? "1" : "0")
+            << " target_fresh=" << (fresh ? "1" : "0")
+            << " target_age=" << target_age
+            << " t_off_x=" << t_off_x_
+            << " t_off_z=" << t_off_z_
+            << " pos=(" << current_pos_[0] << "," << current_pos_[1] << "," << current_pos_[2] << ")"
+            << " sp=(" << setpoint_pos_[0] << "," << setpoint_pos_[1] << "," << z_sp_ << ")"
+            << " yaw_sp=" << current_yaw_sp_;
+
+        msg.data = oss.str();
+        debug_pub_->publish(msg);
+    }
+
     rclcpp::Publisher<OffboardControlMode>::SharedPtr offboard_control_mode_pub_;
     rclcpp::Publisher<TrajectorySetpoint>::SharedPtr trajectory_setpoint_pub_;
     rclcpp::Publisher<VehicleCommand>::SharedPtr vehicle_command_pub_;
+    rclcpp::Publisher<std_msgs::msg::String>::SharedPtr debug_pub_;
     rclcpp::Subscription<VehicleLocalPosition>::SharedPtr local_pos_sub_;
     rclcpp::Subscription<VehicleStatus>::SharedPtr status_sub_;
     rclcpp::Subscription<geometry_msgs::msg::Point>::SharedPtr target_sub_;
     rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr target_id_sub_;
     rclcpp::TimerBase::SharedPtr timer_;
+    rclcpp::TimerBase::SharedPtr debug_timer_;
 };
 
 int main(int argc, char *argv[]) {
