@@ -42,28 +42,39 @@ cd PX4-ROS2
 
 #### 방법 A: 팀원용 (이미 빌드된 이미지 사용 - 권장 👍)
 의존성 설치나 데이터셋 다운로드를 기다릴 필요 없이 즉시 시작할 수 있습니다.
-1. `docker-compose.yml` 파일을 열어 `build:` 섹션을 주석 처리하고, `image:` 섹션의 주석을 해제합니다.
-2. 실행:
+1. `docker-compose.yml` 설정이 `image: seyeongw/...`로 되어 있는지 확인합니다. (기본값)
+2. 실행 (이미지가 없으면 자동으로 다운로드합니다):
    ```bash
-   docker-compose up -d
+   docker-compose up
    ```
 
-#### 방법 B: 관리자용 (직접 이미지 빌드 및 배포)
-환경 설정(`Dockerfile`)을 수정했거나 새로운 배포판을 만들 때 사용합니다.
-1. 이미지 빌드 및 실행:
+#### 방법 B: 관리자용 (이미지 수정 및 배포)
+환경 설정(`Dockerfile`)을 직접 수정해야 할 때 사용합니다.
+1. `docker-compose.yml`에서 `image:` 줄을 주석 처리하고, `build:` 섹션 주석을 해제합니다.
+2. 빌드 및 실행:
    ```bash
-   docker-compose up -d --build
+   docker-compose up --build
    ```
-2. **팀원들에게 배포 (Push)**:
+3. 수정 완료 후 팀원들에게 배포:
    ```bash
-   chmod +x push_image.sh
    ./push_image.sh
    ```
 
 ---
 
 ### 4. 컨테이너 내부 접속 및 작업
-서버가 켜져 있다면, 언제든지 새로운 터미널에서 아래 명령어로 접속할 수 있습니다.
+컨테이너가 실행 중인 상태에서 **새로운 터미널**을 열어 접속합니다.
+
+```bash
+# 1. 컨테이너 내부 접속
+docker exec -it px4_ros2_offboard bash
+
+# 2. 코드 빌드 및 실행
+cd /ros2_ws
+colcon build --symlink-install --packages-select offboard
+source install/setup.bash
+ros2 run offboard offboard_control
+```
 
 ```bash
 # 1. 컨테이너 내부 접속 (언제든 필요할 때 실행)

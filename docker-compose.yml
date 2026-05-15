@@ -2,20 +2,19 @@ version: '3.8'
 
 services:
   offboard_dev:
-    # --- 팀원용: 이미 빌드된 이미지를 사용할 때 (아래 image 활성화, build 주석 처리) ---
-    # image: seyeongw/px4-ros2-offboard:latest
+    # --- 팀원용: 이미 빌드된 이미지를 내려받아 사용할 때 (이미 빌드된 이미지 주소) ---
+    image: seyeongw/px4-ros2-offboard:latest
     
-    # --- 관리자용: 직접 빌드할 때 ---
-    build:
-      context: .
-      dockerfile: Dockerfile
+    # --- 관리자 전용: 환경을 직접 수정하고 빌드할 때만 사용 (팀원은 주석 처리) ---
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile
     
     container_name: px4_ros2_offboard
     volumes:
       # 로컬 코드를 컨테이너 내부 워크스페이스에 마운트 (수정 시 즉시 반영)
       - .:/ros2_ws/src/PX4-ROS2
     privileged: true
-    restart: always
     network_mode: host
     environment:
       - DISPLAY=${DISPLAY}
