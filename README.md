@@ -1,25 +1,23 @@
-# ArduPilot ROS 2 Offboard 제어
+## Docker를 이용한 개발 (권장)
 
-이 저장소는 **MAVROS**를 사용하여 ArduPilot 기반 기체(Copter/Rover/Plane)를 ROS 2에서 Offboard 제어하기 위한 구현을 제공합니다.
+팀원 간의 동일한 개발 환경을 유지하기 위해 도커 사용을 권장합니다. 로컬 소스 코드가 컨테이너 내부와 공유되므로, 코드를 수정해도 이미지를 다시 빌드할 필요가 없습니다.
 
-## 사전 요구 사항
-
-이 패키지를 사용하기 전에 시스템에 ROS 2(Humble 권장)가 설치되어 있어야 합니다.
-
-### 1. MAVROS 및 의존성 설치
-먼저 MAVROS 패키지와 메시지 정의를 설치합니다:
+### 1. 도커 환경 실행
+프로젝트 루트 디렉토리에서 다음 명령을 실행합니다:
 ```bash
-sudo apt-get update
-sudo apt-get install ros-humble-mavros ros-humble-mavros-msgs
+docker-compose up --build
+```
+이 명령은 이미지를 빌드하고, 로컬 코드를 마운트한 뒤, 의존성 설치 및 빌드(`colcon build`)까지 자동으로 수행합니다.
+
+### 2. 컨테이너 내부에서 작업
+컨테이너가 실행 중인 상태에서 새로운 터미널을 열어 접속할 수 있습니다:
+```bash
+docker exec -it px4_ros2_offboard bash
 ```
 
-### 2. GeographicLib 데이터셋 설치
-MAVROS는 좌표 변환(예: GPS에서 로컬 프레임으로)을 위해 GeographicLib 데이터셋이 필요합니다. 다음 스크립트를 실행하여 설치하십시오:
-```bash
-sudo /opt/ros/humble/lib/mavros/install_geographiclib_datasets.sh
-```
+---
 
-## 설정 및 설치
+## 수동 설치 및 설정 (도커 미사용 시)
 
 다음 단계에 따라 ROS 2 워크스페이스에 저장소를 클론하고 빌드하십시오.
 
