@@ -66,8 +66,9 @@ cd PX4-ROS2
 컨테이너가 실행 중인 상태에서 **새로운 터미널**을 열어 접속합니다.
 
 ```bash
-# 1. 컨테이너 내부 접속
-docker exec -it px4_ros2_offboard bash
+# 1. 단축 명령어로 접속
+chmod +x in.sh  # (최초 1회 실행)
+./in.sh
 
 # 2. 코드 빌드 및 실행
 cd /ros2_ws
