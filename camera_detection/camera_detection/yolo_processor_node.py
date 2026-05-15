@@ -17,7 +17,7 @@ class YoloProcessorRealNode(Node):
         super().__init__("yolo_processor_real_node")
 
         self.declare_parameter("device_id", 0)
-        self.declare_parameter("model_path", "/home/sw/ros2_ws/yolo11s.engine")
+        self.declare_parameter("model_path", "yolo11s.engine")
         self.declare_parameter("deadzone", 0.08)
 
         self.device_id = self.get_parameter("device_id").get_parameter_value().integer_value

@@ -4,6 +4,10 @@ FROM ros:humble-ros-base
 RUN apt-get update && apt-get install -y \
     ros-humble-mavros \
     ros-humble-mavros-msgs \
+    ros-humble-cv-bridge \
+    ros-humble-image-transport \
+    ros-humble-sensor-msgs \
+    ros-humble-geometry-msgs \
     python3-pip \
     wget \
     && rm -rf /var/lib/apt/lists/*

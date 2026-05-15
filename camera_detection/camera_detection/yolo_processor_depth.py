@@ -22,7 +22,7 @@ class YoloCombinedDebugNode(Node):
         self.pipeline.start(config)
 
         # 2. YOLO Setup
-        self.model = YOLO("/home/sw/ros2_ws/yolo11s.engine", task="detect")
+        self.model = YOLO("yolo11s.engine", task="detect")
 
         # 3. Publisher
         self.combined_pub = self.create_publisher(CompressedImage, "/perception/yolo_result/compressed", 10)
