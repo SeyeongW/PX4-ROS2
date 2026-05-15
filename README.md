@@ -36,29 +36,42 @@ git clone -b wang https://github.com/SeyeongW/PX4-ROS2.git
 cd PX4-ROS2
 ```
 
-### 3. 도커 컨테이너 빌드 및 실행
+### 3. 도커 컨테이너 빌드 및 실행 (상시 가동 모드)
 프로젝트 루트 디렉토리(`PX4-ROS2`)에서 다음 명령을 실행합니다.
 
 ```bash
-docker-compose up --build
+# 백그라운드에서 실행 (-d 옵션)
+docker-compose up -d --build
 ```
-- **빌드(`--build`)**: `Dockerfile`을 바탕으로 ROS 2, MAVROS, 데이터셋 등이 설치된 이미지를 만듭니다. (최초 1회만 오래 걸림)
-- **실행(`up`)**: 가상 컴퓨터(컨테이너)를 켭니다. 로컬의 소스 코드가 컨테이너 내부와 연결됩니다.
+- **`-d` (Detached)**: 이 옵션을 사용하면 서버가 백그라운드에서 돌아갑니다. 이제 터미널 창을 닫아도 컨테이너는 24시간 내내 켜져 있습니다.
+- **`restart: always`**: 컴퓨터를 재부팅해도 도커 컨테이너가 자동으로 다시 켜집니다.
 
-### 4. 컨테이너 내부에서 코드 빌드 및 실행
-컨테이너가 실행 중인 상태에서 **새로운 터미널**을 열고 다음 명령을 통해 컨테이너 내부로 접속합니다.
+### 4. 컨테이너 내부 접속 및 작업
+서버가 켜져 있다면, 언제든지 새로운 터미널에서 아래 명령어로 접속할 수 있습니다.
 
 ```bash
-# 1. 컨테이너 내부 접속
+# 1. 컨테이너 내부 접속 (언제든 필요할 때 실행)
 docker exec -it px4_ros2_offboard bash
 
-# 2. 코드 빌드 (수정 시마다 실행)
+# 2. 코드 빌드 및 실행
 cd /ros2_ws
 colcon build --symlink-install --packages-select offboard
 source install/setup.bash
-
-# 3. 노드 실행 (MAVROS가 실행 중이어야 함)
 ros2 run offboard offboard_control
+```
+
+### 5. 상태 확인 및 로그 보기
+백그라운드에서 돌아가는 서버의 상태를 확인하고 싶을 때 사용합니다.
+
+```bash
+# 실행 중인 컨테이너 상태 확인
+docker ps
+
+# 실시간 로그 확인 (디버깅 시 유용)
+docker logs -f px4_ros2_offboard
+
+# 서버 종료
+docker-compose down
 ```
 
 ---

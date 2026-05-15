@@ -10,6 +10,7 @@ services:
       # 로컬 코드를 컨테이너 내부 워크스페이스에 마운트 (수정 시 즉시 반영)
       - .:/ros2_ws/src/PX4-ROS2
     privileged: true
+    restart: always
     network_mode: host
     environment:
       - DISPLAY=${DISPLAY}
