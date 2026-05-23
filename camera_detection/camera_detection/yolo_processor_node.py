@@ -16,10 +16,17 @@ class YoloProcessorRealNode(Node):
     def __init__(self):
         super().__init__("yolo_processor_real_node")
 
-        # default model path resolved dynamically relative to this script
-        default_model = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "yolo11n.engine"))
-        if not os.path.exists(default_model):
-            default_model = "yolo11n.engine"
+        # default model path resolved dynamically searching standard workspace locations
+        paths_to_search = [
+            os.path.expanduser("~/ros2_ws/PX4-ROS2/yolo11n.engine"),
+            os.path.expanduser("~/ros2_ws/src/PX4-ROS2/yolo11n.engine"),
+            os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "yolo11n.engine")),
+        ]
+        default_model = "yolo11n.engine"  # fallback
+        for path in paths_to_search:
+            if os.path.exists(path):
+                default_model = path
+                break
 
         self.declare_parameter("device_id", 0)
         self.declare_parameter("model_path", default_model)

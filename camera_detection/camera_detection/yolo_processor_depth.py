@@ -23,9 +23,16 @@ class YoloCombinedDebugNode(Node):
         self.pipeline.start(config)
 
         # 2. YOLO Setup
-        default_model = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "yolo11n.engine"))
-        if not os.path.exists(default_model):
-            default_model = "yolo11n.engine"
+        paths_to_search = [
+            os.path.expanduser("~/ros2_ws/PX4-ROS2/yolo11n.engine"),
+            os.path.expanduser("~/ros2_ws/src/PX4-ROS2/yolo11n.engine"),
+            os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "yolo11n.engine")),
+        ]
+        default_model = "yolo11n.engine"  # fallback
+        for path in paths_to_search:
+            if os.path.exists(path):
+                default_model = path
+                break
         self.model = YOLO(default_model, task="detect")
 
         # 3. Publisher
