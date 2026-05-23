@@ -1,3 +1,4 @@
+import os
 import cv2
 import numpy as np
 import rclpy
@@ -22,7 +23,10 @@ class YoloCombinedDebugNode(Node):
         self.pipeline.start(config)
 
         # 2. YOLO Setup
-        self.model = YOLO("yolo11s.engine", task="detect")
+        default_model = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "yolo11n.engine"))
+        if not os.path.exists(default_model):
+            default_model = "yolo11n.engine"
+        self.model = YOLO(default_model, task="detect")
 
         # 3. Publisher
         self.combined_pub = self.create_publisher(CompressedImage, "/perception/yolo_result/compressed", 10)

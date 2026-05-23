@@ -16,8 +16,13 @@ class YoloProcessorRealNode(Node):
     def __init__(self):
         super().__init__("yolo_processor_real_node")
 
+        # default model path resolved dynamically relative to this script
+        default_model = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "yolo11n.engine"))
+        if not os.path.exists(default_model):
+            default_model = "yolo11n.engine"
+
         self.declare_parameter("device_id", 0)
-        self.declare_parameter("model_path", "yolo11s.engine")
+        self.declare_parameter("model_path", default_model)
         self.declare_parameter("deadzone", 0.08)
 
         self.device_id = self.get_parameter("device_id").get_parameter_value().integer_value
