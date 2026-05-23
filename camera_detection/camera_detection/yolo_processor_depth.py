@@ -63,7 +63,7 @@ class YoloCombinedDebugNode(Node):
 
                 # 컬러 영상에 박스와 거리 표시
                 cv2.rectangle(frame_rgb, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                cv2.putText(frame_rgb, f"ID:{track_id} {dist_cm}cm", (x1, y1-10),
+                cv2.putText(frame_rgb, f"person(0) ID:{track_id} {dist_cm}cm", (x1, y1-10),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
         # --- 3. 영상 가로로 합치기 ---

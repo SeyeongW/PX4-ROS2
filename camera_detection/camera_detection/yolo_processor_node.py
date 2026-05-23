@@ -102,7 +102,7 @@ class YoloProcessorRealNode(Node):
             is_locked = (track_id == self.locked_track_id)
             color = (0, 0, 255) if is_locked else (255, 0, 0)
             cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2 if not is_locked else 4)
-            cv2.putText(frame, f"ID:{track_id} {current_confs[i]:.2f}", (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+            cv2.putText(frame, f"person(0) ID:{track_id} {current_confs[i]:.2f}", (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
 
             if is_locked:
                 cx, cy = (box[0] + box[2]) / 2.0, (box[1] + box[3]) / 2.0
