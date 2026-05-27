@@ -20,10 +20,14 @@ ament_target_dependencies(offboard_sim_waypoints rclcpp mavros_msgs geometry_msg
 add_executable(offboard_tracking_control src/offboard_tracking_control.cpp)
 ament_target_dependencies(offboard_tracking_control rclcpp mavros_msgs geometry_msgs)
 
+add_executable(precision_landing src/precision_landing.cpp)
+ament_target_dependencies(precision_landing rclcpp mavros_msgs geometry_msgs std_msgs)
+
 install(TARGETS
   offboard_control
   offboard_sim_waypoints
   offboard_tracking_control
+  precision_landing
   DESTINATION lib/${PROJECT_NAME}
 )
 
