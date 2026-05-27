@@ -137,8 +137,12 @@ gazebo/
 │   └── model.sdf
 ├── worlds/iris_down_camera_runway.sdf  # 카메라 검증용 월드 (지면 + 마커)
 ├── launch/camera_bridge.launch.py  # gz 카메라 → ROS 2 브리지
+├── install_apt_deps.sh            # sudo 필요한 apt 설치 일괄 스크립트
 └── run_sim.sh                      # 리소스 경로 설정 + Gazebo 실행 헬퍼
 ```
+
+> 아래 환경은 실제로 빌드·실행하여 검증되었습니다: Gazebo에서 iris+하방 카메라가 로드되고
+> `/down_camera/image`(640×480 rgb8)가 ROS 2 토픽으로 정상 발행됨을 확인했습니다.
 
 - `iris_with_down_camera` 모델은 `ardupilot_gazebo`의 `iris_with_standoffs` 에어프레임을 그대로 include 하고, `base_link` 아래에 **고정(fixed) 조인트**로 카메라 링크를 부착합니다. 카메라 링크를 Y축으로 +90° 피치시켜 광학 +X축이 정확히 지면(-Z)을 향하도록 했습니다.
 - 비행에 필요한 lift-drag / motor / `ArduPilotPlugin` 설정은 `iris_with_ardupilot`과 동일하므로, 별도 수정 없이 SITL과 바로 연동됩니다.
@@ -146,6 +150,12 @@ gazebo/
 ## 2. 사전 설치 (드라이버 / 패키지)
 
 > 아래 `apt` 명령들은 `sudo`가 필요합니다. 터미널에서 직접 실행하십시오.
+
+> **빠른 길:** `sudo`가 필요한 apt 설치(2-1, 2-3의 헤더, 빌드 도구)는 한 번에 처리하는 스크립트를 제공합니다.
+> ```bash
+> sudo bash gazebo/install_apt_deps.sh
+> ```
+> 이후 2-2 / 2-3 / 2-4의 **빌드 단계만** sudo 없이 진행하면 됩니다. 아래는 개별 설치 설명입니다.
 
 ### 2-1. Gazebo Harmonic 설치 (gz-sim 8)
 
@@ -212,13 +222,8 @@ mkdir -p ~/ros_gz_ws/src && cd ~/ros_gz_ws/src
 git clone https://github.com/gazebosim/ros_gz.git -b humble
 cd ~/ros_gz_ws
 
-# rosdep (gz 키는 직접 설치했으므로 skip)
-sudo rosdep init 2>/dev/null || true
-rosdep update
-rosdep install -r --from-paths src -i -y --rosdistro humble \
-  --skip-keys "gz-sim8 gz-transport13 gz-msgs10"
-
-colcon build --merge-install
+# 카메라 브리지만 필요하면 해당 패키지까지만 빌드(빠름)
+GZ_VERSION=harmonic colcon build --merge-install --packages-up-to ros_gz_bridge
 # 사용 시: source ~/ros_gz_ws/install/setup.bash
 ```
 
