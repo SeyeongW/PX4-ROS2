@@ -114,6 +114,13 @@
       <pose degrees="true">-29 545 0 0 0 363</pose>
     </include>
 
+    <!-- ArUco DICT_4X4_50 ID=0 marker on the ground (precision landing target) -->
+    <!-- Run `python3 gazebo/gen_aruco_model.py` once to generate the texture. -->
+    <include>
+      <uri>model://aruco_marker_0</uri>
+      <pose>3 0 0.002 0 0 0</pose>
+    </include>
+
     <include>
       <uri>model://iris_with_down_camera</uri>
       <pose degrees="true">0 0 0.195 0 0 90</pose>
