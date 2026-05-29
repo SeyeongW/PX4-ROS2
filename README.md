@@ -249,6 +249,62 @@ ros2 run offboard offboard_tracking_control
 
 ---
 
+## ArUco 마커 정밀착륙
+
+하방 카메라로 지면의 ArUco 마커(DICT_4X4_50, ID 0)를 검출해 그 위로 정밀착륙합니다.
+`precland_bringup.launch.py` 하나가 **MAVROS + 카메라 브리지 + ArUco 검출 + 정밀착륙 제어**를
+한꺼번에 띄워 SITL에 연결하므로, Gazebo·SITL만 따로 켜면 됩니다.
+
+### 사전 준비 (최초 1회)
+
+```bash
+# 마커 텍스처 생성 (안 하면 마커가 검은 박스로 보임)
+python3 ~/ros2_ws/PX4-ROS2/gazebo/gen_aruco_model.py
+
+# 빌드
+cd ~/ros2_ws/PX4-ROS2
+colcon build --symlink-install --packages-select camera_detection offboard
+source install/setup.bash
+```
+
+### 실행 (터미널 3개)
+
+```bash
+# 터미널 1 — Gazebo
+cd ~/ros2_ws/PX4-ROS2/gazebo && ./run_sim.sh
+
+# 터미널 2 — ArduPilot SITL
+cd ~/ardupilot && sim_vehicle.py -v ArduCopter -f gazebo-iris --model JSON --console --map
+
+# 터미널 3 — 서버 일괄 (MAVROS + 카메라 브리지 + 검출 + 정밀착륙)
+source ~/ros2_ws/PX4-ROS2/install/setup.bash
+source ~/ros_gz_ws/install/setup.bash
+ros2 launch camera_detection precland_bringup.launch.py
+```
+
+### 착륙 트리거
+
+`precision_landing` 노드는 스스로 시동/이륙하지 않습니다. 터미널 2(MAVProxy)에서 직접 이륙시키면,
+`armed + GUIDED + 마커 감지` 상태가 됐을 때 자동으로 인계받아 정렬 → 하강 → `LAND`를 수행합니다.
+
+```
+mode guided
+arm throttle
+takeoff 5
+```
+
+### 모니터링
+
+```bash
+ros2 topic echo /precision_landing/debug                        # 단계 전환 로그
+ros2 run rqt_image_view rqt_image_view /perception/aruco_debug/compressed
+```
+
+> **참고:** 기체가 마커 반대 방향으로 움직이면 `offboard/src/precision_landing.cpp`의
+> `correct_lateral()`에서 부호(x/y)를 뒤집고 재빌드하세요.
+
+---
+
 ## 실기체 운용
 
 ### 연결 구성
