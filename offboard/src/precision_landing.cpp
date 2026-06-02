@@ -9,6 +9,7 @@
 #include <geometry_msgs/msg/point.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <mavros_msgs/msg/state.hpp>
+#include <mavros_msgs/srv/command_bool.hpp>
 #include <mavros_msgs/srv/set_mode.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/string.hpp>
@@ -17,22 +18,30 @@ using namespace std::chrono_literals;
 
 // ---------------------------------------------------------------------------
 // State machine
+//   TAKEOFF  : set GUIDED, arm, ramp altitude up to flight_alt (skipped if
+//              auto_takeoff=false — then start in IDLE and wait for a human)
 //   IDLE     : wait for armed + GUIDED + marker visible
 //   ALIGN    : hover at flight_alt, slide laterally until marker is centred
 //   DESCEND  : keep marker centred while descending; pause if marker lost
 //   DONE     : switch FCU to LAND mode
 // ---------------------------------------------------------------------------
-enum class Stage { IDLE, ALIGN, DESCEND, DONE };
+enum class Stage { TAKEOFF, IDLE, ALIGN, DESCEND, DONE };
 
 class PrecisionLandingNode : public rclcpp::Node {
 public:
-    PrecisionLandingNode() : Node("precision_landing_node"), stage_(Stage::IDLE) {
+    PrecisionLandingNode() : Node("precision_landing_node") {
         flight_alt_   = declare_parameter("flight_alt",   5.0f);  // m, hover altitude
         align_thresh_ = declare_parameter("align_thresh", 0.08f); // normalised, ~5% of FOV
         land_alt_     = declare_parameter("land_alt",     0.7f);  // m, trigger LAND mode
         descend_rate_ = declare_parameter("descend_rate", 0.3f);  // m/s downward
         gain_lateral_ = declare_parameter("gain_lateral", 2.5f);  // m of correction per unit offset
         max_step_     = declare_parameter("max_step",     1.5f);  // m, max lateral move per cycle
+        // auto_takeoff: node sets GUIDED, arms and climbs to flight_alt itself.
+        // Set false to keep the old behaviour (a human/other node flies it up).
+        auto_takeoff_   = declare_parameter("auto_takeoff",   true);
+        takeoff_ramp_s_ = declare_parameter("takeoff_ramp_s", 5.0f); // s to reach flight_alt
+
+        stage_ = auto_takeoff_ ? Stage::TAKEOFF : Stage::IDLE;
 
         setpoint_pub_ = create_publisher<geometry_msgs::msg::PoseStamped>(
             "/mavros/setpoint_position/local", 10);
@@ -43,8 +52,10 @@ public:
             "/mavros/state", 10,
             [this](mavros_msgs::msg::State::SharedPtr m) { mav_state_ = *m; });
 
+        // mavros publishes local_position/pose with BEST_EFFORT (sensor) QoS;
+        // subscribe with SensorDataQoS or no messages are delivered.
         pose_sub_ = create_subscription<geometry_msgs::msg::PoseStamped>(
-            "/mavros/local_position/pose", 10,
+            "/mavros/local_position/pose", rclcpp::SensorDataQoS(),
             [this](geometry_msgs::msg::PoseStamped::SharedPtr m) {
                 pos_[0] = static_cast<float>(m->pose.position.x);
                 pos_[1] = static_cast<float>(m->pose.position.y);
@@ -62,6 +73,7 @@ public:
             });
 
         set_mode_cli_ = create_client<mavros_msgs::srv::SetMode>("/mavros/set_mode");
+        arming_cli_   = create_client<mavros_msgs::srv::CommandBool>("/mavros/cmd/arming");
 
         sp_[0] = sp_[1] = 0.0f;
         sp_[2] = flight_alt_;
@@ -78,6 +90,33 @@ private:
         if (!mav_state_.connected) return;
 
         switch (stage_) {
+            // ----------------------------------------------------------------
+            // Climb to flight_alt the same way offboard_control does: request
+            // GUIDED + arm (re-sent every ~2 s until they take), then stream a
+            // rising altitude setpoint. ArduCopter GUIDED takes off by following
+            // the climbing setpoint, so we never leave the position stream idle.
+            case Stage::TAKEOFF: {
+                if (++req_ticks_ % 40 == 1) {           // ~ every 2 s (40 × 50 ms)
+                    if (mav_state_.mode != "GUIDED") set_mode("GUIDED");
+                    else if (!mav_state_.armed)      arm(true);
+                }
+
+                sp_[0] = pos_[0];
+                sp_[1] = pos_[1];
+
+                if (mav_state_.armed && mav_state_.mode == "GUIDED") {
+                    takeoff_elapsed_ += 0.05f;          // 50 ms dt
+                    const float s = std::min(1.0f, takeoff_elapsed_ / takeoff_ramp_s_);
+                    sp_[2] = (1.0f - s) * 0.0f + s * flight_alt_;
+                    if (std::abs(pos_[2] - flight_alt_) <= 1.0f) {
+                        log("→ IDLE (reached flight_alt)"); stage_ = Stage::IDLE;
+                    }
+                } else {
+                    sp_[2] = flight_alt_;               // pre-positioned target
+                }
+                break;
+            }
+
             // ----------------------------------------------------------------
             case Stage::IDLE:
                 sp_ = {pos_[0], pos_[1], flight_alt_};
@@ -149,10 +188,18 @@ private:
     }
 
     // -----------------------------------------------------------------------
-    void send_land() {
+    void send_land() { set_mode("LAND"); }
+
+    void set_mode(const std::string& mode) {
         auto req = std::make_shared<mavros_msgs::srv::SetMode::Request>();
-        req->custom_mode = "LAND";
+        req->custom_mode = mode;
         set_mode_cli_->async_send_request(req);
+    }
+
+    void arm(bool value) {
+        auto req = std::make_shared<mavros_msgs::srv::CommandBool::Request>();
+        req->value = value;
+        arming_cli_->async_send_request(req);
     }
 
     void log(const std::string& s) {
@@ -163,6 +210,8 @@ private:
 
     // Parameters
     float flight_alt_, align_thresh_, land_alt_, descend_rate_, gain_lateral_, max_step_;
+    bool  auto_takeoff_{true};
+    float takeoff_ramp_s_{5.0f};
 
     // State
     Stage  stage_;
@@ -170,7 +219,9 @@ private:
     std::array<float, 3>    pos_{0, 0, 0};
     std::array<float, 3>    sp_{0, 0, 5};
     geometry_msgs::msg::Point offset_;
-    int fresh_{0};
+    int   fresh_{0};
+    int   req_ticks_{0};
+    float takeoff_elapsed_{0.0f};
 
     // ROS interfaces
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr setpoint_pub_;
@@ -180,6 +231,7 @@ private:
     rclcpp::Subscription<geometry_msgs::msg::Point>::SharedPtr    offset_sub_;
     rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr          detected_sub_;
     rclcpp::Client<mavros_msgs::srv::SetMode>::SharedPtr          set_mode_cli_;
+    rclcpp::Client<mavros_msgs::srv::CommandBool>::SharedPtr      arming_cli_;
     rclcpp::TimerBase::SharedPtr                                  timer_;
 };
 

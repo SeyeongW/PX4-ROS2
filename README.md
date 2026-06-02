@@ -208,8 +208,12 @@ takeoff 10
 SITL과 ROS 2를 연결합니다.
 
 ```bash
-ros2 launch mavros apm.launch fcu_url:=udp://127.0.0.1:14550@14555
+ros2 launch mavros apm.launch fcu_url:=udp://:14550@
 ```
+
+> MAVProxy(`sim_vehicle.py`)는 `127.0.0.1:14550` 으로만 MAVLink를 내보냅니다.
+> 그래서 MAVROS는 **14550 에 bind**하고 remote(`@` 뒤)는 비워서 상대 주소를 자동 학습시킵니다.
+> `@14555` 처럼 빈 포트로 송신하게 두면 `connection refused`(UDP closed)가 납니다.
 
 ### 터미널 4 — 카메라 브리지 실행
 
@@ -263,7 +267,7 @@ python3 ~/ros2_ws/PX4-ROS2/gazebo/gen_aruco_model.py
 
 # 빌드
 cd ~/ros2_ws/PX4-ROS2
-colcon build --symlink-install --packages-select camera_detection offboard
+colcon build --symlink-install --packages-select camera_detection precision_landing
 source install/setup.bash
 ```
 
@@ -276,16 +280,19 @@ cd ~/ros2_ws/PX4-ROS2/gazebo && ./run_sim.sh
 # 터미널 2 — ArduPilot SITL
 cd ~/ardupilot && sim_vehicle.py -v ArduCopter -f gazebo-iris --model JSON --console --map
 
-# 터미널 3 — 서버 일괄 (MAVROS + 카메라 브리지 + 검출 + 정밀착륙)
+# 터미널 3 — 서버 일괄 (MAVROS + 카메라 브리지 + 검출 + 정밀착륙[Python])
 source ~/ros2_ws/PX4-ROS2/install/setup.bash
 source ~/ros_gz_ws/install/setup.bash
-ros2 launch camera_detection precland_bringup.launch.py
+ros2 launch precision_landing precision_landing.launch.py
 ```
 
 ### 착륙 트리거
 
-`precision_landing` 노드는 스스로 시동/이륙하지 않습니다. 터미널 2(MAVProxy)에서 직접 이륙시키면,
-`armed + GUIDED + 마커 감지` 상태가 됐을 때 자동으로 인계받아 정렬 → 하강 → `LAND`를 수행합니다.
+기본값 `auto_takeoff:=true` 면 `precision_landing` 노드가 **스스로 GUIDED 전환 → 시동 → `flight_alt`까지 이륙**한 뒤,
+`마커 감지` 시 정렬 → 하강 → `LAND`를 수행합니다.
+
+수동으로 띄우려면 `auto_takeoff:=false` 로 실행하고 터미널 2(MAVProxy)에서 직접 이륙시키세요.
+그러면 `armed + GUIDED + 마커 감지` 상태가 됐을 때 자동으로 인계받습니다.
 
 ```
 mode guided
@@ -300,8 +307,9 @@ ros2 topic echo /precision_landing/debug                        # 단계 전환 
 ros2 run rqt_image_view rqt_image_view /perception/aruco_debug/compressed
 ```
 
-> **참고:** 기체가 마커 반대 방향으로 움직이면 `offboard/src/precision_landing.cpp`의
-> `correct_lateral()`에서 부호(x/y)를 뒤집고 재빌드하세요.
+> **참고:** 기체가 마커 반대 방향으로 움직이면
+> `precision_landing/precision_landing/precision_landing_node.py`의
+> `_correct_lateral()`에서 부호(x/y)를 뒤집으세요 (`--symlink-install` 빌드면 재빌드 불필요).
 
 ---
 

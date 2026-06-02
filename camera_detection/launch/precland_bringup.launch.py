@@ -12,7 +12,7 @@ Gazebo(run_sim.sh)와 ArduPilot SITL(sim_vehicle.py)만 따로 켜 두면,
 
 옵션:
     ros2 launch camera_detection precland_bringup.launch.py \
-        fcu_url:=udp://127.0.0.1:14550@14555 \
+        fcu_url:=udp://:14550@ \
         image_topic:=/down_camera/image
 """
 
@@ -60,16 +60,18 @@ def generate_launch_description():
         parameters=[{"image_topic": image_topic}],
     )
 
-    # 정밀착륙 제어 (armed + GUIDED + 마커 감지 시 자동 인계)
+    # 정밀착륙 제어 (Python) — armed + GUIDED + 마커 감지 시 자동 인계
     precision_landing = Node(
-        package="offboard",
-        executable="precision_landing",
+        package="precision_landing",
+        executable="precision_landing_node",
         name="precision_landing_node",
         output="screen",
     )
 
     return LaunchDescription([
-        DeclareLaunchArgument("fcu_url", default_value="udp://127.0.0.1:14550@14555"),
+        # MAVProxy(sim_vehicle.py)는 127.0.0.1:14550 으로만 송신하므로 14550 에 bind.
+        # remote(@뒤)를 비우면 들어온 패킷에서 상대 주소를 자동 학습 → 양방향 통신.
+        DeclareLaunchArgument("fcu_url", default_value="udp://:14550@"),
         DeclareLaunchArgument("image_topic", default_value="/down_camera/image"),
         mavros,
         camera_bridge,

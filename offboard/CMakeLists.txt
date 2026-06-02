@@ -23,11 +23,15 @@ ament_target_dependencies(offboard_tracking_control rclcpp mavros_msgs geometry_
 add_executable(precision_landing src/precision_landing.cpp)
 ament_target_dependencies(precision_landing rclcpp mavros_msgs geometry_msgs std_msgs)
 
+add_executable(drone_core_controller src/drone_core_controller.cpp)
+ament_target_dependencies(drone_core_controller rclcpp mavros_msgs)
+
 install(TARGETS
   offboard_control
   offboard_sim_waypoints
   offboard_tracking_control
   precision_landing
+  drone_core_controller
   DESTINATION lib/${PROJECT_NAME}
 )
 
