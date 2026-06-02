@@ -83,32 +83,6 @@
       </link>
     </model>
 
-    <!-- A few coloured markers on the ground to verify the camera view -->
-    <model name="marker_red">
-      <static>true</static>
-      <pose>3 0 0.05 0 0 0</pose>
-      <link name="link">
-        <visual name="visual">
-          <geometry><box><size>1 1 0.1</size></box></geometry>
-          <material>
-            <ambient>1 0 0 1</ambient><diffuse>1 0 0 1</diffuse>
-          </material>
-        </visual>
-      </link>
-    </model>
-    <model name="marker_blue">
-      <static>true</static>
-      <pose>0 3 0.05 0 0 0</pose>
-      <link name="link">
-        <visual name="visual">
-          <geometry><box><size>1 1 0.1</size></box></geometry>
-          <material>
-            <ambient>0 0 1 1</ambient><diffuse>0 0 1 1</diffuse>
-          </material>
-        </visual>
-      </link>
-    </model>
-
     <include>
       <uri>model://runway</uri>
       <pose degrees="true">-29 545 0 0 0 363</pose>
@@ -116,9 +90,12 @@
 
     <!-- ArUco DICT_4X4_50 ID=0 marker on the ground (precision landing target) -->
     <!-- Run `python3 gazebo/gen_aruco_model.py` once to generate the texture. -->
+    <!-- 1 m offset from the drone spawn (0,0): well inside the down camera's
+         ~3.4 m ground footprint at 5 m alt, so it's reliably detected while
+         still requiring a real lateral alignment before descent. -->
     <include>
       <uri>model://aruco_marker_0</uri>
-      <pose>3 0 0.002 0 0 0</pose>
+      <pose>1 0 0.002 0 0 0</pose>
     </include>
 
     <include>

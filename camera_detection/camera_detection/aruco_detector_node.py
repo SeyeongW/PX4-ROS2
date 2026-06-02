@@ -2,7 +2,6 @@ import cv2
 import cv2.aruco as aruco
 import numpy as np
 import rclpy
-from cv_bridge import CvBridge
 from geometry_msgs.msg import Point
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
@@ -37,8 +36,6 @@ class ArucoDetectorNode(Node):
         except AttributeError:
             self._detect = lambda g: aruco.detectMarkers(g, adict, parameters=params)
 
-        self.bridge = CvBridge()
-
         qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT)
 
         self.offset_pub   = self.create_publisher(Point,           '/perception/aruco_offset',   10)
@@ -50,8 +47,25 @@ class ArucoDetectorNode(Node):
         self.create_subscription(Image, image_topic, self._cb, qos)
         self.get_logger().info(f'ArUco detector ready — dict={dict_name}, topic={image_topic}')
 
+    @staticmethod
+    def _imgmsg_to_bgr(msg: Image):
+        # Manual sensor_msgs/Image -> BGR ndarray. Avoids cv_bridge, whose
+        # compiled boost module breaks under NumPy 2.x (_ARRAY_API not found).
+        buf = np.frombuffer(msg.data, dtype=np.uint8)
+        h, w = msg.height, msg.width
+        enc = msg.encoding
+        if enc in ('rgb8', 'bgr8'):
+            img = buf.reshape(h, w, 3)
+            if enc == 'rgb8':
+                img = img[:, :, ::-1]              # RGB -> BGR
+            return np.ascontiguousarray(img)
+        if enc in ('mono8', '8UC1'):
+            return cv2.cvtColor(buf.reshape(h, w), cv2.COLOR_GRAY2BGR)
+        # fallback: assume 3-channel packed
+        return np.ascontiguousarray(buf.reshape(h, w, 3))
+
     def _cb(self, msg: Image):
-        frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+        frame = self._imgmsg_to_bgr(msg)
         h, w  = frame.shape[:2]
         cx, cy = w // 2, h // 2
 
@@ -96,9 +110,13 @@ class ArucoDetectorNode(Node):
         cv2.drawMarker(frame, (cx, cy), (0, 0, 255),
                        cv2.MARKER_CROSS, 28, 2, cv2.LINE_AA)
 
-        dbg            = self.bridge.cv2_to_compressed_imgmsg(frame)
-        dbg.header     = header
-        self.debug_pub.publish(dbg)
+        ok, enc = cv2.imencode('.jpg', frame)
+        if ok:
+            dbg = CompressedImage()
+            dbg.header = header
+            dbg.format = 'jpeg'
+            dbg.data = enc.tobytes()
+            self.debug_pub.publish(dbg)
 
 
 def main(args=None):
