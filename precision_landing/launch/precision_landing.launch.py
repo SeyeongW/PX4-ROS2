@@ -26,6 +26,7 @@ from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.launch_description_sources import AnyLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
@@ -33,6 +34,14 @@ def generate_launch_description():
     image_topic = LaunchConfiguration('image_topic')
     flight_alt = LaunchConfiguration('flight_alt')
     auto_takeoff = LaunchConfiguration('auto_takeoff')
+    # 횡방향(이미지->기체) 매핑 튜닝. 드론이 마커를 못 잡고 빙글빙글 돌면
+    # 축이 90° 돌아간 것 -> lat_swap 으로 해결. 한쪽으로 직선 발산하면 부호를 뒤집는다.
+    lat_swap = LaunchConfiguration('lat_swap')
+    lat_sign_fwd = LaunchConfiguration('lat_sign_fwd')
+    lat_sign_left = LaunchConfiguration('lat_sign_left')
+    # 수평 속도 서보 게인/상한. 진동(overshoot)하면 낮추고, 너무 굼뜨면 올린다.
+    vel_gain = LaunchConfiguration('vel_gain')
+    vel_max = LaunchConfiguration('vel_max')
 
     mavros_launch = os.path.join(
         get_package_share_directory('mavros'), 'launch', 'apm.launch')
@@ -73,6 +82,11 @@ def generate_launch_description():
         parameters=[{
             'flight_alt': flight_alt,
             'auto_takeoff': auto_takeoff,
+            'lat_swap': ParameterValue(lat_swap, value_type=bool),
+            'lat_sign_fwd': ParameterValue(lat_sign_fwd, value_type=float),
+            'lat_sign_left': ParameterValue(lat_sign_left, value_type=float),
+            'vel_gain': ParameterValue(vel_gain, value_type=float),
+            'vel_max': ParameterValue(vel_max, value_type=float),
         }],
     )
 
@@ -83,6 +97,16 @@ def generate_launch_description():
         DeclareLaunchArgument('image_topic', default_value='/down_camera/image'),
         DeclareLaunchArgument('flight_alt', default_value='5.0'),
         DeclareLaunchArgument('auto_takeoff', default_value='true'),
+        # 비행 로그로 확정한 매핑: 가로축(left) +1, 전방축(fwd) +1, swap 없음.
+        #   sign_left=-1 -> off.x 발산(가로 부호 반대), +1 이 맞음.
+        #   sign_fwd=-1  -> 하강 중 off.y 발산(전방 부호 반대), +1 이 맞음.
+        #   ("빙글빙글"의 원인은 회전 오류가 아니라 높은 게인의 X축 진동이었음.)
+        DeclareLaunchArgument('lat_swap', default_value='false'),
+        DeclareLaunchArgument('lat_sign_fwd', default_value='1.0'),
+        DeclareLaunchArgument('lat_sign_left', default_value='1.0'),
+        # 진동 억제: 게인/속도를 1.0 -> 0.4/0.5 로 낮춰 한계 진동을 줄인다.
+        DeclareLaunchArgument('vel_gain', default_value='0.4'),
+        DeclareLaunchArgument('vel_max', default_value='0.5'),
         mavros,
         camera_bridge,
         aruco_detector,

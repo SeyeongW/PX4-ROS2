@@ -52,7 +52,7 @@ class PrecisionLandingNode(Node):
         super().__init__('precision_landing_node')
 
         # --- Parameters -----------------------------------------------------
-        self.flight_alt = self.declare_parameter('flight_alt', 5.0).value      # m, hover altitude
+        self.flight_alt = self.declare_parameter('flight_alt', 15.0).value      # m, hover altitude
         self.align_radius = self.declare_parameter('align_radius', 0.30).value  # m, start descent inside this
         self.land_alt = self.declare_parameter('land_alt', 0.7).value          # m, hand off to LAND
         # Landing gate (option 1): only commit to LAND at land_alt if the marker
@@ -106,6 +106,7 @@ class PrecisionLandingNode(Node):
         self.kf_init = False
         self.kf_miss = 0                           # consecutive predict-only ticks
         self.cmd_vel = [0.0, 0.0, 0.0]             # commanded ENU velocity (E, N, Up)
+        self.dbg_tick = 0                          # throttle counter for alignment debug
 
         # --- Publishers -----------------------------------------------------
         # setpoint_raw/local lets us send a velocity setpoint (mavros converts
@@ -242,8 +243,14 @@ class PrecisionLandingNode(Node):
                             self.stage = Stage.ALIGN
 
         elif self.stage == Stage.DONE:
+            # Landing handoff complete. Hold LAND until ArduCopter touches down
+            # and AUTO-DISARMS, confirm the disarm via /mavros/state, then shut
+            # this node down so it doesn't linger after the mission finishes.
             if self.mav_state.mode != 'LAND':
                 self._set_mode('LAND')
+            elif not self.mav_state.armed:
+                self._log('landed & disarmed -> shutting down node')
+                rclpy.shutdown()
             return  # stop sending setpoints; ArduCopter LAND finishes
 
         self._publish_velocity()
@@ -273,6 +280,18 @@ class PrecisionLandingNode(Node):
         eN = self.kf_x[1] - self.pos[1]
         self.cmd_vel[0] = self._clamp(kp * eE, -vmax, vmax)
         self.cmd_vel[1] = self._clamp(kp * eN, -vmax, vmax)
+
+        # Mapping diagnostic (throttled ~1 Hz). Compare where the marker is in
+        # the IMAGE (off=) against the world error we steer toward (err=) and the
+        # commanded velocity (cmd=). For a CORRECT mapping the velocity must
+        # reduce the image offset; if it grows, the swap/sign is wrong.
+        self.dbg_tick += 1
+        if self.dbg_tick % 20 == 0:
+            self._log(
+                f'off=({self.offset.x:+.2f},{self.offset.y:+.2f}) '
+                f'yaw={math.degrees(self.hold_yaw):+.0f} '
+                f'err=({eE:+.2f},{eN:+.2f}) '
+                f'cmd=({self.cmd_vel[0]:+.2f},{self.cmd_vel[1]:+.2f})')
         return math.hypot(eE, eN)
 
     # Convert the current normalised image offset to the marker's world (E,N)
@@ -389,7 +408,10 @@ def main(args=None):
         pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        # DONE stage may already have called rclpy.shutdown() to self-terminate
+        # once landing + disarm were confirmed; only shut down if still running.
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':
