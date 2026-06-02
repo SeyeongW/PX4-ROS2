@@ -64,7 +64,7 @@ class PrecisionLandingNode(Node):
         # Tracks a smooth estimate from noisy detections and COASTS (predict-only)
         # through dropped frames. kf_accel_std = process noise (m/s², how much the
         # target may manoeuvre); kf_meas_std = detection noise (m).
-        self.kf_accel_std = self.declare_parameter('kf_accel_std', 0.5).value
+        self.kf_accel_std = self.declare_parameter('kf_accel_std', 0.1).value
         self.kf_meas_std = self.declare_parameter('kf_meas_std', 0.15).value
         self.coast_ticks = self.declare_parameter('coast_ticks', 30).value     # max predict-only ticks (~1.5 s)
         # VELOCITY control toward the KF estimate (visual servo): v = vel_gain · e,
@@ -219,12 +219,20 @@ class PrecisionLandingNode(Node):
                     self.cmd_vel[2] = 0.0
                     self.stage = Stage.ALIGN            # stop descending until reacquired
                 else:
-                    # Coast through short dropouts instead of stopping every frame.
-                    self.cmd_vel[2] = -self.descend_rate
-                    # Landing gate (option 1): at land_alt, only commit to LAND if
-                    # well centred; otherwise re-align so we don't land off-target.
+                    # Descent rate scales with alignment: full speed when centred,
+                    # zero when error >= align_radius.
+                    # Condition is kf_init (world position of marker centre is known)
+                    # not marker_ok (ArUco pattern currently visible) — the drone
+                    # tracks the KF world estimate through momentary dropouts.
+                    lateral_err = err if err is not None else 999.0
+                    if self.kf_init:
+                        descent_scale = max(0.0, 1.0 - lateral_err / self.align_radius)
+                        self.cmd_vel[2] = -self.descend_rate * descent_scale
+                    else:
+                        self.cmd_vel[2] = 0.0
+                    # Landing gate: at land_alt, only commit to LAND if well centred.
                     if self.pos[2] < self.land_alt:
-                        e = err if err is not None else 999.0
+                        e = lateral_err
                         if e < self.land_align_radius:
                             self._log(f'centred ({e:.2f} m) -> DONE (LAND)')
                             self.stage = Stage.DONE
