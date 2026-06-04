@@ -65,7 +65,7 @@ class PrecisionLandingNode(Node):
         super().__init__('precision_landing_node')
 
         # --- Parameters -----------------------------------------------------
-        self.flight_alt = self.declare_parameter('flight_alt', 15.0).value      # m, hover altitude
+        self.flight_alt = self.declare_parameter('flight_alt', 5.0).value       # m, hover altitude
         # DESCENT FUNNEL (cone): the acceptable horizontal error grows with
         # altitude — wide up high, narrowing to land_align_radius near the ground.
         # The drone descends WHILE converging (it does not stall until perfectly
@@ -104,7 +104,12 @@ class PrecisionLandingNode(Node):
         # convergence with NO overshoot — fixes the left-right oscillation that
         # position-target control produced (nested position loops + lag).
         self.vel_gain = self.declare_parameter('vel_gain', 0.8).value          # 1/s
-        self.vel_max = self.declare_parameter('vel_max', 1.0).value            # m/s, horizontal cap
+        self.vel_max = self.declare_parameter('vel_max', 1.0).value            # m/s, precision cap
+        # APPROACH uses a higher speed limit so the drone flies quickly toward the
+        # platform. Once the camera acquires the marker (ALIGN), vel_max ramps back
+        # down to vel_max over approach_ramp_s seconds — smooth, no abrupt jerk.
+        self.approach_vel_max = self.declare_parameter('approach_vel_max', 5.0).value  # m/s
+        self.approach_ramp_s  = self.declare_parameter('approach_ramp_s',  2.0).value  # s
         # Down-camera intrinsics for altitude-aware pixel→metre conversion.
         # cam_hfov in rad; cam_aspect = image width / height. Update if the
         # camera model changes (current: hfov 1.20, 640×480).
@@ -148,6 +153,10 @@ class PrecisionLandingNode(Node):
         self.cue = None                            # latest broadcast marker [E, N]
         self.cue_stamp = None                      # rclpy time of last cue message
         self.cue_vel = [0.0, 0.0]                  # ENU cue velocity (feed-forward)
+        # Effective horizontal speed cap: starts at approach_vel_max when camera
+        # first sees the marker (APPROACH→ALIGN), then ramps down to vel_max over
+        # approach_ramp_s. Stays at vel_max for the rest of ALIGN + DESCEND.
+        self.eff_vel_max = self.get_parameter('vel_max').value
 
         # --- Publishers -----------------------------------------------------
         # setpoint_raw/local lets us send a velocity setpoint (mavros converts
@@ -263,6 +272,7 @@ class PrecisionLandingNode(Node):
                 if marker_ok:                        # camera already on the marker
                     self._log('-> ALIGN')
                     self._kf_reset()
+                    self.eff_vel_max = self.get_parameter('vel_max').value
                     self.stage = Stage.ALIGN
                 elif self._cue_ok():                 # fly to the broadcast cue first
                     self._log('-> APPROACH (following cue)')
@@ -278,25 +288,42 @@ class PrecisionLandingNode(Node):
             elif marker_ok:
                 self._log('marker acquired -> ALIGN')
                 self._kf_reset()
+                # Ramp eff_vel_max down from approach speed to precision speed
+                # over approach_ramp_s seconds so there's no abrupt jerk.
+                self.eff_vel_max = self.get_parameter('approach_vel_max').value
                 self.stage = Stage.ALIGN
             elif not self._cue_ok():
                 self._log('cue stale -> IDLE')
                 self.stage = Stage.IDLE
             else:
+                # Fly toward the cue at approach speed. v = vff + kp*e is naturally
+                # fastest when far and slows as the drone closes in (proportional).
+                approach_vmax = self.get_parameter('approach_vel_max').value
                 err = self._servo_to(self.cue[0], self.cue[1],
-                                     self.cue_vel[0], self.cue_vel[1])
-                self.cmd_vel[2] = 0.0                # hold flight_alt
+                                     self.cue_vel[0], self.cue_vel[1],
+                                     vmax_override=approach_vmax)
+                # Altitude hold: proportional correction toward flight_alt so
+                # wind/drift doesn't cause the drone to stray off-altitude.
+                self.cmd_vel[2] = self._clamp(
+                    0.5 * (self.flight_alt - self.pos[2]), -0.5, 0.5)
                 self.dbg_tick += 1
                 if self.dbg_tick % 20 == 0:
                     self._log(f'APPROACH cue=({self.cue[0]:+.2f},{self.cue[1]:+.2f}) '
-                              f'err={err:.2f}')
+                              f'err={err:.2f} vmax={approach_vmax:.1f}')
 
         elif self.stage == Stage.ALIGN:
             if not self.mav_state.armed:
                 self._log('disarmed -> IDLE')
                 self.stage = Stage.IDLE
             else:
-                err = self._track(marker_ok)            # KF + horizontal velocity cmd
+                # Ramp eff_vel_max down from approach speed to precision vel_max.
+                vmax = self.get_parameter('vel_max').value
+                ramp_s = self.get_parameter('approach_ramp_s').value
+                approach_vmax = self.get_parameter('approach_vel_max').value
+                if ramp_s > 0 and self.eff_vel_max > vmax:
+                    ramp_per_tick = (approach_vmax - vmax) / ramp_s * DT
+                    self.eff_vel_max = max(vmax, self.eff_vel_max - ramp_per_tick)
+                err = self._track(marker_ok, vmax_override=self.eff_vel_max)
                 self.cmd_vel[2] = 0.0                   # hold altitude
                 if self.kf_miss > self.coast_ticks:
                     # Vision lost: keep chasing the cue if it's live, else give up.
@@ -382,7 +409,7 @@ class PrecisionLandingNode(Node):
     # Track the marker with a constant-velocity Kalman filter and steer the
     # setpoint toward the smoothed estimate. Returns the horizontal distance (m)
     # from the drone to the estimated marker, or None if not yet initialised.
-    def _track(self, marker_ok):
+    def _track(self, marker_ok, vmax_override=None):
         self._kf_predict()
         if marker_ok:
             zE, zN = self._measure_marker_world()
@@ -401,7 +428,8 @@ class PrecisionLandingNode(Node):
         # Stationary marker ⇒ v_marker≈0 ⇒ plain first-order exponential approach.
         eE = self.kf_x[0] - self.pos[0]
         eN = self.kf_x[1] - self.pos[1]
-        self._servo_to(self.kf_x[0], self.kf_x[1], self.kf_x[2], self.kf_x[3])
+        self._servo_to(self.kf_x[0], self.kf_x[1], self.kf_x[2], self.kf_x[3],
+                       vmax_override=vmax_override)
 
         # Mapping diagnostic (throttled ~1 Hz). Compare where the marker is in
         # the IMAGE (off=) against the world error we steer toward (err=) and the
@@ -438,9 +466,10 @@ class PrecisionLandingNode(Node):
     # MOVING target, so the drone can actually settle over it; for a stationary
     # target v_ff≈0 and it reduces to the plain proportional servo. Sets the
     # horizontal cmd_vel and returns the remaining horizontal distance (m).
-    def _servo_to(self, targetE, targetN, vffE=0.0, vffN=0.0):
+    def _servo_to(self, targetE, targetN, vffE=0.0, vffN=0.0, vmax_override=None):
         kp = self.get_parameter('vel_gain').value
-        vmax = self.get_parameter('vel_max').value
+        vmax = vmax_override if vmax_override is not None \
+            else self.get_parameter('vel_max').value
         eE = targetE - self.pos[0]
         eN = targetN - self.pos[1]
         self.cmd_vel[0] = self._clamp(vffE + kp * eE, -vmax, vmax)
