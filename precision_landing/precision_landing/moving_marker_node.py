@@ -33,7 +33,7 @@ import math
 import rclpy
 from rclpy.node import Node
 
-from geometry_msgs.msg import PointStamped
+from geometry_msgs.msg import PointStamped, Vector3Stamped
 
 # gz-transport is optional: without it we still publish the ENU cue, we just
 # can't physically move the Gazebo model (publish-only / external-mover mode).
@@ -55,6 +55,7 @@ class MovingMarkerNode(Node):
         self.world = self.declare_parameter('world', 'iris_down_camera_runway').value
         self.model = self.declare_parameter('model', 'aruco_marker_0').value
         self.marker_topic = self.declare_parameter('marker_topic', '/marker/position').value
+        self.vel_topic = self.declare_parameter('vel_topic', '/marker/velocity').value
         self.rate = self.declare_parameter('rate', 50.0).value          # Hz (higher
         #   keeps the teleport step small at high speed: step = speed / rate)
         self.pattern = self.declare_parameter('pattern', 'line').value  # static|line|circle
@@ -71,6 +72,14 @@ class MovingMarkerNode(Node):
         self.w = (self.speed / self.amplitude) if self.amplitude > 1e-6 else 0.0
 
         self.pub = self.create_publisher(PointStamped, self.marker_topic, 10)
+        # Publish the marker's VELOCITY explicitly (ENU vE, vN) so the controller
+        # feeds it forward directly instead of finite-differencing the position
+        # (no lag/noise → tighter velocity match → the drone stays level and
+        # lands cleanly on the moving platform). Derived from the node's own
+        # successive positions, so it is exact for any pattern and never hard-codes
+        # a speed.
+        self.vel_pub = self.create_publisher(Vector3Stamped, self.vel_topic, 10)
+        self._prev = None        # (e, n, t) for velocity differencing
 
         # --- gz mover -------------------------------------------------------
         self.gz = None
@@ -119,15 +128,31 @@ class MovingMarkerNode(Node):
         return self.center_e + d, self.center_n
 
     def tick(self):
+        now = self.get_clock().now()
+        stamp = now.to_msg()
         e, n = self._position()
 
         msg = PointStamped()
-        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.stamp = stamp
         msg.header.frame_id = self.frame_id
         msg.point.x = e        # ENU East  (== Gazebo world x)
         msg.point.y = n        # ENU North (== Gazebo world y)
         msg.point.z = 0.0
         self.pub.publish(msg)
+
+        # Velocity = backward difference of our own positions (exact, low noise at
+        # this rate). Held at the last value across the brief reversal tick.
+        vel = Vector3Stamped()
+        vel.header.stamp = stamp
+        vel.header.frame_id = self.frame_id
+        if self._prev is not None:
+            pe, pn, pt = self._prev
+            dt = (now - pt).nanoseconds * 1e-9
+            if dt > 1e-4:
+                vel.vector.x = (e - pe) / dt
+                vel.vector.y = (n - pn) / dt
+        self.vel_pub.publish(vel)
+        self._prev = (e, n, now)
 
         if self.gz is not None:
             self._set_model_pose(e, n)

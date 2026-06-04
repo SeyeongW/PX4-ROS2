@@ -44,6 +44,10 @@ def generate_launch_description():
     vel_max = LaunchConfiguration('vel_max')
     approach_vel_max = LaunchConfiguration('approach_vel_max')
     approach_decel_s = LaunchConfiguration('approach_decel_s')
+    # 헤딩: APPROACH 동안 진행방향(명령 속도)으로 기수를 돌린다. yaw_track=false 면
+    # 헤딩 고정(기존). yaw_track_min_speed 이하 저속에선 노이즈로 안 돌게 헤딩 유지.
+    yaw_track = LaunchConfiguration('yaw_track')
+    yaw_track_min_speed = LaunchConfiguration('yaw_track_min_speed')
     # 움직이는 마커: 마커 이동 + 좌표 송출(moving_marker_node)은 월드의 일부라
     # gazebo/run_sim.sh 가 Gazebo 와 함께 띄운다(여기서 중복 실행하지 않음).
     # 드론은 비전 인식 전까지 그 좌표(/marker/position cue)로 먼저 접근(APPROACH).
@@ -104,6 +108,8 @@ def generate_launch_description():
             'vel_max': ParameterValue(vel_max, value_type=float),
             'approach_vel_max': ParameterValue(approach_vel_max, value_type=float),
             'approach_decel_s': ParameterValue(approach_decel_s, value_type=float),
+            'yaw_track': ParameterValue(yaw_track, value_type=bool),
+            'yaw_track_min_speed': ParameterValue(yaw_track_min_speed, value_type=float),
         }],
     )
 
@@ -127,14 +133,19 @@ def generate_launch_description():
         DeclareLaunchArgument('vel_max', default_value='5.0'),
         DeclareLaunchArgument('approach_vel_max', default_value='10.0'),
         DeclareLaunchArgument('approach_decel_s', default_value='5.0'),
+        # APPROACH 중 진행방향으로 기수 정렬(true). 고정 헤딩으로 되돌리려면 false.
+        DeclareLaunchArgument('yaw_track', default_value='true'),
+        DeclareLaunchArgument('yaw_track_min_speed', default_value='0.5'),
         # 좌표 접근. use_cue=false 면 순수 비전 동작(기존)으로 복귀.
         # 마커 이동/궤적은 gazebo/run_sim.sh 의 MARKER_* 환경변수로 조정.
         DeclareLaunchArgument('use_cue', default_value='true'),
         # 플랫폼(차량) 위 착륙: 월드의 aruco_platform 높이(1.0 m)와 맞춰야 함.
         # 평면 지면 마커(aruco_marker_0)로 되돌리면 platform_height:=0.
         DeclareLaunchArgument('platform_height', default_value='1.0'),
-        # 접지에 가깝게 disarm(낙하/미끄럼 최소화). 마찰력과 함께 작동.
-        DeclareLaunchArgument('land_clearance', default_value='0.1'),
+        # 마커 윗면 위 이 높이에서 모터 차단(강제 disarm). 다리가 플랫폼에 박힌 채
+        # '동력+기울어진' 상태로 접촉하면 끌려가다 전복되므로, 다리가 닿기 직전에
+        # 끊어 '속도 맞춘 자유낙하'로 안착시킨다. 너무 높으면 낙하충격 ↑.
+        DeclareLaunchArgument('land_clearance', default_value='0.2'),
         mavros,
         camera_bridge,
         aruco_detector,

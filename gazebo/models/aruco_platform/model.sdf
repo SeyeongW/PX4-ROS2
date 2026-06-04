@@ -22,15 +22,17 @@
         </inertia>
       </inertial>
 
-      <!-- Box body (origin at bottom → centre raised 0.5 m). High surface
-           friction so a just-disarmed drone is carried along by the moving
-           platform instead of sliding off and tipping. -->
+      <!-- Box body (origin at bottom → centre raised 0.5 m). MODERATE surface
+           friction: enough to carry a velocity-matched drone along, but not so
+           high that a leg touching with a little relative velocity catches and
+           trips the drone over (mu=100 made it flip). The real fix for the slide
+           is matching the platform velocity at touchdown, not brute friction. -->
       <collision name="body_col">
         <pose>0 0 0.5 0 0 0</pose>
         <geometry><box><size>1.2 1.2 1.0</size></box></geometry>
         <surface>
           <friction>
-            <ode><mu>100.0</mu><mu2>100.0</mu2></ode>
+            <ode><mu>1.0</mu><mu2>1.0</mu2></ode>
           </friction>
         </surface>
       </collision>

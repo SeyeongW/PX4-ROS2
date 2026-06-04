@@ -42,7 +42,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 
-from geometry_msgs.msg import Point, PointStamped, PoseStamped
+from geometry_msgs.msg import Point, PointStamped, PoseStamped, Vector3Stamped
 from std_msgs.msg import Bool, String
 from mavros_msgs.msg import PositionTarget, State
 from mavros_msgs.srv import CommandBool, CommandLong, CommandTOL, SetMode
@@ -136,6 +136,15 @@ class PrecisionLandingNode(Node):
         # a dead publisher doesn't strand the drone chasing a stale point.
         self.use_cue = self.declare_parameter('use_cue', True).value
         self.cue_timeout = self.declare_parameter('cue_timeout', 1.0).value
+        # HEADING: during APPROACH point the nose toward the direction of travel
+        # (the commanded horizontal velocity), but only above yaw_track_min_speed
+        # so it doesn't spin chasing noise at low speed. In ALIGN/DESCEND the
+        # heading is held fixed — a back-and-forth platform reversing would flip
+        # the velocity (and thus a tracked heading) by 180°, and the body-fixed
+        # camera servo is steadier with a stable heading. The camera mapping uses
+        # the LIVE heading (self.yaw), so vision stays correct while the nose turns.
+        self.yaw_track = self.declare_parameter('yaw_track', True).value
+        self.yaw_track_min_speed = self.declare_parameter('yaw_track_min_speed', 0.5).value
 
         self.stage = Stage.TAKEOFF if self.auto_takeoff else Stage.IDLE
 
@@ -157,6 +166,7 @@ class PrecisionLandingNode(Node):
         self.cue = None                            # latest broadcast marker [E, N]
         self.cue_stamp = None                      # rclpy time of last cue message
         self.cue_vel = [0.0, 0.0]                  # ENU cue velocity (feed-forward)
+        self.cue_vel_stamp = None                  # rclpy time of last /marker/velocity
         # Effective horizontal speed cap: starts at approach_vel_max when camera
         # first sees the marker (APPROACH→ALIGN), then ramps down to vel_max over
         # approach_ramp_s. Stays at vel_max for the rest of ALIGN + DESCEND.
@@ -180,6 +190,10 @@ class PrecisionLandingNode(Node):
         self.create_subscription(Bool, '/perception/aruco_detected', self._detected_cb, 10)
         # Broadcast ENU marker cue (x=East, y=North) — drives APPROACH.
         self.create_subscription(PointStamped, '/marker/position', self._cue_cb, 10)
+        # Explicit marker velocity (ENU). When present it is used as the velocity
+        # feed-forward directly (exact, no lag); otherwise we fall back to finite-
+        # differencing the position cue in _cue_cb.
+        self.create_subscription(Vector3Stamped, '/marker/velocity', self._vel_cb, 10)
 
         # --- Service clients ------------------------------------------------
         self.set_mode_cli = self.create_client(SetMode, '/mavros/set_mode')
@@ -212,20 +226,32 @@ class PrecisionLandingNode(Node):
         if msg.data:
             self.fresh = 10  # 10 × 50 ms = 500 ms freshness window
 
+    def _vel_cb(self, msg):
+        # Explicit marker velocity (ENU) — authoritative feed-forward.
+        self.cue_vel = [msg.vector.x, msg.vector.y]
+        self.cue_vel_stamp = self.get_clock().now()
+
+    def _cue_vel_fresh(self):
+        if self.cue_vel_stamp is None:
+            return False
+        age = (self.get_clock().now() - self.cue_vel_stamp).nanoseconds * 1e-9
+        return age < self.cue_timeout
+
     def _cue_cb(self, msg):
         # ENU cue: x=East, y=North (z ignored — we hold flight_alt on approach).
         now = self.get_clock().now()
         new = [msg.point.x, msg.point.y]
-        # Backward-difference the cue to a velocity so APPROACH can feed-forward
-        # the target's motion (a moving marker, tracked continuously) instead of
-        # forever trailing it by v/kp. Reset the estimate after a stale gap.
-        if self.cue is not None and self.cue_stamp is not None:
-            dt = (now - self.cue_stamp).nanoseconds * 1e-9
-            if 1e-3 < dt < self.cue_timeout:
-                self.cue_vel = [(new[0] - self.cue[0]) / dt,
-                                (new[1] - self.cue[1]) / dt]
-            else:
-                self.cue_vel = [0.0, 0.0]
+        # Velocity feed-forward: prefer the explicit /marker/velocity topic; only
+        # if it isn't being published do we fall back to finite-differencing the
+        # position cue here (laggier/noisier).
+        if not self._cue_vel_fresh():
+            if self.cue is not None and self.cue_stamp is not None:
+                dt = (now - self.cue_stamp).nanoseconds * 1e-9
+                if 1e-3 < dt < self.cue_timeout:
+                    self.cue_vel = [(new[0] - self.cue[0]) / dt,
+                                    (new[1] - self.cue[1]) / dt]
+                else:
+                    self.cue_vel = [0.0, 0.0]
         self.cue = new
         self.cue_stamp = now
 
@@ -275,7 +301,7 @@ class PrecisionLandingNode(Node):
             if self.mav_state.armed and self.mav_state.mode == 'GUIDED':
                 if marker_ok:                        # camera already on the marker
                     self._log('-> ALIGN')
-                    self._kf_reset()
+                    self._kf_reset(seed_vel=self.cue_vel if self._cue_ok() else None)
                     self.eff_vel_max = self.get_parameter('vel_max').value
                     self.stage = Stage.ALIGN
                 elif self._cue_ok():                 # fly to the broadcast cue first
@@ -307,7 +333,9 @@ class PrecisionLandingNode(Node):
 
                 if marker_ok:
                     self._log('marker acquired -> ALIGN')
-                    self._kf_reset()
+                    # Seed the KF velocity with the cue velocity so the drone keeps
+                    # matching the moving platform through the handoff (no stall).
+                    self._kf_reset(seed_vel=self.cue_vel if self._cue_ok() else None)
                     # Start ALIGN ramp from the speed we had at acquisition
                     self.eff_vel_max = eff_vmax
                     self.stage = Stage.ALIGN
@@ -320,6 +348,7 @@ class PrecisionLandingNode(Node):
                                          vmax_override=eff_vmax)
                     self.cmd_vel[2] = self._clamp(
                         0.5 * (self.flight_alt - self.pos[2]), -0.5, 0.5)
+                    self._face_velocity()        # nose toward direction of travel
                     self.dbg_tick += 1
                     if self.dbg_tick % 20 == 0:
                         self._log(f'APPROACH dist={dist:.1f} eta={eta:.1f}s '
@@ -453,7 +482,7 @@ class PrecisionLandingNode(Node):
         if self.dbg_tick % 20 == 0:
             self._log(
                 f'off=({self.offset.x:+.2f},{self.offset.y:+.2f}) '
-                f'yaw={math.degrees(self.hold_yaw):+.0f} '
+                f'yaw={math.degrees(self.yaw):+.0f} '
                 f'err=({eE:+.2f},{eN:+.2f}) '
                 f'cmd=({self.cmd_vel[0]:+.2f},{self.cmd_vel[1]:+.2f})')
         return math.hypot(eE, eN)
@@ -490,6 +519,18 @@ class PrecisionLandingNode(Node):
         self.cmd_vel[1] = self._clamp(vffN + kp * eN, -vmax, vmax)
         return math.hypot(eE, eN)
 
+    # Point the nose along the commanded horizontal velocity (ENU yaw: 0 = East,
+    # CCW positive) so the drone faces where it is going. Only updates above
+    # yaw_track_min_speed so low-speed noise doesn't spin it; below that the last
+    # heading is held. Called from APPROACH only — ALIGN/DESCEND keep a fixed
+    # heading for a steady camera servo.
+    def _face_velocity(self):
+        if not self.get_parameter('yaw_track').value:
+            return
+        vE, vN = self.cmd_vel[0], self.cmd_vel[1]
+        if math.hypot(vE, vN) >= self.get_parameter('yaw_track_min_speed').value:
+            self.hold_yaw = math.atan2(vN, vE)
+
     # Convert the current normalised image offset to the marker's world (E,N)
     # position. Downward camera is body-fixed, so the offset is a BODY error:
     # scale by altitude (pixel→metre), map image→body (tunable mount signs),
@@ -513,15 +554,24 @@ class PrecisionLandingNode(Node):
         gy = iy * half_h          # metres, image-down
         fwd = sign_fwd * (-gy)    # body forward (+X)
         left = sign_left * (-gx)  # body left (+Y)
-        c, s = math.cos(self.hold_yaw), math.sin(self.hold_yaw)
+        # Use the LIVE heading (not the held setpoint) so the body→world rotation
+        # is correct even while the nose is turning toward the direction of travel.
+        c, s = math.cos(self.yaw), math.sin(self.yaw)
         de = c * fwd - s * left
         dn = s * fwd + c * left
         return self.pos[0] + de, self.pos[1] + dn
 
     # --- Kalman filter (constant-velocity, state [E, N, vE, vN]) -------------
-    def _kf_reset(self):
+    def _kf_reset(self, seed_vel=None):
+        # seed_vel: initial velocity estimate for the first measurement. On the
+        # APPROACH→ALIGN handoff we seed it with the (known) cue velocity so the
+        # feed-forward keeps matching a MOVING target from the very first tick —
+        # otherwise the KF starts at v=0, the drone decelerates as if the marker
+        # were stationary, the target escapes, vision is lost and it bounces back
+        # to APPROACH (a fast-acquire / lose / re-approach limit cycle).
         self.kf_init = False
         self.kf_miss = 0
+        self._kf_seed_vel = list(seed_vel) if seed_vel is not None else [0.0, 0.0]
 
     def _kf_predict(self):
         if not self.kf_init:
@@ -542,7 +592,9 @@ class PrecisionLandingNode(Node):
     def _kf_update(self, zE, zN):
         r2 = self.get_parameter('kf_meas_std').value ** 2
         if not self.kf_init:
-            self.kf_x = np.array([zE, zN, 0.0, 0.0])
+            sv = getattr(self, '_kf_seed_vel', [0.0, 0.0])
+            self.kf_x = np.array([zE, zN, sv[0], sv[1]])
+            # Loose velocity covariance so vision can still correct the seed.
             self.kf_P = np.diag([r2, r2, 1.0, 1.0])
             self.kf_init = True
             return

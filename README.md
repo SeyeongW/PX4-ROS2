@@ -17,6 +17,10 @@ PX4-ROS2/
 │       ├── yolo_processor_sim_node.py    # 시뮬레이션용 (.pt 모델)
 │       ├── yolo_processor_depth.py       # RealSense 뎁스 카메라용
 │       └── commander.py                  # 추적 타겟 ID 지정 CLI
+├── precision_landing/      # ArUco 정밀착륙 (Python)
+│   ├── precision_landing/precision_landing_node.py  # 착륙 상태기계 제어
+│   ├── precision_landing/moving_marker_node.py      # 마커 이동 + ENU 좌표 송출
+│   └── launch/precision_landing.launch.py           # 풀 bringup 런치
 ├── gazebo/                 # Gazebo Harmonic 시뮬레이션 자산
 │   ├── models/iris_with_down_camera/     # 하방 카메라 장착 Iris 모델
 │   ├── worlds/iris_down_camera_runway.sdf
@@ -215,26 +219,12 @@ ros2 launch mavros apm.launch fcu_url:=udp://:14550@
 > 그래서 MAVROS는 **14550 에 bind**하고 remote(`@` 뒤)는 비워서 상대 주소를 자동 학습시킵니다.
 > `@14555` 처럼 빈 포트로 송신하게 두면 `connection refused`(UDP closed)가 납니다.
 
-### 터미널 4 — 카메라 브리지 실행
-
-Gazebo 카메라 영상을 ROS 2 토픽으로 전달합니다.
-
-```bash
-source ~/ros_gz_ws/install/setup.bash
-ros2 launch ~/ros2_ws/PX4-ROS2/gazebo/launch/camera_bridge.launch.py
-```
-
-### 카메라 토픽 확인
-
-```bash
-ros2 topic list | grep down_camera
-# /down_camera/image
-# /down_camera/camera_info
-
-ros2 topic hz /down_camera/image   # ~30 Hz 확인
-```
-
 ### YOLO 시뮬레이션 노드 실행 (선택)
+
+> 카메라 영상 브리지는 아래 **ArUco 정밀착륙 런치에 포함**되어 자동 실행됩니다.
+> YOLO만 단독으로 쓸 때는 카메라 브리지를 별도로 띄우세요:
+> `source ~/ros_gz_ws/install/setup.bash && ros2 launch ~/ros2_ws/PX4-ROS2/gazebo/launch/camera_bridge.launch.py`
+> ( `ros2 topic hz /down_camera/image` 로 ~30 Hz 확인 )
 
 ```bash
 ros2 run camera_detection yolo_processor_sim_node \
@@ -255,9 +245,45 @@ ros2 run offboard offboard_tracking_control
 
 ## ArUco 마커 정밀착륙
 
-하방 카메라로 지면의 ArUco 마커(DICT_4X4_50, ID 0)를 검출해 그 위로 정밀착륙합니다.
-`precland_bringup.launch.py` 하나가 **MAVROS + 카메라 브리지 + ArUco 검출 + 정밀착륙 제어**를
-한꺼번에 띄워 SITL에 연결하므로, Gazebo·SITL만 따로 켜면 됩니다.
+하방 카메라로 ArUco 마커(DICT_4X4_50, ID 0)를 검출해 그 위로 정밀착륙합니다.
+마커는 **움직이는 플랫폼**(차량) 위에 있을 수 있으며, 드론은 외부에서 송출되는
+마커 좌표(cue)로 먼저 접근하다가 카메라가 마커를 잡으면 비전 서보로 인계받아
+플랫폼 속도를 맞춰가며 착륙합니다.
+
+`precision_landing.launch.py` **하나가 ROS 쪽을 전부 띄웁니다** — Gazebo와
+ArduPilot SITL만 따로 켜면 되고, MAVROS·카메라 브리지를 따로 수동 실행할 필요가 없습니다.
+
+### 런치파일 구성 (`precision_landing.launch.py`)
+
+런치 하나가 다음 **4개 노드를 자동 기동**하고 SITL에 연결합니다:
+
+| 노드 | 패키지 | 역할 |
+|------|--------|------|
+| MAVROS | `mavros` | ROS 2 ↔ ArduPilot MAVLink 브리지 (`fcu_url`로 SITL 연결) |
+| 카메라 브리지 | `ros_gz_bridge` | Gazebo 하방 카메라 → `/down_camera/image` 토픽 |
+| ArUco 검출 | `camera_detection` | 마커 검출 → `/perception/aruco_offset`, `/perception/aruco_detected` |
+| 정밀착륙 제어 | `precision_landing` | 상태기계(이륙→접근→정렬→하강→착륙), 속도 셋포인트 발행 |
+
+> 마커 이동 + 좌표 송출(`moving_marker_node`)은 월드의 일부라
+> `gazebo/run_sim.sh`가 Gazebo와 함께 띄웁니다(런치에서 중복 실행하지 않음).
+
+주요 런치 인자 (`이름:=값` 으로 변경):
+
+| 인자 | 기본값 | 역할 |
+|------|--------|------|
+| `fcu_url` | `udp://:14550@` | MAVROS↔SITL 연결 (14550 bind, remote 자동학습) |
+| `flight_alt` | `5.0` | 이륙/접근 호버 고도 (m) |
+| `auto_takeoff` | `true` | 노드가 스스로 GUIDED→시동→이륙 |
+| `use_cue` | `true` | 비전 인식 전 cue 좌표로 먼저 접근 |
+| `platform_height` | `1.0` | 마커가 올라앉은 플랫폼 높이 (m, 평면 지면이면 0) |
+| `land_clearance` | `0.2` | 마커 윗면 위 이 높이에서 강제 disarm |
+| `vel_gain` / `vel_max` | `0.4` / `5.0` | 정밀 수평 속도 게인 / 상한 |
+| `approach_vel_max` / `approach_decel_s` | `10.0` / `5.0` | 접근 최대 속도 / ETA 감속 시작(s) |
+| `lat_swap` / `lat_sign_fwd` / `lat_sign_left` | `false` / `1` / `1` | 카메라 마운트 이미지→기체 매핑 보정 |
+| `yaw_track` | `true` | APPROACH 중 진행방향으로 기수 정렬 (false면 헤딩 고정) |
+
+> 전체 파라미터 · 코드 함수 · 디버그 로그 읽는 법 · 튜닝 가이드는
+> **[`docs/precision_landing.md`](docs/precision_landing.md)** 를 참고하세요.
 
 ### 사전 준비 (최초 1회)
 
@@ -286,13 +312,14 @@ source ~/ros_gz_ws/install/setup.bash
 ros2 launch precision_landing precision_landing.launch.py
 ```
 
-### 착륙 트리거
+### 착륙 동작
 
 기본값 `auto_takeoff:=true` 면 `precision_landing` 노드가 **스스로 GUIDED 전환 → 시동 → `flight_alt`까지 이륙**한 뒤,
-`마커 감지` 시 정렬 → 하강 → `LAND`를 수행합니다.
+cue 접근 → 마커 감지 → 정렬 → 하강 → 플랫폼 윗면 `land_clearance` 이내에서 **강제 disarm**으로 안착합니다.
+(지면까지 내려가는 `LAND` 모드는 쓰지 않습니다 — 플랫폼을 무시하므로.)
 
 수동으로 띄우려면 `auto_takeoff:=false` 로 실행하고 터미널 2(MAVProxy)에서 직접 이륙시키세요.
-그러면 `armed + GUIDED + 마커 감지` 상태가 됐을 때 자동으로 인계받습니다.
+그러면 `armed + GUIDED + (마커 감지 또는 유효 cue)` 상태가 됐을 때 자동으로 인계받습니다.
 
 ```
 mode guided
@@ -307,9 +334,10 @@ ros2 topic echo /precision_landing/debug                        # 단계 전환 
 ros2 run rqt_image_view rqt_image_view /perception/aruco_debug/compressed
 ```
 
-> **참고:** 기체가 마커 반대 방향으로 움직이면
-> `precision_landing/precision_landing/precision_landing_node.py`의
-> `_correct_lateral()`에서 부호(x/y)를 뒤집으세요 (`--symlink-install` 빌드면 재빌드 불필요).
+> **마운트 매핑 튜닝:** 기체가 마커 반대 방향으로 미끄러지면 런치 인자
+> `lat_swap` / `lat_sign_fwd` / `lat_sign_left` 를 뒤집으세요. 디버그 로그의
+> `off`(이미지 오프셋)가 `cmd`(명령 속도)에 의해 줄어드는지로 매핑이 맞는지 판단합니다
+> (`--symlink-install` 빌드면 재빌드 불필요). 자세한 내용은 `docs/precision_landing.md`.
 
 ---
 
