@@ -108,8 +108,12 @@ class PrecisionLandingNode(Node):
         # APPROACH uses a higher speed limit so the drone flies quickly toward the
         # platform. Once the camera acquires the marker (ALIGN), vel_max ramps back
         # down to vel_max over approach_ramp_s seconds — smooth, no abrupt jerk.
-        self.approach_vel_max = self.declare_parameter('approach_vel_max', 5.0).value  # m/s
-        self.approach_ramp_s  = self.declare_parameter('approach_ramp_s',  2.0).value  # s
+        self.approach_vel_max = self.declare_parameter('approach_vel_max', 10.0).value  # m/s
+        # approach_decel_s: how many seconds before estimated arrival to start
+        # decelerating. ETA = distance / approach_vel_max; when ETA < decel_s the
+        # speed cap drops linearly from approach_vel_max → vel_max.
+        self.approach_decel_s = self.declare_parameter('approach_decel_s', 5.0).value   # s
+        self.approach_ramp_s  = self.declare_parameter('approach_ramp_s',  2.0).value   # s
         # Down-camera intrinsics for altitude-aware pixel→metre conversion.
         # cam_hfov in rad; cam_aspect = image width / height. Update if the
         # camera model changes (current: hfov 1.20, 640×480).
@@ -285,31 +289,41 @@ class PrecisionLandingNode(Node):
             if not self.mav_state.armed:
                 self._log('disarmed -> IDLE')
                 self.stage = Stage.IDLE
-            elif marker_ok:
-                self._log('marker acquired -> ALIGN')
-                self._kf_reset()
-                # Ramp eff_vel_max down from approach speed to precision speed
-                # over approach_ramp_s seconds so there's no abrupt jerk.
-                self.eff_vel_max = self.get_parameter('approach_vel_max').value
-                self.stage = Stage.ALIGN
-            elif not self._cue_ok():
-                self._log('cue stale -> IDLE')
-                self.stage = Stage.IDLE
             else:
-                # Fly toward the cue at approach speed. v = vff + kp*e is naturally
-                # fastest when far and slows as the drone closes in (proportional).
                 approach_vmax = self.get_parameter('approach_vel_max').value
-                err = self._servo_to(self.cue[0], self.cue[1],
-                                     self.cue_vel[0], self.cue_vel[1],
-                                     vmax_override=approach_vmax)
-                # Altitude hold: proportional correction toward flight_alt so
-                # wind/drift doesn't cause the drone to stray off-altitude.
-                self.cmd_vel[2] = self._clamp(
-                    0.5 * (self.flight_alt - self.pos[2]), -0.5, 0.5)
-                self.dbg_tick += 1
-                if self.dbg_tick % 20 == 0:
-                    self._log(f'APPROACH cue=({self.cue[0]:+.2f},{self.cue[1]:+.2f}) '
-                              f'err={err:.2f} vmax={approach_vmax:.1f}')
+                decel_s = self.get_parameter('approach_decel_s').value
+                vmax = self.get_parameter('vel_max').value
+
+                # ETA-based deceleration: full speed until decel_s seconds out,
+                # then linearly ramp the speed cap down to vel_max at arrival.
+                dist = math.hypot(self.cue[0] - self.pos[0],
+                                  self.cue[1] - self.pos[1])
+                eta = dist / max(approach_vmax, 0.1)
+                if eta < decel_s:
+                    blend = eta / decel_s          # 1.0 far out, 0.0 at arrival
+                    eff_vmax = vmax + (approach_vmax - vmax) * blend
+                else:
+                    eff_vmax = approach_vmax
+
+                if marker_ok:
+                    self._log('marker acquired -> ALIGN')
+                    self._kf_reset()
+                    # Start ALIGN ramp from the speed we had at acquisition
+                    self.eff_vel_max = eff_vmax
+                    self.stage = Stage.ALIGN
+                elif not self._cue_ok():
+                    self._log('cue stale -> IDLE')
+                    self.stage = Stage.IDLE
+                else:
+                    err = self._servo_to(self.cue[0], self.cue[1],
+                                         self.cue_vel[0], self.cue_vel[1],
+                                         vmax_override=eff_vmax)
+                    self.cmd_vel[2] = self._clamp(
+                        0.5 * (self.flight_alt - self.pos[2]), -0.5, 0.5)
+                    self.dbg_tick += 1
+                    if self.dbg_tick % 20 == 0:
+                        self._log(f'APPROACH dist={dist:.1f} eta={eta:.1f}s '
+                                  f'vmax={eff_vmax:.1f}')
 
         elif self.stage == Stage.ALIGN:
             if not self.mav_state.armed:
