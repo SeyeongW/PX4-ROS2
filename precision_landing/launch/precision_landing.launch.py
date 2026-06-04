@@ -42,6 +42,16 @@ def generate_launch_description():
     # 수평 속도 서보 게인/상한. 진동(overshoot)하면 낮추고, 너무 굼뜨면 올린다.
     vel_gain = LaunchConfiguration('vel_gain')
     vel_max = LaunchConfiguration('vel_max')
+    # 움직이는 마커: 마커 이동 + 좌표 송출(moving_marker_node)은 월드의 일부라
+    # gazebo/run_sim.sh 가 Gazebo 와 함께 띄운다(여기서 중복 실행하지 않음).
+    # 드론은 비전 인식 전까지 그 좌표(/marker/position cue)로 먼저 접근(APPROACH).
+    # use_cue=false 면 순수 비전 동작(기존)으로 복귀.
+    use_cue = LaunchConfiguration('use_cue')
+    # 마커가 높이 platform_height 의 물체(플랫폼) 위에 있을 때, 모든 고도 로직을
+    # "마커 윗면까지의 높이(pos.z - platform_height)" 기준으로 계산하고 그 위에 착륙.
+    # 평면 지면 마커면 0 으로. land_clearance = 마커 윗면 위 이 높이에서 강제 disarm.
+    platform_height = LaunchConfiguration('platform_height')
+    land_clearance = LaunchConfiguration('land_clearance')
 
     mavros_launch = os.path.join(
         get_package_share_directory('mavros'), 'launch', 'apm.launch')
@@ -82,6 +92,9 @@ def generate_launch_description():
         parameters=[{
             'flight_alt': flight_alt,
             'auto_takeoff': auto_takeoff,
+            'use_cue': ParameterValue(use_cue, value_type=bool),
+            'platform_height': ParameterValue(platform_height, value_type=float),
+            'land_clearance': ParameterValue(land_clearance, value_type=float),
             'lat_swap': ParameterValue(lat_swap, value_type=bool),
             'lat_sign_fwd': ParameterValue(lat_sign_fwd, value_type=float),
             'lat_sign_left': ParameterValue(lat_sign_left, value_type=float),
@@ -104,9 +117,18 @@ def generate_launch_description():
         DeclareLaunchArgument('lat_swap', default_value='false'),
         DeclareLaunchArgument('lat_sign_fwd', default_value='1.0'),
         DeclareLaunchArgument('lat_sign_left', default_value='1.0'),
-        # 진동 억제: 게인/속도를 1.0 -> 0.4/0.5 로 낮춰 한계 진동을 줄인다.
+        # 게인은 0.4로 진동 억제. vel_max는 이동 플랫폼(최대 3 m/s)을 따라잡고
+        # 위치오차까지 보정해야 하므로 5.0 (정지/저속 마커면 0.5로 낮춰도 됨).
         DeclareLaunchArgument('vel_gain', default_value='0.4'),
-        DeclareLaunchArgument('vel_max', default_value='0.5'),
+        DeclareLaunchArgument('vel_max', default_value='5.0'),
+        # 좌표 접근. use_cue=false 면 순수 비전 동작(기존)으로 복귀.
+        # 마커 이동/궤적은 gazebo/run_sim.sh 의 MARKER_* 환경변수로 조정.
+        DeclareLaunchArgument('use_cue', default_value='true'),
+        # 플랫폼(차량) 위 착륙: 월드의 aruco_platform 높이(1.0 m)와 맞춰야 함.
+        # 평면 지면 마커(aruco_marker_0)로 되돌리면 platform_height:=0.
+        DeclareLaunchArgument('platform_height', default_value='1.0'),
+        # 접지에 가깝게 disarm(낙하/미끄럼 최소화). 마찰력과 함께 작동.
+        DeclareLaunchArgument('land_clearance', default_value='0.1'),
         mavros,
         camera_bridge,
         aruco_detector,

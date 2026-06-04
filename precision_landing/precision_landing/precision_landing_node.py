@@ -8,14 +8,26 @@ and flies the drone down onto the marker by streaming position setpoints.
 State machine
   TAKEOFF : set GUIDED, arm, then /mavros/cmd/takeoff up to flight_alt
             (skipped if auto_takeoff=false — start in IDLE, wait for a human)
-  IDLE    : wait for armed + GUIDED + marker visible
+  IDLE    : wait for armed + GUIDED + (marker visible OR a fresh ENU cue)
+  APPROACH: fly toward the broadcast ENU marker cue (a possibly-moving target)
+            at flight_alt until the down camera acquires the marker
   ALIGN   : hover at flight_alt, slide laterally until marker is centred
-  DESCEND : keep marker centred while descending; pause if marker lost
-  DONE    : switch FCU to LAND mode
+  DESCEND : descend through a funnel (wide up high, tight near the surface),
+            converging while descending; the marker may sit on a platform of
+            height platform_height, so all altitude logic uses height ABOVE the
+            marker (pos.z − platform_height)
+  DONE    : force-disarm onto the platform (no LAND mode — that would descend to
+            the ground and ignore the platform)
+
+Cue → vision handoff: a coordinate publisher (moving_marker_node, or any
+external source) streams the marker's local-ENU position. The drone APPROACHes
+that cue blind, and the instant the down camera sees the marker it hands off to
+the vision servo (ALIGN/DESCEND). If vision drops out it falls back to the cue.
 
 Topic contract (matches aruco_detector_node):
   in  /perception/aruco_offset    geometry_msgs/Point   normalised [-1, 1]
   in  /perception/aruco_detected  std_msgs/Bool
+  in  /marker/position            geometry_msgs/PointStamped  ENU cue (x=E, y=N)
   in  /mavros/state               mavros_msgs/State
   in  /mavros/local_position/pose geometry_msgs/PoseStamped (BEST_EFFORT)
   out /mavros/setpoint_raw/local  mavros_msgs/PositionTarget (velocity + yaw)
@@ -30,18 +42,19 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 
-from geometry_msgs.msg import Point, PoseStamped
+from geometry_msgs.msg import Point, PointStamped, PoseStamped
 from std_msgs.msg import Bool, String
 from mavros_msgs.msg import PositionTarget, State
-from mavros_msgs.srv import CommandBool, CommandTOL, SetMode
+from mavros_msgs.srv import CommandBool, CommandLong, CommandTOL, SetMode
 
 
 class Stage(Enum):
     TAKEOFF = 0
     IDLE = 1
-    ALIGN = 2
-    DESCEND = 3
-    DONE = 4
+    APPROACH = 2
+    ALIGN = 3
+    DESCEND = 4
+    DONE = 5
 
 
 DT = 0.05  # 50 ms control period
@@ -53,11 +66,30 @@ class PrecisionLandingNode(Node):
 
         # --- Parameters -----------------------------------------------------
         self.flight_alt = self.declare_parameter('flight_alt', 15.0).value      # m, hover altitude
-        self.align_radius = self.declare_parameter('align_radius', 0.30).value  # m, start descent inside this
-        self.land_alt = self.declare_parameter('land_alt', 0.7).value          # m, hand off to LAND
-        # Landing gate (option 1): only commit to LAND at land_alt if the marker
-        # is within this horizontal error (m); otherwise re-align first so we
-        # never land grossly off-target.
+        # DESCENT FUNNEL (cone): the acceptable horizontal error grows with
+        # altitude — wide up high, narrowing to land_align_radius near the ground.
+        # The drone descends WHILE converging (it does not stall until perfectly
+        # centred): inside the funnel it always creeps down (>= descend_min_scale
+        # of descend_rate), faster the more centred it is; outside it, it pauses
+        # and re-converges. funnel_radius(alt) = max(land_align_radius,
+        # descend_cone · alt). descend_cone is the half-cone slope (m error / m alt).
+        self.descend_cone = self.declare_parameter('descend_cone', 0.35).value
+        self.descend_min_scale = self.declare_parameter('descend_min_scale', 0.3).value
+        # Land ON TOP of an object: the marker sits at platform_height above the
+        # ground (0 = flat ground decal). All altitude logic (camera projection,
+        # funnel, touchdown) uses the height ABOVE THE MARKER = pos.z − platform_
+        # height, not the raw AGL altitude. touchdown when that clearance drops
+        # below land_clearance and we are centred → force-disarm onto the platform.
+        self.platform_height = self.declare_parameter('platform_height', 0.0).value
+        self.land_clearance = self.declare_parameter('land_clearance', 0.15).value
+        # Below this height ABOVE the marker the ~0.8 m pattern overflows the down
+        # camera, so vision drops out — finish the touchdown OPEN-LOOP on the cue
+        # (exact platform centre) / KF coast instead of stalling. Roughly the
+        # height at which the marker fills the frame: marker_size/2 / tan(hfov/2).
+        self.final_descent_h = self.declare_parameter('final_descent_h', 0.6).value
+        # Landing gate: only commit to touchdown if the marker is within this
+        # horizontal error (m); otherwise re-align first so we never land grossly
+        # off-target. Also the floor of the descent funnel.
         self.land_align_radius = self.declare_parameter('land_align_radius', 0.20).value
         self.descend_rate = self.declare_parameter('descend_rate', 0.3).value  # m/s downward
         # Constant-velocity Kalman filter on the marker's world (E,N) position.
@@ -89,6 +121,12 @@ class PrecisionLandingNode(Node):
         # auto_takeoff: node sets GUIDED, arms and climbs to flight_alt itself.
         # Set false to keep the old behaviour (a human/other node flies it up).
         self.auto_takeoff = self.declare_parameter('auto_takeoff', True).value
+        # APPROACH: cue-following toward a broadcast ENU marker position before
+        # the camera can see it. use_cue=false keeps the pure-vision behaviour.
+        # cue_timeout: how long (s) a cue stays valid after the last message, so
+        # a dead publisher doesn't strand the drone chasing a stale point.
+        self.use_cue = self.declare_parameter('use_cue', True).value
+        self.cue_timeout = self.declare_parameter('cue_timeout', 1.0).value
 
         self.stage = Stage.TAKEOFF if self.auto_takeoff else Stage.IDLE
 
@@ -107,6 +145,9 @@ class PrecisionLandingNode(Node):
         self.kf_miss = 0                           # consecutive predict-only ticks
         self.cmd_vel = [0.0, 0.0, 0.0]             # commanded ENU velocity (E, N, Up)
         self.dbg_tick = 0                          # throttle counter for alignment debug
+        self.cue = None                            # latest broadcast marker [E, N]
+        self.cue_stamp = None                      # rclpy time of last cue message
+        self.cue_vel = [0.0, 0.0]                  # ENU cue velocity (feed-forward)
 
         # --- Publishers -----------------------------------------------------
         # setpoint_raw/local lets us send a velocity setpoint (mavros converts
@@ -124,11 +165,16 @@ class PrecisionLandingNode(Node):
             qos_profile_sensor_data)
         self.create_subscription(Point, '/perception/aruco_offset', self._offset_cb, 10)
         self.create_subscription(Bool, '/perception/aruco_detected', self._detected_cb, 10)
+        # Broadcast ENU marker cue (x=East, y=North) — drives APPROACH.
+        self.create_subscription(PointStamped, '/marker/position', self._cue_cb, 10)
 
         # --- Service clients ------------------------------------------------
         self.set_mode_cli = self.create_client(SetMode, '/mavros/set_mode')
         self.arming_cli = self.create_client(CommandBool, '/mavros/cmd/arming')
         self.takeoff_cli = self.create_client(CommandTOL, '/mavros/cmd/takeoff')
+        # CommandLong is used for a FORCE disarm at touchdown (ArduCopter rejects
+        # a normal in-air disarm; the force magic bypasses the land check).
+        self.command_cli = self.create_client(CommandLong, '/mavros/cmd/command')
 
         self.create_timer(DT, self.tick)
 
@@ -152,6 +198,29 @@ class PrecisionLandingNode(Node):
     def _detected_cb(self, msg):
         if msg.data:
             self.fresh = 10  # 10 × 50 ms = 500 ms freshness window
+
+    def _cue_cb(self, msg):
+        # ENU cue: x=East, y=North (z ignored — we hold flight_alt on approach).
+        now = self.get_clock().now()
+        new = [msg.point.x, msg.point.y]
+        # Backward-difference the cue to a velocity so APPROACH can feed-forward
+        # the target's motion (a moving marker, tracked continuously) instead of
+        # forever trailing it by v/kp. Reset the estimate after a stale gap.
+        if self.cue is not None and self.cue_stamp is not None:
+            dt = (now - self.cue_stamp).nanoseconds * 1e-9
+            if 1e-3 < dt < self.cue_timeout:
+                self.cue_vel = [(new[0] - self.cue[0]) / dt,
+                                (new[1] - self.cue[1]) / dt]
+            else:
+                self.cue_vel = [0.0, 0.0]
+        self.cue = new
+        self.cue_stamp = now
+
+    def _cue_ok(self):
+        if not self.use_cue or self.cue is None or self.cue_stamp is None:
+            return False
+        age = (self.get_clock().now() - self.cue_stamp).nanoseconds * 1e-9
+        return age < self.cue_timeout
 
     # -----------------------------------------------------------------------
     def tick(self):
@@ -190,10 +259,37 @@ class PrecisionLandingNode(Node):
         elif self.stage == Stage.IDLE:
             self.cmd_vel = [0.0, 0.0, 0.0]           # hold position (zero velocity)
             self.hold_yaw = self.yaw     # track heading; frozen once we start aligning
-            if self.mav_state.armed and self.mav_state.mode == 'GUIDED' and marker_ok:
-                self._log('-> ALIGN')
+            if self.mav_state.armed and self.mav_state.mode == 'GUIDED':
+                if marker_ok:                        # camera already on the marker
+                    self._log('-> ALIGN')
+                    self._kf_reset()
+                    self.stage = Stage.ALIGN
+                elif self._cue_ok():                 # fly to the broadcast cue first
+                    self._log('-> APPROACH (following cue)')
+                    self.stage = Stage.APPROACH
+
+        elif self.stage == Stage.APPROACH:
+            # Blind cue-following: servo toward the broadcast ENU marker position
+            # (continuously tracking a moving target) at flight_alt. Hand off to
+            # vision the instant the camera acquires the marker.
+            if not self.mav_state.armed:
+                self._log('disarmed -> IDLE')
+                self.stage = Stage.IDLE
+            elif marker_ok:
+                self._log('marker acquired -> ALIGN')
                 self._kf_reset()
                 self.stage = Stage.ALIGN
+            elif not self._cue_ok():
+                self._log('cue stale -> IDLE')
+                self.stage = Stage.IDLE
+            else:
+                err = self._servo_to(self.cue[0], self.cue[1],
+                                     self.cue_vel[0], self.cue_vel[1])
+                self.cmd_vel[2] = 0.0                # hold flight_alt
+                self.dbg_tick += 1
+                if self.dbg_tick % 20 == 0:
+                    self._log(f'APPROACH cue=({self.cue[0]:+.2f},{self.cue[1]:+.2f}) '
+                              f'err={err:.2f}')
 
         elif self.stage == Stage.ALIGN:
             if not self.mav_state.armed:
@@ -203,9 +299,14 @@ class PrecisionLandingNode(Node):
                 err = self._track(marker_ok)            # KF + horizontal velocity cmd
                 self.cmd_vel[2] = 0.0                   # hold altitude
                 if self.kf_miss > self.coast_ticks:
-                    self._log('marker lost -> IDLE')
-                    self.stage = Stage.IDLE
-                elif err is not None and marker_ok and err < self.align_radius:
+                    # Vision lost: keep chasing the cue if it's live, else give up.
+                    if self._cue_ok():
+                        self._log('marker lost -> APPROACH (cue)')
+                        self.stage = Stage.APPROACH
+                    else:
+                        self._log('marker lost -> IDLE')
+                        self.stage = Stage.IDLE
+                elif err is not None and marker_ok and err < self._funnel_radius():
                     self._log('-> DESCEND')
                     self.stage = Stage.DESCEND
 
@@ -214,44 +315,66 @@ class PrecisionLandingNode(Node):
                 self._log('disarmed -> IDLE')
                 self.stage = Stage.IDLE
             else:
-                err = self._track(marker_ok)            # keep centred on KF estimate
-                if self.kf_miss > self.coast_ticks:
+                err = self._track(marker_ok)            # keep KF alive + KF servo
+                h = self._height_above_marker()
+                if h < self.final_descent_h:
+                    # FINAL (near-touchdown) descent. The marker is ~0.8 m wide, so
+                    # below ~final_descent_h above it the camera no longer sees the
+                    # whole pattern — insisting on vision here just strands the drone
+                    # hovering low. Finish OPEN-LOOP on the most reliable horizontal
+                    # reference (the cue is the platform centre = marker centre),
+                    # falling back to the KF coast. Never bail out: descend straight
+                    # down and disarm. Only hold the descent if not yet centred, so
+                    # we never touch down off the platform.
+                    if self._cue_ok():
+                        lateral_err = self._servo_to(self.cue[0], self.cue[1],
+                                                     self.cue_vel[0], self.cue_vel[1])
+                    else:
+                        lateral_err = err if err is not None else 999.0
+                    if lateral_err < self.land_align_radius:
+                        if h < self.land_clearance:
+                            self._log(f'centred ({lateral_err:.2f} m) over platform '
+                                      f'-> DONE (disarm)')
+                            self.stage = Stage.DONE
+                        else:
+                            self.cmd_vel[2] = -self.descend_rate * self.descend_min_scale
+                    else:
+                        self.cmd_vel[2] = 0.0        # converge first, then drop
+                elif self.kf_miss > self.coast_ticks:
                     self._log('marker lost -> ALIGN (hold alt)')
                     self.cmd_vel[2] = 0.0
                     self.stage = Stage.ALIGN            # stop descending until reacquired
                 else:
-                    # Descent rate scales with alignment: full speed when centred,
-                    # zero when error >= align_radius.
-                    # Condition is kf_init (world position of marker centre is known)
-                    # not marker_ok (ArUco pattern currently visible) — the drone
-                    # tracks the KF world estimate through momentary dropouts.
+                    # Descent funnel: inside funnel_radius(alt) ALWAYS creep down
+                    # (>= descend_min_scale of the rate), faster the more centred;
+                    # outside the funnel pause and re-converge. The funnel narrows
+                    # as altitude drops, so the drone converges WHILE descending.
+                    # Gated on kf_init (marker world position known), not marker_ok
+                    # (pattern currently visible) — it coasts through brief dropouts.
                     lateral_err = err if err is not None else 999.0
                     if self.kf_init:
-                        descent_scale = max(0.0, 1.0 - lateral_err / self.align_radius)
-                        self.cmd_vel[2] = -self.descend_rate * descent_scale
+                        funnel = self._funnel_radius()
+                        if lateral_err <= funnel:
+                            scale = self._clamp(1.0 - lateral_err / funnel,
+                                                self.descend_min_scale, 1.0)
+                            self.cmd_vel[2] = -self.descend_rate * scale
+                        else:
+                            self.cmd_vel[2] = 0.0    # too far off for this altitude
                     else:
                         self.cmd_vel[2] = 0.0
-                    # Landing gate: at land_alt, only commit to LAND if well centred.
-                    if self.pos[2] < self.land_alt:
-                        e = lateral_err
-                        if e < self.land_align_radius:
-                            self._log(f'centred ({e:.2f} m) -> DONE (LAND)')
-                            self.stage = Stage.DONE
-                        else:
-                            self._log(f'off-centre ({e:.2f} m) at land_alt -> ALIGN')
-                            self.cmd_vel[2] = 0.0
-                            self.stage = Stage.ALIGN
 
         elif self.stage == Stage.DONE:
-            # Landing handoff complete. Hold LAND until ArduCopter touches down
-            # and AUTO-DISARMS, confirm the disarm via /mavros/state, then shut
-            # this node down so it doesn't linger after the mission finishes.
-            if self.mav_state.mode != 'LAND':
-                self._set_mode('LAND')
-            elif not self.mav_state.armed:
-                self._log('landed & disarmed -> shutting down node')
+            # Controlled touchdown: we are within land_clearance of the platform
+            # top and centred. Cut the motors with a FORCE disarm (a normal in-air
+            # disarm is rejected by ArduCopter) so the drone settles onto the
+            # platform — we do NOT use LAND mode, which would descend to the ground
+            # and ignore the platform. Re-send until /mavros/state confirms disarm.
+            if self.mav_state.armed:
+                self._force_disarm()
+            else:
+                self._log('disarmed onto platform -> shutting down node')
                 rclpy.shutdown()
-            return  # stop sending setpoints; ArduCopter LAND finishes
+            return  # stop sending setpoints; motors are (being) cut
 
         self._publish_velocity()
 
@@ -272,14 +395,13 @@ class PrecisionLandingNode(Node):
             self.cmd_vel[0] = self.cmd_vel[1] = 0.0
             return None
 
-        # Velocity visual servo: v = vel_gain · error, clamped to vel_max.
-        # First-order (exponential) approach, no overshoot.
-        kp = self.get_parameter('vel_gain').value
-        vmax = self.get_parameter('vel_max').value
+        # Velocity visual servo toward the KF position estimate, feeding forward
+        # the KF velocity estimate (kf_x[2:4]) so a MOVING marker is tracked
+        # without steady-state lag. v = v_marker + vel_gain·error, clamped.
+        # Stationary marker ⇒ v_marker≈0 ⇒ plain first-order exponential approach.
         eE = self.kf_x[0] - self.pos[0]
         eN = self.kf_x[1] - self.pos[1]
-        self.cmd_vel[0] = self._clamp(kp * eE, -vmax, vmax)
-        self.cmd_vel[1] = self._clamp(kp * eN, -vmax, vmax)
+        self._servo_to(self.kf_x[0], self.kf_x[1], self.kf_x[2], self.kf_x[3])
 
         # Mapping diagnostic (throttled ~1 Hz). Compare where the marker is in
         # the IMAGE (off=) against the world error we steer toward (err=) and the
@@ -292,6 +414,37 @@ class PrecisionLandingNode(Node):
                 f'yaw={math.degrees(self.hold_yaw):+.0f} '
                 f'err=({eE:+.2f},{eN:+.2f}) '
                 f'cmd=({self.cmd_vel[0]:+.2f},{self.cmd_vel[1]:+.2f})')
+        return math.hypot(eE, eN)
+
+    # Height (m) of the drone ABOVE THE MARKER surface. The marker rides on top
+    # of an object at platform_height above the ground, so this — not the raw AGL
+    # pos.z — is the distance that drives the camera projection, the funnel and
+    # the touchdown gate. Floored so the pixel→metre scale never blows up.
+    def _height_above_marker(self):
+        ph = self.get_parameter('platform_height').value
+        return max(self.pos[2] - ph, 0.05)
+
+    # Horizontal error (m) tolerated at the current height above the marker: a
+    # cone, wide up high and narrowing to land_align_radius at the surface. Read
+    # live so it can be tuned mid-flight (ros2 param set descend_cone / ...).
+    def _funnel_radius(self):
+        r_land = self.get_parameter('land_align_radius').value
+        slope = self.get_parameter('descend_cone').value
+        return max(r_land, slope * self._height_above_marker())
+
+    # First-order velocity servo toward an absolute ENU point (E, N) with an
+    # optional target-velocity feed-forward: v = v_ff + kp·e, clamped to vel_max.
+    # The feed-forward cancels the steady-state lag (v_target/kp) when chasing a
+    # MOVING target, so the drone can actually settle over it; for a stationary
+    # target v_ff≈0 and it reduces to the plain proportional servo. Sets the
+    # horizontal cmd_vel and returns the remaining horizontal distance (m).
+    def _servo_to(self, targetE, targetN, vffE=0.0, vffN=0.0):
+        kp = self.get_parameter('vel_gain').value
+        vmax = self.get_parameter('vel_max').value
+        eE = targetE - self.pos[0]
+        eN = targetN - self.pos[1]
+        self.cmd_vel[0] = self._clamp(vffE + kp * eE, -vmax, vmax)
+        self.cmd_vel[1] = self._clamp(vffN + kp * eN, -vmax, vmax)
         return math.hypot(eE, eN)
 
     # Convert the current normalised image offset to the marker's world (E,N)
@@ -308,7 +461,9 @@ class PrecisionLandingNode(Node):
         ix, iy = self.offset.x, self.offset.y   # normalised: +x right, +y down
         if swap:
             ix, iy = iy, ix
-        alt = max(self.pos[2], 0.3)
+        # Distance camera→marker is the height above the MARKER (on the platform
+        # top), not AGL — otherwise the pixel→metre scale is wrong near touchdown.
+        alt = self._height_above_marker()
         half_w = alt * math.tan(hfov * 0.5)
         half_h = half_w / aspect
         gx = ix * half_w          # metres, image-right
@@ -389,6 +544,15 @@ class PrecisionLandingNode(Node):
         req = CommandTOL.Request()
         req.altitude = float(alt)
         self.takeoff_cli.call_async(req)
+
+    def _force_disarm(self):
+        # MAV_CMD_COMPONENT_ARM_DISARM (400), param1=0 disarm, param2=21196 = the
+        # force magic that bypasses ArduCopter's "still flying" disarm check.
+        req = CommandLong.Request()
+        req.command = 400
+        req.param1 = 0.0
+        req.param2 = 21196.0
+        self.command_cli.call_async(req)
 
     def _log(self, text):
         self.get_logger().info(text)

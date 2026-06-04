@@ -28,6 +28,7 @@ setup(
     entry_points={
         'console_scripts': [
             'precision_landing_node = precision_landing.precision_landing_node:main',
+            'moving_marker_node = precision_landing.moving_marker_node:main',
         ],
     },
 )

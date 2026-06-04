@@ -1,0 +1,73 @@
+<?xml version="1.0"?>
+<sdf version="1.9">
+  <!-- A moving "vehicle" the drone lands ON TOP of: a 1.2×1.2×1.0 m box with the
+       ArUco marker on its top face (z = 1.0). moving_marker_node teleports this
+       model along a trajectory (set_pose every tick) and streams its (E,N).
+
+       Kinematic-by-teleport: non-static so its pose is streamed each step (a
+       static model teleported by set_pose flickers), gravity off and a LARGE
+       mass so the landing drone can neither make it fall nor shove it aside, and
+       the per-tick set_pose overrides any residual contact motion. Model origin
+       is at the BOTTOM centre, so set_pose z=0 puts the box on the ground and the
+       marker top at z = 1.0 (= platform_height for the controller). -->
+  <model name="aruco_platform">
+    <static>false</static>
+    <link name="link">
+      <gravity>false</gravity>
+      <inertial>
+        <mass>100.0</mass>
+        <inertia>
+          <ixx>20.0</ixx><iyy>20.0</iyy><izz>24.0</izz>
+          <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz>
+        </inertia>
+      </inertial>
+
+      <!-- Box body (origin at bottom → centre raised 0.5 m). High surface
+           friction so a just-disarmed drone is carried along by the moving
+           platform instead of sliding off and tipping. -->
+      <collision name="body_col">
+        <pose>0 0 0.5 0 0 0</pose>
+        <geometry><box><size>1.2 1.2 1.0</size></box></geometry>
+        <surface>
+          <friction>
+            <ode><mu>100.0</mu><mu2>100.0</mu2></ode>
+          </friction>
+        </surface>
+      </collision>
+      <visual name="body_vis">
+        <pose>0 0 0.5 0 0 0</pose>
+        <geometry><box><size>1.2 1.2 1.0</size></box></geometry>
+        <material>
+          <ambient>0.25 0.28 0.32 1</ambient>
+          <diffuse>0.30 0.34 0.40 1</diffuse>
+          <specular>0.1 0.1 0.1 1</specular>
+        </material>
+      </visual>
+
+      <!-- ArUco marker on the top face, just above z = 1.0 so it is not z-fighting
+           with the box top. Same texture/material trick as aruco_marker_0 (force
+           non-metallic so the albedo PNG shows). Texture reused from that model. -->
+      <visual name="marker_vis">
+        <pose>0 0 1.001 0 0 0</pose>
+        <geometry>
+          <plane>
+            <normal>0 0 1</normal>
+            <size>0.8 0.8</size>
+          </plane>
+        </geometry>
+        <material>
+          <ambient>1 1 1 1</ambient>
+          <diffuse>1 1 1 1</diffuse>
+          <specular>0 0 0 1</specular>
+          <pbr>
+            <metal>
+              <albedo_map>model://aruco_marker_0/materials/textures/aruco_0.png</albedo_map>
+              <metalness>0.0</metalness>
+              <roughness>1.0</roughness>
+            </metal>
+          </pbr>
+        </material>
+      </visual>
+    </link>
+  </model>
+</sdf>

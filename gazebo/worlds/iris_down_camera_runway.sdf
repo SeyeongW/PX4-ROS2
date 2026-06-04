@@ -88,14 +88,17 @@
       <pose degrees="true">-29 545 0 0 0 363</pose>
     </include>
 
-    <!-- ArUco DICT_4X4_50 ID=0 marker on the ground (precision landing target) -->
-    <!-- Run `python3 gazebo/gen_aruco_model.py` once to generate the texture. -->
-    <!-- 1 m offset from the drone spawn (0,0): well inside the down camera's
-         ~3.4 m ground footprint at 5 m alt, so it's reliably detected while
-         still requiring a real lateral alignment before descent. -->
+    <!-- Moving 1.0 m platform with the ArUco DICT_4X4_50 ID=0 marker on top; the
+         drone lands ON TOP of it. moving_marker_node (started by run_sim.sh)
+         teleports it along a trajectory and streams its (E,N). Spawn 1 m from the
+         drone (0,0); box origin is at the bottom so z=0 sits it on the ground and
+         the marker top is at z=1.0 (= controller's platform_height).
+         Run `python3 gazebo/gen_aruco_model.py` once to generate the texture.
+         For the old flat-ground demo, include model://aruco_marker_0 instead and
+         set platform_height:=0. -->
     <include>
-      <uri>model://aruco_marker_0</uri>
-      <pose>1 0 0.002 0 0 0</pose>
+      <uri>model://aruco_platform</uri>
+      <pose>3 0 0 0 0 0</pose>
     </include>
 
     <include>
