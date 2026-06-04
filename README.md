@@ -182,7 +182,7 @@ echo "source ~/ros_gz_ws/install/setup.bash" >> ~/.bashrc
 ### 터미널 1 — Gazebo 실행
 
 ```bash
-cd ~/ros2_ws/src/PX4-ROS2/gazebo
+cd ~/ros2_ws/PX4-ROS2/gazebo
 ./run_sim.sh
 ```
 
@@ -221,7 +221,7 @@ Gazebo 카메라 영상을 ROS 2 토픽으로 전달합니다.
 
 ```bash
 source ~/ros_gz_ws/install/setup.bash
-ros2 launch ~/ros2_ws/src/PX4-ROS2/gazebo/launch/camera_bridge.launch.py
+ros2 launch ~/ros2_ws/PX4-ROS2/gazebo/launch/camera_bridge.launch.py
 ```
 
 ### 카메라 토픽 확인
