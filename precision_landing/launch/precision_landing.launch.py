@@ -42,6 +42,8 @@ def generate_launch_description():
     # 수평 속도 서보 게인/상한. 진동(overshoot)하면 낮추고, 너무 굼뜨면 올린다.
     vel_gain = LaunchConfiguration('vel_gain')
     vel_max = LaunchConfiguration('vel_max')
+    approach_vel_max = LaunchConfiguration('approach_vel_max')
+    approach_decel_s = LaunchConfiguration('approach_decel_s')
     # 움직이는 마커: 마커 이동 + 좌표 송출(moving_marker_node)은 월드의 일부라
     # gazebo/run_sim.sh 가 Gazebo 와 함께 띄운다(여기서 중복 실행하지 않음).
     # 드론은 비전 인식 전까지 그 좌표(/marker/position cue)로 먼저 접근(APPROACH).
@@ -100,6 +102,8 @@ def generate_launch_description():
             'lat_sign_left': ParameterValue(lat_sign_left, value_type=float),
             'vel_gain': ParameterValue(vel_gain, value_type=float),
             'vel_max': ParameterValue(vel_max, value_type=float),
+            'approach_vel_max': ParameterValue(approach_vel_max, value_type=float),
+            'approach_decel_s': ParameterValue(approach_decel_s, value_type=float),
         }],
     )
 
@@ -121,6 +125,8 @@ def generate_launch_description():
         # 위치오차까지 보정해야 하므로 5.0 (정지/저속 마커면 0.5로 낮춰도 됨).
         DeclareLaunchArgument('vel_gain', default_value='0.4'),
         DeclareLaunchArgument('vel_max', default_value='5.0'),
+        DeclareLaunchArgument('approach_vel_max', default_value='10.0'),
+        DeclareLaunchArgument('approach_decel_s', default_value='5.0'),
         # 좌표 접근. use_cue=false 면 순수 비전 동작(기존)으로 복귀.
         # 마커 이동/궤적은 gazebo/run_sim.sh 의 MARKER_* 환경변수로 조정.
         DeclareLaunchArgument('use_cue', default_value='true'),
