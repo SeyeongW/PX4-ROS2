@@ -1,0 +1,57 @@
+# track_follower_node parameters — single place to tune the lane-keeping truck.
+#
+# Loaded by run_sim.sh via `--params-file`. Edit a value and restart run_sim.sh.
+# (A few quick knobs — forward_speed / ctrl_bw / zeta — can also be overridden on
+#  the command line via env vars FOLLOW_SPEED / FOLLOW_BW / FOLLOW_ZETA, which win
+#  over this file.)
+#
+# Control model: lateral loop ÿ + 2ζωₙẏ + ωₙ²y = 0 with
+#   ω = kappa_ff·v·κ  +  k_ψ·ψ  +  k_y·e_y ,  k_y = ωₙ²/v_cruise,  k_ψ = 2ζωₙ
+# so ctrl_bw(=ωₙ) sets the P/speed of correction and zeta(=ζ) sets the damping.
+
+track_follower_node:
+  ros__parameters:
+
+    # --- steering control (the main tuning knobs) ---
+    ctrl_bw: 1.2           # ωₙ [rad/s] — loop bandwidth (≈ proportional strength)
+    zeta: 1.2              # ζ damping ratio — raise to kill oscillation, lower for snappier
+    kappa_ff: 1.0          # curvature feed-forward scale (1.0 = full v·κ)
+    yaw_rate_max: 0.8      # rad/s — steering command clamp
+    ctrl_lpf_alpha: 1.0    # EMA on e_y/ψ/κ: 1.0 = OFF; <1 smooths raw jitter (adds lag)
+
+    # --- dynamic speed profile ---
+    forward_speed: 3.0     # m/s — cruise speed CAP (not a fixed command)
+    lat_accel_max: 2.5     # m/s^2 — curve speed limit v ≤ sqrt(lat_accel_max/|κ|)
+    accel_max: 1.5         # m/s^2 — forward acceleration ramp
+    decel_max: 2.5         # m/s^2 — braking ramp
+    min_speed: 1.0         # m/s — floor while tracking (keeps steering authority)
+
+    # --- lane detection (white-line thresholding + banding) ---
+    white_thresh: 180      # grayscale threshold for the white lines
+    roi_top: 0.45          # ROI top    (fraction of image height)
+    roi_bot: 0.95          # ROI bottom (fraction of image height)
+    n_bands: 12            # ROI split into this many horizontal strips
+    band_min_px: 6         # min white columns for a band to count
+    line_gap_px: 20        # column gap (px) that separates the two line clusters
+    min_cluster_px: 2      # min columns for a cluster to be kept
+    fit_degree: 2          # 2 = curve fit, 1 = straight-line fit
+    half_lane: 1.0         # m — half lane width (centre offset when one line seen)
+    lost_hold_frames: 8    # coast this many lost frames before easing to a stop
+
+    # --- camera geometry for IPM (must match aruco_platform front_camera SDF) ---
+    cam_fov: 1.60          # rad — horizontal FOV
+    cam_height: 0.85       # m — camera height above ground
+    cam_pitch: 0.61        # rad — downward pitch
+    cam_x: 0.60            # m — camera forward offset from platform origin
+
+    # --- wiring / behaviour ---
+    publish_debug: true          # publish /perception/track_debug overlay
+    release_on_arm: true         # sever DetachableJoint when the drone arms
+    start_delay: 0.0             # s — stay still at start (EKF settle before launch)
+    image_topic: "/front_camera/image"
+    marker_topic: "/marker/position"
+    model: "aruco_platform"
+    world: "iris_down_camera_runway"
+    cmd_vel_topic: "/model/aruco_platform/cmd_vel"
+    detach_topic: "/aruco_platform/detach"
+    frame_id: "map"

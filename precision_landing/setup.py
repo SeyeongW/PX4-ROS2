@@ -29,6 +29,8 @@ setup(
         'console_scripts': [
             'precision_landing_node = precision_landing.precision_landing_node:main',
             'moving_marker_node = precision_landing.moving_marker_node:main',
+            'track_follower_node = precision_landing.track_follower_node:main',
+            'mission_manager_node = precision_landing.mission_manager_node:main',
         ],
     },
 )

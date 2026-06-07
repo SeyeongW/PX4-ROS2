@@ -40,7 +40,8 @@ from enum import Enum
 import numpy as np
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import (qos_profile_sensor_data, QoSProfile, QoSDurabilityPolicy,
+                       QoSReliabilityPolicy, QoSHistoryPolicy)
 
 from geometry_msgs.msg import Point, PointStamped, PoseStamped, Vector3Stamped
 from std_msgs.msg import Bool, String
@@ -55,6 +56,7 @@ class Stage(Enum):
     ALIGN = 3
     DESCEND = 4
     DONE = 5
+    DORMANT = 6   # integrated mode: wait for mission_manager's land_enable
 
 
 DT = 0.05  # 50 ms control period
@@ -130,6 +132,12 @@ class PrecisionLandingNode(Node):
         # auto_takeoff: node sets GUIDED, arms and climbs to flight_alt itself.
         # Set false to keep the old behaviour (a human/other node flies it up).
         self.auto_takeoff = self.declare_parameter('auto_takeoff', True).value
+        # require_enable: integrated (truck-mission) mode. The node starts DORMANT
+        # and streams NO setpoints until mission_manager latches /mission/land_enable
+        # =true, then it runs the landing from IDLE; if the gate goes false again it
+        # hands authority straight back (returns to DORMANT). Default false keeps the
+        # standalone behaviour (this node flies the whole demo itself).
+        self.require_enable = self.declare_parameter('require_enable', False).value
         # APPROACH: cue-following toward a broadcast ENU marker position before
         # the camera can see it. use_cue=false keeps the pure-vision behaviour.
         # cue_timeout: how long (s) a cue stays valid after the last message, so
@@ -146,7 +154,11 @@ class PrecisionLandingNode(Node):
         self.yaw_track = self.declare_parameter('yaw_track', True).value
         self.yaw_track_min_speed = self.declare_parameter('yaw_track_min_speed', 0.5).value
 
-        self.stage = Stage.TAKEOFF if self.auto_takeoff else Stage.IDLE
+        if self.require_enable:
+            self.stage = Stage.DORMANT
+        else:
+            self.stage = Stage.TAKEOFF if self.auto_takeoff else Stage.IDLE
+        self.land_enabled = False
 
         # --- State ----------------------------------------------------------
         self.mav_state = State()
@@ -194,6 +206,16 @@ class PrecisionLandingNode(Node):
         # feed-forward directly (exact, no lag); otherwise we fall back to finite-
         # differencing the position cue in _cue_cb.
         self.create_subscription(Vector3Stamped, '/marker/velocity', self._vel_cb, 10)
+        # Landing-authority gate from mission_manager (latched). Matched
+        # transient_local QoS so we get the last value even if it was published
+        # before we subscribed.
+        if self.require_enable:
+            latched = QoSProfile(
+                depth=1, history=QoSHistoryPolicy.KEEP_LAST,
+                reliability=QoSReliabilityPolicy.RELIABLE,
+                durability=QoSDurabilityPolicy.TRANSIENT_LOCAL)
+            self.create_subscription(
+                Bool, '/mission/land_enable', self._enable_cb, latched)
 
         # --- Service clients ------------------------------------------------
         self.set_mode_cli = self.create_client(SetMode, '/mavros/set_mode')
@@ -225,6 +247,10 @@ class PrecisionLandingNode(Node):
     def _detected_cb(self, msg):
         if msg.data:
             self.fresh = 10  # 10 × 50 ms = 500 ms freshness window
+
+    def _enable_cb(self, msg):
+        # mission_manager's landing-authority gate (integrated mode only).
+        self.land_enabled = msg.data
 
     def _vel_cb(self, msg):
         # Explicit marker velocity (ENU) — authoritative feed-forward.
@@ -269,6 +295,17 @@ class PrecisionLandingNode(Node):
 
         if not self.mav_state.connected:
             return
+
+        # Integrated mode: stream NOTHING until mission_manager grants landing
+        # authority; hand it straight back (return to DORMANT) if revoked, so only
+        # one node ever owns /mavros/setpoint_raw/local.
+        if self.require_enable:
+            if not self.land_enabled:
+                self.stage = Stage.DORMANT
+                return
+            if self.stage == Stage.DORMANT:
+                self._log('land_enable -> IDLE (taking landing authority)')
+                self.stage = Stage.IDLE
 
         if self.stage == Stage.TAKEOFF:
             # ArduCopter GUIDED does NOT lift from a streamed position setpoint

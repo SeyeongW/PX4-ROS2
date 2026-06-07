@@ -34,6 +34,8 @@ import rclpy
 from rclpy.node import Node
 
 from geometry_msgs.msg import PointStamped, Vector3Stamped
+from mavros_msgs.msg import State
+from rcl_interfaces.msg import ParameterDescriptor
 
 # gz-transport is optional: without it we still publish the ENU cue, we just
 # can't physically move the Gazebo model (publish-only / external-mover mode).
@@ -41,6 +43,9 @@ try:
     from gz.transport13 import Node as GzNode
     from gz.msgs10.pose_pb2 import Pose as GzPose
     from gz.msgs10.boolean_pb2 import Boolean as GzBoolean
+    from gz.msgs10.empty_pb2 import Empty as GzEmpty
+    from gz.msgs10.twist_pb2 import Twist as GzTwist
+    from gz.msgs10.pose_v_pb2 import Pose_V as GzPoseV
     _GZ_OK = True
 except Exception as _e:        # pragma: no cover - depends on host gz install
     _GZ_OK = False
@@ -63,10 +68,37 @@ class MovingMarkerNode(Node):
         self.center_n = self.declare_parameter('center_n', 0.0).value   # m, ENU North
         self.amplitude = self.declare_parameter('amplitude', 1.5).value  # m
         self.speed = self.declare_parameter('speed', 0.3).value         # m/s path speed
+        # Hold STATIONARY at the start position for this many seconds before the
+        # trajectory begins. For the mounted-on-moving-truck scenario the drone
+        # rides the truck and must sit still long enough for its EKF/GPS to settle
+        # and arm; only then does the truck drive off (and the drone launches WHILE
+        # moving). 0 = start moving immediately (legacy landing-demo behaviour).
+        # dynamic_typing so a bare integer override (e.g. start_delay:=20) is
+        # accepted, not rejected as "INTEGER, expecting DOUBLE"; coerce to float.
+        self.start_delay = float(self.declare_parameter(
+            'start_delay', 0.0,
+            ParameterDescriptor(dynamic_typing=True)).value)  # s
         self.z = self.declare_parameter('z', 0.002).value               # m, ground height
         self.frame_id = self.declare_parameter('frame_id', 'map').value
         # move_model=false → publish the cue only, leave the Gazebo model alone.
         self.move_model = self.declare_parameter('move_model', True).value
+        # HOW to move the model:
+        #   velocity : stream the trajectory VELOCITY as gz.msgs.Twist to the model's
+        #              VelocityControl plugin. Real momentum, so a fix-jointed drone
+        #              is carried and lifts off cleanly when released (mounted truck).
+        #   teleport : set_pose every tick (a kinematic decal; legacy flat-marker
+        #              demo where the model has no VelocityControl plugin).
+        self.drive_mode = self.declare_parameter('drive_mode', 'velocity').value
+        self.cmd_vel_topic = self.declare_parameter(
+            'cmd_vel_topic', '/model/aruco_platform/cmd_vel').value
+        # DetachableJoint release: the drone rides the truck secured by a fixed
+        # joint (declared in aruco_platform/model.sdf). The instant the drone arms
+        # for takeoff we publish gz.msgs.Empty on this gz topic to sever the joint,
+        # freeing it to lift off FROM the moving truck. release_on_arm=false leaves
+        # the joint alone (e.g. the legacy ground-launch world has no joint).
+        self.detach_topic = self.declare_parameter(
+            'detach_topic', '/aruco_platform/detach').value
+        self.release_on_arm = self.declare_parameter('release_on_arm', True).value
 
         # angular rate so |velocity| == speed along the path
         self.w = (self.speed / self.amplitude) if self.amplitude > 1e-6 else 0.0
@@ -79,20 +111,49 @@ class MovingMarkerNode(Node):
         # successive positions, so it is exact for any pattern and never hard-codes
         # a speed.
         self.vel_pub = self.create_publisher(Vector3Stamped, self.vel_topic, 10)
-        self._prev = None        # (e, n, t) for velocity differencing
+        self._prev_traj = None   # (e, n, t) analytic target, for the drive velocity
+        self._actual = None      # (x, y) latest ACTUAL truck pose from gz (vel mode)
 
         # --- gz mover -------------------------------------------------------
         self.gz = None
+        self.detach_pub = None
+        self.cmd_vel_pub = None
         self.set_pose_srv = f'/world/{self.world}/set_pose'
-        if self.move_model:
+        if (self.move_model or self.release_on_arm):
             if _GZ_OK:
                 self.gz = GzNode()
-                self.get_logger().info(
-                    f'moving model "{self.model}" via {self.set_pose_srv}')
+                if self.move_model:
+                    if self.drive_mode == 'velocity':
+                        self.cmd_vel_pub = self.gz.advertise(self.cmd_vel_topic, GzTwist)
+                        # In velocity mode the analytic target drifts from the truck
+                        # when sim runs slower than wall-clock (velocity integrates in
+                        # sim time, the target advances in wall time), so read the
+                        # ACTUAL truck pose from gz and report THAT as the cue.
+                        pose_topic = f'/world/{self.world}/dynamic_pose/info'
+                        self.gz.subscribe(GzPoseV, pose_topic, self._gz_pose_cb)
+                        self.get_logger().info(
+                            f'driving model "{self.model}" by VELOCITY via {self.cmd_vel_topic}; '
+                            f'cue from actual pose ({pose_topic})')
+                    else:
+                        self.get_logger().info(
+                            f'moving model "{self.model}" via {self.set_pose_srv} (teleport)')
+                if self.release_on_arm:
+                    self.detach_pub = self.gz.advertise(self.detach_topic, GzEmpty)
+                    self.get_logger().info(
+                        f'will release DetachableJoint via {self.detach_topic} on arm')
             else:
                 self.get_logger().warn(
                     f'gz Python bindings unavailable ({_GZ_ERR}); '
-                    'publishing cue only (model will NOT move).')
+                    'publishing cue only (model will NOT move / joint NOT released).')
+
+        # Watch the FCU arm state so we can sever the DetachableJoint the instant
+        # the drone arms for takeoff (rising edge false→true), releasing it from
+        # the moving truck. Sim-only glue lives here (not in mission_manager) to
+        # keep the mission brain hardware-portable.
+        self._armed = False
+        self._released = False
+        if self.release_on_arm:
+            self.create_subscription(State, '/mavros/state', self._state_cb, 10)
 
         self.get_logger().info(
             f'pattern={self.pattern} center=({self.center_e:.2f},{self.center_n:.2f}) '
@@ -104,7 +165,11 @@ class MovingMarkerNode(Node):
     # -----------------------------------------------------------------------
     def _position(self):
         """Marker (E, N) at the current time for the configured pattern."""
-        t = (self.get_clock().now() - self.t0).nanoseconds * 1e-9
+        # Stationary warm-up: stay put until start_delay has elapsed, then run the
+        # trajectory from t=0 (so motion begins smoothly from the start position).
+        t = (self.get_clock().now() - self.t0).nanoseconds * 1e-9 - self.start_delay
+        if t < 0.0:
+            t = 0.0
         if self.pattern == 'static':
             return self.center_e, self.center_n
         if self.pattern == 'circle':
@@ -130,32 +195,68 @@ class MovingMarkerNode(Node):
     def tick(self):
         now = self.get_clock().now()
         stamp = now.to_msg()
-        e, n = self._position()
+        e, n = self._position()       # analytic trajectory TARGET
+
+        # Drive velocity = analytic trajectory derivative (smooth, known). This is
+        # what the truck is commanded to do, and ≈ its actual velocity.
+        vx = vy = 0.0
+        if self._prev_traj is not None:
+            pe, pn, pt = self._prev_traj
+            dt = (now - pt).nanoseconds * 1e-9
+            if dt > 1e-4:
+                vx = (e - pe) / dt
+                vy = (n - pn) / dt
+        self._prev_traj = (e, n, now)
+
+        # Move the model: real velocity (carries the jointed drone with momentum so
+        # it lifts off cleanly on release) or legacy teleport.
+        if self.gz is not None:
+            if self.drive_mode == 'velocity':
+                self._set_model_velocity(vx, vy)
+            else:
+                self._set_model_pose(e, n)
+
+        # Cue = where the truck ACTUALLY is. Velocity mode: report the actual gz
+        # pose (the analytic target drifts under real-time-factor < 1, since the
+        # velocity integrates in sim time but the target advances in wall time).
+        # Teleport mode: actual == analytic, so the analytic target is exact.
+        if self.drive_mode == 'velocity' and self._actual is not None:
+            cue_e, cue_n = self._actual
+        else:
+            cue_e, cue_n = e, n
 
         msg = PointStamped()
         msg.header.stamp = stamp
         msg.header.frame_id = self.frame_id
-        msg.point.x = e        # ENU East  (== Gazebo world x)
-        msg.point.y = n        # ENU North (== Gazebo world y)
+        msg.point.x = cue_e    # ENU East  (== Gazebo world x)
+        msg.point.y = cue_n    # ENU North (== Gazebo world y)
         msg.point.z = 0.0
         self.pub.publish(msg)
 
-        # Velocity = backward difference of our own positions (exact, low noise at
-        # this rate). Held at the last value across the brief reversal tick.
+        # Cue velocity = the (smooth) commanded velocity, which the truck tracks.
         vel = Vector3Stamped()
         vel.header.stamp = stamp
         vel.header.frame_id = self.frame_id
-        if self._prev is not None:
-            pe, pn, pt = self._prev
-            dt = (now - pt).nanoseconds * 1e-9
-            if dt > 1e-4:
-                vel.vector.x = (e - pe) / dt
-                vel.vector.y = (n - pn) / dt
+        vel.vector.x = vx
+        vel.vector.y = vy
         self.vel_pub.publish(vel)
-        self._prev = (e, n, now)
 
-        if self.gz is not None:
-            self._set_model_pose(e, n)
+    def _gz_pose_cb(self, msg):
+        # Latest ACTUAL pose of the truck model (gz dynamic_pose/info, world frame).
+        for p in msg.pose:
+            if p.name == self.model:
+                self._actual = (p.position.x, p.position.y)
+                return
+
+    def _set_model_velocity(self, vx, vy):
+        if self.cmd_vel_pub is None:
+            return
+        # Truck has no yaw, so world ENU velocity maps straight to the Twist.
+        twist = GzTwist()
+        twist.linear.x = float(vx)
+        twist.linear.y = float(vy)
+        twist.linear.z = 0.0
+        self.cmd_vel_pub.publish(twist)
 
     def _set_model_pose(self, e, n):
         req = GzPose()
@@ -171,6 +272,21 @@ class MovingMarkerNode(Node):
             self.get_logger().warn(
                 f'set_pose to {self.set_pose_srv} failed (is Gazebo running?)',
                 throttle_duration_sec=5.0)
+
+    def _state_cb(self, msg):
+        # Release the DetachableJoint once, on the disarmed→armed rising edge.
+        if msg.armed and not self._armed and not self._released:
+            self._release_joint()
+        self._armed = msg.armed
+
+    def _release_joint(self):
+        if self.detach_pub is None:
+            return
+        # gz DetachableJoint severs on ANY message to its <topic>; send Empty.
+        self.detach_pub.publish(GzEmpty())
+        self._released = True
+        self.get_logger().info(
+            f'drone armed -> released DetachableJoint ({self.detach_topic})')
 
 
 def main(args=None):
