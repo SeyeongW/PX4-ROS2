@@ -101,6 +101,15 @@ def generate_launch_description():
             'approach_decel_s': 5.0,
             'yaw_track': True,
             'yaw_track_min_speed': 0.5,
+            # 트랙(이동+곡선) 위 착륙 안정화. 곡선 주행 트럭을 등속 KF가 못 따라가
+            # 마커가 좁아진 다운카메라 프레임 밖으로 빠지면서 DESCEND->ALIGN 으로
+            # 되돌아가는 limit cycle을 줄인다.
+            #   kf_accel_std  : 0.1->2.0  곡선 기동(횡가속 ~2.5 m/s²)을 KF가 추적
+            #   final_descent_h: 0.6->1.4  더 높은 데서 정확한 큐 개루프 착지로 전환
+            #   coast_ticks   : 30->60    비전 끊김 허용 1.5->3.0 s (큐로 코스트)
+            'kf_accel_std': 2.0,
+            'final_descent_h': 1.4,
+            'coast_ticks': 60,
         }],
     )
 

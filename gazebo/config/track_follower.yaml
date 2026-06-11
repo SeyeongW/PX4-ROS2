@@ -13,11 +13,26 @@ track_follower_node:
   ros__parameters:
 
     # --- steering control (the main tuning knobs) ---
-    ctrl_bw: 1.2           # ωₙ [rad/s] — loop bandwidth (≈ proportional strength)
-    zeta: 1.2              # ζ damping ratio — raise to kill oscillation, lower for snappier
+    ctrl_bw: 0.9           # ωₙ [rad/s] — loop bandwidth (≈ proportional strength). 1.2->0.9 to kill vibration (scales BOTH gains down)
+    zeta: 1.4              # ζ damping ratio — raise to kill oscillation, lower for snappier. 1.2->1.4 for more heading-gain damping
     kappa_ff: 1.0          # curvature feed-forward scale (1.0 = full v·κ)
     yaw_rate_max: 0.8      # rad/s — steering command clamp
     ctrl_lpf_alpha: 1.0    # EMA on e_y/ψ/κ: 1.0 = OFF; <1 smooths raw jitter (adds lag)
+
+    # --- spike / outlier gate ("hold the good value") ---
+    # ζ damps a CONTINUOUS weave but does NOTHING for an occasional one-frame JUMP
+    # (stray blob, mis-paired line cluster, single↔double-line flip, glare). The
+    # lane can't move that fast between frames, so a leap beyond the gate is rejected
+    # and the LAST GOOD value is HELD — the truck keeps the lock instead of lurching.
+    # A jump that persists past outlier_max_reject frames is real (curve entry) so it
+    # is accepted and re-syncs. Zero lag on steady tracking; fires only on a spike.
+    # HUD shows "[SPIKE held N]" on the top line while it is holding.
+    #  - Still see lurches? TIGHTEN: outlier_gate_ey 0.40->0.25, outlier_gate_psi 0.30->0.20
+    #  - Blocks real curve entry / feels laggy in bends? LOOSEN gates up, or lower
+    #    outlier_max_reject (re-sync sooner). Set outlier_max_reject: 0 to DISABLE.
+    outlier_gate_ey: 0.40    # m   — max plausible e_y jump per frame (above = spike)
+    outlier_gate_psi: 0.30   # rad — max plausible heading jump per frame
+    outlier_max_reject: 3    # frames to hold before accepting a persistent change
 
     # --- dynamic speed profile ---
     forward_speed: 3.0     # m/s — cruise speed CAP (not a fixed command)
@@ -26,9 +41,44 @@ track_follower_node:
     decel_max: 2.5         # m/s^2 — braking ramp
     min_speed: 1.0         # m/s — floor while tracking (keeps steering authority)
 
+    # --- oscillation governor (anti-hunting speed cut) ---
+    # If the truck WEAVES left-right and the steering loop won't settle, this cuts
+    # the speed cap FAST to bleed the energy out, then climbs back SLOWLY once the
+    # weaving stops ("slow down to catch the vibration, then re-accelerate gently").
+    # It triggers ONLY on real hunting: we count e_y sign flips (beyond a deadband)
+    # in a sliding window — a steady one-sided offset never flips sign, so it is NOT
+    # throttled. Watch the bottom HUD line in /perception/track_debug: it turns RED
+    # "OSC! flips=N scale=0.xx" while cutting, "osc ok scale=1.00" when clear.
+    #
+    # TUNING (typical order):
+    #  1) Still oscillating? Make it MORE sensitive / aggressive:
+    #       osc_flip_thresh 3->2   (trip sooner)
+    #       osc_min_scale  0.4->0.3 and/or osc_min_speed 0.5->0.3 (slow down more)
+    #       osc_drop_rate  1.0->1.5 (cut speed faster)
+    #  2) Tripping too often / feels sluggish on clean track? Make it LESS sensitive:
+    #       osc_deadband 0.05->0.10 (ignore more wobble) or osc_flip_thresh 3->4
+    #  3) Re-acceleration too slow/abrupt after it settles? Tune the recovery:
+    #       osc_recover_rate 0.15 up = climb back faster, down = gentler
+    #  Set osc_min_scale: 1.0 to DISABLE the governor entirely (cap never cut).
+    osc_window: 2.0        # s — sliding window over which e_y sign flips are counted
+    osc_flip_thresh: 3     # flips within the window to declare "oscillating"
+    osc_deadband: 0.05     # m — |e_y| below this is noise, not counted as a flip
+    osc_drop_rate: 1.0     # 1/s — how fast the speed-cap scale falls while hunting
+    osc_recover_rate: 0.15 # 1/s — how slowly the scale climbs back to 1.0 when clear
+    osc_min_scale: 0.4     # floor on the cap scale (1.0 = governor OFF)
+    osc_min_speed: 0.5     # m/s — hard speed floor while oscillating (below min_speed)
+    # Adaptive look-ahead vs oscillation: while the governor flags hunting, EXTEND the
+    # look-ahead (read the lane further ahead) — more anticipation / phase lead DAMPS
+    # the weave; ease back to nominal once it settles. X0 stays clamped to the seen
+    # span so a bigger L never extrapolates. HUD bottom line shows "la=1.xx".
+    #  - Still oscillating in curves? raise lookahead_osc_scale 1.6->2.0
+    #  - Cuts corners / feels laggy when it extends? lower it toward 1.2, or set 1.0 OFF
+    lookahead_osc_scale: 1.6  # max look-ahead multiplier while hunting (1.0 = OFF)
+    lookahead_osc_rate: 1.0   # 1/s — how fast the multiplier ramps in/out
+
     # --- lane detection (white-line thresholding + banding) ---
     white_thresh: 180      # grayscale threshold for the white lines
-    roi_top: 0.45          # ROI top    (fraction of image height)
+    roi_top: 0.35          # ROI top    (fraction of image height). 0.45->0.35: see ~2.7m not ~2.0m so look-ahead L can grow with speed
     roi_bot: 0.95          # ROI bottom (fraction of image height)
     n_bands: 12            # ROI split into this many horizontal strips
     band_min_px: 6         # min white columns for a band to count

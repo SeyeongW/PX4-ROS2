@@ -7,12 +7,15 @@ centroid, this node fits the lane numerically: it samples the lane CENTRE at
 several look-ahead rows (centre = midpoint between the two detected line edges in
 that row band), then runs a LEAST-SQUARES POLYNOMIAL FIT — np.polyfit, degree 2
 (a curve) when enough points span the ROI, degree 1 (a straight line) otherwise.
-The fitted curve x = P(row) is the estimated lane path ahead. Steering combines
-two readings off that fit: the CROSS-TRACK error P(near row) (how far off-centre
-the lane is right at the vehicle) and a LOOK-AHEAD error P(far row) (where the
-lane heads, which anticipates curves); the degree-2 coefficient (path curvature)
-also trims forward speed in tight bends. So the platform tracks the fitted
-line/curve down the MIDDLE of the lane. It
+The fitted curve Y = P(X) is the estimated lane path ahead. Like a driver who
+eyes the road WELL AHEAD rather than the bumper, steering is sampled at a LOOK-
+AHEAD point L = lookahead_dist + lookahead_time·v metres in front (further when
+faster): the lateral error P(L), the heading atan P'(L) and the curvature there
+feed the 2nd-order steering loop, so the truck anticipates the curve instead of
+reacting to it late. L is clamped into the seen span [Xs.min, Xs.max] so it never
+extrapolates past the furthest detected point. The curvature also trims forward
+speed in tight bends. So the platform tracks the fitted curve down the MIDDLE of
+the lane. It
 drives the truck via its gz VelocityControl plugin (the same cmd_vel topic the
 old preset-trajectory mover used), so the rest of the truck mission is unchanged:
 
@@ -120,6 +123,25 @@ class TrackFollowerNode(Node):
         # steer with (lateral authority ∝ speed); crawling kills controllability.
         self.min_speed = self.declare_parameter('min_speed', 1.0).value           # m/s
 
+        # --- Oscillation governor (anti-hunting speed cut) ------------------
+        # If the lateral error keeps FLIPPING SIGN (the truck weaves left-right and
+        # the steering loop can't settle), we treat that as oscillation and CUT the
+        # speed cap fast to bleed the energy out, then let it climb back SLOWLY once
+        # the weaving stops. This is distinct from slowing on steady error (which we
+        # avoid, see _drive): a one-sided offset has NO sign flips -> not throttled;
+        # only genuine hunting is. We count e_y zero-crossings (beyond a deadband) in
+        # a sliding window; >= osc_flip_thresh crossings = oscillating.
+        self.osc_window = self.declare_parameter('osc_window', 2.0).value          # s, count window
+        self.osc_flip_thresh = int(self.declare_parameter('osc_flip_thresh', 3).value)  # flips
+        self.osc_deadband = self.declare_parameter('osc_deadband', 0.05).value     # m, ignore noise
+        # scale (0..1) multiplies the speed cap. Drop FAST when hunting, recover SLOW.
+        self.osc_drop_rate = self.declare_parameter('osc_drop_rate', 1.0).value    # 1/s down
+        self.osc_recover_rate = self.declare_parameter('osc_recover_rate', 0.15).value  # 1/s up
+        self.osc_min_scale = self.declare_parameter('osc_min_scale', 0.4).value    # floor on scale
+        # Hard speed floor while oscillating: lets us go BELOW min_speed to kill the
+        # weave (the user's "slow down to catch the vibration"), but never to a stop.
+        self.osc_min_speed = self.declare_parameter('osc_min_speed', 0.5).value    # m/s
+
         # --- Steering control, designed as a 2nd-order lateral loop ----------
         # The lane-keeping loop is modelled as ÿ + 2ζωₙẏ + ωₙ²y = 0 (y = lateral
         # error [m]). The kinematic model ẏ = v·ψ, ψ̇ = ω with the feedback law
@@ -132,19 +154,60 @@ class TrackFollowerNode(Node):
         # (no overshoot, no weaving) — exactly the case the Bode exercise singles
         # out (BW = ωₙ when ζ = 1/√2). v·κ is curvature feed-forward so a constant-
         # radius bend needs no steady-state error.
-        self.ctrl_bw = self.declare_parameter('ctrl_bw', 1.2).value        # ωₙ [rad/s]
+        # Lower ωₙ = a slower, gentler loop. Dropped 1.2->0.9 to kill the vibration:
+        # it scales BOTH gains down together (k_y=ωₙ²/v, k_ψ=2ζωₙ), so the steering
+        # is less twitchy without raising the D-gain (which would amplify camera
+        # jitter). The longer look-ahead (roi_top) does the rest. Raise back toward
+        # 1.2 for sharper tracking once the ride is smooth.
+        self.ctrl_bw = self.declare_parameter('ctrl_bw', 0.9).value        # ωₙ [rad/s]
         # ζ ≥ 1 (critically/over-damped). 0.707 is the no-lag optimum, but the real
         # loop has camera/processing lag (worse under the GUI, which drops camera
         # frames) that eats phase margin and leaves a P-dominant loop OSCILLATING.
         # ζ>1 raises the heading (D) gain k_ψ=2ζωₙ so it converges without ringing,
         # while P=k_y=ωₙ²/v stays put. Raise FOLLOW_ZETA more if it still hunts.
-        self.zeta = self.declare_parameter('zeta', 1.2).value              # damping ratio
+        self.zeta = self.declare_parameter('zeta', 1.4).value              # damping ratio
         self.kappa_ff = self.declare_parameter('kappa_ff', 1.0).value      # curvature FF scale
         # EMA low-pass on the lane estimate (e_y/ψ/κ): 1.0 = OFF. Default off — the
         # lag it adds hurts convergence (it was making the oscillation worse, not
         # better); damping is handled by ζ instead. Set <1 only for raw-noise jitter.
         self.ctrl_lpf_alpha = self.declare_parameter('ctrl_lpf_alpha', 1.0).value
+        # --- Spike / outlier gate ("hold the good value") -------------------
+        # ζ damps a CONTINUOUS weave; it does NOT help an occasional one-frame
+        # JUMP in the lane estimate (a stray white blob, a momentarily mis-paired
+        # line cluster, a single↔double-line flip, glare). The lane cannot
+        # physically move that fast between frames, so if e_y or ψ leaps more than
+        # the gate from the last good value we REJECT that frame and HOLD the last
+        # estimate — the truck keeps tracking the value it had locked instead of
+        # lurching. If the "jump" PERSISTS past outlier_max_reject frames it is a
+        # real change (curve entry / the lane genuinely shifted) so we accept it
+        # and re-sync. Zero lag on steady tracking — it only fires on a spike.
+        # Set outlier_max_reject=0 to disable (every frame accepted).
+        self.outlier_gate_ey = self.declare_parameter('outlier_gate_ey', 0.40).value   # m / frame
+        self.outlier_gate_psi = self.declare_parameter('outlier_gate_psi', 0.30).value  # rad / frame
+        self.outlier_max_reject = int(
+            self.declare_parameter('outlier_max_reject', 3).value)   # frames before re-sync
         self.yaw_rate_max = self.declare_parameter('yaw_rate_max', 0.8).value     # rad/s
+        # --- Look-ahead ("eyes up the road") --------------------------------
+        # A driver steers toward where the lane will be a few metres AHEAD, not at
+        # the bumper. We read the fitted centre line at a look-ahead distance
+        #   L = lookahead_dist + lookahead_time · v   (further ahead when faster)
+        # so the cross-track / heading / curvature the steering loop sees already
+        # ANTICIPATE the upcoming curve. lookahead_dist is the floor (used when
+        # nearly stopped); lookahead_time scales it with speed (pure-pursuit style).
+        # Set lookahead_time=0 for a fixed look-ahead = lookahead_dist. L is clamped
+        # to the seen span so it never extrapolates past the furthest detected point.
+        self.lookahead_dist = self.declare_parameter('lookahead_dist', 2.0).value  # m, floor
+        self.lookahead_time = self.declare_parameter('lookahead_time', 0.4).value  # s, ·speed
+        # Adaptive look-ahead vs oscillation: when the governor flags hunting we EXTEND
+        # the look-ahead (read the lane FURTHER ahead) — looking further adds phase lead
+        # / anticipation that DAMPS the weave, the opposite of staring at the bumper
+        # which causes it. The multiplier ramps up to lookahead_osc_scale while
+        # oscillating and eases back to 1.0 once it settles. X0 is still clamped to the
+        # seen span (Xs.max), so a bigger L never extrapolates past detected points — it
+        # just stops being pinned at the near field. Set lookahead_osc_scale=1.0 to
+        # disable (look-ahead no longer reacts to oscillation).
+        self.lookahead_osc_scale = self.declare_parameter('lookahead_osc_scale', 1.6).value  # max L mult while hunting
+        self.lookahead_osc_rate = self.declare_parameter('lookahead_osc_rate', 1.0).value    # 1/s ramp of the mult
         # How many consecutive lane-lost frames to coast (hold last estimate) before
         # declaring the lane truly lost and easing to a stop.
         self.lost_hold_frames = int(self.declare_parameter('lost_hold_frames', 8).value)
@@ -177,7 +240,12 @@ class TrackFollowerNode(Node):
         # IPM-projected to ground (X fwd, Y left) and a curve Y=P(X) is least-squares
         # fit there (degree 2 = curve, 1 = straight line).
         self.white_thresh = int(self.declare_parameter('white_thresh', 180).value)
-        self.roi_top = self.declare_parameter('roi_top', 0.45).value
+        # roi_top sets how FAR ahead we see: 0.45 only reached ~2.0 m, so the look-
+        # ahead L=lookahead_dist+lookahead_time·v was always clamped to that ~2.0 m
+        # (X0 stuck near the bumper -> "fixed" + near-field reaction -> weaving).
+        # 0.35 pushes the far ROI edge to ~2.7 m (still well below the ~0.05 horizon
+        # row), giving L room to grow with speed so the look-ahead is truly dynamic.
+        self.roi_top = self.declare_parameter('roi_top', 0.35).value
         self.roi_bot = self.declare_parameter('roi_bot', 0.95).value
         self.n_bands = int(self.declare_parameter('n_bands', 12).value)
         self.band_min_px = int(self.declare_parameter('band_min_px', 6).value)
@@ -197,11 +265,19 @@ class TrackFollowerNode(Node):
         self._last_psi = 0.0     # lane heading rel. forward [rad], +left
         self._last_kappa = 0.0   # lane curvature [1/m], +left
         self._lost_count = 0
+        self._rej_count = 0      # consecutive spike-rejected frames (gate re-syncs past max)
+        self._spike = False      # latest frame was a held spike (for the HUD)
         self._v = 0.0            # current commanded speed [m/s] (ramped, not pinned)
         self._t_prev = None      # last tick time, for the speed ramp dt
         self._v_target = 0.0     # latest speed target (for the HUD)
         self._last_omega = 0.0   # last commanded yaw rate / speed (for the HUD)
         self._last_v = 0.0
+        # oscillation governor state
+        self._osc_scale = 1.0    # current speed-cap multiplier (1=full, drops on hunting)
+        self._la_scale = 1.0     # current look-ahead multiplier (1=nominal, grows on hunting)
+        self._osc_flips = []     # timestamps [s] of recent e_y sign flips (sliding window)
+        self._ey_sign = 0        # last significant sign of e_y (+1/-1, 0 = inside deadband)
+        self._oscillating = False  # latched detection flag (for the HUD)
         self._fit_deg = 0        # degree of the most recent lane fit (1=line,2=curve)
         self._armed = False
         self._released = False
@@ -327,6 +403,22 @@ class TrackFollowerNode(Node):
         t = -self.cam_h / rz                # >0
         return (self.cam_x + t * rx, t * ry)
 
+    def _image_xy(self, X, Y, w, h):
+        """Forward perspective projection: ground point (X,Y) in the platform body
+        frame [m] (X forward, Y left) -> image pixel (u,v). Exact inverse of
+        _ground_xy, used by the overlay to draw the METRIC lane fit and the
+        look-ahead target where they truly lie in the frame. None if the point is
+        not in front of the camera (non-positive optical depth)."""
+        f = (w / 2.0) / math.tan(self.cam_fov / 2.0)
+        st, ct = math.sin(self.cam_pitch), math.cos(self.cam_pitch)
+        dx = X - self.cam_x
+        depth = dx * ct + self.cam_h * st       # distance along the optical axis
+        if depth <= 1e-6:
+            return None
+        xn = -Y / depth
+        yn = (-dx * st + self.cam_h * ct) / depth
+        return (int(round(w / 2.0 + xn * f)), int(round(h / 2.0 + yn * f)))
+
     def _image_cb(self, msg: Image):
         bgr = _imgmsg_to_bgr(msg)
         h, w = bgr.shape[:2]
@@ -368,7 +460,15 @@ class TrackFollowerNode(Node):
             self._fit_deg = degm
             cm = np.polyfit(Xs, Ys, degm)        # virtual centre line Y=P(X) [m]
             dcm = np.polyder(cm)
-            X0 = float(Xs.min())
+            # Look AHEAD: read the fit at L = lookahead_dist + lookahead_time·v
+            # metres in front (further when faster), clamped to the seen span so we
+            # never extrapolate past the furthest detected point. This is the
+            # point a driver would be steering TOWARD, so the loop anticipates the
+            # curve rather than chasing the lane right at the bumper (Xs.min).
+            # ·_la_scale: the oscillation governor pushes the look-ahead FURTHER while
+            # hunting (anticipation damps the weave), back to nominal when settled.
+            L = (self.lookahead_dist + self.lookahead_time * self._v) * self._la_scale
+            X0 = float(min(Xs.max(), max(Xs.min(), L)))
             e_y = float(np.polyval(cm, X0))      # lateral offset of centre [m], +left
             slope = float(np.polyval(dcm, X0))
             psi = math.atan(slope)               # heading of centre [rad], +left
@@ -381,6 +481,19 @@ class TrackFollowerNode(Node):
             e_y = a * e_y + (1 - a) * self._last_ey
             psi = a * psi + (1 - a) * self._last_psi
             kappa = a * kappa + (1 - a) * self._last_kappa
+            # Spike gate: if this frame's estimate JUMPS more than the gate from
+            # the last good value, treat it as an outlier and HOLD the last value
+            # (don't let one bad fit yank the steering). A jump that persists past
+            # outlier_max_reject frames is a real change -> accept it and re-sync.
+            if self.outlier_max_reject > 0 and self._rej_count < self.outlier_max_reject \
+                    and (abs(e_y - self._last_ey) > self.outlier_gate_ey
+                         or abs(psi - self._last_psi) > self.outlier_gate_psi):
+                self._rej_count += 1
+                self._spike = True
+                e_y, psi, kappa = self._last_ey, self._last_psi, self._last_kappa
+            else:
+                self._rej_count = 0
+                self._spike = False
             orows = np.array([o[0] for o in overlay], dtype=float)
             ocols = np.array([o[1] for o in overlay], dtype=float)
             coeffs = np.polyfit(orows, ocols, 2 if len(overlay) >= 3 else 1)
@@ -417,15 +530,41 @@ class TrackFollowerNode(Node):
             min(0.1, max(1e-3, (now - self._t_prev).nanoseconds * 1e-9))
         self._t_prev = now
 
-        # --- Dynamic speed: NOT a fixed command, but ONLY curvature-limited + ramp.
-        #   v ≤ √(a_lat/|κ|) keeps a lateral-accel budget on bends; an accel/decel
-        #   ramp makes it ease up/down with travel. We deliberately do NOT slow on
-        #   tracking error: a car is nonholonomic, so going slower REDUCES lateral
-        #   authority (you need forward motion to move sideways) and makes the
-        #   steering loop oscillate — the opposite of the hovering drone. ---
+        # --- Oscillation governor: detect left-right hunting via e_y sign flips and
+        #   scale the speed cap down FAST, recover SLOW. A steady one-sided offset
+        #   never flips sign so it is NOT throttled; only genuine weaving is. ---
+        s = 1 if e_y > self.osc_deadband else -1 if e_y < -self.osc_deadband else 0
+        if s != 0 and self._ey_sign != 0 and s != self._ey_sign:
+            self._osc_flips.append(t)
+        if s != 0:
+            self._ey_sign = s
+        self._osc_flips = [tf for tf in self._osc_flips if tf >= t - self.osc_window]
+        self._oscillating = len(self._osc_flips) >= self.osc_flip_thresh
+        if self._oscillating:
+            self._osc_scale = max(self.osc_min_scale,
+                                  self._osc_scale - self.osc_drop_rate * dt)
+        else:
+            self._osc_scale = min(1.0, self._osc_scale + self.osc_recover_rate * dt)
+        # Adaptive look-ahead: EXTEND L while hunting (more anticipation/phase lead =
+        # damping), ease back to nominal when clear. Same ramp rate both ways — read by
+        # the next _image_cb when it computes L (one-frame lag, like _osc_scale).
+        la_target = self.lookahead_osc_scale if self._oscillating else 1.0
+        dla = la_target - self._la_scale
+        self._la_scale += max(-self.lookahead_osc_rate * dt,
+                              min(self.lookahead_osc_rate * dt, dla))
+        self._la_scale = max(1.0, min(self.lookahead_osc_scale, self._la_scale))
+
+        # --- Dynamic speed: NOT a fixed command, but curvature-limited + ramp, then
+        #   the oscillation governor on top. v ≤ √(a_lat/|κ|) keeps a lateral-accel
+        #   budget on bends; an accel/decel ramp eases it up/down with travel. We do
+        #   NOT slow on steady tracking error (a nonholonomic car loses lateral
+        #   authority when crawling) — but we DO cut speed on detected OSCILLATION,
+        #   dropping below min_speed (to osc_min_speed) to bleed the weave out. ---
         if detected or self._lost_count < self.lost_hold_frames:
             v_curve = math.sqrt(self.lat_accel_max / max(abs(kappa), 1e-4))
-            v_target = max(self.min_speed, min(self.forward_speed, v_curve))
+            v_cap = self.forward_speed * self._osc_scale
+            v_floor = max(self.osc_min_speed, self.min_speed * self._osc_scale)
+            v_target = max(v_floor, min(v_cap, v_curve))
         else:
             v_target = 0.0                      # lane lost: ease to a stop
         self._v_target = v_target
@@ -492,20 +631,50 @@ class TrackFollowerNode(Node):
         cv2.rectangle(vis, (0, r0), (w - 1, r1), (255, 128, 0), 2)
         cv2.line(vis, (cxc, r0), (cxc, r1), (180, 180, 180), 1)
 
-        # 2) per-band detection: left edge / right edge (orange) and lane centre
-        #    (yellow), with a thin bar showing the detected lane width.
+        # 2) per-band detections as dots: edges (orange) + lane centre (yellow).
         for (row, centre, left, right) in samples:
             row = int(row)
-            cv2.line(vis, (int(left), row), (int(right), row), (0, 165, 255), 1)
             cv2.circle(vis, (int(left), row), 3, (0, 140, 255), -1)
             cv2.circle(vis, (int(right), row), 3, (0, 140, 255), -1)
             cv2.circle(vis, (int(centre), row), 3, (0, 255, 255), -1)
 
-        # 3) the fitted lane path (magenta, image-space fit just for drawing)
+        # 2b) CONTINUOUS LANE LINES: fit the detected left / right edges across all
+        #     bands that saw BOTH lines and draw each as a smooth curve following the
+        #     recognised lane markings (blue = left line, red = right line). This is
+        #     the "draw a line along the recognised lane" overlay.
+        two = [(int(r), l, rt) for (r, c, l, rt) in samples if l != rt]
+        if len(two) >= 2:
+            rows = np.array([t[0] for t in two], dtype=float)
+            deg = 2 if len(two) >= 3 else 1
+            lfit = np.polyfit(rows, np.array([t[1] for t in two], dtype=float), deg)
+            rfit = np.polyfit(rows, np.array([t[2] for t in two], dtype=float), deg)
+            rr = list(range(int(rows.min()), int(rows.max()) + 1, 3))
+            lp = [(int(np.polyval(lfit, rw)), rw) for rw in rr]
+            rp = [(int(np.polyval(rfit, rw)), rw) for rw in rr]
+            for i in range(1, len(rr)):
+                cv2.line(vis, lp[i - 1], lp[i], (255, 80, 0), 2)   # left  (blue)
+                cv2.line(vis, rp[i - 1], rp[i], (0, 80, 255), 2)   # right (red)
+
+        # 3) the GENERATED PATH: the fitted centre line the truck is following,
+        #    drawn in magenta (image-space fit just for drawing).
         if coeffs is not None:
             pts = [(int(np.polyval(coeffs, row)), row) for row in range(r0, r1, 3)]
             for i in range(1, len(pts)):
                 cv2.line(vis, pts[i - 1], pts[i], (255, 0, 255), 2)
+
+        # 3b) LOOK-AHEAD TARGET: project the metric look-ahead point — X0 metres in
+        #     FRONT, lateral offset e_y — back into the image with the forward IPM, so
+        #     the target disc sits out at that true distance on the path (not at the
+        #     bumper). When X0 grows with speed the disc visibly slides further away.
+        if detected:
+            la = self._image_xy(X0, e_y, w, h)
+            if la is not None:
+                u0, v0 = la
+                cv2.circle(vis, (u0, v0), 11, (255, 255, 255), -1)
+                cv2.circle(vis, (u0, v0), 11, (0, 0, 0), 2)
+                cv2.drawMarker(vis, (u0, v0), (0, 0, 0), cv2.MARKER_CROSS, 16, 2)
+                cv2.putText(vis, f'L={X0:.1f}m', (u0 + 14, v0 - 8), font, 0.5,
+                            (255, 255, 255), 2, cv2.LINE_AA)
 
         # 4) steering arrow from bottom centre: tilts toward the commanded turn,
         #    length grows with yaw-rate magnitude. +omega = left (CCW).
@@ -530,6 +699,8 @@ class TrackFollowerNode(Node):
         turn = 'LEFT' if omega > 0.02 else 'RIGHT' if omega < -0.02 else 'STRAIGHT'
         state = (f'TRACKING  fit=deg{self._fit_deg}  n={len(samples)}'
                  if detected else f'LANE LOST ({self._lost_count})')
+        if self._spike:
+            state += f'  [SPIKE held {self._rej_count}]'
         lines = [
             state,
             f'lateral e_y = {e_y:+.2f} m   (X0={X0:.1f} m)',
@@ -538,14 +709,23 @@ class TrackFollowerNode(Node):
             f'wn={self.ctrl_bw:.2f} zeta={self.zeta:.3f}',
             f'yaw = {omega:+.2f} rad/s ({deg_s:+.0f} deg/s) {turn}',
             f'speed = {self._last_v:.1f} -> {self._v_target:.1f} m/s',
+            (f'OSC! flips={len(self._osc_flips)} scale={self._osc_scale:.2f} la={self._la_scale:.2f}'
+             if self._oscillating
+             else f'osc ok  scale={self._osc_scale:.2f} la={self._la_scale:.2f}'),
         ]
         panel = vis.copy()
         cv2.rectangle(panel, (4, 4), (330, 22 + 22 * len(lines)), (0, 0, 0), -1)
         cv2.addWeighted(panel, 0.45, vis, 0.55, 0, vis)
         col0 = (0, 255, 0) if detected else (0, 0, 255)
+        osc_i = len(lines) - 1            # last line = oscillation governor status
         for i, ln in enumerate(lines):
-            cv2.putText(vis, ln, (10, 24 + 22 * i), font, 0.55,
-                        col0 if i == 0 else (255, 255, 255), 1, cv2.LINE_AA)
+            if i == 0:
+                col = col0
+            elif i == osc_i and self._oscillating:
+                col = (0, 0, 255)         # red while the governor is cutting speed
+            else:
+                col = (255, 255, 255)
+            cv2.putText(vis, ln, (10, 24 + 22 * i), font, 0.55, col, 1, cv2.LINE_AA)
 
         stamp = self.get_clock().now().to_msg()
         raw = Image()

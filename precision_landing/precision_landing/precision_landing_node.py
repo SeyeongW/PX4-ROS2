@@ -447,8 +447,14 @@ class PrecisionLandingNode(Node):
                             self.cmd_vel[2] = -self.descend_rate * self.descend_min_scale
                     else:
                         self.cmd_vel[2] = 0.0        # converge first, then drop
-                elif self.kf_miss > self.coast_ticks:
-                    self._log('marker lost -> ALIGN (hold alt)')
+                elif self.kf_miss > self.coast_ticks and not self._cue_ok():
+                    # Vision lost AND no live cue to fall back on: give up the
+                    # descent and re-align. With a moving platform on a track the
+                    # camera footprint shrinks toward the marker size as we drop, so
+                    # a turning target slips out of frame for >coast_ticks often —
+                    # but as long as the cue (platform centre) is live we keep
+                    # descending on it below instead of bouncing back to ALIGN.
+                    self._log('marker lost (no cue) -> ALIGN (hold alt)')
                     self.cmd_vel[2] = 0.0
                     self.stage = Stage.ALIGN            # stop descending until reacquired
                 else:
@@ -456,6 +462,13 @@ class PrecisionLandingNode(Node):
                     # (>= descend_min_scale of the rate), faster the more centred;
                     # outside the funnel pause and re-converge. The funnel narrows
                     # as altitude drops, so the drone converges WHILE descending.
+                    # Vision dropout (kf_miss>coast_ticks) but cue still live: steer
+                    # on the cue (exact platform centre) so a moving/turning target
+                    # doesn't strand the descent — this is the same open-loop
+                    # reference the final-descent stage uses, just applied higher up.
+                    if self.kf_miss > self.coast_ticks and self._cue_ok():
+                        err = self._servo_to(self.cue[0], self.cue[1],
+                                             self.cue_vel[0], self.cue_vel[1])
                     # Gated on kf_init (marker world position known), not marker_ok
                     # (pattern currently visible) — it coasts through brief dropouts.
                     lateral_err = err if err is not None else 999.0
