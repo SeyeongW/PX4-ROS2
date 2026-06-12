@@ -9,9 +9,12 @@
   <!--                                                                      -->
   <!-- Run:                                                                 -->
   <!--   Terminal 1:  gz sim -v4 -r gazebo/worlds/rover_skid_test.sdf       -->
-  <!--   Terminal 2:  sim_vehicle.py -v Rover -f JSON (frame rover-skid)    -->
-  <!--                  -I1 (console) (map)                                 -->
-  <!--   then in MAVProxy: mode MANUAL / arm throttle / drive, or GUIDED.   -->
+  <!--   Terminal 2:  sim_vehicle.py -v Rover (model JSON) -I1 (console)    -->
+  <!--                  (map) add-param-file = gazebo/config/rover_skid.parm -->
+
+  <!--   then in MAVProxy: mode MANUAL / arm throttle / rc 3 1600 to drive. -->
+  <!--   The param file forces skid wiring (SERVO1=73/SERVO3=74); without   -->
+  <!--   it the rover steers/curves instead of driving straight.            -->
   <!-- Needs GZ_SIM_RESOURCE_PATH to include gazebo/models and the          -->
   <!-- ardupilot_gazebo models (run via gazebo/run_sim.sh env, or export).  -->
   <!-- ================================================================== -->

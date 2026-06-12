@@ -11,9 +11,12 @@
   <!-- the other, so a speed difference yaws the rover (no steering hinge).  -->
   <!--                                                                      -->
   <!-- Run alongside the drone with a SECOND SITL instance on -I1, which     -->
-  <!-- offsets the FDM port to 9012 (drone stays on 9002):                   -->
-  <!--   sim_vehicle.py -v Rover -f JSON (frame rover-skid) -I1 (console)     -->
-  <!-- ArduPilot params for skid steering:                                   -->
+  <!-- offsets the FDM port to 9012 (drone stays on 9002). ALWAYS load the    -->
+  <!-- skid param file - the rover-skid frame defaults do NOT stick across    -->
+  <!-- runs (a previous default-Rover EEPROM leaves SERVO1=26/SERVO3=70):     -->
+  <!--   sim_vehicle.py -v Rover (model JSON) -I1 (console) (map)             -->
+  <!--     add-param-file = gazebo/config/rover_skid.parm                     -->
+  <!-- That file sets the skid wiring this plugin expects:                    -->
   <!--   SERVO1_FUNCTION 73  (ThrottleLeft)   -> plugin channel 0            -->
   <!--   SERVO3_FUNCTION 74  (ThrottleRight)  -> plugin channel 2            -->
   <!--                                                                      -->
