@@ -16,8 +16,20 @@ class YoloProcessorRealNode(Node):
     def __init__(self):
         super().__init__("yolo_processor_real_node")
 
+        # default model path resolved dynamically searching standard workspace locations
+        paths_to_search = [
+            os.path.expanduser("~/ros2_ws/PX4-ROS2/yolo11n.engine"),
+            os.path.expanduser("~/ros2_ws/src/PX4-ROS2/yolo11n.engine"),
+            os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "yolo11n.engine")),
+        ]
+        default_model = "yolo11n.engine"  # fallback
+        for path in paths_to_search:
+            if os.path.exists(path):
+                default_model = path
+                break
+
         self.declare_parameter("device_id", 0)
-        self.declare_parameter("model_path", "/home/sw/ros2_ws/yolo11s.engine")
+        self.declare_parameter("model_path", default_model)
         self.declare_parameter("deadzone", 0.08)
 
         self.device_id = self.get_parameter("device_id").get_parameter_value().integer_value
@@ -102,7 +114,7 @@ class YoloProcessorRealNode(Node):
             is_locked = (track_id == self.locked_track_id)
             color = (0, 0, 255) if is_locked else (255, 0, 0)
             cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2 if not is_locked else 4)
-            cv2.putText(frame, f"ID:{track_id} {current_confs[i]:.2f}", (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+            cv2.putText(frame, f"person(0) ID:{track_id} {current_confs[i]:.2f}", (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
 
             if is_locked:
                 cx, cy = (box[0] + box[2]) / 2.0, (box[1] + box[3]) / 2.0

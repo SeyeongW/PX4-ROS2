@@ -307,7 +307,7 @@ class YoloProcessorSimNode(Node):
         x1, y1, x2, y2 = [int(v) for v in box]
         cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
 
-        label = f"id:{display_id} person {conf:.2f}"
+        label = f"person(0) ID:{display_id} {conf:.2f}"
         (text_w, text_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 1)
         label_y1 = y1 - 20 if y1 - 20 > 0 else y1
         label_y2 = y1 if y1 - 20 > 0 else y1 + 20

@@ -4,33 +4,45 @@
 #include <array>
 #include <cstdint>
 #include <algorithm>
+#include <memory>
 
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp/qos.hpp>
 
-#include <px4_msgs/msg/offboard_control_mode.hpp>
-#include <px4_msgs/msg/trajectory_setpoint.hpp>
-#include <px4_msgs/msg/vehicle_command.hpp>
-#include <px4_msgs/msg/vehicle_local_position.hpp>
-#include <px4_msgs/msg/vehicle_status.hpp>
+#include <geometry_msgs/msg/pose_stamped.hpp>
+#include <geometry_msgs/msg/twist_stamped.hpp>
+#include <mavros_msgs/msg/state.hpp>
+#include <mavros_msgs/srv/command_bool.hpp>
+#include <mavros_msgs/srv/set_mode.hpp>
 
 using namespace std::chrono_literals;
-using namespace px4_msgs::msg;
 
-class OffboardRealSimplifiedLog : public rclcpp::Node {
+class ArduPilotOffboardControl : public rclcpp::Node {
 public:
-    OffboardRealSimplifiedLog() : Node("offboard_real_log_node") {
-        auto qos_profile = rclcpp::SensorDataQoS();
+    ArduPilotOffboardControl() : Node("ardupilot_offboard_node") {
+        
+        // Publishers
+        target_pose_publisher_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("/mavros/setpoint_position/local", 10);
+        
+        // Subscriptions
+        state_subscription_ = this->create_subscription<mavros_msgs::msg::State>(
+            "/mavros/state", 10,
+            [this](const mavros_msgs::msg::State::SharedPtr msg) { 
+                current_state_ = *msg; 
+            });
 
-        offboard_control_mode_publisher_ = this->create_publisher<OffboardControlMode>("/fmu/in/offboard_control_mode", 10);
-        trajectory_setpoint_publisher_ = this->create_publisher<TrajectorySetpoint>("/fmu/in/trajectory_setpoint", 10);
-        vehicle_command_publisher_ = this->create_publisher<VehicleCommand>("/fmu/in/vehicle_command", 10);
+        local_pos_subscription_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
+            "/mavros/local_position/pose", 10,
+            [this](const geometry_msgs::msg::PoseStamped::SharedPtr msg) {
+                current_pos_ = {static_cast<float>(msg->pose.position.x), 
+                                static_cast<float>(msg->pose.position.y), 
+                                static_cast<float>(msg->pose.position.z)};
+                
+                // Simplified yaw extraction from quaternion
+                float qz = msg->pose.orientation.z;
+                float qw = msg->pose.orientation.w;
+                current_yaw_meas_ = 2.0f * std::atan2(qz, qw);
 
-        local_pos_subscription_ = this->create_subscription<VehicleLocalPosition>(
-            "/fmu/out/vehicle_local_position", qos_profile,
-            [this](const VehicleLocalPosition &msg) {
-                current_pos_ = {msg.x, msg.y, msg.z};
-                current_yaw_meas_ = msg.heading;
                 if (!yaw_initialized_) {
                     current_yaw_sp_ = current_yaw_meas_;
                     target_yaw_ = current_yaw_sp_;
@@ -38,22 +50,21 @@ public:
                 }
             });
 
-        status_subscription_ = this->create_subscription<VehicleStatus>(
-            "/fmu/out/vehicle_status", qos_profile,
-            [this](const VehicleStatus &msg) { arming_state_ = msg.arming_state; });
+        // Service Clients
+        arming_client_ = this->create_client<mavros_msgs::srv::CommandBool>("/mavros/cmd/arming");
+        set_mode_client_ = this->create_client<mavros_msgs::srv::SetMode>("/mavros/set_mode");
 
         timer_ = this->create_wall_timer(100ms, [this]() {
             if (phase_ == Phase::landing) {
-                if (arming_state_ == VehicleStatus::ARMING_STATE_DISARMED) {
+                if (!current_state_.armed) {
                     RCLCPP_INFO(this->get_logger(), ">>> MISSION COMPLETE / DISARMED");
                     rclcpp::shutdown();
                     return;
                 }
             }
-            if (phase_ != Phase::landing) {
-                publish_offboard_control_mode();
-                publish_trajectory_setpoint();
-            }
+
+            // In ArduPilot/MAVROS, we should stream setpoints even before entering GUIDED
+            publish_target_pose();
             manage_mission_flow();
         });
     }
@@ -62,28 +73,27 @@ private:
     enum class Phase { warmup, takeoff, hold, move, landing };
 
     rclcpp::TimerBase::SharedPtr timer_;
-    rclcpp::Publisher<OffboardControlMode>::SharedPtr offboard_control_mode_publisher_;
-    rclcpp::Publisher<TrajectorySetpoint>::SharedPtr trajectory_setpoint_publisher_;
-    rclcpp::Publisher<VehicleCommand>::SharedPtr vehicle_command_publisher_;
-    rclcpp::Subscription<VehicleLocalPosition>::SharedPtr local_pos_subscription_;
-    rclcpp::Subscription<VehicleStatus>::SharedPtr status_subscription_;
+    rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr target_pose_publisher_;
+    rclcpp::Subscription<mavros_msgs::msg::State>::SharedPtr state_subscription_;
+    rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr local_pos_subscription_;
+    
+    rclcpp::Client<mavros_msgs::srv::CommandBool>::SharedPtr arming_client_;
+    rclcpp::Client<mavros_msgs::srv::SetMode>::SharedPtr set_mode_client_;
 
+    mavros_msgs::msg::State current_state_;
     Phase phase_ = Phase::warmup;
     uint64_t ticks_ = 0;
+    
+    // ENU Coordinates: [East, North, Up]
     std::array<float, 3> current_pos_{0.0f, 0.0f, 0.0f};
     std::array<float, 3> setpoint_pos_{0.0f, 0.0f, 0.0f};
-    std::array<float, 3> target_vel_{0.0f, 0.0f, 0.0f};
 
     bool yaw_initialized_ = false;
     float current_yaw_meas_ = 0.0f;
     float current_yaw_sp_ = 0.0f;
     float target_yaw_ = 0.0f;
-    uint8_t arming_state_ = 0;
-    bool arm_sent_ = false;
-    bool offboard_sent_ = false;
 
-    const float flight_alt_ = 50.0f;
-    float z_sp_ = 0.0f;
+    const float flight_alt_ = 50.0f; // 50m Up
     float takeoff_elapsed_ = 0.0f;
     const float takeoff_ramp_time_ = 5.0f;
     const float cruise_speed_ = 5.0f;
@@ -91,24 +101,40 @@ private:
     const float yaw_speed_ = 1.0f;
 
     bool wp_initialized_ = false;
-    std::vector<std::array<float,2>> wp_abs_;
+    std::vector<std::array<float,2>> wp_abs_; // {East, North}
     size_t seg_index_ = 0;
 
-    void generate_lawnmower_path(float start_x, float start_y, float initial_yaw) {
+    void set_mode(std::string mode) {
+        auto request = std::make_shared<mavros_msgs::srv::SetMode::Request>();
+        request->custom_mode = mode;
+        set_mode_client_->async_send_request(request);
+    }
+
+    void arm(bool value) {
+        auto request = std::make_shared<mavros_msgs::srv::CommandBool::Request>();
+        request->value = value;
+        arming_client_->async_send_request(request);
+    }
+
+    void generate_lawnmower_path(float start_east, float start_north, float initial_yaw) {
         wp_abs_.clear();
         float length = 100.0f;
         float step = 25.0f; 
+        
+        // initial_yaw is ENU (0 = East, CCW)
         float cos_y = std::cos(initial_yaw);
         float sin_y = std::sin(initial_yaw);
 
-        for (float y = 0; y <= 100.1f; y += step) {
-            std::vector<float> row_x;
-            if (static_cast<int>(std::round(y / step)) % 2 == 0) row_x = {0.0f, length};
-            else row_x = {length, 0.0f};
-            for (float x : row_x) {
-                float rot_x = x * cos_y - y * sin_y;
-                float rot_y = x * sin_y + y * cos_y;
-                wp_abs_.push_back({start_x + rot_x, start_y + rot_y});
+        for (float n = 0; n <= 100.1f; n += step) {
+            std::vector<float> row_e;
+            if (static_cast<int>(std::round(n / step)) % 2 == 0) row_e = {0.0f, length};
+            else row_e = {length, 0.0f};
+            
+            for (float e : row_e) {
+                // Rotation in ENU
+                float rot_e = e * cos_y - n * sin_y;
+                float rot_n = e * sin_y + n * cos_y;
+                wp_abs_.push_back({start_east + rot_e, start_north + rot_n});
             }
         }
     }
@@ -116,18 +142,24 @@ private:
     void manage_mission_flow() {
         switch (phase_) {
             case Phase::warmup:
-                if (yaw_initialized_ && !offboard_sent_) {
-                    publish_vehicle_command(VehicleCommand::VEHICLE_CMD_DO_SET_MODE, 1.0f, 6.0f);
-                    offboard_sent_ = true;
+                if (yaw_initialized_ && current_state_.mode != "GUIDED" && ticks_ % 20 == 0) {
+                    RCLCPP_INFO(this->get_logger(), "Setting mode to GUIDED...");
+                    set_mode("GUIDED");
                 }
-                if (offboard_sent_ && !arm_sent_) {
-                    publish_vehicle_command(VehicleCommand::VEHICLE_CMD_COMPONENT_ARM_DISARM, 1.0f);
-                    arm_sent_ = true;
-                    ticks_ = 0;
+                if (current_state_.mode == "GUIDED" && !current_state_.armed && ticks_ % 20 == 0) {
+                    RCLCPP_INFO(this->get_logger(), "Arming...");
+                    arm(true);
                 }
-                if (arm_sent_ && ++ticks_ >= 50) {
-                    RCLCPP_INFO(this->get_logger(), ">>> TAKEOFF");
-                    phase_ = Phase::takeoff;
+                if (current_state_.armed && current_state_.mode == "GUIDED") {
+                    ticks_++;
+                    if (ticks_ >= 20) {
+                        RCLCPP_INFO(this->get_logger(), ">>> TAKEOFF");
+                        phase_ = Phase::takeoff;
+                        takeoff_elapsed_ = 0.0f;
+                        ticks_ = 0;
+                    }
+                } else {
+                    ticks_++;
                 }
                 break;
 
@@ -135,13 +167,13 @@ private:
                 takeoff_elapsed_ += 0.1f;
                 {
                     float s = std::min(1.0f, takeoff_elapsed_ / takeoff_ramp_time_);
-                    z_sp_ = (1.0f - s) * current_pos_[2] + s * (-flight_alt_);
+                    setpoint_pos_[2] = (1.0f - s) * current_pos_[2] + s * flight_alt_;
                 }
                 setpoint_pos_[0] = current_pos_[0];
                 setpoint_pos_[1] = current_pos_[1];
                 target_yaw_ = current_yaw_sp_;
 
-                if (std::abs(current_pos_[2]) >= (flight_alt_ - 1.0f)) {
+                if (std::abs(current_pos_[2] - flight_alt_) <= 1.0f) {
                     if (!wp_initialized_) {
                         generate_lawnmower_path(current_pos_[0], current_pos_[1], current_yaw_meas_);
                         wp_initialized_ = true;
@@ -162,25 +194,21 @@ private:
             case Phase::move: {
                 if (seg_index_ >= wp_abs_.size()) {
                     RCLCPP_INFO(this->get_logger(), ">>> RTL");
-                    publish_vehicle_command(VehicleCommand::VEHICLE_CMD_NAV_RETURN_TO_LAUNCH);
+                    set_mode("RTL");
                     phase_ = Phase::landing;
                     break;
                 }
                 const auto &B = wp_abs_[seg_index_];
-                float dx = B[0] - current_pos_[0];
-                float dy = B[1] - current_pos_[1];
-                float dist = std::hypot(dx, dy);
+                float de = B[0] - current_pos_[0];
+                float dn = B[1] - current_pos_[1];
+                float dist = std::hypot(de, dn);
 
-                if (dist > 0.1f) {
-                    target_vel_[0] = (dx / dist) * cruise_speed_;
-                    target_vel_[1] = (dy / dist) * cruise_speed_;
-                }
                 if (dist < wp_switch_radius_) seg_index_++;
 
                 setpoint_pos_[0] = B[0];
                 setpoint_pos_[1] = B[1];
-                z_sp_ = -flight_alt_;
-                target_yaw_ = std::atan2(dy, dx);
+                setpoint_pos_[2] = flight_alt_;
+                target_yaw_ = std::atan2(dn, de);
                 
                 // Update Yaw
                 float diff = target_yaw_ - current_yaw_sp_;
@@ -195,35 +223,25 @@ private:
         }
     }
 
-    void publish_offboard_control_mode() {
-        OffboardControlMode msg{};
-        msg.position = true;
-        msg.velocity = true;
-        msg.timestamp = this->get_clock()->now().nanoseconds() / 1000ULL;
-        offboard_control_mode_publisher_->publish(msg);
-    }
-
-    void publish_trajectory_setpoint() {
-        TrajectorySetpoint msg{};
-        msg.position = {setpoint_pos_[0], setpoint_pos_[1], z_sp_};
-        msg.velocity = (phase_ == Phase::move) ? std::array<float, 3>{target_vel_[0], target_vel_[1], 0.0f} : std::array<float, 3>{0.0f, 0.0f, 0.0f};
-        msg.yaw = current_yaw_sp_;
-        msg.timestamp = this->get_clock()->now().nanoseconds() / 1000ULL;
-        trajectory_setpoint_publisher_->publish(msg);
-    }
-
-    void publish_vehicle_command(uint16_t command, float param1 = 0.0f, float param2 = 0.0f) {
-        VehicleCommand msg{};
-        msg.command = command; msg.param1 = param1; msg.param2 = param2;
-        msg.target_system = 1; msg.target_component = 1; msg.source_system = 1; msg.source_component = 1;
-        msg.from_external = true; msg.timestamp = this->get_clock()->now().nanoseconds() / 1000ULL;
-        vehicle_command_publisher_->publish(msg);
+    void publish_target_pose() {
+        geometry_msgs::msg::PoseStamped msg;
+        msg.header.stamp = this->get_clock()->now();
+        msg.header.frame_id = "map";
+        msg.pose.position.x = setpoint_pos_[0];
+        msg.pose.position.y = setpoint_pos_[1];
+        msg.pose.position.z = setpoint_pos_[2];
+        
+        // Simple yaw to quaternion (z-axis only)
+        msg.pose.orientation.z = std::sin(current_yaw_sp_ / 2.0f);
+        msg.pose.orientation.w = std::cos(current_yaw_sp_ / 2.0f);
+        
+        target_pose_publisher_->publish(msg);
     }
 };
 
 int main(int argc, char *argv[]) {
     rclcpp::init(argc, argv);
-    rclcpp::spin(std::make_shared<OffboardRealSimplifiedLog>());
+    rclcpp::spin(std::make_shared<ArduPilotOffboardControl>());
     rclcpp::shutdown();
     return 0;
 }

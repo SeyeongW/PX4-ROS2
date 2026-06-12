@@ -2,7 +2,7 @@ import os
 from glob import glob
 from setuptools import find_packages, setup
 
-package_name = 'camera_detection'
+package_name = 'precision_landing'
 
 setup(
     name=package_name,
@@ -18,8 +18,8 @@ setup(
     zip_safe=True,
     maintainer='seyeong',
     maintainer_email='seyeong186@gmail.com',
-    description='TODO: Package description',
-    license='TODO: License declaration',
+    description='ArUco precision landing controller (ArduPilot/MAVROS, GUIDED).',
+    license='Apache-2.0',
     extras_require={
         'test': [
             'pytest',
@@ -27,11 +27,10 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            'yolo_processor_node = camera_detection.yolo_processor_node:main',
-            'stream_test_node = camera_detection.stream_test_node:main',
-            'yolo_processor_sim_node = camera_detection.yolo_processor_sim_node:main',
-            'commander = camera_detection.commander:main',
-            'aruco_detector_node = camera_detection.aruco_detector_node:main',
+            'precision_landing_node = precision_landing.precision_landing_node:main',
+            'moving_marker_node = precision_landing.moving_marker_node:main',
+            'track_follower_node = precision_landing.track_follower_node:main',
+            'mission_manager_node = precision_landing.mission_manager_node:main',
         ],
     },
 )

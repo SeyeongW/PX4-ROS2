@@ -1,3 +1,4 @@
+import os
 import cv2
 import numpy as np
 import rclpy
@@ -22,7 +23,17 @@ class YoloCombinedDebugNode(Node):
         self.pipeline.start(config)
 
         # 2. YOLO Setup
-        self.model = YOLO("/home/sw/ros2_ws/yolo11s.engine", task="detect")
+        paths_to_search = [
+            os.path.expanduser("~/ros2_ws/PX4-ROS2/yolo11n.engine"),
+            os.path.expanduser("~/ros2_ws/src/PX4-ROS2/yolo11n.engine"),
+            os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "yolo11n.engine")),
+        ]
+        default_model = "yolo11n.engine"  # fallback
+        for path in paths_to_search:
+            if os.path.exists(path):
+                default_model = path
+                break
+        self.model = YOLO(default_model, task="detect")
 
         # 3. Publisher
         self.combined_pub = self.create_publisher(CompressedImage, "/perception/yolo_result/compressed", 10)
@@ -63,7 +74,7 @@ class YoloCombinedDebugNode(Node):
 
                 # 컬러 영상에 박스와 거리 표시
                 cv2.rectangle(frame_rgb, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                cv2.putText(frame_rgb, f"ID:{track_id} {dist_cm}cm", (x1, y1-10),
+                cv2.putText(frame_rgb, f"person(0) ID:{track_id} {dist_cm}cm", (x1, y1-10),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
         # --- 3. 영상 가로로 합치기 ---
