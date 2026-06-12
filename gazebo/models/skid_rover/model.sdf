@@ -246,7 +246,7 @@
       <modelXYZToAirplaneXForwardZDown degrees="true">0 0 0 180 0 0</modelXYZToAirplaneXForwardZDown>
       <gazeboXYZToNED degrees="true">0 0 0 180 0 90</gazeboXYZToNED>
 
-      <imuName>skid_rover::imu_link::imu_sensor</imuName>
+      <imuName>imu_link::imu_sensor</imuName>
 
       <!-- Skid steering: throttle is REVERSIBLE, so PWM 1500 = stop. Map the
            1100..1900 servo band to wheel velocity -20..+20 rad/s (radius 0.15 ->
