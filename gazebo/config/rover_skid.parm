@@ -1,0 +1,31 @@
+# ArduPilot Rover skid-steering parameters for the skid_rover Gazebo model.
+#
+# WHY THIS FILE EXISTS
+#   `sim_vehicle.py -f rover-skid` is supposed to load skid defaults, but the
+#   frame defaults only apply on a fresh EEPROM - a previous default-Rover run
+#   leaves SERVO1_FUNCTION=26 (GroundSteering) / SERVO3_FUNCTION=70 (Throttle)
+#   in the stored params, which do NOT match the skid_rover plugin wiring and
+#   make the rover steer/curve instead of driving straight. Loading this file
+#   forces the skid configuration every run.
+#
+# WIRING (matches gazebo/models/skid_rover/model.sdf ArduPilotPlugin):
+#   SERVO1 = ThrottleLeft  (fn 73) -> plugin channel 0 -> LEFT  wheels
+#   SERVO3 = ThrottleRight (fn 74) -> plugin channel 2 -> RIGHT wheels
+#   ArduPilot auto-detects skid steering from the presence of ThrottleLeft +
+#   ThrottleRight and mixes throttle+steering into the two outputs, so there is
+#   no separate steering channel.
+#   MIN/MAX pinned to 1100/1900 to match the plugin's servo_min/servo_max
+#   (trim 1500 = stop, full reverse 1100, full forward 1900).
+#
+# USAGE
+#   sim_vehicle.py -v Rover --model JSON -I1 --console --map \
+#     --add-param-file=gazebo/config/rover_skid.parm
+
+SERVO1_FUNCTION 73
+SERVO3_FUNCTION 74
+SERVO1_MIN 1100
+SERVO1_MAX 1900
+SERVO1_TRIM 1500
+SERVO3_MIN 1100
+SERVO3_MAX 1900
+SERVO3_TRIM 1500
