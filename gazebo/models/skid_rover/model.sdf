@@ -30,9 +30,9 @@
     <link name="chassis">
       <pose>0 0 0.20 0 0 0</pose>
       <inertial>
-        <mass>12.0</mass>
+        <mass>6.0</mass>
         <inertia>
-          <ixx>0.52</ixx><iyy>1.03</iyy><izz>1.49</izz>
+          <ixx>0.26</ixx><iyy>0.51</iyy><izz>0.75</izz>
           <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz>
         </inertia>
       </inertial>
@@ -48,7 +48,7 @@
         </material>
       </visual>
 
-      <!-- ArUco marker on the flatbed top (z=0.35, marker just above to avoid
+      <!-- ArUco marker on the flatbed top (z=0.28, marker just above to avoid
            z-fighting). Same non-metallic albedo trick as aruco_marker_0 so the
            PNG shows. This is the drone's precision-landing target. -->
       <visual name="marker_vis">
@@ -134,13 +134,13 @@
     <link name="wheel_lf">
       <pose>0.35 0.42 0.15 -1.5708 0 0</pose>
       <inertial>
-        <mass>0.5</mass>
-        <inertia><ixx>0.003</ixx><iyy>0.003</iyy><izz>0.005</izz>
+        <mass>2.0</mass>
+        <inertia><ixx>0.013</ixx><iyy>0.013</iyy><izz>0.023</izz>
           <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia>
       </inertial>
       <collision name="col">
         <geometry><cylinder><radius>0.15</radius><length>0.10</length></cylinder></geometry>
-        <surface><friction><ode><mu>1.2</mu><mu2>1.2</mu2></ode></friction></surface>
+        <surface><friction><ode><mu>1.0</mu><mu2>1.0</mu2></ode></friction></surface>
       </collision>
       <visual name="vis">
         <geometry><cylinder><radius>0.15</radius><length>0.10</length></cylinder></geometry>
@@ -151,20 +151,20 @@
       <parent>chassis</parent>
       <child>wheel_lf</child>
       <axis><xyz>0 0 1</xyz><limit><lower>-1e16</lower><upper>1e16</upper></limit>
-        <dynamics><friction>0.0</friction></dynamics></axis>
+        <dynamics><damping>0.5</damping><friction>0.0</friction></dynamics></axis>
     </joint>
 
     <!-- left rear -->
     <link name="wheel_lr">
       <pose>-0.35 0.42 0.15 -1.5708 0 0</pose>
       <inertial>
-        <mass>0.5</mass>
-        <inertia><ixx>0.003</ixx><iyy>0.003</iyy><izz>0.005</izz>
+        <mass>2.0</mass>
+        <inertia><ixx>0.013</ixx><iyy>0.013</iyy><izz>0.023</izz>
           <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia>
       </inertial>
       <collision name="col">
         <geometry><cylinder><radius>0.15</radius><length>0.10</length></cylinder></geometry>
-        <surface><friction><ode><mu>1.2</mu><mu2>1.2</mu2></ode></friction></surface>
+        <surface><friction><ode><mu>1.0</mu><mu2>1.0</mu2></ode></friction></surface>
       </collision>
       <visual name="vis">
         <geometry><cylinder><radius>0.15</radius><length>0.10</length></cylinder></geometry>
@@ -175,20 +175,20 @@
       <parent>chassis</parent>
       <child>wheel_lr</child>
       <axis><xyz>0 0 1</xyz><limit><lower>-1e16</lower><upper>1e16</upper></limit>
-        <dynamics><friction>0.0</friction></dynamics></axis>
+        <dynamics><damping>0.5</damping><friction>0.0</friction></dynamics></axis>
     </joint>
 
     <!-- right front -->
     <link name="wheel_rf">
       <pose>0.35 -0.42 0.15 -1.5708 0 0</pose>
       <inertial>
-        <mass>0.5</mass>
-        <inertia><ixx>0.003</ixx><iyy>0.003</iyy><izz>0.005</izz>
+        <mass>2.0</mass>
+        <inertia><ixx>0.013</ixx><iyy>0.013</iyy><izz>0.023</izz>
           <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia>
       </inertial>
       <collision name="col">
         <geometry><cylinder><radius>0.15</radius><length>0.10</length></cylinder></geometry>
-        <surface><friction><ode><mu>1.2</mu><mu2>1.2</mu2></ode></friction></surface>
+        <surface><friction><ode><mu>1.0</mu><mu2>1.0</mu2></ode></friction></surface>
       </collision>
       <visual name="vis">
         <geometry><cylinder><radius>0.15</radius><length>0.10</length></cylinder></geometry>
@@ -199,20 +199,20 @@
       <parent>chassis</parent>
       <child>wheel_rf</child>
       <axis><xyz>0 0 1</xyz><limit><lower>-1e16</lower><upper>1e16</upper></limit>
-        <dynamics><friction>0.0</friction></dynamics></axis>
+        <dynamics><damping>0.5</damping><friction>0.0</friction></dynamics></axis>
     </joint>
 
     <!-- right rear -->
     <link name="wheel_rr">
       <pose>-0.35 -0.42 0.15 -1.5708 0 0</pose>
       <inertial>
-        <mass>0.5</mass>
-        <inertia><ixx>0.003</ixx><iyy>0.003</iyy><izz>0.005</izz>
+        <mass>2.0</mass>
+        <inertia><ixx>0.013</ixx><iyy>0.013</iyy><izz>0.023</izz>
           <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia>
       </inertial>
       <collision name="col">
         <geometry><cylinder><radius>0.15</radius><length>0.10</length></cylinder></geometry>
-        <surface><friction><ode><mu>1.2</mu><mu2>1.2</mu2></ode></friction></surface>
+        <surface><friction><ode><mu>1.0</mu><mu2>1.0</mu2></ode></friction></surface>
       </collision>
       <visual name="vis">
         <geometry><cylinder><radius>0.15</radius><length>0.10</length></cylinder></geometry>
@@ -223,7 +223,7 @@
       <parent>chassis</parent>
       <child>wheel_rr</child>
       <axis><xyz>0 0 1</xyz><limit><lower>-1e16</lower><upper>1e16</upper></limit>
-        <dynamics><friction>0.0</friction></dynamics></axis>
+        <dynamics><damping>0.5</damping><friction>0.0</friction></dynamics></axis>
     </joint>
 
     <!-- ============================================================== -->
