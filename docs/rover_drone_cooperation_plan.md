@@ -111,8 +111,9 @@ Rover(SITL)** 로 교체하고, 그 위에서 드론(ArduCopter)이 정밀착륙
 ```bash
 # 터미널 1: 드론 SITL
 sim_vehicle.py -v ArduCopter -f JSON -I0 --console --map
-# 터미널 2: 로버 SITL
-sim_vehicle.py -v Rover -f JSON --frame rover-skid -I1 --console
+# 터미널 2: 로버 SITL (스키드 파라미터는 EEPROM에 안 남으므로 매번 파일로 강제)
+sim_vehicle.py -v Rover --model JSON -I1 --console \
+  --add-param-file=gazebo/config/rover_skid.parm
 # 터미널 3: Gazebo (월드에 두 기체)
 ./gazebo/run_sim.sh
 # 터미널 4: ROS bringup (차량별 MAVROS + 네임스페이스 노드)
