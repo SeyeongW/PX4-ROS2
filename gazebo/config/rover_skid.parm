@@ -14,18 +14,23 @@
 #   ArduPilot auto-detects skid steering from the presence of ThrottleLeft +
 #   ThrottleRight and mixes throttle+steering into the two outputs, so there is
 #   no separate steering channel.
-#   MIN/MAX pinned to 1100/1900 to match the plugin's servo_min/servo_max
-#   (trim 1500 = stop, full reverse 1100, full forward 1900).
+#   MIN pinned to 1500 (NOT 1100): when DISARMED, ArduRover drives the throttle
+#   outputs to SERVO_MIN. With MIN=1100 that is read as full REVERSE and the
+#   rover rolls backward on its own the instant SITL connects. MIN=1500 makes the
+#   disarmed output equal the trim (stop), matching the plugin's forward-only
+#   mapping (servo_min=1500 -> 0, 1900 -> +max). This also means no reverse drive
+#   at the ArduPilot level, so skid turns are differential-forward only (no
+#   pivot-in-place) - intended for now.
 #
-# USAGE
-#   sim_vehicle.py -v Rover --model JSON -I1 --console --map \
+# USAGE (always wipe params with -w so these MIN values actually take):
+#   sim_vehicle.py -v Rover --model JSON -I1 -w --console --map \
 #     --add-param-file=gazebo/config/rover_skid.parm
 
 SERVO1_FUNCTION 73
 SERVO3_FUNCTION 74
-SERVO1_MIN 1100
+SERVO1_MIN 1500
 SERVO1_MAX 1900
 SERVO1_TRIM 1500
-SERVO3_MIN 1100
+SERVO3_MIN 1500
 SERVO3_MAX 1900
 SERVO3_TRIM 1500
