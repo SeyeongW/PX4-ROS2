@@ -11,5 +11,15 @@ __pycache__/
 # --- VS Code 설정 파일 (나만 쓰는 설정) ---
 .vscode/
 
+# --- 시뮬레이션/비행 산출물 (커밋 금지) ---
+logs/
+*.BIN
+eeprom.bin
+*.tlog
+*.tlog.raw
+mav.parm
+dumpcore.sh_*.out
+dumpstack.sh_*.out
+
 # --- 기타 ---
 .DS_Store
