@@ -7,25 +7,23 @@
             </Interfaces>
             <AllowMulticast>false</AllowMulticast>
             <EnableMulticastLoopback>false</EnableMulticastLoopback>
-            <!-- tailscale0 MTU=1280 이라 기본 FragmentSize(1344)가 넘쳐서 영상이 안 넘어옴.
-                 IP/UDP 헤더 여유를 두고 1200B로 낮춤. -->
             <FragmentSize>1200B</FragmentSize>
             <MaxMessageSize>1200B</MaxMessageSize>
         </General>
         <Discovery>
             <ParticipantIndex>auto</ParticipantIndex>
-            <!-- 한 호스트에서 노드(participant)를 많이 띄울 때 디스커버리 누락 방지 -->
             <MaxAutoParticipantIndex>50</MaxAutoParticipantIndex>
             <Peers>
                 <!-- Linux PC IP -->
                 <Peer address="100.110.148.7" />
                 <!-- Jetson IP -->
                 <Peer address="100.112.65.33" />
+                <!-- 팀원 seo (YeongukSeo) -->
+                <Peer address="100.107.150.98" />
+                <!-- 나머지 팀원은 네 Tailnet 합류 후 tailscale status에 뜨는 실제 IP로 추가할 것 -->
             </Peers>
         </Discovery>
         <Internal>
-            <!-- 영상/포인트클라우드 등 고대역폭 데이터가 몰릴 때 수신 패킷 드롭 방지 -->
-            <SocketReceiveBufferSize min="10MB"/>
         </Internal>
     </Domain>
 </CycloneDDS>

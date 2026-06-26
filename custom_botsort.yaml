@@ -1,0 +1,19 @@
+# BoT-SORT (+ReID, +GMC) — 짐벌 추종용 커스텀 설정
+# 짐벌이 움직여 배경이 흐를 때 카메라 모션 보정(GMC)과 외형 재매칭(ReID)으로
+# 겹침/순간놓침 구간에서도 동일 track ID 유지를 강화한다.
+tracker_type: botsort      # BoT-SORT (ByteTrack + 외형 ReID + 카메라 모션 보정)
+
+# --- association thresholds ---
+track_high_thresh: 0.25    # 1차 매칭 임계 (작은/흐린 새도 잡도록 낮춤)
+track_low_thresh: 0.1      # 2차 매칭 임계 (저conf 검출 회수)
+new_track_thresh: 0.25     # 새 트랙 생성 임계
+track_buffer: 60           # 60프레임(약 2초) 동안 사라진 트랙 기억 (재락 도움)
+match_thresh: 0.8          # IoU 매칭 민감도
+fuse_score: true           # conf 를 매칭 점수에 융합
+
+# --- BoT-SORT specific ---
+gmc_method: sparseOptFlow  # 카메라(짐벌) 모션 보정 — 배경 흐름 상쇄
+proximity_thresh: 0.5      # ReID 적용 전 IoU 근접 게이트
+appearance_thresh: 0.25    # 외형(ReID) 유사도 임계
+with_reid: true            # 외형 재매칭 사용 (겹침/순간놓침에 강함)
+model: auto                # auto = YOLO 모델 특징을 ReID 에 재사용 (별도 가중치 불필요)
