@@ -141,14 +141,14 @@ class PreclandHwNode(Node):
         self._guide_tick = 0
 
         self.create_timer(DT, self.tick)
-        self._log('════════════ ArUco 정밀착륙 (실기체) ════════════')
+        self._log('============ ArUco 정밀착륙 (실기체) ============')
         if self.auto_takeoff:
             self._log(f'자동이륙 ON — 노드가 GUIDED/시동/이륙({self.flight_alt:.1f} m)까지 스스로 합니다.')
         else:
             self._log('진행 순서:  ① 시동(ARM)  →  ② 이륙 후 GUIDED 전환  →  '
                       '③ 마커 위로 이동  →  자동 정렬·하강·착륙')
-            self._log('※ 언제든 모드 스위치로 회수 가능 (GUIDED 벗어나면 즉시 제어 중단).')
-        self._log('⏳ FC(MAVROS) 연결을 기다리는 중…')
+            self._log('* 언제든 모드 스위치로 회수 가능 (GUIDED 벗어나면 즉시 제어 중단).')
+        self._log('FC(MAVROS) 연결을 기다리는 중')
 
     # -----------------------------------------------------------------------
     # 콜백
@@ -182,9 +182,9 @@ class PreclandHwNode(Node):
             return
         if not self._prev_connected:
             self._prev_connected = True
-            self._log('✅ FC 연결됨 (MAVROS).')
+            self._log('FC 연결됨 (MAVROS).')
             if not self.auto_takeoff:
-                self._log('👉 다음 할 일: 시동(ARM)을 걸어주세요.')
+                self._log('다음 할 일: 시동(ARM)을 걸어주세요.')
 
         armed = self.mav_state.armed
         guided = self.mav_state.mode == 'GUIDED'
@@ -192,10 +192,10 @@ class PreclandHwNode(Node):
         # 안전 게이트: 비행 중 조종사가 GUIDED 를 벗어나거나 disarm 하면 즉시 중단.
         if self.stage in (Stage.ALIGN, Stage.DESCEND):
             if not armed:
-                self._log('⚠️ 시동 꺼짐 — 정밀착륙 중단, 대기 상태로.  -> IDLE')
+                self._log('시동 꺼짐 — 정밀착륙 중단, 대기 상태로.  -> IDLE')
                 self.stage = Stage.IDLE
             elif self.require_guided and not guided:
-                self._log('🕹️ GUIDED 이탈(조종사 회수) — 제어 중단, 대기 상태로.  -> IDLE')
+                self._log('GUIDED 이탈(조종사 회수) — 제어 중단, 대기 상태로.  -> IDLE')
                 self.stage = Stage.IDLE
 
         if self.stage == Stage.TAKEOFF:
@@ -222,7 +222,7 @@ class PreclandHwNode(Node):
             self.hold_yaw = self.yaw      # 정렬 시작 전까지 현재 헤딩 추종
             self._idle_guide(armed, guided, marker_ok)
             if armed and guided and marker_ok:
-                self._log('🎯 마커 감지 — 정밀착륙을 시작합니다!  → 정렬(ALIGN)')
+                self._log('마커 감지 — 정밀착륙을 시작합니다!  → 정렬(ALIGN)')
                 self._kf_reset()
                 self.stage = Stage.ALIGN
 
@@ -230,10 +230,10 @@ class PreclandHwNode(Node):
             err = self._track(marker_ok)
             self.cmd_vel[2] = 0.0                 # 고도 유지
             if self.kf_miss > self.coast_ticks:
-                self._log('… 마커를 놓쳤습니다 — 대기 상태로 복귀.  → IDLE')
+                self._log('마커를 놓쳤습니다 — 대기 상태로 복귀.  → IDLE')
                 self.stage = Stage.IDLE
             elif err is not None and marker_ok and err < self._funnel_radius():
-                self._log('✅ 정렬 완료 — 하강을 시작합니다.  → 하강(DESCEND)')
+                self._log('정렬 완료 — 하강을 시작합니다.  → 하강(DESCEND)')
                 self.stage = Stage.DESCEND
 
         elif self.stage == Stage.DESCEND:
@@ -243,13 +243,13 @@ class PreclandHwNode(Node):
             if h < self.land_switch_alt and lateral < self.land_align_radius:
                 # 저고도·중심 정렬: 여기서부터는 마커가 화면을 넘쳐 검출이 불안정하므로
                 # FC 의 LAND 모드로 인계 → 접지 감지·자동 disarm.
-                self._log(f'✅ 중심 정렬({lateral:.2f} m) & 저고도(h={h:.2f} m) — '
+                self._log(f'중심 정렬({lateral:.2f} m) & 저고도(h={h:.2f} m) — '
                           f'FC에 착륙을 인계합니다.  → 착륙(LAND)')
                 self.stage = Stage.LAND
                 return
             if self.kf_miss > self.coast_ticks:
                 # 비전 상실: 하강 멈추고 재정렬(정지 마커라 추종할 cue 없음).
-                self._log('… 하강 중 마커 상실 — 고도 유지하며 재정렬.  → 정렬(ALIGN)')
+                self._log('하강 중 마커 상실 — 고도 유지하며 재정렬.  → 정렬(ALIGN)')
                 self.cmd_vel[2] = 0.0
                 self.stage = Stage.ALIGN
             elif self.kf_init:
@@ -269,12 +269,12 @@ class PreclandHwNode(Node):
             # /mavros/state 로 확인될 때까지 ~1 s 마다 재전송. disarm 되면 착륙 완료.
             self.land_sent += 1
             if not armed:
-                self._log('✅ 접지·시동 꺼짐 확인 — 착륙 완료! 수고하셨습니다. (노드 종료)')
+                self._log('접지·시동 꺼짐 확인 — 착륙 완료! 수고하셨습니다. (노드 종료)')
                 self.stage = Stage.DONE
                 rclpy.shutdown()
                 return
             if self.mav_state.mode != 'LAND' and self.land_sent % 20 == 1:
-                self._log('🛬 LAND 모드로 전환 요청 — 접지하면 자동으로 시동이 꺼집니다.')
+                self._log('LAND 모드로 전환 요청 — 접지하면 자동으로 시동이 꺼집니다.')
                 self._set_mode('LAND')
             return                                 # 셋포인트 송출 안 함
 
@@ -288,30 +288,30 @@ class PreclandHwNode(Node):
     # 필요한 다음 동작을 다시 알려준다. 로그만 보고도 순서를 따라올 수 있게.
     def _idle_guide(self, armed, guided, marker_ok):
         if armed and not self._prev_armed:
-            self._log('✅ 시동 걸림 (ARMED).')
-            self._log('👉 다음 할 일: 이륙한 뒤 GUIDED 모드로 전환하세요.')
+            self._log('시동 걸림 (ARMED).')
+            self._log('다음 할 일: 이륙한 뒤 GUIDED 모드로 전환하세요.')
         elif not armed and self._prev_armed:
-            self._log('⚠️ 시동 꺼짐 (DISARMED). 다시 시동을 걸어주세요.')
+            self._log('시동 꺼짐 (DISARMED). 다시 시동을 걸어주세요.')
         if guided and not self._prev_guided:
-            self._log('✅ GUIDED 모드 확인.')
-            self._log('👉 다음 할 일: 드론을 마커 위로 이동하세요 — 하방 카메라가 '
+            self._log('GUIDED 모드 확인.')
+            self._log('다음 할 일: 드론을 마커 위로 이동하세요 — 하방 카메라가 '
                       '마커를 잡으면 자동으로 정렬·하강·착륙합니다.')
         elif not guided and self._prev_guided:
-            self._log('🕹️ GUIDED 해제(수동 조종). 다시 GUIDED로 전환하면 이어집니다.')
+            self._log('GUIDED 해제(수동 조종). 다시 GUIDED로 전환하면 이어집니다.')
         if marker_ok and not self._prev_marker:
-            self._log('✅ 마커 보임.')
+            self._log('마커 보임.')
         elif not marker_ok and self._prev_marker:
-            self._log('… 마커를 놓쳤습니다 — 카메라 시야에 마커가 들어오게 이동하세요.')
+            self._log('마커를 놓쳤습니다 — 카메라 시야에 마커가 들어오게 이동하세요.')
         self._prev_armed, self._prev_guided, self._prev_marker = armed, guided, marker_ok
 
         self._guide_tick += 1
         if self._guide_tick % 60 == 0:          # 3초마다 현재 필요한 동작 리마인드
             if not armed:
-                self._log('⏳ 대기 중 — 시동(ARM)을 걸어주세요.')
+                self._log('대기 중 — 시동(ARM)을 걸어주세요.')
             elif not guided:
-                self._log('⏳ 대기 중 — 이륙 후 GUIDED 모드로 전환하세요.')
+                self._log('대기 중 — 이륙 후 GUIDED 모드로 전환하세요.')
             elif not marker_ok:
-                self._log('⏳ 대기 중 — 드론을 마커 위로 (하방 카메라가 마커를 봐야 시작).')
+                self._log('대기 중 — 드론을 마커 위로 (하방 카메라가 마커를 봐야 시작).')
 
     # 마커를 등속 칼만 필터로 추종하고 추정 위치로 속도 서보. 드론↔마커 수평거리(m) 반환.
     def _track(self, marker_ok):
