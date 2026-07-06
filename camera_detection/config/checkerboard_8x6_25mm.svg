@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="245.0mm" height="207.0mm" viewBox="0 0 245.0 207.0">
+<rect x="0" y="0" width="245.0" height="207.0" fill="white"/>
+<rect x="10.0" y="10.0" width="25.0" height="25.0" fill="black"/>
+<rect x="60.0" y="10.0" width="25.0" height="25.0" fill="black"/>
+<rect x="110.0" y="10.0" width="25.0" height="25.0" fill="black"/>
+<rect x="160.0" y="10.0" width="25.0" height="25.0" fill="black"/>
+<rect x="210.0" y="10.0" width="25.0" height="25.0" fill="black"/>
+<rect x="35.0" y="35.0" width="25.0" height="25.0" fill="black"/>
+<rect x="85.0" y="35.0" width="25.0" height="25.0" fill="black"/>
+<rect x="135.0" y="35.0" width="25.0" height="25.0" fill="black"/>
+<rect x="185.0" y="35.0" width="25.0" height="25.0" fill="black"/>
+<rect x="10.0" y="60.0" width="25.0" height="25.0" fill="black"/>
+<rect x="60.0" y="60.0" width="25.0" height="25.0" fill="black"/>
+<rect x="110.0" y="60.0" width="25.0" height="25.0" fill="black"/>
+<rect x="160.0" y="60.0" width="25.0" height="25.0" fill="black"/>
+<rect x="210.0" y="60.0" width="25.0" height="25.0" fill="black"/>
+<rect x="35.0" y="85.0" width="25.0" height="25.0" fill="black"/>
+<rect x="85.0" y="85.0" width="25.0" height="25.0" fill="black"/>
+<rect x="135.0" y="85.0" width="25.0" height="25.0" fill="black"/>
+<rect x="185.0" y="85.0" width="25.0" height="25.0" fill="black"/>
+<rect x="10.0" y="110.0" width="25.0" height="25.0" fill="black"/>
+<rect x="60.0" y="110.0" width="25.0" height="25.0" fill="black"/>
+<rect x="110.0" y="110.0" width="25.0" height="25.0" fill="black"/>
+<rect x="160.0" y="110.0" width="25.0" height="25.0" fill="black"/>
+<rect x="210.0" y="110.0" width="25.0" height="25.0" fill="black"/>
+<rect x="35.0" y="135.0" width="25.0" height="25.0" fill="black"/>
+<rect x="85.0" y="135.0" width="25.0" height="25.0" fill="black"/>
+<rect x="135.0" y="135.0" width="25.0" height="25.0" fill="black"/>
+<rect x="185.0" y="135.0" width="25.0" height="25.0" fill="black"/>
+<rect x="10.0" y="160.0" width="25.0" height="25.0" fill="black"/>
+<rect x="60.0" y="160.0" width="25.0" height="25.0" fill="black"/>
+<rect x="110.0" y="160.0" width="25.0" height="25.0" fill="black"/>
+<rect x="160.0" y="160.0" width="25.0" height="25.0" fill="black"/>
+<rect x="210.0" y="160.0" width="25.0" height="25.0" fill="black"/>
+<rect x="10.0" y="10.0" width="225.0" height="175.0" fill="none" stroke="black" stroke-width="0.2"/>
+<text x="10.0" y="203.0" font-family="monospace" font-size="4" fill="black">checkerboard  --size 8x6  --square 0.025   (9x7 squares, 25.0mm each) -- PRINT AT 100%, verify with ruler</text>
+</svg>

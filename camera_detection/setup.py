@@ -13,6 +13,7 @@ setup(
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
         (os.path.join('share', package_name, 'launch'), glob('launch/*.py')),
+        (os.path.join('share', package_name, 'config'), glob('config/*.yaml')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -32,6 +33,7 @@ setup(
             'yolo_processor_sim_node = camera_detection.yolo_processor_sim_node:main',
             'commander = camera_detection.commander:main',
             'aruco_detector_node = camera_detection.aruco_detector_node:main',
+            'aruco_pose_node = camera_detection.aruco_pose_node:main',
         ],
     },
 )
