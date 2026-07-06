@@ -1,7 +1,9 @@
-# 하방 카메라 캘리브레이션 (Jetson USB cam / uvcvideo, 2026-07-06) ----------------
+# 하방 카메라 캘리브레이션 (Jetson USB cam: icSpring 32e6:9221, MJPG 1280x720) --------
 #
-# camera_calibration cameracalibrator --size 8x6 --square 0.03 결과.
-# 1280x720, HFOV ~83deg. 카메라/렌즈를 바꾸면 재캘리브레이션 필요.
+# camera_calibration cameracalibrator --size 8x6 --square 0.03 결과 (2026-07-06).
+# HFOV ~96deg (광각, 배럴 왜곡 큼). usb_cam(mjpeg2rgb)로 캡처. 카메라 바꾸면 재캘리브.
+#   ros2 run usb_cam usb_cam_node_exe --ros-args -p video_device:=/dev/video0 \
+#       -p pixel_format:=mjpeg2rgb -p image_width:=1280 -p image_height:=720
 #   ros2 run camera_calibration cameracalibrator --size 8x6 --square 0.03 \
 #       --ros-args -r image:=/image_raw
 # 필드는 ROS camera_info yaml 규약.
@@ -12,14 +14,14 @@ camera_matrix:
   rows: 3
   cols: 3
   # fx  0  cx / 0  fy  cy / 0  0  1
-  data: [717.29478,   0.0,     651.87890,
-           0.0,     718.77183, 372.59620,
+  data: [578.25374,   0.0,     666.81979,
+           0.0,     579.59485, 395.64995,
            0.0,       0.0,       1.0]
 distortion_model: plumb_bob
 distortion_coefficients:
   rows: 1
   cols: 5
-  data: [-0.060322, 0.048651, 0.002510, -0.001458, 0.000000]
+  data: [-0.168189, 0.023952, 0.001472, -0.000700, 0.000000]
 rectification_matrix:
   rows: 3
   cols: 3
@@ -29,6 +31,6 @@ rectification_matrix:
 projection_matrix:
   rows: 3
   cols: 4
-  data: [711.89448,   0.0,     648.55090,   0.0,
-           0.0,     714.64535, 375.06690,   0.0,
+  data: [432.23965,   0.0,     678.48510,   0.0,
+           0.0,     536.54605, 402.84568,   0.0,
            0.0,       0.0,       1.0,        0.0]

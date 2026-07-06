@@ -110,6 +110,29 @@ def generate_launch_description():
         ],
     )
 
+    # 카메라 드라이버 (C) MJPG USB 카메라 via usb_cam (mjpeg2rgb 디코딩).
+    #   v4l2_camera 가 MJPG 디코딩을 못 하는 카메라(예: icSpring 720p=MJPG 전용)용.
+    usb_cam = Node(
+        package='usb_cam',
+        executable='usb_cam_node_exe',
+        name='down_camera',
+        output='screen',
+        condition=LaunchConfigurationEquals('camera_driver', 'usb_cam'),
+        parameters=[{
+            'video_device': video_device,
+            'pixel_format': 'mjpeg2rgb',
+            'image_width': 1280,
+            'image_height': 720,
+            'framerate': 30.0,
+            'camera_info_url': calib_url,
+            'frame_id': 'down_camera_optical',
+        }],
+        remappings=[
+            ('image_raw', image_topic),
+            ('camera_info', camera_info_topic),
+        ],
+    )
+
     # ArUco pose 검출 (캘리브레이션 기반)
     aruco_pose = Node(
         package='camera_detection',
@@ -151,7 +174,8 @@ def generate_launch_description():
         # 실기체 FCU 연결. Jetson UART 예: /dev/ttyTHS1:921600. USB 텔레메트리면
         # /dev/ttyUSB0:57600. SITL 테스트면 udp://:14550@.
         DeclareLaunchArgument('fcu_url', default_value='/dev/ttyTHS1:921600'),
-        DeclareLaunchArgument('camera_driver', default_value='gscam'),   # gscam|v4l2|none
+        # gscam(Jetson CSI) | v4l2(USB raw) | usb_cam(MJPG USB, mjpeg2rgb) | none
+        DeclareLaunchArgument('camera_driver', default_value='usb_cam'),
         DeclareLaunchArgument('video_device', default_value='/dev/video0'),
         # Jetson CSI 파이프라인(예: IMX219). 카메라/해상도에 맞게 조정.
         DeclareLaunchArgument(
@@ -194,6 +218,7 @@ def generate_launch_description():
         mavros,
         gscam,
         v4l2,
+        usb_cam,
         aruco_pose,
         precland,
     ])
