@@ -16,7 +16,10 @@ SITL 대비 달라진 점
 
 상태 기계
   (TAKEOFF) : auto_takeoff=true 일 때만. GUIDED→arm→flight_alt 까지 이륙.
-  IDLE      : armed + GUIDED + 마커 감지 될 때까지 제자리(속도 0) 대기.
+  IDLE      : armed 대기. 시동 순간 위치를 홈으로 캡처(마커 위에서 시동 권장).
+              GUIDED 되면 GOHOME 으로(return_home_on_guided=true).
+  GOHOME    : 홈(시동 지점=마커 위)으로 flight_alt 유지하며 자동 복귀. 마커가
+              시야에 들어오면 ALIGN 으로 인계. (모드 전환 직후 수동 조종 회피)
   ALIGN     : flight_alt 호버하며 마커 중심으로 수평 정렬(속도 서보).
   DESCEND   : 깔때기(funnel) 허용오차를 따라 정렬하며 동시에 하강.
   LAND      : 저고도·중심 정렬 상태에서 LAND 모드로 전환, FC 에 착륙 인계.
@@ -40,6 +43,7 @@ from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 
 from geometry_msgs.msg import PoseStamped
+from rcl_interfaces.msg import SetParametersResult
 from sensor_msgs.msg import Range
 from std_msgs.msg import Bool, String
 from mavros_msgs.msg import PositionTarget, State
@@ -53,6 +57,7 @@ class Stage(Enum):
     DESCEND = 3
     LAND = 4
     DONE = 5
+    GOHOME = 6
 
 
 DT = 0.05  # 50 ms (20 Hz) 제어 주기
@@ -74,10 +79,47 @@ class PreclandHwNode(Node):
         # 마커 윗면 위 이 높이 아래로 내려오고 + 중심 정렬되면 LAND 모드로 인계.
         # 저고도에선 마커가 화면을 넘쳐 검출이 끊기므로, 여기서 FC 에 넘긴다.
         self.land_switch_alt = self.declare_parameter('land_switch_alt', 1.0).value
-        # 속도 서보: v = v_gain·error, vel_max 로 clamp. 1차 응답(오버슈트 없는 수렴).
-        # 실기체는 보수적으로 느리게(SITL 보다 낮은 상한).
-        self.vel_gain = self.declare_parameter('vel_gain', 0.6).value       # 1/s
-        self.vel_max = self.declare_parameter('vel_max', 0.8).value         # m/s
+        # ============================ PID 속도 서보 ============================
+        # 수평 정렬 제어식:  v = Kp·e + Ki·∫e dt + Kd·de/dt (+ 피드포워드),  vel_max clamp
+        #   e = 마커 월드위치 − 드론위치 (축별 E, N).  출력 v = FC 로 보내는 속도 명령.
+        #   Kp(vel_gain): 위치오차 비례. 응답 속도. 크면 빠르지만 진동/오버슈트.
+        #   Ki(vel_ki)  : 적분. 바람 등 지속 외란의 정상상태 치우침 제거. 과하면 헌팅.
+        #   Kd(vel_kd)  : 미분. 감쇠(진동·오버슈트 억제). 과하면 노이즈에 떨림.
+        #
+        # ── 튜닝 절차 (지상/저고도에서, 마커 위 호버로) ──────────────────────
+        #  1) Ki=0, Kd=0 으로 시작. Kp 를 낮은 값(0.3)부터 조금씩 ↑ —
+        #     마커로 신속히 붙되 '진동 직전'에서 멈춘다.
+        #  2) 진동(마커 위에서 좌우로 흔들)이 보이면 Kd 를 조금씩 ↑ 해 눌러준다.
+        #     (Kd 과하면 모터가 미세하게 떨림 → 그 직전까지만.)
+        #  3) 중심에서 한쪽으로 살짝 치우쳐 호버(바람/무게중심)하면 Ki 를 조금씩 ↑ —
+        #     남은 오프셋이 서서히 0 으로. (Ki 과하면 느린 왕복 헌팅 → 줄인다.)
+        #  4) i_vel_max 는 I 항이 낼 수 있는 최대 속도. 강풍이면 ↑, 폭주 걱정되면 ↓.
+        #
+        # ── 증상 → 처방 ─────────────────────────────────────────────────────
+        #   빠르게 갔다가 지나쳐 되돌아옴(오버슈트)      : Kp↓  또는  Kd↑
+        #   마커 위에서 지속 진동/흔들림                 : Kd↑ (안되면 Kp↓)
+        #   중심 못 맞추고 옆으로 치우쳐 정지            : Ki↑
+        #   중심 부근을 느리게 왕복(헌팅)               : Ki↓
+        #   반응이 굼떠 마커 추종이 느림                 : Kp↑
+        #   모터가 고주파로 미세 진동                    : Kd↓ (미분이 노이즈 증폭)
+        #
+        # ── 디버그 로그 관찰 (약 1초마다) ───────────────────────────────────
+        #   h=1.20(cam) err=(+0.05,-0.03) i=(+0.12,-0.08) cmd=(+0.18,-0.14) miss=0
+        #     err : 수평 오차(m, E/N).  0 으로 수렴해야 정렬 완료.
+        #     i   : 적분 누적. 계속 커지기만 하면 Ki 과함/anti-windup 확인.
+        #     cmd : 최종 속도 명령(m/s). 떨리면 Kd↓/Kp↓.  vel_max 에 자주 붙으면 상한 고려.
+        #
+        # 주의: 실기체는 보수적으로(낮은 Kp·vel_max). 게인은 축(E/N) 공통 적용.
+        # 라이브 튜닝: 비행 중 재시작 없이 즉시 반영 —
+        #   ros2 param set /precland_hw_node vel_kd 0.12
+        # 좋은 값을 찾으면 위 기본값에 반영해 저장(다음 실행에도 유지).
+        self.vel_gain = self.declare_parameter('vel_gain', 0.6).value       # Kp (1/s)
+        self.vel_max = self.declare_parameter('vel_max', 0.8).value         # m/s (출력 상한)
+        self.vel_ki = self.declare_parameter('vel_ki', 0.15).value          # Ki (1/s^2)
+        self.vel_kd = self.declare_parameter('vel_kd', 0.08).value          # Kd (무차원)
+        # I 항이 낼 수 있는 최대 속도(m/s). anti-windup 상한.
+        self.i_vel_max = self.declare_parameter('i_vel_max', 0.3).value
+        # ======================================================================
         # 정지 마커 등속 칼만 필터(평활화 + 프레임 누락 시 coast).
         self.kf_accel_std = self.declare_parameter('kf_accel_std', 0.1).value
         self.kf_meas_std = self.declare_parameter('kf_meas_std', 0.05).value  # pose 는 정밀
@@ -113,6 +155,21 @@ class PreclandHwNode(Node):
         # 수평이라 영향 작지만, 켜두면 안전.
         self.lidar_tilt_comp = self.declare_parameter('lidar_tilt_comp', True).value
 
+        # --- 홈 복귀 동작 (이 파일에서 직접 튜닝 — 런치에 없음) --------------
+        # GUIDED 전환 시: 조종사가 마커 위로 수동 이동하는 대신, 시동(ARM)했던
+        # 위치=홈으로 지정 고도(flight_alt) 유지하며 자동 복귀 → 거기서 마커
+        # 추적·착륙. 마커 위에서 시동을 걸면 홈=마커 위가 된다. 모드 전환 직후
+        # 수동 조종이 어려운 문제를 피함.
+        # ★ 이 4개는 런치에서 안 넘기므로 여기 기본값이 곧 실제값. 숫자만 바꾸면 됨.
+        self.return_home_on_guided = self.declare_parameter(
+            'return_home_on_guided', True).value
+        # 홈 도착 판정 반경(m). 이 안 + 고도 맞으면 '홈 도착'.
+        self.home_radius = self.declare_parameter('home_radius', 0.6).value
+        # 지정 고도 허용오차(m).
+        self.alt_tol = self.declare_parameter('alt_tol', 0.4).value
+        # 복귀 중 수직 속도 상한(m/s) — 지정 고도까지 오르내림.
+        self.climb_rate = self.declare_parameter('climb_rate', 0.5).value
+
         self.stage = Stage.TAKEOFF if self.auto_takeoff else Stage.IDLE
 
         # --- 상태 -----------------------------------------------------------
@@ -135,6 +192,13 @@ class PreclandHwNode(Node):
         self.kf_init = False
         self.kf_miss = 0
         self.cmd_vel = [0.0, 0.0, 0.0]  # 명령 ENU 속도 (E, N, Up)
+        self.home_e = 0.0             # 시동 시점 위치(홈, ENU E)
+        self.home_n = 0.0             # 시동 시점 위치(홈, ENU N)
+        self.home_captured = False    # 시동 시 홈 좌표 캡처 여부
+        # PID 속도 서보 상태(축별 E, N)
+        self.pid_int = [0.0, 0.0]     # 적분 누적(∫e dt)
+        self.pid_prev_e = [0.0, 0.0]  # 직전 오차(미분용)
+        self.pid_primed = False       # 리셋 직후 첫 샘플 미분 킥 방지
 
         # --- Pub/Sub --------------------------------------------------------
         self.raw_pub = self.create_publisher(
@@ -164,13 +228,28 @@ class PreclandHwNode(Node):
         self._prev_marker = False
         self._guide_tick = 0
 
+        # 라이브 튜닝: 비행 중 재시작 없이 게인·임계값을 즉시 반영.
+        #   ros2 param set /precland_hw_node vel_kd 0.12
+        #   ros2 param get /precland_hw_node vel_kd
+        # declare_parameter 를 전부 마친 뒤 등록해야 선언 시점 콜백을 피함.
+        self._live_params = {
+            'vel_gain', 'vel_ki', 'vel_kd', 'i_vel_max', 'vel_max',
+            'descend_rate', 'descend_cone', 'descend_min_scale',
+            'land_align_radius', 'land_switch_alt',
+            'flight_alt', 'home_radius', 'alt_tol', 'climb_rate',
+            'lat_swap', 'lat_sign_fwd', 'lat_sign_left',
+            'lidar_min', 'lidar_max', 'lidar_offset', 'lidar_tilt_comp',
+        }
+        self.add_on_set_parameters_callback(self._on_set_params)
+
         self.create_timer(DT, self.tick)
         self._log('============ ArUco 정밀착륙 (실기체) ============')
         if self.auto_takeoff:
             self._log(f'자동이륙 ON — 노드가 GUIDED/시동/이륙({self.flight_alt:.1f} m)까지 스스로 합니다.')
         else:
-            self._log('진행 순서:  ① 시동(ARM)  →  ② 이륙 후 GUIDED 전환  →  '
-                      '③ 마커 위로 이동  →  자동 정렬·하강·착륙')
+            self._log('진행 순서:  ① 마커 위에서 시동(ARM) → 그 지점이 홈  →  '
+                      '② 수동 이륙·비행  →  ③ GUIDED 전환 → 홈(마커 위)으로 자동 '
+                      '복귀·정렬·하강·착륙')
             self._log('* 언제든 모드 스위치로 회수 가능 (GUIDED 벗어나면 즉시 제어 중단).')
         self._log('FC(MAVROS) 연결을 기다리는 중')
 
@@ -228,8 +307,18 @@ class PreclandHwNode(Node):
         armed = self.mav_state.armed
         guided = self.mav_state.mode == 'GUIDED'
 
+        # 시동(ARM) 순간의 위치를 홈으로 캡처. 마커 위에서 시동 → 홈=마커 위.
+        # disarm 되면 리셋해 다음 시동에서 다시 캡처.
+        if armed and not self.home_captured:
+            self.home_e, self.home_n = self.pos[0], self.pos[1]
+            self.home_captured = True
+            self._log(f'홈 위치 캡처(시동 지점): E={self.home_e:+.2f} N={self.home_n:+.2f} m '
+                      '(여기가 마커 위여야 함)')
+        elif not armed:
+            self.home_captured = False
+
         # 안전 게이트: 비행 중 조종사가 GUIDED 를 벗어나거나 disarm 하면 즉시 중단.
-        if self.stage in (Stage.ALIGN, Stage.DESCEND):
+        if self.stage in (Stage.GOHOME, Stage.ALIGN, Stage.DESCEND):
             if not armed:
                 self._log('시동 꺼짐 — 정밀착륙 중단, 대기 상태로.  -> IDLE')
                 self.stage = Stage.IDLE
@@ -258,12 +347,38 @@ class PreclandHwNode(Node):
 
         elif self.stage == Stage.IDLE:
             self.cmd_vel = [0.0, 0.0, 0.0]
-            self.hold_yaw = self.yaw      # 정렬 시작 전까지 현재 헤딩 추종
+            self.hold_yaw = self.yaw      # 복귀/정렬 시작 전까지 현재 헤딩 고정
             self._idle_guide(armed, guided, marker_ok)
-            if armed and guided and marker_ok:
+            if armed and guided:
+                if self.return_home_on_guided and self.home_captured:
+                    self._log('GUIDED 전환 — 홈(시동 지점=마커 위)으로 지정 고도 '
+                              f'{self.flight_alt:.1f} m 유지하며 복귀합니다.  → 복귀(GOHOME)')
+                    self._pid_reset()
+                    self.stage = Stage.GOHOME
+                elif marker_ok:
+                    self._log('마커 감지 — 정밀착륙을 시작합니다!  → 정렬(ALIGN)')
+                    self._kf_reset()
+                    self.stage = Stage.ALIGN
+
+        elif self.stage == Stage.GOHOME:
+            # 홈(시동 지점=마커 위)으로 수평 복귀 + 지정 고도로 상승/하강.
+            # 마커가 시야에 들어오면 즉시 정밀 정렬로 인계.
+            self._servo_to(self.home_e, self.home_n)
+            ez = self.flight_alt - self.pos[2]
+            self.cmd_vel[2] = self._clamp(self.vel_gain * ez,
+                                          -self.climb_rate, self.climb_rate)
+            dist = math.hypot(self.home_e - self.pos[0], self.home_n - self.pos[1])
+            self.dbg_tick += 1
+            if self.dbg_tick % 20 == 0:
+                self._log(f'복귀중 dist={dist:.2f} m  alt={self.pos[2]:.2f}/'
+                          f'{self.flight_alt:.1f} m')
+            if marker_ok:
                 self._log('마커 감지 — 정밀착륙을 시작합니다!  → 정렬(ALIGN)')
                 self._kf_reset()
                 self.stage = Stage.ALIGN
+            elif dist < self.home_radius and abs(ez) < self.alt_tol:
+                if self.dbg_tick % 40 == 0:
+                    self._log('홈 도착 — 마커 탐색 중(하방 카메라에 마커가 들어와야 착륙 시작).')
 
         elif self.stage == Stage.ALIGN:
             err = self._track(marker_ok)
@@ -332,9 +447,7 @@ class PreclandHwNode(Node):
         elif not armed and self._prev_armed:
             self._log('시동 꺼짐 (DISARMED). 다시 시동을 걸어주세요.')
         if guided and not self._prev_guided:
-            self._log('GUIDED 모드 확인.')
-            self._log('다음 할 일: 드론을 마커 위로 이동하세요 — 하방 카메라가 '
-                      '마커를 잡으면 자동으로 정렬·하강·착륙합니다.')
+            self._log('GUIDED 모드 확인 — 홈(마커 위)으로 자동 복귀를 시작합니다.')
         elif not guided and self._prev_guided:
             self._log('GUIDED 해제(수동 조종). 다시 GUIDED로 전환하면 이어집니다.')
         if marker_ok and not self._prev_marker:
@@ -346,11 +459,9 @@ class PreclandHwNode(Node):
         self._guide_tick += 1
         if self._guide_tick % 60 == 0:          # 3초마다 현재 필요한 동작 리마인드
             if not armed:
-                self._log('대기 중 — 시동(ARM)을 걸어주세요.')
+                self._log('대기 중 — 마커 위에서 시동(ARM)을 걸어주세요(그 지점이 홈).')
             elif not guided:
-                self._log('대기 중 — 이륙 후 GUIDED 모드로 전환하세요.')
-            elif not marker_ok:
-                self._log('대기 중 — 드론을 마커 위로 (하방 카메라가 마커를 봐야 시작).')
+                self._log('대기 중 — 이륙 후 GUIDED 로 전환하면 홈으로 복귀합니다.')
 
     # 마커를 등속 칼만 필터로 추종하고 추정 위치로 속도 서보. 드론↔마커 수평거리(m) 반환.
     def _track(self, marker_ok):
@@ -383,6 +494,7 @@ class PreclandHwNode(Node):
             hsrc = 'lidar' if (self.use_lidar_height and self.lidar_fresh > 0
                                and self.lidar_h is not None) else 'cam'
             self._log(f'h={self.marker_h:.2f}({hsrc}) err=({eE:+.2f},{eN:+.2f}) '
+                      f'i=({self.pid_int[0]:+.2f},{self.pid_int[1]:+.2f}) '
                       f'cmd=({self.cmd_vel[0]:+.2f},{self.cmd_vel[1]:+.2f}) '
                       f'miss={self.kf_miss}')
         return math.hypot(eE, eN)
@@ -391,13 +503,38 @@ class PreclandHwNode(Node):
         return max(self.land_align_radius, self.descend_cone * self.marker_h)
 
     def _servo_to(self, tE, tN, vffE=0.0, vffN=0.0):
-        eE = tE - self.pos[0]
-        eN = tN - self.pos[1]
-        self.cmd_vel[0] = self._clamp(vffE + self.vel_gain * eE,
-                                      -self.vel_max, self.vel_max)
-        self.cmd_vel[1] = self._clamp(vffN + self.vel_gain * eN,
-                                      -self.vel_max, self.vel_max)
-        return math.hypot(eE, eN)
+        # PID 속도 서보(축별 E, N). 출력=속도 명령, vel_max 로 clamp.
+        e = (tE - self.pos[0], tN - self.pos[1])
+        vff = (vffE, vffN)
+        for i in (0, 1):
+            # D: 오차 미분(마커 정지 → ≈ -드론속도). 리셋 직후 첫 샘플은 0(킥 방지).
+            de = (e[i] - self.pid_prev_e[i]) / DT if self.pid_primed else 0.0
+            i_term = self._clamp(self.vel_ki * self.pid_int[i],
+                                 -self.i_vel_max, self.i_vel_max)
+            u = vff[i] + self.vel_gain * e[i] + i_term + self.vel_kd * de
+            u_sat = self._clamp(u, -self.vel_max, self.vel_max)
+            # anti-windup(조건부 적분): 출력이 포화 중이고 오차가 더 밀어붙이는
+            # 방향이면 적분을 멈춰 누적 폭주를 막는다.
+            if not (u != u_sat and u * e[i] > 0.0):
+                self.pid_int[i] += e[i] * DT
+            self.cmd_vel[i] = u_sat
+        self.pid_prev_e = list(e)
+        self.pid_primed = True
+        return math.hypot(e[0], e[1])
+
+    def _pid_reset(self):
+        self.pid_int = [0.0, 0.0]
+        self.pid_prev_e = [0.0, 0.0]
+        self.pid_primed = False
+
+    # 라이브 튜닝 콜백: `ros2 param set` 이 오면 해당 self.* 를 즉시 갱신 →
+    # 다음 제어 tick 부터 새 값 적용(노드 재시작 불필요).
+    def _on_set_params(self, params):
+        for p in params:
+            if p.name in self._live_params:
+                setattr(self, p.name, p.value)
+                self._log(f'[param] {p.name} = {p.value}')
+        return SetParametersResult(successful=True)
 
     # 카메라 프레임 tvec(m) → 마커 월드(E,N) 위치. tvec.x=이미지오른쪽, tvec.y=이미지
     # 아래(m). 이미지→기체(마운트 부호), 기체→월드(현재 yaw 회전), 드론위치 가산.
@@ -416,6 +553,7 @@ class PreclandHwNode(Node):
     def _kf_reset(self):
         self.kf_init = False
         self.kf_miss = 0
+        self._pid_reset()
 
     def _kf_predict(self):
         if not self.kf_init:
