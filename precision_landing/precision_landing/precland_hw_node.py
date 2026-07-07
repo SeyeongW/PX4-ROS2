@@ -172,8 +172,13 @@ class PreclandHwNode(Node):
         self.lidar_tilt_comp = self.declare_parameter('lidar_tilt_comp', True).value
 
         # --- 이륙/호버 수직 제어 (이 파일에서 직접 튜닝 — 런치에 없음) -------
-        # 이륙 도달·호버 고도 허용오차(m). |flight_alt − 현재고도| 이 안이면 도달.
+        # 이륙 도달·호버 고도 허용오차(m).
         self.alt_tol = self.declare_parameter('alt_tol', 0.4).value
+        # 이륙 '완료' 판정 고도(m). 이륙 명령은 계속 flight_alt(5 m)로 내리되, 이 고도만
+        # 넘으면 이륙됐다고 보고 SEARCH 로 넘어간다. flight_alt 근처에서 간당간당하며
+        # 재이륙 명령이 반복되는 것을 막기 위해 flight_alt 보다 넉넉히 낮게 둔다.
+        # (flight_alt=5.0 기준 4.0 → 1 m 여유.) flight_alt 보다 낮게 설정할 것.
+        self.takeoff_done_alt = self.declare_parameter('takeoff_done_alt', 4.0).value
         # SEARCH 호버 중 고도 유지 수직 속도 상한(m/s).
         self.climb_rate = self.declare_parameter('climb_rate', 0.5).value
 
@@ -251,7 +256,8 @@ class PreclandHwNode(Node):
             'vel_gain', 'vel_ki', 'vel_kd', 'i_vel_max', 'vel_max',
             'descend_rate', 'descend_cone', 'descend_min_scale',
             'land_align_radius', 'land_switch_alt',
-            'flight_alt', 'search_time', 'max_land_attempts', 'alt_tol', 'climb_rate',
+            'flight_alt', 'search_time', 'max_land_attempts',
+            'alt_tol', 'takeoff_done_alt', 'climb_rate',
             'lat_swap', 'lat_sign_fwd', 'lat_sign_left',
             'lidar_min', 'lidar_max', 'lidar_offset', 'lidar_tilt_comp',
         }
@@ -363,13 +369,15 @@ class PreclandHwNode(Node):
             if not guided:
                 if send:
                     self._log('이륙: GUIDED 전환 요청'); self._set_mode('GUIDED')
-            elif self.pos[2] < self.flight_alt - self.alt_tol:
+            elif self.pos[2] < self.takeoff_done_alt:
+                # 명령 목표는 계속 flight_alt(5 m) — 완료 판정만 takeoff_done_alt(4 m).
                 if send:
-                    self._log(f'이륙: {self.flight_alt:.1f} m 로 상승 명령')
+                    self._log(f'이륙: {self.flight_alt:.1f} m 로 상승 명령 '
+                              f'(현재 {self.pos[2]:.1f} m)')
                     self._takeoff(self.flight_alt)
             else:
-                self._log(f'이륙 완료({self.pos[2]:.1f} m) — {self.search_time:.0f} s 동안 '
-                          '마커 탐색.  → 탐색(SEARCH)')
+                self._log(f'이륙 완료(≥{self.takeoff_done_alt:.1f} m, 현재 {self.pos[2]:.1f} m) '
+                          f'— {self.search_time:.0f} s 동안 마커 탐색.  → 탐색(SEARCH)')
                 self.search_deadline = self._now() + self.search_time
                 self._pid_reset()
                 self.stage = Stage.SEARCH
