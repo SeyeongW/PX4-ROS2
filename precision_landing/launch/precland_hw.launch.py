@@ -58,6 +58,11 @@ def generate_launch_description():
     vel_gain = LaunchConfiguration('vel_gain')
     vel_max = LaunchConfiguration('vel_max')
     descend_rate = LaunchConfiguration('descend_rate')
+    use_lidar_height = LaunchConfiguration('use_lidar_height')
+    lidar_topic = LaunchConfiguration('lidar_topic')
+    lidar_min = LaunchConfiguration('lidar_min')
+    lidar_max = LaunchConfiguration('lidar_max')
+    lidar_offset = LaunchConfiguration('lidar_offset')
     lat_swap = LaunchConfiguration('lat_swap')
     lat_sign_fwd = LaunchConfiguration('lat_sign_fwd')
     lat_sign_left = LaunchConfiguration('lat_sign_left')
@@ -164,6 +169,11 @@ def generate_launch_description():
             'vel_gain': ParameterValue(vel_gain, value_type=float),
             'vel_max': ParameterValue(vel_max, value_type=float),
             'descend_rate': ParameterValue(descend_rate, value_type=float),
+            'use_lidar_height': ParameterValue(use_lidar_height, value_type=bool),
+            'lidar_topic': lidar_topic,
+            'lidar_min': ParameterValue(lidar_min, value_type=float),
+            'lidar_max': ParameterValue(lidar_max, value_type=float),
+            'lidar_offset': ParameterValue(lidar_offset, value_type=float),
             'lat_swap': ParameterValue(lat_swap, value_type=bool),
             'lat_sign_fwd': ParameterValue(lat_sign_fwd, value_type=float),
             'lat_sign_left': ParameterValue(lat_sign_left, value_type=float),
@@ -196,7 +206,7 @@ def generate_launch_description():
                 'config', 'down_camera.yaml')),
         DeclareLaunchArgument('aruco_dict', default_value='DICT_4X4_50'),
         # 인쇄한 마커 한 변 실측(m). pose 정확도의 핵심 — 자로 재서 정확히.
-        DeclareLaunchArgument('marker_size', default_value='0.20'),
+        DeclareLaunchArgument('marker_size', default_value='0.25'),
         DeclareLaunchArgument('marker_id', default_value='-1'),  # -1 = 아무 마커
 
         DeclareLaunchArgument('flight_alt', default_value='4.0'),
@@ -210,6 +220,14 @@ def generate_launch_description():
         DeclareLaunchArgument('vel_gain', default_value='0.6'),
         DeclareLaunchArgument('vel_max', default_value='0.8'),
         DeclareLaunchArgument('descend_rate', default_value='0.25'),
+        # 하방 라이다(FC RNGFND → MAVROS Range)로 높이 측정. 마커 검출과 무관하게
+        # 연속·정밀 → 저고도 하강·LAND 인계가 안정적. 없으면 use_lidar_height:=false.
+        DeclareLaunchArgument('use_lidar_height', default_value='false'),
+        DeclareLaunchArgument('lidar_topic',
+                              default_value='/mavros/rangefinder/rangefinder'),
+        DeclareLaunchArgument('lidar_min', default_value='0.1'),
+        DeclareLaunchArgument('lidar_max', default_value='40.0'),
+        DeclareLaunchArgument('lidar_offset', default_value='0.0'),
         # 카메라 마운트 매핑(첫 비행에서 지상 테스트로 확정).
         DeclareLaunchArgument('lat_swap', default_value='false'),
         DeclareLaunchArgument('lat_sign_fwd', default_value='1.0'),

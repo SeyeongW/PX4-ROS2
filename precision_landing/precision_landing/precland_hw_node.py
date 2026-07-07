@@ -40,6 +40,7 @@ from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 
 from geometry_msgs.msg import PoseStamped
+from sensor_msgs.msg import Range
 from std_msgs.msg import Bool, String
 from mavros_msgs.msg import PositionTarget, State
 from mavros_msgs.srv import CommandBool, CommandTOL, SetMode
@@ -95,6 +96,23 @@ class PreclandHwNode(Node):
         # 언제든 회수(RC 오버라이드) 가능. false 로 두면 이 게이트를 끔(권장 안 함).
         self.require_guided = self.declare_parameter('require_guided', True).value
 
+        # 하방 라이다(레인지파인더)로 높이 측정. 마커 검출과 무관하게 연속·정밀한
+        # 수직 거리를 주므로, 저고도에서 마커가 화면을 넘쳐 검출이 끊겨도 고도 판단이
+        # 유지됨(하강률·LAND 인계). 수평 정렬(x,y)은 여전히 카메라 마커로 함.
+        # ArduPilot RNGFND → MAVROS 는 보통 sensor_msgs/Range 로 발행.
+        self.use_lidar_height = self.declare_parameter('use_lidar_height', False).value
+        self.lidar_topic = self.declare_parameter(
+            'lidar_topic', '/mavros/rangefinder/rangefinder').value
+        # 유효 측정 범위(m). 이 밖의 값(0/음수/최대 초과)은 무시하고 폴백.
+        self.lidar_min = self.declare_parameter('lidar_min', 0.1).value
+        self.lidar_max = self.declare_parameter('lidar_max', 40.0).value
+        # 센서 장착면과 착륙 기준면(다리 접지)의 오프셋(m). 라이다가 기체 배 밑에
+        # 있으면 실제 다리 접지까지 거리는 range - offset. 필요 없으면 0.
+        self.lidar_offset = self.declare_parameter('lidar_offset', 0.0).value
+        # 기울어졌을 때 slant range → 수직 높이 보정(range × cosθ). 정렬 중엔 거의
+        # 수평이라 영향 작지만, 켜두면 안전.
+        self.lidar_tilt_comp = self.declare_parameter('lidar_tilt_comp', True).value
+
         self.stage = Stage.TAKEOFF if self.auto_takeoff else Stage.IDLE
 
         # --- 상태 -----------------------------------------------------------
@@ -103,7 +121,10 @@ class PreclandHwNode(Node):
         self.yaw = 0.0                 # 현재 헤딩(ENU, rad)
         self.hold_yaw = 0.0            # 정렬 중 유지할 헤딩
         self.tvec = None               # 최신 마커 위치(카메라 프레임 m): (right, down, dist)
-        self.marker_h = self.flight_alt  # 마커 윗면 위 높이(tvec.z 기반, coast 시 유지)
+        self.marker_h = self.flight_alt  # 지면(마커면) 위 높이. 라이다 우선, 없으면 tvec.z
+        self.lidar_h = None            # 최신 라이다 수직 높이(m, 보정·오프셋 반영)
+        self.lidar_fresh = 0           # 라이다 신선도 카운트다운
+        self.cos_tilt = 1.0            # 수직 대비 기체 기울기 cos (R22), 틸트 보정용
         self.fresh = 0                 # 마커 신선도 카운트다운
         self.req_ticks = 0
         self.dbg_tick = 0
@@ -127,6 +148,9 @@ class PreclandHwNode(Node):
         self.create_subscription(
             PoseStamped, '/perception/marker_pose', self._marker_cb, 10)
         self.create_subscription(Bool, '/perception/aruco_detected', self._detected_cb, 10)
+        if self.use_lidar_height:
+            self.create_subscription(
+                Range, self.lidar_topic, self._range_cb, qos_profile_sensor_data)
 
         # --- 서비스 클라이언트 ----------------------------------------------
         self.set_mode_cli = self.create_client(SetMode, '/mavros/set_mode')
@@ -162,10 +186,23 @@ class PreclandHwNode(Node):
         q = msg.pose.orientation
         self.yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
                               1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        # 기체 z축(위)의 월드 수직 성분 = R22. 수평이면 1, 기울면 <1.
+        # 라이다 slant range → 수직 높이 = range × cos(tilt) = range × R22.
+        self.cos_tilt = 1.0 - 2.0 * (q.x * q.x + q.y * q.y)
 
     def _marker_cb(self, msg):
         # 카메라 광학 프레임 tvec: x=오른쪽, y=아래, z=마커까지 거리(≈높이).
         self.tvec = (msg.pose.position.x, msg.pose.position.y, msg.pose.position.z)
+
+    def _range_cb(self, msg: Range):
+        # ArduPilot RNGFND → MAVROS. 유효 범위 밖(0/음수/최대 초과)이면 버리고 폴백.
+        r = float(msg.range)
+        if not (self.lidar_min <= r <= self.lidar_max):
+            return
+        if self.lidar_tilt_comp and self.cos_tilt > 0.1:
+            r *= self.cos_tilt          # slant → 수직 높이
+        self.lidar_h = max(r - self.lidar_offset, 0.0)
+        self.lidar_fresh = 20           # 20 × 50 ms = 1.0 s 신선도 창
 
     def _detected_cb(self, msg):
         if msg.data:
@@ -175,6 +212,8 @@ class PreclandHwNode(Node):
     def tick(self):
         if self.fresh > 0:
             self.fresh -= 1
+        if self.lidar_fresh > 0:
+            self.lidar_fresh -= 1
         marker_ok = self.fresh > 0 and self.tvec is not None
 
         if not self.mav_state.connected:
@@ -319,10 +358,16 @@ class PreclandHwNode(Node):
         if marker_ok:
             zE, zN = self._measure_marker_world()
             self._kf_update(zE, zN)
-            self.marker_h = max(self.tvec[2], 0.05)   # 카메라가 측정한 마커 위 높이
             self.kf_miss = 0
         else:
             self.kf_miss += 1
+
+        # 높이: 라이다 우선(마커 검출과 무관하게 연속), 라이다가 끊기면 카메라 tvec.z
+        # 폴백, 둘 다 없으면 직전 marker_h 유지(coast).
+        if self.use_lidar_height and self.lidar_fresh > 0 and self.lidar_h is not None:
+            self.marker_h = max(self.lidar_h, 0.05)
+        elif marker_ok:
+            self.marker_h = max(self.tvec[2], 0.05)
 
         if not self.kf_init:
             self.cmd_vel[0] = self.cmd_vel[1] = 0.0
@@ -335,7 +380,9 @@ class PreclandHwNode(Node):
 
         self.dbg_tick += 1
         if self.dbg_tick % 20 == 0:
-            self._log(f'h={self.marker_h:.2f} err=({eE:+.2f},{eN:+.2f}) '
+            hsrc = 'lidar' if (self.use_lidar_height and self.lidar_fresh > 0
+                               and self.lidar_h is not None) else 'cam'
+            self._log(f'h={self.marker_h:.2f}({hsrc}) err=({eE:+.2f},{eN:+.2f}) '
                       f'cmd=({self.cmd_vel[0]:+.2f},{self.cmd_vel[1]:+.2f}) '
                       f'miss={self.kf_miss}')
         return math.hypot(eE, eN)
