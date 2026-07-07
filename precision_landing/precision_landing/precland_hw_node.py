@@ -28,7 +28,9 @@ SITL 대비 달라진 점
   DESCEND   : 깔때기(funnel) 허용오차를 따라 정렬하며 동시에 하강.
   LAND      : 저고도·중심 정렬 상태에서 LAND 모드로 전환, FC 에 착륙 인계.
   RTL_WAIT  : FC 의 RTL 로 홈 복귀·착륙에 맡김(셋포인트 미송출). 도중 마커가 보이면
-              GUIDED 회수(RTL_INTERCEPT). 마커 없이 RTL 이 disarm 까지 가면 미션 종료.
+              GUIDED 회수(RTL_INTERCEPT). 단 비전 착륙 시도가 max_land_attempts 회를
+              넘으면 마커가 보여도 가로채지 않고 홈 착륙(진동 루프 방지). 마커 없이
+              RTL 이 disarm 까지 가면 미션 종료.
   RTL_INTERCEPT : GUIDED 회수 요청 → 모드 확인되면 ALIGN 으로 인계.
   DONE      : disarm 확인 후 노드 종료.
 
@@ -81,6 +83,10 @@ class PreclandHwNode(Node):
         self.flight_alt = self.declare_parameter('flight_alt', 5.0).value
         # 이륙 후 이 고도에서 마커를 탐색하는 시간(s). 지나면 RTL 로 복귀.
         self.search_time = self.declare_parameter('search_time', 5.0).value
+        # 비전 착륙 시도 상한. SEARCH 가 마커를 못 찾고 RTL 로 떨어질 때마다 1회 소진.
+        # 이 횟수를 넘으면 그 다음 RTL 은 마커가 보여도 가로채지 않고 홈에 착륙(진동
+        # 루프 방지). 0 이하 = 무제한(항상 가로채기 시도).
+        self.max_land_attempts = self.declare_parameter('max_land_attempts', 3).value
         # 하강 깔때기: 허용 수평오차가 고도에 비례해 넓어짐(높이 관대, 지면 근처 land_
         # align_radius 로 좁아짐). funnel_radius(h) = max(land_align_radius, descend_cone·h).
         self.descend_cone = self.declare_parameter('descend_cone', 0.35).value
@@ -201,6 +207,9 @@ class PreclandHwNode(Node):
         # 이번 비행에서 GUIDED 가 한 번이라도 확립됐는지. 이륙 초기 GUIDED 핸드셰이크
         # (아직 GUIDED 아님)와, 확립 후 조종사 회수(GUIDED 이탈)를 구분하기 위함.
         self.guided_seen = False
+        # 비전 착륙 시도 소진 카운트(SEARCH 실패 → RTL 마다 +1). disarm 시 리셋.
+        self.land_attempts = 0
+        self._final_rtl_logged = False  # '더 이상 가로채지 않음' 안내 1회만
         # PID 속도 서보 상태(축별 E, N)
         self.pid_int = [0.0, 0.0]     # 적분 누적(∫e dt)
         self.pid_prev_e = [0.0, 0.0]  # 직전 오차(미분용)
@@ -242,7 +251,7 @@ class PreclandHwNode(Node):
             'vel_gain', 'vel_ki', 'vel_kd', 'i_vel_max', 'vel_max',
             'descend_rate', 'descend_cone', 'descend_min_scale',
             'land_align_radius', 'land_switch_alt',
-            'flight_alt', 'search_time', 'alt_tol', 'climb_rate',
+            'flight_alt', 'search_time', 'max_land_attempts', 'alt_tol', 'climb_rate',
             'lat_swap', 'lat_sign_fwd', 'lat_sign_left',
             'lidar_min', 'lidar_max', 'lidar_offset', 'lidar_tilt_comp',
         }
@@ -313,6 +322,8 @@ class PreclandHwNode(Node):
         if not armed:
             self.takeoff_latched = False
             self.guided_seen = False
+            self.land_attempts = 0
+            self._final_rtl_logged = False
         elif guided:
             self.guided_seen = True
 
@@ -381,8 +392,18 @@ class PreclandHwNode(Node):
                 self._kf_reset()
                 self.stage = Stage.ALIGN
             elif remain <= 0.0:
-                self._log(f'{self.search_time:.0f} s 내 마커 미발견 — RTL 로 홈 복귀합니다.  '
-                          '→ RTL(RTL_WAIT)')
+                self.land_attempts += 1
+                unlimited = self.max_land_attempts <= 0
+                left = (self.max_land_attempts - self.land_attempts) if not unlimited else -1
+                if unlimited or left > 0:
+                    self._log(f'{self.search_time:.0f} s 내 마커 미발견 — RTL 로 홈 복귀합니다. '
+                              f'(비전 착륙 시도 {self.land_attempts}'
+                              f'{"" if unlimited else "/" + str(self.max_land_attempts)}, '
+                              'RTL 중 마커 보이면 재가로채기)  → RTL(RTL_WAIT)')
+                else:
+                    self._log(f'{self.search_time:.0f} s 내 마커 미발견 — 비전 착륙 시도 '
+                              f'{self.land_attempts}/{self.max_land_attempts} 소진. 이후로는 '
+                              'RTL 홈 착륙에 맡깁니다(재가로채기 안 함).  → RTL(RTL_WAIT)')
                 self._set_mode('RTL')
                 self.req_ticks = 0
                 self.stage = Stage.RTL_WAIT
@@ -397,11 +418,19 @@ class PreclandHwNode(Node):
                 self.stage = Stage.DONE
                 rclpy.shutdown()
                 return
-            if marker_ok:
+            # 시도 상한 초과: 마커가 보여도 가로채지 않고 FC 의 RTL 홈 착륙에 맡긴다.
+            attempts_left = (self.max_land_attempts <= 0
+                             or self.land_attempts < self.max_land_attempts)
+            if marker_ok and attempts_left:
                 self._log('RTL 복귀 중 마커 포착 — GUIDED 로 회수해 정밀 정렬합니다.  '
                           '→ 회수(RTL_INTERCEPT)')
                 self.req_ticks = 0
                 self.stage = Stage.RTL_INTERCEPT
+            elif marker_ok and not attempts_left:
+                if not self._final_rtl_logged:
+                    self._final_rtl_logged = True
+                    self._log(f'마커 보이지만 비전 착륙 시도 {self.max_land_attempts}회 소진 — '
+                              '재가로채기 없이 RTL 홈 착륙을 계속합니다.')
             elif self.dbg_tick % 40 == 0:
                 self._log(f'RTL 복귀 중(mode={self.mav_state.mode}) — 마커 탐색 지속.')
             return                                 # 셋포인트 송출 안 함
