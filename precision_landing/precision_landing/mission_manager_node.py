@@ -18,9 +18,14 @@ State machine
               watches /mavros/state), so the drone lifts off FROM the moving truck.
   TAKEOFF   : GUIDED -> arm -> /mavros/cmd/takeoff to flight_alt (no setpoints;
               ArduCopter holds position itself after a guided takeoff).
-  MISSION   : fly to the mission waypoint and loiter. Each tick re-evaluates the
-              RETURN decision (battery budget vs. distance to the moving truck)
-              and watches the truck link.
+  MISSION   : fly a patrol route (patrol_route: path to a waypoint-list YAML,
+              looped indefinitely, dwelling loiter_s at each stop) or, if
+              patrol_route is unset, the single (mission_area_e,
+              mission_area_n) waypoint (legacy: dwell loiter_s then RETURN).
+              Each tick re-evaluates the RETURN decision (battery budget vs.
+              distance to the moving truck, an external task-complete signal,
+              or -- single-waypoint case only -- the dwell timer) and watches
+              the truck link.
   LANDING   : hand off — latch /mission/land_enable=true and STOP streaming
               setpoints. precision_landing_node (dormant until now) wakes and runs
               APPROACH->ALIGN->DESCEND->DONE onto the moving truck. We keep
@@ -38,6 +43,7 @@ Topic contract
   in  /mavros/local_position/pose   geometry_msgs/PoseStamped (BEST_EFFORT)
   in  /marker/position              geometry_msgs/PointStamped  truck ENU cue
   in  /marker/velocity              geometry_msgs/Vector3Stamped (optional)
+  in  /mission/task_complete        std_msgs/Bool               external mission-complete signal
   out /mavros/setpoint_raw/local    mavros_msgs/PositionTarget (MISSION/LINK_LOST)
   out /mission/land_enable          std_msgs/Bool (latched)  landing-authority gate
   out /mission/phase                std_msgs/String          current FSM stage
@@ -46,6 +52,8 @@ Topic contract
 
 import math
 from enum import Enum
+
+import yaml
 
 import rclpy
 from rclpy.node import Node
@@ -56,6 +64,8 @@ from geometry_msgs.msg import PointStamped, PoseStamped, Vector3Stamped
 from std_msgs.msg import Bool, Float32, String
 from mavros_msgs.msg import PositionTarget, State
 from mavros_msgs.srv import CommandBool, CommandTOL, SetMode
+
+from precision_landing import apf
 
 
 class Stage(Enum):
@@ -71,25 +81,82 @@ class Stage(Enum):
 DT = 0.05  # 50 ms control period
 
 
+def _load_patrol_route(path):
+    """Waypoint list YAML -> [(e, n), ...]. Format: `waypoints: [{e:, n:}, ...]`
+    (same convention as gazebo/config/obstacle_map.yaml's obstacle list)."""
+    with open(path) as f:
+        data = yaml.safe_load(f)
+    return [(float(w['e']), float(w['n'])) for w in data['waypoints']]
+
+
 class MissionManagerNode(Node):
     def __init__(self):
         super().__init__('mission_manager_node')
 
         # --- Parameters -----------------------------------------------------
         self.flight_alt = self.declare_parameter('flight_alt', 5.0).value
-        # Mission area: a fixed ENU waypoint the drone flies to and loiters over.
+        # Mission area: a fixed ENU point used as (a) the MOUNTED-stage launch-
+        # trigger anchor (trigger_dist below) and (b) the legacy single
+        # waypoint when patrol_route (below) is not set.
         self.mission_e = self.declare_parameter('mission_area_e', 120.0).value
         self.mission_n = self.declare_parameter('mission_area_n', 40.0).value
         # Launch trigger: take off once the truck drives within this distance (m)
         # of the mission area.
         self.trigger_dist = self.declare_parameter('trigger_dist', 50.0).value
-        # Loiter time (s) over the mission waypoint before returning.
+        # Dwell time (s) at each patrol waypoint (or the single legacy
+        # waypoint) before moving on / returning.
         self.loiter_s = self.declare_parameter('loiter_s', 15.0).value
-        # Considered "arrived" at the mission waypoint within this radius (m).
+        # Considered "arrived" at a waypoint within this radius (m).
         self.arrive_radius = self.declare_parameter('arrive_radius', 2.0).value
-        # Horizontal velocity servo toward the (stationary) mission waypoint.
+        # Horizontal velocity servo toward the current (stationary) waypoint.
         self.vel_gain = self.declare_parameter('vel_gain', 0.6).value      # 1/s
         self.vel_max = self.declare_parameter('vel_max', 8.0).value        # m/s
+        # --- Patrol route (Step 1: waypoint-sequencing skeleton, no new path-
+        # planning algorithm yet -- still the same P+APF velocity servo) -----
+        # Empty (default): legacy single-point behaviour -- the one waypoint is
+        # (mission_area_e, mission_area_n) and the dwell timer itself ends the
+        # mission (RETURN), same as before this feature existed.
+        # Non-empty: path to a YAML `waypoints: [{e:, n:}, ...]` list (see
+        # gazebo/config/patrol_route.yaml). Loops the list indefinitely,
+        # dwelling loiter_s at each stop; only low_battery or the external
+        # /mission/task_complete signal ends it (there is no single "done"
+        # point to time out on during a patrol).
+        self.patrol_route_path = self.declare_parameter('patrol_route', '').value
+        self.patrol_mode = bool(self.patrol_route_path)
+        if self.patrol_mode:
+            try:
+                self.patrol_waypoints = _load_patrol_route(self.patrol_route_path)
+                if not self.patrol_waypoints:
+                    raise ValueError('waypoints list is empty')
+                self.get_logger().info(
+                    f'patrol: loaded {len(self.patrol_waypoints)} waypoints from '
+                    f'{self.patrol_route_path}')
+            except Exception as e:
+                self.get_logger().error(
+                    f'patrol: failed to load patrol_route "{self.patrol_route_path}": '
+                    f'{e}; falling back to single mission_area waypoint')
+                self.patrol_mode = False
+                self.patrol_waypoints = [(self.mission_e, self.mission_n)]
+        else:
+            self.patrol_waypoints = [(self.mission_e, self.mission_n)]
+        # --- Obstacle avoidance (APF baseline) -------------------------------
+        # Off by default. Same repulsion model as precision_landing_node — see
+        # apf.py / gazebo/config/obstacle_map.yaml. Layered onto _servo_to's
+        # attractive term for the MISSION (outbound patrol) leg.
+        self.apf_enable = self.declare_parameter('apf_enable', False).value
+        self.obstacle_map_path = self.declare_parameter('obstacle_map', '').value
+        self.apf_influence_radius = self.declare_parameter('apf_influence_radius', 15.0).value  # m
+        self.apf_gain = self.declare_parameter('apf_gain', 6.0).value                  # m/s at the surface
+        self.apf_vel_cap = self.declare_parameter('apf_vel_cap', 6.0).value            # m/s
+        self._obstacles = []
+        if self.apf_enable and self.obstacle_map_path:
+            try:
+                self._obstacles = apf.load_obstacles(self.obstacle_map_path)
+                self.get_logger().info(
+                    f'APF: loaded {len(self._obstacles)} obstacles from {self.obstacle_map_path}')
+            except Exception as e:
+                self.get_logger().error(
+                    f'APF: failed to load obstacle_map "{self.obstacle_map_path}": {e}')
         # --- Simulated battery budget (param-driven, predictable for the demo) --
         # battery_s counts DOWN from battery_capacity_s at consume_rate per second
         # while airborne. RETURN is triggered when the time still needed to reach
@@ -122,6 +189,8 @@ class MissionManagerNode(Node):
         self.battery_s = self.battery_capacity_s
         self.arrived = False
         self.loiter_start = None
+        self.patrol_idx = 0             # index into self.patrol_waypoints
+        self.mission_complete = False   # latest value from /mission/task_complete
         self.link_lost_start = None
         self.resume_stage = None        # stage to return to after a recovered link
         self.land_enabled = False
@@ -149,6 +218,8 @@ class MissionManagerNode(Node):
             PoseStamped, '/mavros/local_position/pose', self._pose_cb,
             qos_profile_sensor_data)
         self.create_subscription(PointStamped, '/marker/position', self._cue_cb, 10)
+        self.create_subscription(
+            Bool, '/mission/task_complete', self._task_complete_cb, 10)
 
         # --- Service clients ------------------------------------------------
         self.set_mode_cli = self.create_client(SetMode, '/mavros/set_mode')
@@ -156,9 +227,11 @@ class MissionManagerNode(Node):
         self.takeoff_cli = self.create_client(CommandTOL, '/mavros/cmd/takeoff')
 
         self.create_timer(DT, self.tick)
+        patrol_desc = (f'patrol={len(self.patrol_waypoints)}wp (loops)' if self.patrol_mode
+                       else 'patrol=off (single waypoint)')
         self._log(f'mission area=({self.mission_e:.0f},{self.mission_n:.0f}) '
                   f'trigger_dist={self.trigger_dist:.0f} loiter={self.loiter_s:.0f}s '
-                  f'battery={self.battery_capacity_s:.0f}s')
+                  f'battery={self.battery_capacity_s:.0f}s {patrol_desc}')
 
     # -----------------------------------------------------------------------
     # Callbacks
@@ -182,6 +255,9 @@ class MissionManagerNode(Node):
             return False
         age = (self.get_clock().now() - self.cue_stamp).nanoseconds * 1e-9
         return age < self.cue_timeout
+
+    def _task_complete_cb(self, msg):
+        self.mission_complete = msg.data
 
     # -----------------------------------------------------------------------
     def tick(self):
@@ -214,6 +290,10 @@ class MissionManagerNode(Node):
                 if d <= self.trigger_dist:
                     self._log('truck near mission area -> TAKEOFF')
                     self.battery_s = self.battery_capacity_s
+                    self.mission_complete = False   # clear any stale signal from last run
+                    self.patrol_idx = 0
+                    self.arrived = False
+                    self.loiter_start = None
                     self.stage = Stage.TAKEOFF
 
         elif self.stage == Stage.TAKEOFF:
@@ -245,32 +325,49 @@ class MissionManagerNode(Node):
                 # Lost the truck link -> try to reconnect (Phase 3 failsafe).
                 self._enter_link_lost(Stage.MISSION)
             else:
-                # Fly to the mission waypoint, then loiter over it.
-                d_area = self._dist(self.pos, [self.mission_e, self.mission_n])
+                # Fly to the current patrol waypoint, dwell loiter_s, then
+                # advance to the next one (looping). Legacy single-waypoint
+                # case: patrol_waypoints has exactly one entry, so "advance"
+                # is a no-op and dwell_done doubles as the old loiter_done.
+                wp = self.patrol_waypoints[self.patrol_idx]
+                d_area = self._dist(self.pos, wp)
                 if not self.arrived and d_area < self.arrive_radius:
                     self.arrived = True
                     self.loiter_start = self.get_clock().now()
-                    self._log(f'arrived at mission area -> loiter {self.loiter_s:.0f}s')
-                self._servo_to(self.mission_e, self.mission_n)
+                    self._log(f'arrived at waypoint {self.patrol_idx} '
+                              f'-> dwell {self.loiter_s:.0f}s')
+                self._servo_to(wp[0], wp[1])
                 self.cmd_vel[2] = self._clamp(
                     0.5 * (self.flight_alt - self.pos[2]), -0.5, 0.5)
                 self._face_velocity()
                 publish = True
 
-                # RETURN decision: battery budget vs. distance to the moving truck.
+                dwell_done = self.arrived and self.loiter_start is not None and \
+                    (self.get_clock().now() - self.loiter_start).nanoseconds * 1e-9 \
+                    >= self.loiter_s
+                if dwell_done and len(self.patrol_waypoints) > 1:
+                    self.patrol_idx = (self.patrol_idx + 1) % len(self.patrol_waypoints)
+                    self.arrived = False
+                    self.loiter_start = None
+                    self._log(f'-> advance to waypoint {self.patrol_idx}')
+
+                # RETURN decision: battery budget vs. distance to the moving
+                # truck, an external task-complete signal, or -- legacy
+                # single-waypoint case only -- the dwell timer itself (patrol
+                # mode loops indefinitely; there's no single "done" point to
+                # time out on, so only battery/task_complete end it).
                 d_truck = self._dist(self.pos, self.cue)
                 t_return = d_truck / max(self.effective_speed, 0.1)
                 low_battery = self.battery_s <= t_return + self.reserve_margin_s
-                loiter_done = self.arrived and self.loiter_start is not None and \
-                    (self.get_clock().now() - self.loiter_start).nanoseconds * 1e-9 \
-                    >= self.loiter_s
+                loiter_done = dwell_done and not self.patrol_mode
                 self.dbg_tick += 1
                 if self.dbg_tick % 20 == 0:
                     self._log(f'MISSION batt={self.battery_s:.0f}s '
                               f'd_truck={d_truck:.0f} t_ret={t_return:.0f}s '
                               f'{"[LOW BATT]" if low_battery else ""}')
-                if low_battery or loiter_done:
-                    why = 'low battery' if low_battery else 'loiter done'
+                if low_battery or loiter_done or self.mission_complete:
+                    why = ('low battery' if low_battery else
+                           'task complete' if self.mission_complete else 'loiter done')
                     self._log(f'RETURN ({why}) -> LANDING handoff')
                     self.stage = Stage.LANDING
 
@@ -338,8 +435,23 @@ class MissionManagerNode(Node):
     def _servo_to(self, target_e, target_n):
         eE = target_e - self.pos[0]
         eN = target_n - self.pos[1]
-        self.cmd_vel[0] = self._clamp(self.vel_gain * eE, -self.vel_max, self.vel_max)
-        self.cmd_vel[1] = self._clamp(self.vel_gain * eN, -self.vel_max, self.vel_max)
+        vE = self.vel_gain * eE
+        vN = self.vel_gain * eN
+        if self.apf_enable and self._obstacles:
+            rE, rN = apf.repulsive_velocity(
+                self.pos[0], self.pos[1], self._obstacles,
+                self.apf_influence_radius, self.apf_gain, self.apf_vel_cap)
+            vE += rE
+            vN += rN
+        # Clamp as a 2D vector (not per-axis) so the commanded DIRECTION is
+        # preserved when the combined speed exceeds vel_max.
+        speed = math.hypot(vE, vN)
+        if speed > self.vel_max and speed > 1e-6:
+            scale = self.vel_max / speed
+            vE *= scale
+            vN *= scale
+        self.cmd_vel[0] = vE
+        self.cmd_vel[1] = vN
         return math.hypot(eE, eN)
 
     def _face_velocity(self):

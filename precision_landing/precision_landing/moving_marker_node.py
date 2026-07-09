@@ -23,8 +23,15 @@ Topic / service contract:
 
 Trajectory patterns (param `pattern`):
   static : stay at (center_e, center_n)
-  line   : e = center_e + amplitude·sin(w t),  n = center_n
+  line   : constant-speed straight back-and-forth along East, centred on
+           (center_e, center_n) — see _position() for the exact triangle-wave
+           profile (not a literal sine; velocity magnitude is constant).
   circle : e = center_e + amplitude·cos(w t),  n = center_n + amplitude·sin(w t)
+  cross  : constant-speed "+"-shaped patrol — out-and-back along +East, then
+           -East, then +North, then -North (each leg length = amplitude),
+           looping. Exercises BOTH the drone's East-West and North-South
+           obstacle-avoidance legs (line only exercises East-West), so the
+           obstacle map's clear lane must stay clear along both axes.
   where w = speed / amplitude (rad/s) so `speed` is the path speed in m/s.
 """
 
@@ -63,7 +70,7 @@ class MovingMarkerNode(Node):
         self.vel_topic = self.declare_parameter('vel_topic', '/marker/velocity').value
         self.rate = self.declare_parameter('rate', 50.0).value          # Hz (higher
         #   keeps the teleport step small at high speed: step = speed / rate)
-        self.pattern = self.declare_parameter('pattern', 'line').value  # static|line|circle
+        self.pattern = self.declare_parameter('pattern', 'line').value  # static|line|circle|cross
         self.center_e = self.declare_parameter('center_e', 1.0).value   # m, ENU East
         self.center_n = self.declare_parameter('center_n', 0.0).value   # m, ENU North
         self.amplitude = self.declare_parameter('amplitude', 1.5).value  # m
@@ -163,18 +170,25 @@ class MovingMarkerNode(Node):
         self.create_timer(1.0 / self.rate, self.tick)
 
     # -----------------------------------------------------------------------
+    def _traj_time(self):
+        """Elapsed trajectory time (s), possibly NEGATIVE during the
+        stationary start_delay warm-up -- callers that need to know "are we
+        still in warm-up" (e.g. _cross_velocity) want the unclamped value;
+        _position clamps it to 0 itself."""
+        return (self.get_clock().now() - self.t0).nanoseconds * 1e-9 - self.start_delay
+
     def _position(self):
         """Marker (E, N) at the current time for the configured pattern."""
         # Stationary warm-up: stay put until start_delay has elapsed, then run the
         # trajectory from t=0 (so motion begins smoothly from the start position).
-        t = (self.get_clock().now() - self.t0).nanoseconds * 1e-9 - self.start_delay
-        if t < 0.0:
-            t = 0.0
+        t = max(self._traj_time(), 0.0)
         if self.pattern == 'static':
             return self.center_e, self.center_n
         if self.pattern == 'circle':
             return (self.center_e + self.amplitude * math.cos(self.w * t),
                     self.center_n + self.amplitude * math.sin(self.w * t))
+        if self.pattern == 'cross':
+            return self._cross_position(t)
         # default: line — CONSTANT-SPEED straight runs along East (a triangle wave,
         # not a sin: the velocity is constant in magnitude so the drone's velocity
         # feed-forward matches it exactly and it lands cleanly). The platform runs
@@ -192,20 +206,81 @@ class MovingMarkerNode(Node):
             d = phase - 4.0 * A                  # −A → centre
         return self.center_e + d, self.center_n
 
+    def _cross_position(self, t):
+        """"+"-shaped patrol: four constant-speed out-and-back legs in order
+        +East, -East, +North, -South -- each leg is centre->amplitude->centre
+        (length 2A), so the full loop period is 8A. Direction changes only at
+        arm boundaries (centre), matching the same constant-speed-with-
+        direction-reversal style as the 'line' pattern above."""
+        if self.amplitude < 1e-6:
+            return self.center_e, self.center_n
+        A = self.amplitude
+        period = 8.0 * A
+        phase = (self.speed * t) % period
+        arm = int(phase // (2.0 * A))            # 0:+E 1:-E 2:+N 3:-N
+        local = phase - arm * (2.0 * A)          # 0..2A within this arm
+        d = local if local < A else (2.0 * A - local)   # centre->A->centre
+        if arm == 0:
+            return self.center_e + d, self.center_n
+        elif arm == 1:
+            return self.center_e - d, self.center_n
+        elif arm == 2:
+            return self.center_e, self.center_n + d
+        else:
+            return self.center_e, self.center_n - d
+
+    def _cross_velocity(self, raw_t):
+        """Exact instantaneous velocity for _cross_position(), NOT finite-
+        differenced. Finite-differencing two consecutive _position() samples
+        breaks specifically for 'cross': at the ~1 control tick that straddles
+        an arm boundary (e.g. -East ending -> +North starting), the two
+        samples come from DIFFERENT axes, so (e-pe)/dt, (n-pn)/dt spuriously
+        blends both into one diagonal velocity pulse for that tick. Gazebo
+        integrates that pulse into REAL position before the next tick's
+        (correct) velocity zeroes the spurious axis again -- the position kick
+        does NOT undo. Over many arm switches this accumulates into a
+        steadily growing off-axis offset (observed: the platform drifting off
+        the intended "+" shape and eventually clipping an obstacle that was
+        placed assuming exact axis alignment). Always exactly axis-aligned by
+        construction, so this bug class cannot occur."""
+        if raw_t < 0.0 or self.amplitude < 1e-6:
+            return 0.0, 0.0
+        A = self.amplitude
+        period = 8.0 * A
+        phase = (self.speed * raw_t) % period
+        arm = int(phase // (2.0 * A))
+        local = phase - arm * (2.0 * A)
+        sign = 1.0 if local < A else -1.0   # centre->+A leg vs +A->centre leg
+        if arm == 0:
+            return sign * self.speed, 0.0
+        elif arm == 1:
+            return -sign * self.speed, 0.0
+        elif arm == 2:
+            return 0.0, sign * self.speed
+        else:
+            return 0.0, -sign * self.speed
+
     def tick(self):
         now = self.get_clock().now()
         stamp = now.to_msg()
         e, n = self._position()       # analytic trajectory TARGET
 
-        # Drive velocity = analytic trajectory derivative (smooth, known). This is
-        # what the truck is commanded to do, and ≈ its actual velocity.
-        vx = vy = 0.0
-        if self._prev_traj is not None:
-            pe, pn, pt = self._prev_traj
-            dt = (now - pt).nanoseconds * 1e-9
-            if dt > 1e-4:
-                vx = (e - pe) / dt
-                vy = (n - pn) / dt
+        if self.pattern == 'cross':
+            # Analytic velocity (see _cross_velocity docstring) -- avoids the
+            # finite-difference arm-boundary bug.
+            vx, vy = self._cross_velocity(self._traj_time())
+        else:
+            # Drive velocity = analytic trajectory derivative via finite
+            # difference. Fine for line/circle/static: they never switch
+            # axes, so two consecutive samples never blend different
+            # directions the way 'cross' can.
+            vx = vy = 0.0
+            if self._prev_traj is not None:
+                pe, pn, pt = self._prev_traj
+                dt = (now - pt).nanoseconds * 1e-9
+                if dt > 1e-4:
+                    vx = (e - pe) / dt
+                    vy = (n - pn) / dt
         self._prev_traj = (e, n, now)
 
         # Move the model: real velocity (carries the jointed drone with momentum so

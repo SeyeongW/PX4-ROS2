@@ -21,5 +21,8 @@ mav.parm
 dumpcore.sh_*.out
 dumpstack.sh_*.out
 
+# --- Docker (로컬 GPU 설정, 사람마다 다름) ---
+docker-compose.override.yml
+
 # --- 기타 ---
 .DS_Store

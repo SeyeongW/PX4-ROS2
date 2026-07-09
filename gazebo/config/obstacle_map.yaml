@@ -1,0 +1,54 @@
+# Known obstacle map for gazebo/worlds/obstacle_field.sdf.
+#
+# Method A ("known map") from the dynamic-path-planning research plan: since
+# we author the Gazebo world ourselves, obstacle coordinates are already
+# known and are handed to the planner (APF / MPC / ...) as prior knowledge
+# instead of being perceived online. Coordinates here MUST match the <pose>/
+# <box><size> of each obstacle_N model in obstacle_field.sdf exactly — if you
+# move an obstacle in the world file, update this file too.
+#
+# Frame: local ENU metres, origin = drone/platform spawn (0, 0), same frame
+# as /mavros/local_position/pose and /marker/position. z_min/z_max are height
+# above ground (obstacles sit on the ground plane, z_min=0).
+#
+# flight_alt defaults to 5.0 m (precision_landing_node) and hover-search /
+# RTL-intercept legs fly at similarly low altitude, so every obstacle here is
+# 12 m tall (>2x margin) — a planner cannot solve this field by climbing over,
+# it must route around horizontally.
+
+frame_id: map
+footprint: [6.0, 6.0]     # x (E) x y (N) metres, square footprint, same for all
+height: 12.0               # z_max, metres above ground (z_min = 0.0)
+
+# clear_lane: the trailer runs a "+"-shaped back-and-forth patrol (pattern=
+# cross, center 0,0) — out-and-back along East, West, North and South, with a
+# 90-degree direction change (VelocityControl, real 100 kg momentum) at the
+# centre every arm switch. Every obstacle is kept OUTSIDE |N| <= this
+# (East-West arm) AND OUTSIDE |E| <= this (North-South arm) simultaneously, so
+# the ground vehicle's lane on BOTH arms, and the mounted takeoff/landing
+# point at (0,0), are never physically blocked. Widened from an original 6.0
+# after an observed physical collision at that tighter margin (>=7 m edge
+# clearance now instead of ~3 m; every obstacle also >=17 m from the centre
+# turn point).
+clear_lane_half_width: 10.0
+
+# 16 obstacles: the original 8 (two nudged outward so the North-South arm
+# stays clear) plus obstacle_9..16 for more varied routing, including the
+# North/South reach the old East-West-only line never used.
+obstacles:
+  - {name: obstacle_1,  e: -25, n: 12}
+  - {name: obstacle_2,  e: -15, n: -14}
+  - {name: obstacle_3,  e: -12, n: 16}
+  - {name: obstacle_4,  e: 12,  n: -12}
+  - {name: obstacle_5,  e: 12,  n: 14}
+  - {name: obstacle_6,  e: 20,  n: -16}
+  - {name: obstacle_7,  e: 28,  n: 10}
+  - {name: obstacle_8,  e: -30, n: -10}
+  - {name: obstacle_9,  e: -20, n: 22}
+  - {name: obstacle_10, e: 10,  n: 24}
+  - {name: obstacle_11, e: -10, n: -20}
+  - {name: obstacle_12, e: 18,  n: -10}
+  - {name: obstacle_13, e: -24, n: -24}
+  - {name: obstacle_14, e: 24,  n: 20}
+  - {name: obstacle_15, e: -14, n: 10}
+  - {name: obstacle_16, e: 16,  n: -24}

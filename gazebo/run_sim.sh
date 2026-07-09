@@ -82,10 +82,12 @@ echo "GZ_SIM_SYSTEM_PLUGIN_PATH=$GZ_SIM_SYSTEM_PLUGIN_PATH"
 # Tunables (env vars):
 #   MARKER_MOVE=0      disable (Gazebo only, platform stays put)
 #   MARKER_MODEL       gz model name to drive   (default aruco_platform)
-#   MARKER_PATTERN     line | circle | static   (default line — constant-direction
-#                        motion the CV Kalman/feed-forward tracks exactly, so the
-#                        drone matches its velocity and lands cleanly; a circle's
-#                        turning velocity defeats the tracker and tips the drone)
+#   MARKER_PATTERN     line | cross | circle | static   (default line, or cross
+#                        for obstacle_field — see below. Both are piecewise
+#                        constant-direction motion the CV Kalman/feed-forward
+#                        tracks exactly, so the drone matches velocity and lands
+#                        cleanly; a circle's turning velocity defeats the
+#                        tracker and tips the drone)
 #   MARKER_SPEED       path speed  m/s           (default 3.0 — needs vel_max>3 on
 #                        the controller so the drone can match it AND correct)
 #   MARKER_AMP         half-stroke (line) / radius (circle)  m  (default 250 → the
@@ -117,7 +119,32 @@ echo "GZ_SIM_SYSTEM_PLUGIN_PATH=$GZ_SIM_SYSTEM_PLUGIN_PATH"
 # Steering: lane fit on the IPM (bird's-eye) ground plane → metric cross-track[m]/
 # heading[rad]/curvature[1/m], then a 2nd-order law (k_y=ωₙ²/v, k_ψ=2ζωₙ) +
 # curvature feed-forward — see node header / docs.
-FOLLOW_TRACK="${FOLLOW_TRACK:-1}"
+# --- world selection ---------------------------------------------------------
+# WORLD picks which .sdf under gazebo/worlds/ to launch (name WITHOUT .sdf).
+#   iris_down_camera_runway (default) : black-void world, painted 400 m track,
+#                                        trailer driven by camera line-following.
+#   obstacle_field                    : open daylight world with tall (12 m)
+#                                        box obstacles for dynamic path-planning
+#                                        work (16 obstacles, coordinates
+#                                        mirrored in gazebo/config/
+#                                        obstacle_map.yaml). No painted line
+#                                        here, so FOLLOW_TRACK defaults to 0
+#                                        and the trailer instead runs a
+#                                        "+"-shaped back-and-forth patrol
+#                                        (moving_marker_node, pattern=cross)
+#                                        centred on the spawn point, exercising
+#                                        both the East-West and North-South
+#                                        obstacle-avoidance legs.
+WORLD="${WORLD:-iris_down_camera_runway}"
+if [[ "$WORLD" == "obstacle_field" ]]; then
+  FOLLOW_TRACK="${FOLLOW_TRACK:-0}"
+  MARKER_PATTERN="${MARKER_PATTERN:-cross}"
+  MARKER_CE="${MARKER_CE:-0.0}"
+  MARKER_CN="${MARKER_CN:-0.0}"
+  MARKER_AMP="${MARKER_AMP:-30.0}"
+else
+  FOLLOW_TRACK="${FOLLOW_TRACK:-1}"
+fi
 MARKER_MOVE="${MARKER_MOVE:-1}"
 WS_SETUP="$SCRIPT_DIR/../install/setup.bash"
 ROS_SETUP="/opt/ros/${ROS_DISTRO:-humble}/setup.bash"
@@ -151,6 +178,7 @@ if [[ "$MARKER_MOVE" == "1" ]]; then
         exec ros2 run precision_landing track_follower_node --ros-args \
           --params-file '$PARAMS_FILE' \
           -p model:='${MARKER_MODEL:-aruco_platform}' \
+          -p world:='$WORLD' \
           -p start_delay:='${MARKER_START_DELAY:-0.0}' \
           -p release_on_arm:='${MARKER_RELEASE_ON_ARM:-true}' \
           $FOLLOW_OVR
@@ -162,6 +190,7 @@ if [[ "$MARKER_MOVE" == "1" ]]; then
         source '$WS_SETUP'
         exec ros2 run precision_landing moving_marker_node --ros-args \
           -p model:='${MARKER_MODEL:-aruco_platform}' \
+          -p world:='$WORLD' \
           -p pattern:='${MARKER_PATTERN:-line}' \
           -p speed:='${MARKER_SPEED:-3.0}' \
           -p amplitude:='${MARKER_AMP:-250.0}' \
@@ -213,6 +242,6 @@ if [[ "$VIEW" == "1" && "${HEADLESS:-0}" != "1" && -n "${DISPLAY:-}" \
   CHILD_PGIDS+=("$!")
 fi
 
-echo "Launching world: iris_down_camera_runway.sdf"
+echo "Launching world: $WORLD.sdf"
 # Not exec'd, so the EXIT trap fires and cleans up the helpers on Ctrl-C.
-gz sim -v4 -r "${SERVER_ARGS[@]}" "${RENDER_ARGS[@]}" "$SCRIPT_DIR/worlds/iris_down_camera_runway.sdf"
+gz sim -v4 -r "${SERVER_ARGS[@]}" "${RENDER_ARGS[@]}" "$SCRIPT_DIR/worlds/$WORLD.sdf"

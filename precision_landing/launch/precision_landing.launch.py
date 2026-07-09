@@ -58,6 +58,13 @@ def generate_launch_description():
     # 평면 지면 마커면 0 으로. land_clearance = 마커 윗면 위 이 높이에서 강제 disarm.
     platform_height = LaunchConfiguration('platform_height')
     land_clearance = LaunchConfiguration('land_clearance')
+    # 장애물 회피(APF 베이스라인). obstacle_field 월드에서만 의미 있음 — 기본 꺼짐.
+    #   obstacle_map:=<repo>/gazebo/config/obstacle_map.yaml apf_enable:=true
+    apf_enable = LaunchConfiguration('apf_enable')
+    obstacle_map = LaunchConfiguration('obstacle_map')
+    apf_influence_radius = LaunchConfiguration('apf_influence_radius')
+    apf_gain = LaunchConfiguration('apf_gain')
+    apf_vel_cap = LaunchConfiguration('apf_vel_cap')
 
     mavros_launch = os.path.join(
         get_package_share_directory('mavros'), 'launch', 'apm.launch')
@@ -110,6 +117,11 @@ def generate_launch_description():
             'approach_decel_s': ParameterValue(approach_decel_s, value_type=float),
             'yaw_track': ParameterValue(yaw_track, value_type=bool),
             'yaw_track_min_speed': ParameterValue(yaw_track_min_speed, value_type=float),
+            'apf_enable': ParameterValue(apf_enable, value_type=bool),
+            'obstacle_map': obstacle_map,
+            'apf_influence_radius': ParameterValue(apf_influence_radius, value_type=float),
+            'apf_gain': ParameterValue(apf_gain, value_type=float),
+            'apf_vel_cap': ParameterValue(apf_vel_cap, value_type=float),
         }],
     )
 
@@ -146,6 +158,12 @@ def generate_launch_description():
         # '동력+기울어진' 상태로 접촉하면 끌려가다 전복되므로, 다리가 닿기 직전에
         # 끊어 '속도 맞춘 자유낙하'로 안착시킨다. 너무 높으면 낙하충격 ↑.
         DeclareLaunchArgument('land_clearance', default_value='0.2'),
+        # 장애물 회피(APF). obstacle_field 월드 + gazebo/config/obstacle_map.yaml 용.
+        DeclareLaunchArgument('apf_enable', default_value='false'),
+        DeclareLaunchArgument('obstacle_map', default_value=''),
+        DeclareLaunchArgument('apf_influence_radius', default_value='15.0'),
+        DeclareLaunchArgument('apf_gain', default_value='6.0'),
+        DeclareLaunchArgument('apf_vel_cap', default_value='6.0'),
         mavros,
         camera_bridge,
         aruco_detector,

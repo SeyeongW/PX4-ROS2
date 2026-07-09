@@ -64,6 +64,14 @@ class ArucoDetectorNode(Node):
         # fallback: assume 3-channel packed
         return np.ascontiguousarray(buf.reshape(h, w, 3))
 
+    @staticmethod
+    def _quad_area(pts):
+        # Shoelace formula on the 4 detected corners — apparent pixel area,
+        # used only to rank which of several co-located markers is most
+        # confidently resolved (bigger = less corner-jitter as a % of size).
+        x, y = pts[:, 0], pts[:, 1]
+        return 0.5 * abs(np.dot(x, np.roll(y, 1)) - np.dot(y, np.roll(x, 1)))
+
     def _cb(self, msg: Image):
         frame = self._imgmsg_to_bgr(msg)
         h, w  = frame.shape[:2]
@@ -74,9 +82,16 @@ class ArucoDetectorNode(Node):
         detected        = ids is not None and len(ids) > 0
 
         offset = Point()
+        sel = -1
         if detected:
-            # Use the first detected marker
-            pts = corners[0][0]
+            # The platform carries THREE concentric ArUco markers of different
+            # physical sizes sharing one centre (aruco_platform/model.sdf), so
+            # whichever ones are resolvable at the current altitude all report
+            # ~the same centroid. Pick the one with the largest apparent pixel
+            # area (most confidently/robustly detected) rather than always the
+            # first ID in the dictionary's detection order.
+            sel = int(np.argmax([self._quad_area(c[0]) for c in corners]))
+            pts = corners[sel][0]
             mx  = float(np.mean(pts[:, 0]))
             my  = float(np.mean(pts[:, 1]))
             # Normalised offset: -1 (left/top) to +1 (right/bottom)
@@ -84,7 +99,7 @@ class ArucoDetectorNode(Node):
             offset.y = (my - cy) / (h / 2.0)
 
         if self.publish_debug:
-            self._draw(frame, corners, ids, cx, cy, offset, detected, msg.header)
+            self._draw(frame, corners, ids, sel, cx, cy, offset, detected, msg.header)
 
         self.offset_pub.publish(offset)
 
@@ -92,14 +107,15 @@ class ArucoDetectorNode(Node):
         det_msg.data = detected
         self.detected_pub.publish(det_msg)
 
-    def _draw(self, frame, corners, ids, cx, cy, offset, detected, header):
+    def _draw(self, frame, corners, ids, sel, cx, cy, offset, detected, header):
         if detected:
             aruco.drawDetectedMarkers(frame, corners, ids)
             mx = int(cx + offset.x * (frame.shape[1] / 2))
             my = int(cy + offset.y * (frame.shape[0] / 2))
             cv2.circle(frame, (mx, my), 6, (0, 255, 0), -1)
             cv2.line(frame, (cx, cy), (mx, my), (0, 220, 255), 2)
-            label = f'ID:{ids[0][0]}  dx={offset.x:+.2f} dy={offset.y:+.2f}'
+            label = (f'ID:{np.ravel(ids)[sel]} (of {len(ids)} seen)  '
+                     f'dx={offset.x:+.2f} dy={offset.y:+.2f}')
             cv2.putText(frame, label, (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
                         0.65, (0, 255, 0), 2)
         else:

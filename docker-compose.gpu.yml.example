@@ -1,0 +1,31 @@
+# NVIDIA GPU 가속 (선택사항). 이 파일 자체는 무시되고, 아래처럼 복사해서 씁니다:
+#
+#   cp docker-compose.gpu.yml.example docker-compose.override.yml
+#   docker compose up -d
+#
+# docker-compose.override.yml은 docker compose가 docker-compose.yml과 자동으로
+# 합쳐서 읽으므로 -f 플래그 없이 그냥 평소처럼 up 하면 됩니다.
+#
+# 필요조건: 호스트에 nvidia-container-toolkit 설치 + 설정
+#   (sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker)
+#
+# Intel+NVIDIA 하이브리드(Optimus) 노트북이면 __GLX_VENDOR_LIBRARY_NAME 등이 꼭
+# 있어야 gz sim이 NVIDIA로 렌더링됩니다 — 없으면 컨테이너 안 GLX가 기본값(보통 Mesa
+# 소프트웨어 렌더링 또는 Intel iGPU)을 골라버려서 GPU가 있어도 안 쓰임.
+# 데스크톱(NVIDIA 단일 GPU)이면 이 세 줄은 없어도 되지만 있어도 무해합니다.
+
+services:
+  sim:
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: all
+      __GLX_VENDOR_LIBRARY_NAME: nvidia
+      __NV_PRIME_RENDER_OFFLOAD: "1"
+      __VK_LAYER_NV_optimus: NVIDIA_only
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

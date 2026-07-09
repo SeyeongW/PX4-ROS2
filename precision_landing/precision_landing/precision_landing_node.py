@@ -48,6 +48,8 @@ from std_msgs.msg import Bool, String
 from mavros_msgs.msg import PositionTarget, State
 from mavros_msgs.srv import CommandBool, CommandLong, CommandTOL, SetMode
 
+from precision_landing import apf
+
 
 class Stage(Enum):
     TAKEOFF = 0
@@ -116,6 +118,25 @@ class PrecisionLandingNode(Node):
         # speed cap drops linearly from approach_vel_max → vel_max.
         self.approach_decel_s = self.declare_parameter('approach_decel_s', 5.0).value   # s
         self.approach_ramp_s  = self.declare_parameter('approach_ramp_s',  2.0).value   # s
+        # --- Obstacle avoidance (APF baseline) -------------------------------
+        # Off by default (unaffected: the track world / real hardware have no
+        # obstacle_map). Adds a repulsive velocity on top of _servo_to's
+        # attractive term whenever within apf_influence_radius of an obstacle's
+        # surface (see gazebo/config/obstacle_map.yaml, apf.py).
+        self.apf_enable = self.declare_parameter('apf_enable', False).value
+        self.obstacle_map_path = self.declare_parameter('obstacle_map', '').value
+        self.apf_influence_radius = self.declare_parameter('apf_influence_radius', 15.0).value  # m
+        self.apf_gain = self.declare_parameter('apf_gain', 6.0).value                  # m/s at the surface
+        self.apf_vel_cap = self.declare_parameter('apf_vel_cap', 6.0).value            # m/s
+        self._obstacles = []
+        if self.apf_enable and self.obstacle_map_path:
+            try:
+                self._obstacles = apf.load_obstacles(self.obstacle_map_path)
+                self.get_logger().info(
+                    f'APF: loaded {len(self._obstacles)} obstacles from {self.obstacle_map_path}')
+            except Exception as e:
+                self.get_logger().error(
+                    f'APF: failed to load obstacle_map "{self.obstacle_map_path}": {e}')
         # Down-camera intrinsics for altitude-aware pixel→metre conversion.
         # cam_hfov in rad; cam_aspect = image width / height. Update if the
         # camera model changes (current: hfov 1.20, 640×480).
@@ -565,8 +586,23 @@ class PrecisionLandingNode(Node):
             else self.get_parameter('vel_max').value
         eE = targetE - self.pos[0]
         eN = targetN - self.pos[1]
-        self.cmd_vel[0] = self._clamp(vffE + kp * eE, -vmax, vmax)
-        self.cmd_vel[1] = self._clamp(vffN + kp * eN, -vmax, vmax)
+        vE = vffE + kp * eE
+        vN = vffN + kp * eN
+        if self.apf_enable and self._obstacles:
+            rE, rN = apf.repulsive_velocity(
+                self.pos[0], self.pos[1], self._obstacles,
+                self.apf_influence_radius, self.apf_gain, self.apf_vel_cap)
+            vE += rE
+            vN += rN
+        # Clamp as a 2D vector (not per-axis) so the commanded DIRECTION is
+        # preserved when the combined speed exceeds vmax.
+        speed = math.hypot(vE, vN)
+        if speed > vmax and speed > 1e-6:
+            scale = vmax / speed
+            vE *= scale
+            vN *= scale
+        self.cmd_vel[0] = vE
+        self.cmd_vel[1] = vN
         return math.hypot(eE, eN)
 
     # Point the nose along the commanded horizontal velocity (ENU yaw: 0 = East,

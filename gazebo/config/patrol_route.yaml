@@ -1,0 +1,18 @@
+# Patrol/recon waypoint route for MISSION (mission_manager_node, patrol_route
+# param). Loaded and looped indefinitely by mission_manager_node -- see
+# _load_patrol_route() / the docstring's MISSION bullet.
+#
+# Designed for gazebo/worlds/obstacle_field.sdf's 16-obstacle layout (see
+# gazebo/config/obstacle_map.yaml): a hexagonal loop at radius ~20-25 m around
+# the trailer's "+"-shaped patrol area, passing near (but not through the
+# tightest gaps of) each obstacle cluster, so a plain P+APF servo (Step 1 has
+# no new path-planning algorithm yet) can reliably complete it. Frame: local
+# ENU metres, same origin as /mavros/local_position/pose and /marker/position.
+
+waypoints:
+  - {e: 25,  n: 0}     # east side, between the obstacle_7/14 and obstacle_6/12 clusters
+  - {e: 15,  n: 20}    # NE, near obstacle_5/10/14
+  - {e: -15, n: 20}    # NW, near obstacle_3/9/15
+  - {e: -25, n: 0}     # west side, between the obstacle_1/9 and obstacle_2/8 clusters
+  - {e: -15, n: -20}   # SW, near obstacle_2/11/13
+  - {e: 15,  n: -20}   # SE, near obstacle_4/12/16

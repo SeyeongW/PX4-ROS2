@@ -1,0 +1,321 @@
+<?xml version="1.0" ?>
+<sdf version="1.9">
+  <world name="obstacle_field">
+    <physics name="1ms" type="ignore">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+
+    <plugin filename="gz-sim-physics-system"
+      name="gz::sim::systems::Physics">
+    </plugin>
+    <plugin
+      filename="gz-sim-sensors-system"
+      name="gz::sim::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+    <plugin filename="gz-sim-user-commands-system"
+      name="gz::sim::systems::UserCommands">
+    </plugin>
+    <plugin filename="gz-sim-scene-broadcaster-system"
+      name="gz::sim::systems::SceneBroadcaster">
+    </plugin>
+    <plugin filename="gz-sim-imu-system"
+      name="gz::sim::systems::Imu">
+    </plugin>
+    <plugin filename="gz-sim-navsat-system"
+      name="gz::sim::systems::NavSat">
+    </plugin>
+
+    <!-- Ordinary daylight scene (unlike iris_down_camera_runway's black void):
+         obstacles need to be visually distinguishable from open sky/ground for
+         the GUI and for any future camera-based obstacle perception. -->
+    <scene>
+      <ambient>0.6 0.6 0.6 1</ambient>
+      <background>0.6 0.7 0.85 1</background>
+      <sky></sky>
+    </scene>
+
+    <spherical_coordinates>
+      <latitude_deg>-35.363262</latitude_deg>
+      <longitude_deg>149.165237</longitude_deg>
+      <elevation>584</elevation>
+      <heading_deg>0</heading_deg>
+      <surface_model>EARTH_WGS84</surface_model>
+    </spherical_coordinates>
+
+    <light type="directional" name="sun">
+      <cast_shadows>true</cast_shadows>
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>0.8 0.8 0.8 1</diffuse>
+      <specular>0.8 0.8 0.8 1</specular>
+      <attenuation>
+        <range>1000</range>
+        <constant>0.9</constant>
+        <linear>0.01</linear>
+        <quadratic>0.001</quadratic>
+      </attenuation>
+      <direction>-0.5 0.1 -0.9</direction>
+    </light>
+
+    <!-- Flat ground plane, collision + visual, large enough to cover the whole
+         obstacle field and the trailer's full back-and-forth run. -->
+    <model name="ground_plane">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry><plane><normal>0 0 1</normal><size>500 500</size></plane></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><plane><normal>0 0 1</normal><size>500 500</size></plane></geometry>
+          <material>
+            <ambient>0.35 0.4 0.35 1</ambient>
+            <diffuse>0.4 0.45 0.4 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- ================================================================
+         Obstacle field for dynamic path-planning research (drone must fly
+         AROUND these while tracking the moving trailer/platform below).
+
+         Layout (Method A: known map, coordinates also mirrored verbatim in
+         gazebo/config/obstacle_map.yaml for the planner to consume):
+           - Footprint 6x6 m, height 12 m for every obstacle. flight_alt
+             defaults to 5.0 m (precision_landing_node) and hover-search /
+             RTL-intercept legs run at similarly low altitudes, so 12 m gives
+             > 2x margin — the drone CANNOT simply climb over these, it must
+             route around them horizontally.
+           - The trailer/platform runs a "+"-shaped back-and-forth patrol
+             (pattern=cross, default center 0,0): out-and-back along East,
+             West, North and South in turn, with a 90-degree direction
+             change (VelocityControl, real 100 kg momentum) at the centre
+             every time it switches arms. Every obstacle below is kept
+             OUTSIDE |N| < 10 m (East-West arm) AND OUTSIDE |E| < 10 m
+             (North-South arm) simultaneously — widened from an original
+             6 m after an observed physical collision at the tighter
+             margin, giving >= 7 m of edge clearance instead of ~3 m and
+             keeping every obstacle >= 17 m from the centre turn point — so
+             the ground vehicle's own lane on BOTH arms, and the mounted
+             takeoff at the spawn point (0,0), are never physically blocked.
+             Obstacles only ever obstruct the DRONE's aerial approach/return
+             paths, which is the point of the exercise.
+           - 16 obstacles total: the original 8 (obstacle_1..8, two nudged
+             outward to respect the North-South arm) plus obstacle_9..16
+             filling out the field for more varied routing, including the
+             North/South reach (|N| up to ~24) that only the cross pattern
+             (vs. the old East-West-only line) uses.
+         ================================================================ -->
+    <model name="obstacle_1">
+      <static>true</static>
+      <pose>-25 12 6 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>6 6 12</size></box></geometry></collision>
+        <visual name="visual">
+          <geometry><box><size>6 6 12</size></box></geometry>
+          <material><ambient>0.55 0.35 0.3 1</ambient><diffuse>0.6 0.4 0.35 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="obstacle_2">
+      <static>true</static>
+      <pose>-15 -14 6 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>6 6 12</size></box></geometry></collision>
+        <visual name="visual">
+          <geometry><box><size>6 6 12</size></box></geometry>
+          <material><ambient>0.55 0.35 0.3 1</ambient><diffuse>0.6 0.4 0.35 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="obstacle_3">
+      <static>true</static>
+      <pose>-12 16 6 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>6 6 12</size></box></geometry></collision>
+        <visual name="visual">
+          <geometry><box><size>6 6 12</size></box></geometry>
+          <material><ambient>0.55 0.35 0.3 1</ambient><diffuse>0.6 0.4 0.35 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="obstacle_4">
+      <static>true</static>
+      <pose>12 -12 6 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>6 6 12</size></box></geometry></collision>
+        <visual name="visual">
+          <geometry><box><size>6 6 12</size></box></geometry>
+          <material><ambient>0.55 0.35 0.3 1</ambient><diffuse>0.6 0.4 0.35 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="obstacle_5">
+      <static>true</static>
+      <pose>12 14 6 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>6 6 12</size></box></geometry></collision>
+        <visual name="visual">
+          <geometry><box><size>6 6 12</size></box></geometry>
+          <material><ambient>0.55 0.35 0.3 1</ambient><diffuse>0.6 0.4 0.35 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="obstacle_6">
+      <static>true</static>
+      <pose>20 -16 6 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>6 6 12</size></box></geometry></collision>
+        <visual name="visual">
+          <geometry><box><size>6 6 12</size></box></geometry>
+          <material><ambient>0.55 0.35 0.3 1</ambient><diffuse>0.6 0.4 0.35 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="obstacle_7">
+      <static>true</static>
+      <pose>28 10 6 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>6 6 12</size></box></geometry></collision>
+        <visual name="visual">
+          <geometry><box><size>6 6 12</size></box></geometry>
+          <material><ambient>0.55 0.35 0.3 1</ambient><diffuse>0.6 0.4 0.35 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="obstacle_8">
+      <static>true</static>
+      <pose>-30 -10 6 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>6 6 12</size></box></geometry></collision>
+        <visual name="visual">
+          <geometry><box><size>6 6 12</size></box></geometry>
+          <material><ambient>0.55 0.35 0.3 1</ambient><diffuse>0.6 0.4 0.35 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="obstacle_9">
+      <static>true</static>
+      <pose>-20 22 6 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>6 6 12</size></box></geometry></collision>
+        <visual name="visual">
+          <geometry><box><size>6 6 12</size></box></geometry>
+          <material><ambient>0.55 0.35 0.3 1</ambient><diffuse>0.6 0.4 0.35 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="obstacle_10">
+      <static>true</static>
+      <pose>10 24 6 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>6 6 12</size></box></geometry></collision>
+        <visual name="visual">
+          <geometry><box><size>6 6 12</size></box></geometry>
+          <material><ambient>0.55 0.35 0.3 1</ambient><diffuse>0.6 0.4 0.35 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="obstacle_11">
+      <static>true</static>
+      <pose>-10 -20 6 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>6 6 12</size></box></geometry></collision>
+        <visual name="visual">
+          <geometry><box><size>6 6 12</size></box></geometry>
+          <material><ambient>0.55 0.35 0.3 1</ambient><diffuse>0.6 0.4 0.35 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="obstacle_12">
+      <static>true</static>
+      <pose>18 -10 6 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>6 6 12</size></box></geometry></collision>
+        <visual name="visual">
+          <geometry><box><size>6 6 12</size></box></geometry>
+          <material><ambient>0.55 0.35 0.3 1</ambient><diffuse>0.6 0.4 0.35 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="obstacle_13">
+      <static>true</static>
+      <pose>-24 -24 6 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>6 6 12</size></box></geometry></collision>
+        <visual name="visual">
+          <geometry><box><size>6 6 12</size></box></geometry>
+          <material><ambient>0.55 0.35 0.3 1</ambient><diffuse>0.6 0.4 0.35 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="obstacle_14">
+      <static>true</static>
+      <pose>24 20 6 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>6 6 12</size></box></geometry></collision>
+        <visual name="visual">
+          <geometry><box><size>6 6 12</size></box></geometry>
+          <material><ambient>0.55 0.35 0.3 1</ambient><diffuse>0.6 0.4 0.35 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="obstacle_15">
+      <static>true</static>
+      <pose>-14 10 6 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>6 6 12</size></box></geometry></collision>
+        <visual name="visual">
+          <geometry><box><size>6 6 12</size></box></geometry>
+          <material><ambient>0.55 0.35 0.3 1</ambient><diffuse>0.6 0.4 0.35 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="obstacle_16">
+      <static>true</static>
+      <pose>16 -24 6 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>6 6 12</size></box></geometry></collision>
+        <visual name="visual">
+          <geometry><box><size>6 6 12</size></box></geometry>
+          <material><ambient>0.55 0.35 0.3 1</ambient><diffuse>0.6 0.4 0.35 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Moving platform (trailer) with three concentric ArUco markers of
+         different physical sizes on top — see aruco_platform/model.sdf.
+         Straight line pattern, center (0,0), driven by moving_marker_node
+         (run_sim.sh sets FOLLOW_TRACK=0 by default for this world since
+         there is no painted line here). -->
+    <include>
+      <uri>model://aruco_platform</uri>
+      <pose>0 0 0 0 0 0</pose>
+    </include>
+
+    <!-- Drone spawns ON TOP of the platform, secured by the DetachableJoint
+         declared in aruco_platform/model.sdf, same mounted-launch scheme as
+         iris_down_camera_runway.sdf. -->
+    <include>
+      <uri>model://iris_with_down_camera</uri>
+      <pose degrees="true">0 0 1.195 0 0 90</pose>
+    </include>
+
+  </world>
+</sdf>

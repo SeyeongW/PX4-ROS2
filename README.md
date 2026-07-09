@@ -2,6 +2,10 @@
 
 ArduPilot 기반 드론을 ROS 2로 Offboard 제어하며, 하방 카메라 + YOLO로 지상 표적을 추적하는 시스템입니다.
 
+> **호스트에 Gazebo Classic 등 다른 버전이 이미 깔려 있다면** 아래 설치 단계 대신
+> Docker 환경을 쓰세요 — 이 레포가 요구하는 Gazebo Harmonic 스택만 컨테이너 안에
+> 격리됩니다. **[`docker/README.md`](docker/README.md)** 참고.
+
 ## 프로젝트 구성
 
 ```
