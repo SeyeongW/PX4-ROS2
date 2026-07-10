@@ -1,11 +1,14 @@
-# 하방 카메라 캘리브레이션 (Jetson USB cam: icSpring 32e6:9221, MJPG 1280x720) --------
+# 하방 카메라 캘리브레이션 (Jetson USB cam, MJPG 1280x720) ----------------------
 #
-# camera_calibration cameracalibrator --size 8x6 --square 0.03 결과 (2026-07-06).
-# HFOV ~96deg (광각, 배럴 왜곡 큼). usb_cam(mjpeg2rgb)로 캡처. 카메라 바꾸면 재캘리브.
+# camera_calibration cameracalibrator --size 8x6 --square 0.025 결과 (2026-07-10).
+# 카메라 교체: 이전 icSpring 광각(fx~578, 왜곡 -0.168) → 신규 렌즈(fx~719, 왜곡 -0.058,
+# 화각 더 좁고 왜곡 작음). usb_cam(mjpeg2rgb)로 캡처. 카메라 바꾸면 재캘리브.
 #   ros2 run usb_cam usb_cam_node_exe --ros-args -p video_device:=/dev/video0 \
 #       -p pixel_format:=mjpeg2rgb -p image_width:=1280 -p image_height:=720
-#   ros2 run camera_calibration cameracalibrator --size 8x6 --square 0.03 \
+#   ros2 run camera_calibration cameracalibrator --size 8x6 --square 0.025 \
 #       --ros-args -r image:=/image_raw
+# 캘리브 해상도(1280x720)와 실제 구동 해상도(precland_hw.launch.py usb_cam)가
+# 반드시 같아야 함 — 해상도 바꾸면 fx/fy/cx/cy 전부 스케일되어 재캘리브 필요.
 # 필드는 ROS camera_info yaml 규약.
 image_width: 1280
 image_height: 720
@@ -14,14 +17,14 @@ camera_matrix:
   rows: 3
   cols: 3
   # fx  0  cx / 0  fy  cy / 0  0  1
-  data: [578.25374,   0.0,     666.81979,
-           0.0,     579.59485, 395.64995,
+  data: [718.60585,   0.0,     630.49040,
+           0.0,     720.53861, 367.32221,
            0.0,       0.0,       1.0]
 distortion_model: plumb_bob
 distortion_coefficients:
   rows: 1
   cols: 5
-  data: [-0.168189, 0.023952, 0.001472, -0.000700, 0.000000]
+  data: [-0.057745, 0.054843, 0.003289, 0.000924, 0.000000]
 rectification_matrix:
   rows: 3
   cols: 3
@@ -31,6 +34,6 @@ rectification_matrix:
 projection_matrix:
   rows: 3
   cols: 4
-  data: [432.23965,   0.0,     678.48510,   0.0,
-           0.0,     536.54605, 402.84568,   0.0,
+  data: [719.76650,   0.0,     632.75190,   0.0,
+           0.0,     721.75125, 370.60812,   0.0,
            0.0,       0.0,       1.0,        0.0]
