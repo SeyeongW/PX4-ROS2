@@ -201,11 +201,15 @@ cd ~/PX4-ROS2
 읽으므로 `ardupilot_gazebo` 없이도 실행됩니다. 상세 내용은
 [`gazebo/MAPS.md`](gazebo/MAPS.md)를 참고하세요.
 
-다른 사람에게 스크립트 없이 전달할 산악맵 직접 실행 명령은 다음 한 줄입니다.
-저장소 최상위 디렉터리에서 실행합니다.
+다른 사람에게 스크립트 없이 전달할 RTX/NVIDIA 직접 실행 명령은 다음과
+같습니다. 저장소 최상위 디렉터리에서 실행합니다.
 
 ```bash
-GZ_SIM_RESOURCE_PATH="$PWD/gazebo/models:$PWD/gazebo/worlds" gz sim -v4 -r --physics-engine gz-physics-bullet-featherstone-plugin "$PWD/gazebo/worlds/ugv_drone_map.world"
+# 산악맵
+GZ_SIM_RESOURCE_PATH="$PWD/gazebo/models:$PWD/gazebo/worlds" __NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia __VK_LAYER_NV_optimus=NVIDIA_only QT_QPA_PLATFORM=xcb gz sim -v4 -r --physics-engine gz-physics-bullet-featherstone-plugin "$PWD/gazebo/worlds/ugv_drone_map.world"
+
+# 도시맵
+GZ_SIM_RESOURCE_PATH="$PWD/gazebo/models:$PWD/gazebo/worlds" __NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia __VK_LAYER_NV_optimus=NVIDIA_only QT_QPA_PLATFORM=xcb gz sim -v4 -r --physics-engine gz-physics-bullet-featherstone-plugin "$PWD/gazebo/worlds/applepark_city/applepark.world"
 ```
 
 ### 산악 드론 월드
