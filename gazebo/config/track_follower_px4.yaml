@@ -1,0 +1,66 @@
+# track_follower_node parameters for the PX4 truck_mission_px4_track world
+# (gazebo/worlds/truck_mission_px4_track.sdf, model://moving_platform_track).
+# Steering/vision-detection tuning copied from track_follower.yaml (the
+# ArduPilot-era aruco_platform world) since cam_fov/cam_height/cam_pitch are
+# unchanged -- only cam_x differs now (the trailer body box was enlarged to
+# match the plate's full footprint, so the camera had to move further
+# forward to stay clear of it; see moving_platform_track/model.sdf's
+# front_camera comment), plus release_on_arm=false since this model has no
+# DetachableJoint (the drone just rests on the platform's collision surface
+# via gravity until it lifts off under its own thrust, same as
+# moving_platform_aruco -- see that model's comment).
+
+track_follower_node:
+  ros__parameters:
+    ctrl_bw: 0.9
+    zeta: 1.4
+    kappa_ff: 1.0
+    yaw_rate_max: 0.8
+    ctrl_lpf_alpha: 1.0
+
+    outlier_gate_ey: 0.40
+    outlier_gate_psi: 0.30
+    outlier_max_reject: 3
+
+    forward_speed: 3.0
+    lat_accel_max: 2.5
+    accel_max: 1.5
+    decel_max: 2.5
+    min_speed: 1.0
+
+    osc_window: 2.0
+    osc_flip_thresh: 3
+    osc_deadband: 0.05
+    osc_drop_rate: 1.0
+    osc_recover_rate: 0.15
+    osc_min_scale: 0.4
+    osc_min_speed: 0.5
+    lookahead_osc_scale: 1.6
+    lookahead_osc_rate: 1.0
+
+    white_thresh: 180
+    roi_top: 0.35
+    roi_bot: 0.95
+    n_bands: 12
+    band_min_px: 6
+    line_gap_px: 20
+    min_cluster_px: 2
+    fit_degree: 2
+    half_lane: 1.0
+    lost_hold_frames: 8
+
+    cam_fov: 1.60
+    cam_height: 0.85
+    cam_pitch: 0.61
+    cam_x: 4.5   # must match moving_platform_track/model.sdf's front_camera pose x -- see that file's comment
+
+    publish_debug: true
+    release_on_arm: false        # moving_platform_track has no DetachableJoint
+    start_delay: 0.0
+    image_topic: "/front_camera/image"
+    marker_topic: "/marker/position"
+    model: "flat_platform"
+    world: "truck_mission_px4_track"
+    cmd_vel_topic: "/model/flat_platform/cmd_vel"
+    detach_topic: "/aruco_platform/detach"   # unused (release_on_arm=false)
+    frame_id: "map"

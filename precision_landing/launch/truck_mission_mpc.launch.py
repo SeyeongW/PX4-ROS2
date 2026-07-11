@@ -120,7 +120,7 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
-        DeclareLaunchArgument('fcu_url', default_value='udp://:14550@'),
+        DeclareLaunchArgument('fcu_url', default_value='udp://:14540@'),
         DeclareLaunchArgument('image_topic', default_value='/down_camera/image'),
         DeclareLaunchArgument('flight_alt', default_value='5.0'),
         DeclareLaunchArgument('mission_area_e', default_value='120.0'),

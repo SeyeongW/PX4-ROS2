@@ -45,7 +45,7 @@ RUN curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
 # ---------------------------------------------------------------------------
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ros-humble-mavros ros-humble-mavros-msgs ros-humble-mavros-extras \
-      ros-humble-rqt-image-view \
+      ros-humble-rqt-image-view ros-humble-compressed-image-transport \
     && rm -rf /var/lib/apt/lists/* \
     && /opt/ros/humble/lib/mavros/install_geographiclib_datasets.sh
 

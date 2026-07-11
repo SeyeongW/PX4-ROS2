@@ -126,6 +126,14 @@ class MovingMarkerNode(Node):
         #              is carried and lifts off cleanly when released (mounted truck).
         #   teleport : set_pose every tick (a kinematic decal; legacy flat-marker
         #              demo where the model has no VelocityControl plugin).
+        #   external : something ELSE drives the model (PX4's own
+        #              MovingPlatformController plugin on moving_platform_aruco,
+        #              see gazebo/worlds/truck_mission_px4.sdf) -- this node only
+        #              relays its actual gz pose as the cue (position + finite-
+        #              differenced velocity), commands nothing, and ignores
+        #              move_model/release_on_arm (that model has no
+        #              DetachableJoint; the drone just rests on its collision
+        #              surface via gravity until it lifts off under its own thrust).
         self.drive_mode = self.declare_parameter('drive_mode', 'velocity').value
         self.cmd_vel_topic = self.declare_parameter(
             'cmd_vel_topic', '/model/aruco_platform/cmd_vel').value
@@ -151,6 +159,7 @@ class MovingMarkerNode(Node):
         self.vel_pub = self.create_publisher(Vector3Stamped, self.vel_topic, 10)
         self._prev_traj = None   # (e, n, t) analytic target, for the drive velocity
         self._actual = None      # (x, y) latest ACTUAL truck pose from gz (vel mode)
+        self._actual_prev = None  # (e, n, t) previous actual pose, for external-mode finite diff
 
         # "+"-shape waypoints for the closed-loop 'cross' driver: East tip, centre,
         # North tip, centre, West tip, centre, South tip, centre -- looped. Visiting
@@ -172,7 +181,7 @@ class MovingMarkerNode(Node):
         self.detach_pub = None
         self.cmd_vel_pub = None
         self.set_pose_srv = f'/world/{self.world}/set_pose'
-        if (self.move_model or self.release_on_arm):
+        if (self.move_model or self.release_on_arm or self.drive_mode == 'external'):
             if _GZ_OK:
                 self.gz = GzNode()
                 if self.move_model:
@@ -190,6 +199,15 @@ class MovingMarkerNode(Node):
                     else:
                         self.get_logger().info(
                             f'moving model "{self.model}" via {self.set_pose_srv} (teleport)')
+                elif self.drive_mode == 'external':
+                    # Not driving anything ourselves -- just relay the actual
+                    # pose (some other plugin, e.g. PX4's MovingPlatformController,
+                    # moves the model).
+                    pose_topic = f'/world/{self.world}/dynamic_pose/info'
+                    self.gz.subscribe(GzPoseV, pose_topic, self._gz_pose_cb)
+                    self.get_logger().info(
+                        f'external drive mode: relaying actual pose of "{self.model}" '
+                        f'from {pose_topic} as the cue (not commanding movement)')
                 if self.release_on_arm:
                     self.detach_pub = self.gz.advertise(self.detach_topic, GzEmpty)
                     self.get_logger().info(
@@ -359,6 +377,11 @@ class MovingMarkerNode(Node):
     def tick(self):
         now = self.get_clock().now()
         stamp = now.to_msg()
+
+        if self.drive_mode == 'external':
+            self._tick_external(now, stamp)
+            return
+
         e, n = self._position()       # analytic trajectory TARGET
 
         if self.pattern == 'cross' and self.drive_mode == 'velocity':
@@ -411,6 +434,39 @@ class MovingMarkerNode(Node):
         self.pub.publish(msg)
 
         # Cue velocity = the (smooth) commanded velocity, which the truck tracks.
+        vel = Vector3Stamped()
+        vel.header.stamp = stamp
+        vel.header.frame_id = self.frame_id
+        vel.vector.x = vx
+        vel.vector.y = vy
+        self.vel_pub.publish(vel)
+
+    def _tick_external(self, now, stamp):
+        """drive_mode='external': relay the actual gz pose of a model driven by
+        something else (PX4's MovingPlatformController) as the cue -- publish
+        nothing until the first pose arrives, then finite-difference successive
+        actual positions for the velocity cue (no analytic trajectory/commanded
+        velocity exists in this mode, unlike 'velocity'/'teleport')."""
+        if self._actual is None:
+            return
+        e, n = self._actual
+        vx = vy = 0.0
+        if self._actual_prev is not None:
+            pe, pn, pt = self._actual_prev
+            dt = (now - pt).nanoseconds * 1e-9
+            if dt > 1e-4:
+                vx = (e - pe) / dt
+                vy = (n - pn) / dt
+        self._actual_prev = (e, n, now)
+
+        msg = PointStamped()
+        msg.header.stamp = stamp
+        msg.header.frame_id = self.frame_id
+        msg.point.x = e
+        msg.point.y = n
+        msg.point.z = 0.0
+        self.pub.publish(msg)
+
         vel = Vector3Stamped()
         vel.header.stamp = stamp
         vel.header.frame_id = self.frame_id

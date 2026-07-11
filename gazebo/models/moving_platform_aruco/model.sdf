@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<sdf version="1.9">
+  <model name="flat_platform">
+    <link name="platform_link">
+      <!-- Truck/trailer body: fills the gap between the ground and the
+           landing plate so this reads as "a box with a bigger flat bed on
+           top" instead of a plate floating at z=2 with nothing under it.
+           Same link as the plate (rigid, moves as one unit driven by
+           MovingPlatformController). Footprint matches the 5x5 plate
+           exactly, centred on the same origin; an earlier smaller/centred
+           version (3.5x3.5) was fine sitting still, but under
+           MovingPlatformController's actual driving (acceleration + ground
+           friction on the box) it tipped the whole platform: the huge
+           <inertial> below is a flat round-number placeholder (not derived
+           from this geometry) that implicitly assumes the collision mass is
+           distributed symmetrically about the link origin, and any offset or
+           undersized footprint breaks that assumption, giving the drive
+           force a lever arm to rotate against. Matching the plate exactly
+           removes the asymmetry regardless of how (in)accurate the inertia
+           numbers are. Height (1.9) touches the plate's underside (world
+           z=1.95) while stopping just short of the ground (world z=0.05) to
+           avoid z-fighting/resting-contact jitter with ground_plane. -->
+      <visual name="body_visual">
+        <pose>0 0 -1.0 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>5 5 1.9</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.55 0.32 0.05 1</ambient>
+          <diffuse>0.6 0.38 0.08 1</diffuse>
+          <specular>0.2 0.2 0.2 1</specular>
+        </material>
+      </visual>
+      <collision name="body_collision">
+        <pose>0 0 -1.0 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>5 5 1.9</size>
+          </box>
+        </geometry>
+      </collision>
+      <visual name="platform_visual">
+        <geometry>
+          <box>
+            <size>5 5 0.1</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.3 0.3 0.3 1</ambient>
+          <diffuse>0.3 0.3 0.3 1</diffuse>
+          <specular>0.1 0.1 0.1 1</specular>
+        </material>
+      </visual>
+      <!-- ArUco decal on the top face, centred, well clear of the 5x5 edges.
+           z offset = half the platform thickness (0.05) + a hair (0.001) to
+           avoid z-fighting with platform_visual. Not PX4's own arucotag model
+           (that's a separate static model, so it wouldn't move WITH the
+           platform) -- same texture asset, applied as an extra visual on this
+           link instead so it rides along with MovingPlatformController. -->
+      <visual name="aruco_visual">
+        <pose>0 0 0.051 0 0 0</pose>
+        <geometry>
+          <plane>
+            <normal>0 0 1</normal>
+            <size>1.0 1.0</size>
+          </plane>
+        </geometry>
+        <material>
+          <diffuse>1 1 1 1</diffuse>
+          <specular>0.4 0.4 0.4 1</specular>
+          <pbr>
+            <metal>
+              <albedo_map>model://moving_platform_aruco/arucotag.png</albedo_map>
+            </metal>
+          </pbr>
+        </material>
+      </visual>
+      <collision name="platform_collision">
+        <geometry>
+          <box>
+            <size>5 5 0.1</size>
+          </box>
+        </geometry>
+      </collision>
+      <pose>0 0 2 0 0 0</pose>
+      <inertial>
+          <mass>10000</mass>
+          <inertia>
+              <ixx>10000</ixx>
+              <iyy>10000</iyy>
+              <izz>10000</izz>
+          </inertia>
+      </inertial>
+      <sensor name="navsat_sensor" type="navsat">
+        <always_on>1</always_on>
+        <update_rate>30</update_rate>
+      </sensor>
+    </link>
+    <plugin
+      filename="libMovingPlatformController.so"
+      name="custom::MovingPlatformController">
+      <link_name>platform_link</link_name>
+    </plugin>
+  </model>
+</sdf>

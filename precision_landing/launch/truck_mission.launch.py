@@ -102,7 +102,7 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
-        DeclareLaunchArgument('fcu_url', default_value='udp://:14550@'),
+        DeclareLaunchArgument('fcu_url', default_value='udp://:14540@'),
         DeclareLaunchArgument('image_topic', default_value='/down_camera/image'),
         DeclareLaunchArgument('flight_alt', default_value='5.0'),
         # 임무지역: 트럭 경로(E축, N=0)에서 벗어난 지점으로 잡아 드론이 트럭을 떠났다

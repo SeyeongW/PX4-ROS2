@@ -1,36 +1,6 @@
 services:
-  sim:
-    build:
-      context: ./docker
-      args:
-        USERNAME: seo
-        USER_UID: "1000"
-        USER_GID: "1000"
-    image: px4-ros2-sim:humble-harmonic
-    container_name: px4_ros2_sim
-    network_mode: host        # gz-transport / MAVLink(UDP) / ROS 2 DDS는 모두 loopback을 씀 (run_sim.sh가 GZ_IP=127.0.0.1로 고정)
-    stdin_open: true
-    tty: true
-    working_dir: /home/seo/ros2_ws/PX4-ROS2
-    environment:
-      DISPLAY: ${DISPLAY}
-    volumes:
-      # 레포는 호스트 바인드 마운트 → 호스트에서 편집, 컨테이너에서 colcon build
-      - .:/home/seo/ros2_ws/PX4-ROS2
-      # ArduPilot SITL / ardupilot_gazebo / ros_gz는 이미지 빌드시 이미 컴파일되어 있고,
-      # named volume이 최초 마운트 시 이미지 내용을 그대로 복사해가므로 재빌드해도 유지됨.
-      - ardupilot_home:/home/seo/ardupilot
-      - ardupilot_gazebo_home:/home/seo/ardupilot_gazebo
-      - ros_gz_ws_home:/home/seo/ros_gz_ws
-      # GUI (gz sim / rqt_image_view) — X11 소켓 공유
-      - /tmp/.X11-unix:/tmp/.X11-unix:rw
-    # NVIDIA GPU 가속은 필수가 아님 — 없으면 gz sim이 소프트웨어 렌더링(느리지만 동작함)으로
-    # 자동 폴백됨. GPU 가속하려면 docker-compose.gpu.yml.example 참고 (docker/README.md).
-
   sim-px4:
-    # PX4 SITL 버전 -- sim(ArduPilot)과 별개 이미지/컨테이너/볼륨. 둘 다 같은 레포를
-    # 바인드 마운트하므로 소스 수정은 공유되지만, 두 컨테이너를 동시에 띄우고 같은
-    # Gazebo 월드를 서로 다른 비행체가 동시에 조종하려는 게 아님 -- 한 번에 하나만 사용.
+    # PX4 SITL 버전. (ArduPilot용 sim 서비스는 PX4로 전환 완료 후 제거됨.)
     build:
       context: ./docker
       dockerfile: Dockerfile.px4
@@ -55,8 +25,5 @@ services:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
 
 volumes:
-  ardupilot_home:
-  ardupilot_gazebo_home:
-  ros_gz_ws_home:
   px4_autopilot_home:
   ros_gz_ws_home_px4:

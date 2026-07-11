@@ -16,8 +16,17 @@ State machine
             converging while descending; the marker may sit on a platform of
             height platform_height, so all altitude logic uses height ABOVE the
             marker (pos.z − platform_height)
+            Skipped entirely when precland_enable=true — ALIGN hands off
+            straight to PRECLAND on marker acquisition instead.
+  PRECLAND: precland_enable=true only. Publish the marker's body-frame offset
+            to mavros' landing_target plugin (/mavros/landing_target/pose_in)
+            and request PX4's own AUTO.PRECLAND mode — from here PX4 flies the
+            approach/descend/touchdown itself (search timeout, retries: see
+            its PLD_* params), we stream nothing and just watch for disarm.
   DONE    : force-disarm onto the platform (no LAND mode — that would descend to
-            the ground and ignore the platform)
+            the ground and ignore the platform). Not used when precland_enable
+            reached DONE via PRECLAND -- PX4 disarms on its own there; we only
+            detect it (mirrors mission_manager's own was_armed edge check).
 
 Cue → vision handoff: a coordinate publisher (moving_marker_node, or any
 external source) streams the marker's local-ENU position. The drone APPROACHes
@@ -31,6 +40,7 @@ Topic contract (matches aruco_detector_node):
   in  /mavros/state               mavros_msgs/State
   in  /mavros/local_position/pose geometry_msgs/PoseStamped (BEST_EFFORT)
   out /mavros/setpoint_raw/local  mavros_msgs/PositionTarget (velocity + yaw)
+  out /mavros/landing_target/raw  mavros_msgs/LandingTarget (PRECLAND only, listen_lt=true)
   out /precision_landing/debug    std_msgs/String
 """
 
@@ -45,8 +55,10 @@ from rclpy.qos import (qos_profile_sensor_data, QoSProfile, QoSDurabilityPolicy,
 
 from geometry_msgs.msg import Point, PointStamped, PoseStamped, Vector3Stamped
 from std_msgs.msg import Bool, String
-from mavros_msgs.msg import PositionTarget, State
+from mavros_msgs.msg import LandingTarget, PositionTarget, State
 from mavros_msgs.srv import CommandBool, CommandLong, CommandTOL, SetMode
+from rcl_interfaces.msg import Parameter as RosParameter, ParameterValue as RosParameterValue, ParameterType as RosParameterType
+from rcl_interfaces.srv import SetParameters
 
 from precision_landing import apf
 
@@ -59,6 +71,7 @@ class Stage(Enum):
     DESCEND = 4
     DONE = 5
     DORMANT = 6   # integrated mode: wait for mission_manager's land_enable
+    PRECLAND = 7  # handed off to PX4's own AUTO.PRECLAND (precland_enable=true)
 
 
 DT = 0.05  # 50 ms control period
@@ -139,8 +152,10 @@ class PrecisionLandingNode(Node):
                     f'APF: failed to load obstacle_map "{self.obstacle_map_path}": {e}')
         # Down-camera intrinsics for altitude-aware pixel→metre conversion.
         # cam_hfov in rad; cam_aspect = image width / height. Update if the
-        # camera model changes (current: hfov 1.20, 640×480).
-        self.cam_hfov = self.declare_parameter('cam_hfov', 1.20).value
+        # camera model changes (current: PX4 mono_cam/x500_mono_cam_down,
+        # hfov 1.74, 1280x960 -- was 1.20/640x480 under the old ArduPilot-era
+        # iris_with_down_camera model).
+        self.cam_hfov = self.declare_parameter('cam_hfov', 1.74).value
         self.cam_aspect = self.declare_parameter('cam_aspect', 4.0 / 3.0).value
         # Lateral mapping tuning (camera-mount dependent). If the drone slides the
         # WRONG way during ALIGN, flip these until it converges onto the marker:
@@ -174,6 +189,45 @@ class PrecisionLandingNode(Node):
         # the LIVE heading (self.yaw), so vision stays correct while the nose turns.
         self.yaw_track = self.declare_parameter('yaw_track', True).value
         self.yaw_track_min_speed = self.declare_parameter('yaw_track_min_speed', 0.5).value
+        # precland_enable: once the marker is first acquired (ALIGN entry),
+        # hand off to PX4's own AUTO.PRECLAND instead of running our own
+        # ALIGN/DESCEND/force-disarm sequence -- see the PRECLAND stage.
+        # Defaults to False: PX4's navigator/precland.cpp run_state_final_approach()
+        # is a literal no-op ("nothing to do, will land") -- once within
+        # PLD_FAPPR_ALT of the target it freezes the setpoint and descends
+        # open-loop, and losing the target at ANY point (a missed vision frame,
+        # not just a real dropout) sends it to switch_to_state_fallback(), which
+        # lands at the vehicle's CURRENT position with no reference to the
+        # target at all. Verified by reading both functions directly. Neither
+        # behaviour is acceptable for a continuously-moving trailer -- it works
+        # fine for a stationary pad, which is what it was designed for. Our own
+        # ALIGN/DESCEND (KF + cue-velocity feed-forward, open-loop-on-cue final
+        # descent) tracks a moving/turning target all the way to touchdown; set
+        # true only to go back to testing PX4's own feature specifically.
+        # precland_target_size: physical marker size (m, square) -- pushed into
+        # mavros' landing_target plugin (target_size.x/y) at startup so PX4's
+        # geometry matches the real decal (gazebo/models/moving_platform_aruco).
+        # Only relevant when precland_enable=true.
+        self.precland_enable = self.declare_parameter('precland_enable', False).value
+        self.precland_target_size = self.declare_parameter('precland_target_size', 1.0).value
+        # Require this many CONSECUTIVE raw aruco_detector hits before treating
+        # the marker as genuinely acquired (IDLE/APPROACH -> ALIGN/PRECLAND) --
+        # a single-frame false positive at long range has been observed once
+        # (see _detected_cb); this does not affect self.fresh's coast-through-
+        # dropout behaviour used once already in ALIGN/DESCEND/PRECLAND.
+        self.marker_confirm_frames = self.declare_parameter('marker_confirm_frames', 3).value
+        # Belt-and-braces on top of marker_confirm_frames: a false-positive
+        # detection that itself lasts >= marker_confirm_frames consecutive
+        # frames slips straight through the streak check (observed: PRECLAND
+        # handed off while the drone was still 77 m from the cue -- a real
+        # detection at typical flight_alt/camera FOV is physically impossible
+        # at that range). Gate the IDLE/APPROACH -> ALIGN/PRECLAND transition
+        # on distance-to-cue too, not just the streak, since a down-facing
+        # camera can only plausibly see the marker within a few flight_alt's
+        # worth of horizontal offset -- generous default well above real
+        # acquisition ranges seen so far (~a few m), comfortably below the
+        # bogus 70m+ ones.
+        self.marker_max_acquire_dist = self.declare_parameter('marker_max_acquire_dist', 15.0).value
 
         if self.require_enable:
             self.stage = Stage.DORMANT
@@ -186,6 +240,7 @@ class PrecisionLandingNode(Node):
         self.pos = [0.0, 0.0, 0.0]                 # local ENU position
         self.offset = Point()                      # latest marker offset
         self.fresh = 0                             # marker freshness countdown
+        self._detect_streak = 0                    # consecutive raw detections (false-positive filter)
         self.req_ticks = 0
         self.yaw = 0.0                             # current heading (ENU, rad)
         self.hold_yaw = 0.0                        # heading to keep while aligning
@@ -211,6 +266,11 @@ class PrecisionLandingNode(Node):
         self.raw_pub = self.create_publisher(
             PositionTarget, '/mavros/setpoint_raw/local', 10)
         self.debug_pub = self.create_publisher(String, '/precision_landing/debug', 10)
+        # PRECLAND handoff: marker offset -> mavros' landing_target plugin
+        # (listen_lt=true, "raw" topic -> landtarget_cb), which forwards it to
+        # PX4 as a MAVLink LANDING_TARGET message.
+        self.landing_target_pub = self.create_publisher(
+            LandingTarget, '/mavros/landing_target/raw', 10)
 
         # --- Subscribers ----------------------------------------------------
         self.create_subscription(State, '/mavros/state', self._state_cb, 10)
@@ -245,6 +305,13 @@ class PrecisionLandingNode(Node):
         # CommandLong is used for a FORCE disarm at touchdown (ArduCopter rejects
         # a normal in-air disarm; the force magic bypasses the land check).
         self.command_cli = self.create_client(CommandLong, '/mavros/cmd/command')
+        # mavros' landing_target plugin defaults to listen_lt=false (ignores
+        # pose_in) and a 0.3x0.3m target_size -- push our actual values in via
+        # its (ROS2-native, not MAVLink) parameter service once at startup.
+        self._lt_param_cli = self.create_client(
+            SetParameters, '/mavros/landing_target/set_parameters')
+        self._lt_param_attempts = 0
+        self._lt_tick = 0
 
         self.create_timer(DT, self.tick)
 
@@ -268,6 +335,16 @@ class PrecisionLandingNode(Node):
     def _detected_cb(self, msg):
         if msg.data:
             self.fresh = 10  # 10 × 50 ms = 500 ms freshness window
+            self._detect_streak += 1
+        else:
+            # Reset the CONSECUTIVE-detection streak (see marker_confirm_frames)
+            # on any raw miss -- unlike self.fresh above, this one does NOT
+            # coast through dropouts; it exists specifically to filter a
+            # single-frame false positive (observed once: aruco_detected=True
+            # while the drone was ~90 m from the actual marker -- a genuine
+            # detection at that range/geometry is not possible, so it was
+            # noise/a corrupted frame, not a real acquisition).
+            self._detect_streak = 0
 
     def _enable_cb(self, msg):
         # mission_manager's landing-authority gate (integrated mode only).
@@ -308,11 +385,34 @@ class PrecisionLandingNode(Node):
         age = (self.get_clock().now() - self.cue_stamp).nanoseconds * 1e-9
         return age < self.cue_timeout
 
+    def _marker_confirmed(self):
+        if self._detect_streak < self.marker_confirm_frames:
+            return False
+        # Sanity-check against the broadcast cue: a real detection is only
+        # physically possible within a few flight_alt's worth of the target's
+        # known position (see marker_max_acquire_dist's declare_parameter
+        # comment). No cue at all is an edge case (marker seen before any cue
+        # ever arrived) -- trust the streak alone rather than block forever.
+        if self.cue is not None:
+            dist = math.hypot(self.cue[0] - self.pos[0], self.cue[1] - self.pos[1])
+            if dist > self.marker_max_acquire_dist:
+                self._log(
+                    f'marker streak confirmed but {dist:.0f}m from cue '
+                    f'(> {self.marker_max_acquire_dist:.0f}m) -- ignoring as a false positive')
+                return False
+        return True
+
     # -----------------------------------------------------------------------
     def tick(self):
         if self.fresh > 0:
             self.fresh -= 1
         marker_ok = self.fresh > 0
+
+        if self.precland_enable:
+            self._lt_tick += 1
+            if self._lt_param_attempts < 5 and self._lt_tick % 20 == 1:
+                self._lt_param_attempts += 1
+                self._set_landing_target_params()
 
         if not self.mav_state.connected:
             return
@@ -356,12 +456,20 @@ class PrecisionLandingNode(Node):
         elif self.stage == Stage.IDLE:
             self.cmd_vel = [0.0, 0.0, 0.0]           # hold position (zero velocity)
             self.hold_yaw = self.yaw     # track heading; frozen once we start aligning
-            if self.mav_state.armed and self.mav_state.mode == 'GUIDED':
-                if marker_ok:                        # camera already on the marker
-                    self._log('-> ALIGN')
-                    self._kf_reset(seed_vel=self.cue_vel if self._cue_ok() else None)
-                    self.eff_vel_max = self.get_parameter('vel_max').value
-                    self.stage = Stage.ALIGN
+            # Integrated (require_enable) mode hands off from mission_manager's
+            # PX4 OFFBOARD; the standalone auto_takeoff path below is still
+            # ArduPilot GUIDED and not yet ported -- accept either so both keep
+            # working until that standalone path gets its own PX4 pass.
+            if self.mav_state.armed and self.mav_state.mode in ('OFFBOARD', 'GUIDED'):
+                if self._marker_confirmed():          # camera already on the marker
+                    if self.precland_enable:
+                        self._log('-> PRECLAND (marker acquired, handing off to PX4 AUTO.PRECLAND)')
+                        self.stage = Stage.PRECLAND
+                    else:
+                        self._log('-> ALIGN')
+                        self._kf_reset(seed_vel=self.cue_vel if self._cue_ok() else None)
+                        self.eff_vel_max = self.get_parameter('vel_max').value
+                        self.stage = Stage.ALIGN
                 elif self._cue_ok():                 # fly to the broadcast cue first
                     self._log('-> APPROACH (following cue)')
                     self.stage = Stage.APPROACH
@@ -389,14 +497,18 @@ class PrecisionLandingNode(Node):
                 else:
                     eff_vmax = approach_vmax
 
-                if marker_ok:
-                    self._log('marker acquired -> ALIGN')
-                    # Seed the KF velocity with the cue velocity so the drone keeps
-                    # matching the moving platform through the handoff (no stall).
-                    self._kf_reset(seed_vel=self.cue_vel if self._cue_ok() else None)
-                    # Start ALIGN ramp from the speed we had at acquisition
-                    self.eff_vel_max = eff_vmax
-                    self.stage = Stage.ALIGN
+                if self._marker_confirmed():
+                    if self.precland_enable:
+                        self._log('marker acquired -> PRECLAND (handing off to PX4 AUTO.PRECLAND)')
+                        self.stage = Stage.PRECLAND
+                    else:
+                        self._log('marker acquired -> ALIGN')
+                        # Seed the KF velocity with the cue velocity so the drone keeps
+                        # matching the moving platform through the handoff (no stall).
+                        self._kf_reset(seed_vel=self.cue_vel if self._cue_ok() else None)
+                        # Start ALIGN ramp from the speed we had at acquisition
+                        self.eff_vel_max = eff_vmax
+                        self.stage = Stage.ALIGN
                 elif not self._cue_ok():
                     self._log('cue stale -> IDLE')
                     self.stage = Stage.IDLE
@@ -503,6 +615,25 @@ class PrecisionLandingNode(Node):
                             self.cmd_vel[2] = 0.0    # too far off for this altitude
                     else:
                         self.cmd_vel[2] = 0.0
+
+        elif self.stage == Stage.PRECLAND:
+            # Handed off to PX4: keep its landing_target_estimator fed while we
+            # still see the marker (PX4 itself handles losing it -- search
+            # pattern / retry count / eventual AUTO.LAND fallback, see its
+            # PLD_SRCH_TOUT/PLD_MAX_SRCH params -- we don't replicate any of
+            # that here). Stream NO setpoints of our own; only OFFBOARD honours
+            # them and we're asking PX4 to leave OFFBOARD for AUTO.PRECLAND.
+            if not self.mav_state.armed:
+                self._log('disarmed -> DONE (PX4 completed the landing)')
+                self.stage = Stage.DONE
+                return
+            if marker_ok:
+                self._publish_landing_target()
+            self.req_ticks += 1
+            if self.mav_state.mode != 'AUTO.PRECLAND' and self.req_ticks % 40 == 1:
+                self._log('PRECLAND: request AUTO.PRECLAND')
+                self._set_mode('AUTO.PRECLAND')
+            return  # PX4 flies itself in this mode; we stream nothing
 
         elif self.stage == Stage.DONE:
             # Controlled touchdown: we are within land_clearance of the platform
@@ -657,6 +788,69 @@ class PrecisionLandingNode(Node):
         de = c * fwd - s * left
         dn = s * fwd + c * left
         return self.pos[0] + de, self.pos[1] + dn
+
+    # PRECLAND stage: publish to mavros' landing_target plugin's "raw" input
+    # (mavros_msgs/LandingTarget on landing_target/raw, listen_lt=true --
+    # landtarget_cb in mavros_extras/src/plugins/landing_target.cpp).
+    #
+    # Verified against BOTH ends of the pipe in upstream PX4/mavros source
+    # (two real bugs found and fixed here, not guesses):
+    #  1. landing_target/pose_in is a PUBLISHER the plugin uses only when
+    #     RECEIVING a tracked target back FROM the FCU -- publishing there
+    #     (an earlier version of this function) was a silent no-op.
+    #  2. mavros' landtarget_cb ALWAYS hardcodes position_valid=1 on the wire
+    #     regardless of our message content. PX4's mavlink_receiver.cpp
+    #     handle_message_landing_target(), when position_valid && frame==
+    #     LOCAL_NED, does NOT treat x/y/z as camera/body-relative -- it
+    #     publishes them STRAIGHT THROUGH as landing_target_pose.{x,y,z}_abs
+    #     (absolute position in the LOCAL_NED WORLD frame, i.e. relative to
+    #     the EKF origin, consumed as such by navigator/precland.cpp). angle_x/
+    #     angle_y/distance/size_x/size_y are only used on the OTHER branch
+    #     (position_valid=false, IR-LOCK-style relative bearing via
+    #     irlock_report) -- mavros can never reach that branch, so those
+    #     fields are ignored here entirely; only send the marker's WORLD
+    #     position. mavros applies transform_frame_enu_ned (x,y,z)->(y,x,-z)
+    #     to pose.position before sending, so raw world ENU (E,N,Up) in is
+    #     exactly what's needed -- reuses _measure_marker_world() as-is.
+    def _publish_landing_target(self):
+        marker_e, marker_n = self._measure_marker_world()
+        alt = self._height_above_marker()
+        marker_up = self.pos[2] - alt
+
+        msg = LandingTarget()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = 'map'
+        msg.target_num = 0
+        # mavros_msgs/LandingTarget.msg's LOCAL_NED constant is WRONG (=2) --
+        # checked against the actual wire enum PX4 compares against
+        # (mavlink::common::MAV_FRAME in mavlink/v2.0/common/common.hpp),
+        # which is GLOBAL=0, LOCAL_NED=1. Sending frame=2 makes PX4's
+        # mavlink_receiver.cpp take the "unsupported coordinate frame" branch
+        # and silently drop the message (logged via mavlink_log_critical,
+        # which surfaces as an undecoded numeric "FCU: EVENT ..." line in
+        # mavros' log, not obviously an error) -- this was the reason every
+        # PRECLAND attempt search-timed-out even once the topic/message-type
+        # and world-absolute-position bugs above were already fixed. Hardcode
+        # the real value here rather than trust the mismatched ROS constant.
+        msg.frame = 1
+        msg.distance = alt
+        msg.pose.position.x = marker_e
+        msg.pose.position.y = marker_n
+        msg.pose.position.z = marker_up
+        msg.pose.orientation.w = 1.0
+        msg.type = LandingTarget.VISION_FIDUCIAL
+        self.landing_target_pub.publish(msg)
+
+    # mavros' landing_target plugin defaults to listen_lt=false, which
+    # subscribes to a plain PoseStamped on "pose" instead of our "raw"
+    # LandingTarget message -- listen_lt=true switches it to landtarget_cb.
+    def _set_landing_target_params(self):
+        req = SetParameters.Request()
+        req.parameters = [
+            RosParameter(name='listen_lt',
+                        value=RosParameterValue(type=RosParameterType.PARAMETER_BOOL, bool_value=True)),
+        ]
+        self._lt_param_cli.call_async(req)
 
     # --- Kalman filter (constant-velocity, state [E, N, vE, vN]) -------------
     def _kf_reset(self, seed_vel=None):

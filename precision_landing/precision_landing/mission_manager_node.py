@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Truck-launch mission manager (ArduPilot / MAVROS, GUIDED mode).
+"""Truck-launch mission manager (PX4 / MAVROS, OFFBOARD mode).
 
 The high-level mission brain that sits ABOVE the validated precision_landing
 controller. It owns the whole flight life-cycle and hands the terminal
@@ -16,8 +16,10 @@ State machine
               /marker/position) drives within trigger_dist of the mission area,
               then launch. Arming releases the DetachableJoint (moving_marker_node
               watches /mavros/state), so the drone lifts off FROM the moving truck.
-  TAKEOFF   : GUIDED -> arm -> /mavros/cmd/takeoff to flight_alt (no setpoints;
-              ArduCopter holds position itself after a guided takeoff).
+  TAKEOFF   : stream setpoints (required before PX4 accepts OFFBOARD) -> OFFBOARD
+              -> arm -> climb via a velocity setpoint to flight_alt. Unlike
+              ArduPilot's GUIDED+CommandTOL, PX4 OFFBOARD does the whole climb
+              under our own velocity command, so this stage never stops streaming.
   MISSION   : fly a patrol route (patrol_route: path to a waypoint-list YAML,
               looped indefinitely, dwelling loiter_s at each stop) or, if
               patrol_route is unset, the single (mission_area_e,
@@ -33,7 +35,7 @@ State machine
   LINK_LOST : the truck cue went stale (simulated GPS-link loss). Hover in place
               and try to reconnect for reconnect_window_s; if it comes back resume,
               otherwise SAFE_LAND.
-  SAFE_LAND : land where we are (LAND mode, vertical descent). Terrain-flatness
+  SAFE_LAND : land where we are (AUTO.LAND, vertical descent). Terrain-flatness
               evaluation is a vision-only PASS-THROUGH STUB here — flat SITL can't
               exercise it; real discrimination is deferred to hardware LiDAR.
   DONE      : disarmed on the ground / platform. Idle (keep publishing telemetry).
@@ -44,7 +46,7 @@ Topic contract
   in  /marker/position              geometry_msgs/PointStamped  truck ENU cue
   in  /marker/velocity              geometry_msgs/Vector3Stamped (optional)
   in  /mission/task_complete        std_msgs/Bool               external mission-complete signal
-  out /mavros/setpoint_raw/local    mavros_msgs/PositionTarget (MISSION/LINK_LOST)
+  out /mavros/setpoint_raw/local    mavros_msgs/PositionTarget (TAKEOFF/MISSION/LINK_LOST)
   out /mission/land_enable          std_msgs/Bool (latched)  landing-authority gate
   out /mission/phase                std_msgs/String          current FSM stage
   out /mission/battery_s            std_msgs/Float32         simulated battery left
@@ -63,7 +65,8 @@ from rclpy.qos import (qos_profile_sensor_data, QoSProfile, QoSDurabilityPolicy,
 from geometry_msgs.msg import PointStamped, PoseStamped, Vector3Stamped
 from std_msgs.msg import Bool, Float32, String
 from mavros_msgs.msg import PositionTarget, State
-from mavros_msgs.srv import CommandBool, CommandTOL, SetMode
+from mavros_msgs.srv import CommandBool, ParamSetV2, SetMode
+from rcl_interfaces.msg import ParameterValue, ParameterType
 
 from precision_landing import apf
 from precision_landing import planner
@@ -81,6 +84,9 @@ class Stage(Enum):
 
 
 DT = 0.05  # 50 ms control period
+# PX4 rejects an OFFBOARD mode request unless setpoints are already streaming;
+# prime for this many ticks (1 s @ 20 Hz) before requesting the switch.
+OFFBOARD_PRIME_TICKS = 20
 
 
 def _load_patrol_route(path):
@@ -281,7 +287,9 @@ class MissionManagerNode(Node):
         # --- Service clients ------------------------------------------------
         self.set_mode_cli = self.create_client(SetMode, '/mavros/set_mode')
         self.arming_cli = self.create_client(CommandBool, '/mavros/cmd/arming')
-        self.takeoff_cli = self.create_client(CommandTOL, '/mavros/cmd/takeoff')
+        self.param_set_cli = self.create_client(ParamSetV2, '/mavros/param/set')
+        self._nav_dll_act_attempts = 0
+        self._param_fix_tick = 0
 
         self.create_timer(DT, self.tick)
         patrol_desc = (f'patrol={len(self.patrol_waypoints)}wp (loops)' if self.patrol_mode
@@ -321,6 +329,19 @@ class MissionManagerNode(Node):
         if not self.mav_state.connected:
             return
 
+        # PX4 refuses to arm without EITHER an RC link OR a GCS heartbeat
+        # (NAV_DLL_ACT > 0, its default) -- MAVROS registers as a companion
+        # link, not a GCS, so it never satisfies this on its own (confirmed
+        # via `commander check`: "No connection to the ground control
+        # station" / "Arming denied: Resolve system health failures first"
+        # until this is cleared). We have neither an RC nor a real GCS in
+        # this setup, so disable the requirement. Fire a few times (once
+        # isn't guaranteed to land before the service/link is fully up).
+        self._param_fix_tick += 1
+        if self._nav_dll_act_attempts < 5 and self._param_fix_tick % 20 == 1:
+            self._nav_dll_act_attempts += 1
+            self._set_param_int('NAV_DLL_ACT', 0)
+
         # Deplete the simulated battery whenever airborne (armed).
         if self.mav_state.armed:
             self.battery_s = max(0.0, self.battery_s - self.consume_rate * DT)
@@ -354,22 +375,27 @@ class MissionManagerNode(Node):
                     self.stage = Stage.TAKEOFF
 
         elif self.stage == Stage.TAKEOFF:
-            # GUIDED -> arm -> takeoff, each re-sent ~every 2 s. Arming releases
-            # the DetachableJoint (moving_marker_node). No setpoints during climb.
+            # PX4 OFFBOARD requires setpoints to already be streaming before
+            # (and continuously during/after) the mode switch, so we publish
+            # every TAKEOFF tick from the very first one and never stop --
+            # arm happens once already in OFFBOARD, then we climb under our
+            # own velocity command (no separate AUTO.TAKEOFF hop, unlike the
+            # old GUIDED+CommandTOL flow this replaces).
+            publish = True
             self.req_ticks += 1
             send = (self.req_ticks % 40 == 1)
-            if self.mav_state.mode != 'GUIDED':
-                if send:
-                    self._log('TAKEOFF: set GUIDED')
-                    self._set_mode('GUIDED')
+            if self.mav_state.mode != 'OFFBOARD':
+                if self.req_ticks >= OFFBOARD_PRIME_TICKS and send:
+                    self._log('TAKEOFF: request OFFBOARD')
+                    self._set_mode('OFFBOARD')
             elif not self.mav_state.armed:
                 if send:
                     self._log('TAKEOFF: arming (releases truck joint)')
                     self._arm(True)
             elif self.pos[2] < self.flight_alt - 0.5:
-                if send:
-                    self._log(f'TAKEOFF: cmd takeoff to {self.flight_alt:.1f} m')
-                    self._takeoff(self.flight_alt)
+                # Fixed climb rate (not proportional -- error stays large from
+                # the ground) up to flight_alt.
+                self.cmd_vel[2] = 1.0
             else:
                 self._log('-> MISSION (reached flight_alt)')
                 self.stage = Stage.MISSION
@@ -462,9 +488,9 @@ class MissionManagerNode(Node):
             self.req_ticks += 1
             if self.mav_state.armed:
                 if self.req_ticks % 40 == 1:
-                    self._log('SAFE_LAND: flat terrain assumed safe -> LAND mode')
-                if self.mav_state.mode != 'LAND':
-                    self._set_mode('LAND')
+                    self._log('SAFE_LAND: flat terrain assumed safe -> AUTO.LAND mode')
+                if self.mav_state.mode != 'AUTO.LAND':
+                    self._set_mode('AUTO.LAND')
             # Completion (disarm) handled by the was_armed edge above.
 
         elif self.stage == Stage.DONE:
@@ -658,10 +684,11 @@ class MissionManagerNode(Node):
         req.value = value
         self.arming_cli.call_async(req)
 
-    def _takeoff(self, alt):
-        req = CommandTOL.Request()
-        req.altitude = float(alt)
-        self.takeoff_cli.call_async(req)
+    def _set_param_int(self, param_id, value):
+        req = ParamSetV2.Request()
+        req.param_id = param_id
+        req.value = ParameterValue(type=ParameterType.PARAMETER_INTEGER, integer_value=value)
+        self.param_set_cli.call_async(req)
 
     def _log(self, text):
         self.get_logger().info(text)
