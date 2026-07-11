@@ -75,6 +75,37 @@ class MovingMarkerNode(Node):
         self.center_n = self.declare_parameter('center_n', 0.0).value   # m, ENU North
         self.amplitude = self.declare_parameter('amplitude', 1.5).value  # m
         self.speed = self.declare_parameter('speed', 0.3).value         # m/s path speed
+        # 'cross' + drive_mode=velocity only: closed-loop P-servo gain/arrive-radius
+        # toward each "+"-shape waypoint, using the ACTUAL gz pose as feedback (see
+        # _cross_velocity_closed_loop). Replaces the old open-loop analytic velocity
+        # command, which assumed the physical model tracks a commanded velocity with
+        # zero lag -- with real mass/VelocityControl dynamics it doesn't, so an
+        # instantaneous open-loop direction flip (in-arm reversal at each amplitude
+        # extreme, or the 90-degree axis switch passing through centre) overshoots
+        # past the intended turn point. Closed-loop feedback decelerates smoothly
+        # approaching each waypoint (proportional term shrinks) and self-corrects any
+        # drift every tick, bounding the overshoot regardless of the exact plugin
+        # dynamics (observed: still colliding with obstacles at the old open-loop
+        # scheme even after widening clear_lane_half_width once already).
+        self.cross_kp = self.declare_parameter('cross_kp', 0.6).value          # 1/s
+        self.cross_arrive_radius = self.declare_parameter(
+            'cross_arrive_radius', 1.0).value                                  # m
+        # Hard acceleration cap on the OUTPUT command, on top of the P-servo
+        # above. The P-servo smooths deceleration approaching a waypoint (its
+        # proportional term naturally shrinks near the target) but NOT the
+        # departure: the instant the target switches to the next waypoint,
+        # the remaining distance is suddenly large again, so the P-servo's
+        # desired velocity jumps toward full speed in the new direction
+        # within a single tick. A PID-style feedback law can't fix this on
+        # its own -- P/I/D all react to the CURRENT error, which itself has a
+        # step discontinuity at a waypoint switch, so their output inherits
+        # that jump (D on a step error is actually worse: "derivative kick").
+        # Rate-limiting the OUTPUT itself is what guarantees smooth accel in
+        # both directions, independent of the servo gain -- clamp the
+        # per-tick change in commanded velocity to cross_accel_max * dt.
+        self.cross_accel_max = self.declare_parameter(
+            'cross_accel_max', 2.0).value                                     # m/s^2
+        self._cross_cmd_vel = [0.0, 0.0]    # last rate-limited output (state across ticks)
         # Hold STATIONARY at the start position for this many seconds before the
         # trajectory begins. For the mounted-on-moving-truck scenario the drone
         # rides the truck and must sit still long enough for its EKF/GPS to settle
@@ -120,6 +151,21 @@ class MovingMarkerNode(Node):
         self.vel_pub = self.create_publisher(Vector3Stamped, self.vel_topic, 10)
         self._prev_traj = None   # (e, n, t) analytic target, for the drive velocity
         self._actual = None      # (x, y) latest ACTUAL truck pose from gz (vel mode)
+
+        # "+"-shape waypoints for the closed-loop 'cross' driver: East tip, centre,
+        # North tip, centre, West tip, centre, South tip, centre -- looped. Visiting
+        # order differs from the old open-loop _cross_position (which did a full
+        # out-and-back on one axis before switching), but covers the same 4 arms and
+        # keeps every leg exactly axis-aligned, which is what obstacle_map.yaml's
+        # clear_lane assumes.
+        A = self.amplitude
+        self._cross_wps = [
+            (self.center_e + A, self.center_n), (self.center_e, self.center_n),
+            (self.center_e, self.center_n + A), (self.center_e, self.center_n),
+            (self.center_e - A, self.center_n), (self.center_e, self.center_n),
+            (self.center_e, self.center_n - A), (self.center_e, self.center_n),
+        ]
+        self._cross_idx = 0
 
         # --- gz mover -------------------------------------------------------
         self.gz = None
@@ -260,14 +306,70 @@ class MovingMarkerNode(Node):
         else:
             return 0.0, -sign * self.speed
 
+    def _cross_velocity_closed_loop(self):
+        """Closed-loop replacement for _cross_velocity (drive_mode='velocity'
+        only): P-servo toward self._cross_wps[self._cross_idx] using the actual
+        gz pose as feedback, advancing to the next waypoint on arrival. Speed is
+        capped at self.speed and decays proportionally near the target, so the
+        commanded velocity reaches ~0 right at each turn instead of flipping
+        sign/axis instantaneously -- see the cross_kp/cross_arrive_radius
+        declare_parameter comment for why. The RETURNED value is additionally
+        hard-rate-limited to cross_accel_max (see that parameter's comment):
+        the P-servo above smooths deceleration approaching a waypoint but not
+        departure, since the moment the target switches the desired velocity
+        jumps toward full speed in the new direction within one tick."""
+        if self._traj_time() < 0.0:
+            v_desired_e, v_desired_n = 0.0, 0.0   # stationary start_delay warm-up
+        else:
+            cur_e, cur_n = self._actual if self._actual is not None else \
+                (self.center_e, self.center_n)
+            target = self._cross_wps[self._cross_idx]
+            err_e, err_n = target[0] - cur_e, target[1] - cur_n
+            dist = math.hypot(err_e, err_n)
+            if dist < self.cross_arrive_radius:
+                self._cross_idx = (self._cross_idx + 1) % len(self._cross_wps)
+                target = self._cross_wps[self._cross_idx]
+                err_e, err_n = target[0] - cur_e, target[1] - cur_n
+                dist = math.hypot(err_e, err_n)
+            if dist < 1e-6:
+                v_desired_e, v_desired_n = 0.0, 0.0
+            else:
+                speed_cmd = min(self.speed, self.cross_kp * dist)
+                v_desired_e, v_desired_n = speed_cmd * err_e / dist, speed_cmd * err_n / dist
+
+        dt = 1.0 / self.rate
+        max_step = self.cross_accel_max * dt
+        cmd_e, cmd_n = self._cross_cmd_vel
+        d_e, d_n = v_desired_e - cmd_e, v_desired_n - cmd_n
+        # Clamp the STEP VECTOR's magnitude, not each axis independently --
+        # clamping components separately lets the combined magnitude reach
+        # sqrt(2)*max_step whenever both axes need to change at once (exactly
+        # what happens right at the 90-degree centre switch: the old axis's
+        # error is falling to 0 while the new axis's error is rising from 0,
+        # both at once) -- found by a closed-loop simulation checking the
+        # ACTUAL |accel| every tick, not by inspection.
+        d_mag = math.hypot(d_e, d_n)
+        if d_mag > max_step and d_mag > 1e-9:
+            scale = max_step / d_mag
+            d_e *= scale
+            d_n *= scale
+        self._cross_cmd_vel = [cmd_e + d_e, cmd_n + d_n]
+        return tuple(self._cross_cmd_vel)
+
     def tick(self):
         now = self.get_clock().now()
         stamp = now.to_msg()
         e, n = self._position()       # analytic trajectory TARGET
 
-        if self.pattern == 'cross':
-            # Analytic velocity (see _cross_velocity docstring) -- avoids the
-            # finite-difference arm-boundary bug.
+        if self.pattern == 'cross' and self.drive_mode == 'velocity':
+            # Closed-loop P-servo toward the current "+"-shape waypoint using the
+            # ACTUAL gz pose (see _cross_velocity_closed_loop) -- decelerates
+            # approaching each turn instead of flipping direction open-loop, so
+            # real momentum/plugin dynamics can't overshoot past it.
+            vx, vy = self._cross_velocity_closed_loop()
+        elif self.pattern == 'cross':
+            # Teleport mode has no physics/momentum, so the open-loop analytic
+            # velocity (see _cross_velocity docstring) is exact and simpler.
             vx, vy = self._cross_velocity(self._traj_time())
         else:
             # Drive velocity = analytic trajectory derivative via finite

@@ -1,0 +1,152 @@
+# PX4-ROS2 시뮬레이션 환경 (ROS 2 Humble + Gazebo Harmonic + PX4 SITL)
+#
+# docker/Dockerfile(ArduPilot 버전)과 별개 이미지 — 기존 ArduPilot 세팅은 그대로 두고
+# PX4 SITL(gz-sim 백엔드)만 독립적으로 검증하기 위해 분리함. 1~6단계는 ArduPilot판과
+# 동일(ROS2/MAVROS/Gazebo Harmonic은 자율비행체 종류와 무관), 7단계부터 PX4로 갈림.
+
+FROM ubuntu:22.04
+
+ARG USERNAME=seo
+ARG USER_UID=1000
+ARG USER_GID=1000
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    LANG=en_US.UTF-8 \
+    LC_ALL=en_US.UTF-8 \
+    ROS_DISTRO=humble
+
+# ---------------------------------------------------------------------------
+# 1. 기본 도구 + locale
+# ---------------------------------------------------------------------------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      locales curl gnupg2 lsb-release software-properties-common \
+      ca-certificates sudo git wget build-essential cmake ninja-build \
+      rapidjson-dev python3-pip python3-dev tzdata \
+    && locale-gen en_US en_US.UTF-8 \
+    && update-locale LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8 \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---------------------------------------------------------------------------
+# 2. ROS 2 Humble
+# ---------------------------------------------------------------------------
+RUN curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
+      -o /usr/share/keyrings/ros-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] \
+      http://packages.ros.org/ros2/ubuntu $(lsb_release -cs) main" \
+      > /etc/apt/sources.list.d/ros2.list \
+    && apt-get update && apt-get install -y --no-install-recommends \
+      ros-humble-ros-base ros-humble-cv-bridge ros-humble-image-transport \
+      python3-colcon-common-extensions python3-rosdep \
+    && rm -rf /var/lib/apt/lists/* \
+    && rosdep init
+
+# ---------------------------------------------------------------------------
+# 3. MAVROS (PX4도 지원 -- 모드 문자열만 다름, 패키지는 동일)
+# ---------------------------------------------------------------------------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ros-humble-mavros ros-humble-mavros-msgs ros-humble-mavros-extras \
+      ros-humble-rqt-image-view \
+    && rm -rf /var/lib/apt/lists/* \
+    && /opt/ros/humble/lib/mavros/install_geographiclib_datasets.sh
+
+# ---------------------------------------------------------------------------
+# 4. Gazebo Harmonic (OSRF 저장소)
+# ---------------------------------------------------------------------------
+RUN curl https://packages.osrfoundation.org/gazebo.gpg \
+      --output /usr/share/keyrings/pkgs-osrf-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/pkgs-osrf-archive-keyring.gpg] \
+      http://packages.osrfoundation.org/gazebo/ubuntu-stable $(lsb_release -cs) main" \
+      > /etc/apt/sources.list.d/gazebo-stable.list \
+    && apt-get update && apt-get install -y --no-install-recommends \
+      gz-harmonic libgz-sim8-dev \
+      libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+      libopencv-dev \
+    && rm -rf /var/lib/apt/lists/*
+# libopencv-dev: PX4's gz_plugins/optical_flow module needs it (find_package(OpenCV)
+# fails otherwise) -- found by actually running the build, not from PX4's own docs.
+
+# ---------------------------------------------------------------------------
+# 5. Python 의존성 (CPU-only torch로 고정 -- docker/Dockerfile과 동일한 이유)
+# ---------------------------------------------------------------------------
+RUN pip3 install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu \
+    && pip3 install --no-cache-dir ultralytics opencv-python numpy
+
+# ---------------------------------------------------------------------------
+# 6. 비-root 사용자
+# ---------------------------------------------------------------------------
+RUN groupadd --gid ${USER_GID} ${USERNAME} \
+    && useradd --uid ${USER_UID} --gid ${USER_GID} --create-home --shell /bin/bash ${USERNAME} \
+    && echo "${USERNAME} ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/${USERNAME} \
+    && chmod 0440 /etc/sudoers.d/${USERNAME}
+
+USER ${USERNAME}
+ENV HOME=/home/${USERNAME}
+ENV USER=${USERNAME}
+WORKDIR ${HOME}
+
+RUN rosdep update
+
+# ---------------------------------------------------------------------------
+# 7. PX4-Autopilot SITL 빌드 (gz-sim 백엔드, NuttX/구버전 sim-tools 제외)
+# ---------------------------------------------------------------------------
+# --no-nuttx        : 실기체용 ARM 크로스컴파일러 스킵 (SITL만 쓰므로 불필요)
+# --no-sim-tools    : jMAVSim/구버전 Gazebo9 설치 스킵 (Gazebo Harmonic은 이미 4단계에서 apt로 설치함)
+#
+# 두 가지는 실제로 빌드를 돌려보고서야 알아낸 함정 (ArduPilot의 "sim_vehicle.py가 매번
+# waf 재빌드에 git rev-parse를 쓴다" 함정과 같은 종류 -- 문서만 보고는 안 나옴):
+#   1. NuttX 서브모듈(shallow submodule이라 태그 히스토리가 없음)을 지우지 않으면
+#      src/lib/version/px_update_git_header.py가 nuttx 태그를 찾다가 IndexError로
+#      빌드 자체가 실패함. SITL만 쓰므로 NuttX 자체가 애초에 불필요 -- deinit으로 제거.
+#   2. `make px4_sitl gz_x500`처럼 두 번째 단어(gz_x500)를 같이 주면 그게 "빌드 설정"이
+#      아니라 빌드 후 생성된 서브 Makefile에 그대로 전달되는 "실행" 인자로 처리돼서,
+#      빌드가 끝나자마자 곧장 시뮬레이터를 실행하려고 들며 (디스플레이/Gazebo 월드가 없는
+#      이미지 빌드 단계라) gz-transport 연결을 기다리며 무한 대기함. DONT_RUN=1은 구버전
+#      jsbsim/gazebo-classic 러너에만 있고 이 gz-sim 경로는 아예 안 봄 -- 두 번째 단어를
+#      아예 안 주고(`make px4_sitl_default`) 빌드만 하는 것으로 회피.
+RUN git clone --branch v1.16.2 --recurse-submodules --shallow-submodules --depth 1 \
+      https://github.com/PX4/PX4-Autopilot.git ${HOME}/PX4-Autopilot \
+    && cd ${HOME}/PX4-Autopilot \
+    && git submodule deinit -f platforms/nuttx/NuttX/nuttx \
+    && bash ./Tools/setup/ubuntu.sh --no-nuttx --no-sim-tools \
+    && make px4_sitl_default \
+    && find build -name '*.o' -delete
+WORKDIR ${HOME}/PX4-Autopilot
+
+# ---------------------------------------------------------------------------
+# 8. ros_gz 브리지 (Harmonic 소스 빌드 -- docker/Dockerfile과 동일, 자율비행체 무관)
+# ---------------------------------------------------------------------------
+RUN sudo apt-get update && sudo apt-get install -y --no-install-recommends \
+      ros-humble-actuator-msgs ros-humble-gps-msgs ros-humble-vision-msgs \
+    && sudo rm -rf /var/lib/apt/lists/*
+RUN mkdir -p ${HOME}/ros_gz_ws/src \
+    && git clone --depth 1 -b humble https://github.com/gazebosim/ros_gz.git ${HOME}/ros_gz_ws/src/ros_gz \
+    && rm -rf ${HOME}/ros_gz_ws/src/ros_gz/.git
+WORKDIR ${HOME}/ros_gz_ws
+SHELL ["/bin/bash", "-c"]
+# PX4's Tools/setup/ubuntu.sh (step 7) pip-installs its own unpinned dependency
+# set, which can leave setuptools/packaging as a mismatched pair (found by
+# actually running the build: ros_gz_interfaces' python egg-info build failed
+# with "canonicalize_version() got an unexpected keyword argument
+# 'strip_trailing_zero'" -- modern setuptools calling an older packaging.
+# Neither Dockerfile step pins versions, so this is latent version drift, not
+# anything intentional -- force a mutually-compatible modern pair right before
+# the one colcon build step that's sensitive to it.
+RUN pip3 install --no-cache-dir --user --upgrade setuptools packaging
+RUN . /opt/ros/humble/setup.bash \
+    && GZ_VERSION=harmonic colcon build --merge-install --packages-up-to ros_gz_bridge \
+    && rm -rf build log
+
+WORKDIR ${HOME}
+
+USER root
+COPY env.sh /entrypoint-env.sh
+COPY entrypoint.sh /entrypoint.sh
+COPY env-px4.sh /entrypoint-env-px4.sh
+RUN chmod +x /entrypoint-env.sh /entrypoint.sh /entrypoint-env-px4.sh
+USER ${USERNAME}
+
+ENV BASH_ENV=/entrypoint-env-px4.sh
+RUN echo 'source /entrypoint-env-px4.sh' >> ${HOME}/.bashrc
+
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["bash"]

@@ -2,17 +2,39 @@
 # param). Loaded and looped indefinitely by mission_manager_node -- see
 # _load_patrol_route() / the docstring's MISSION bullet.
 #
-# Designed for gazebo/worlds/obstacle_field.sdf's 16-obstacle layout (see
-# gazebo/config/obstacle_map.yaml): a hexagonal loop at radius ~20-25 m around
-# the trailer's "+"-shaped patrol area, passing near (but not through the
-# tightest gaps of) each obstacle cluster, so a plain P+APF servo (Step 1 has
-# no new path-planning algorithm yet) can reliably complete it. Frame: local
-# ENU metres, same origin as /mavros/local_position/pose and /marker/position.
+# REDESIGNED 2026-07-09 after the original hexagonal loop (radius ~20-25 m)
+# was found to cut straight through obstacle bounding circles on several legs
+# (verified with a segment-to-obstacle distance check: legs 1/3/4/5 had
+# NEGATIVE surface clearance -- i.e. the un-avoided straight line already
+# intersects the obstacle, sometimes TWO at once). A plain P+APF servo (Step 1
+# has no new path-planning algorithm yet) occasionally fails to escape that --
+# APF's classic local-minimum/insufficient-authority weakness when squeezed
+# between obstacles or heading straight at one -- which is what caused the
+# patrol-mode crash.
+#
+# New shape: a "+"-shaped loop (East tip -> centre -> North tip -> centre ->
+# West tip -> centre -> South tip -> centre, looping), same idea as the
+# trailer's own cross patrol pattern. gazebo/config/obstacle_map.yaml's 16
+# obstacles cluster in the diagonal quadrants (clear_lane_half_width=10 keeps
+# them off the cardinal axes), so every leg here stays on-axis and is
+# provably clear: the closest obstacle (obstacle_7/10/11/12/15, which all sit
+# almost exactly on the clear_lane boundary) is 5.76 m clear of its surface
+# on EVERY leg, independent of radius, computed directly against
+# obstacle_map.yaml -- this loop does not depend on APF to avoid a collision
+# at all; APF is just a bonus safety margin. A single-obstacle deliberate
+# encounter (which DOES require APF to escape) is covered separately by the
+# legacy mission_area=(20,16) regression test aimed at obstacle_5.
+#
+# Frame: local ENU metres, same origin as /mavros/local_position/pose and
+# /marker/position. Loop period covers all 4 directions once (unlike the
+# trailer's own out-and-back-per-axis order), each leg exactly axis-aligned.
 
 waypoints:
-  - {e: 25,  n: 0}     # east side, between the obstacle_7/14 and obstacle_6/12 clusters
-  - {e: 15,  n: 20}    # NE, near obstacle_5/10/14
-  - {e: -15, n: 20}    # NW, near obstacle_3/9/15
-  - {e: -25, n: 0}     # west side, between the obstacle_1/9 and obstacle_2/8 clusters
-  - {e: -15, n: -20}   # SW, near obstacle_2/11/13
-  - {e: 15,  n: -20}   # SE, near obstacle_4/12/16
+  - {e: 25,  n: 0}    # east tip
+  - {e: 0,   n: 0}    # centre (also the takeoff/landing point)
+  - {e: 0,   n: 25}   # north tip
+  - {e: 0,   n: 0}    # centre
+  - {e: -25, n: 0}    # west tip
+  - {e: 0,   n: 0}    # centre
+  - {e: 0,   n: -25}  # south tip
+  - {e: 0,   n: 0}    # centre

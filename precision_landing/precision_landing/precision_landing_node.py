@@ -536,13 +536,24 @@ class PrecisionLandingNode(Node):
             self.cmd_vel[0] = self.cmd_vel[1] = 0.0
             return None
 
-        # Velocity visual servo toward the KF position estimate, feeding forward
-        # the KF velocity estimate (kf_x[2:4]) so a MOVING marker is tracked
-        # without steady-state lag. v = v_marker + vel_gain·error, clamped.
-        # Stationary marker ⇒ v_marker≈0 ⇒ plain first-order exponential approach.
+        # Velocity visual servo toward the KF position estimate. Feed-forward
+        # PREFERS the broadcast cue velocity (self.cue_vel, exact/ground-truth --
+        # same source APPROACH uses) over the KF's own velocity estimate
+        # (kf_x[2:4]) whenever the cue is fresh: the KF velocity is filtered from
+        # noisy vision measurements under a constant-velocity assumption, so a
+        # sharp platform turn (accel exceeding kf_accel_std) takes several
+        # measurement cycles to "convince" it of the new direction -- observed as
+        # ~1-2 s of tracking lag right after a turn. The cue is exact and updates
+        # every tick, so it has none of that settling delay. Falls back to the KF
+        # velocity only once the cue itself goes stale (matches DESCEND's
+        # existing cue-first-else-KF pattern below). Position target stays the KF
+        # estimate (kf_x[0:2]) -- that's still the best estimate of exactly where
+        # the marker is in view, cue vs vision offsets aside.
         eE = self.kf_x[0] - self.pos[0]
         eN = self.kf_x[1] - self.pos[1]
-        self._servo_to(self.kf_x[0], self.kf_x[1], self.kf_x[2], self.kf_x[3],
+        vffE, vffN = (self.cue_vel[0], self.cue_vel[1]) if self._cue_ok() \
+            else (self.kf_x[2], self.kf_x[3])
+        self._servo_to(self.kf_x[0], self.kf_x[1], vffE, vffN,
                        vmax_override=vmax_override)
 
         # Mapping diagnostic (throttled ~1 Hz). Compare where the marker is in

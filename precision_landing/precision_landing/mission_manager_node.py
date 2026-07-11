@@ -66,6 +66,8 @@ from mavros_msgs.msg import PositionTarget, State
 from mavros_msgs.srv import CommandBool, CommandTOL, SetMode
 
 from precision_landing import apf
+from precision_landing import planner
+from precision_landing import mpc as mpc_solver
 
 
 class Stage(Enum):
@@ -148,15 +150,70 @@ class MissionManagerNode(Node):
         self.apf_influence_radius = self.declare_parameter('apf_influence_radius', 15.0).value  # m
         self.apf_gain = self.declare_parameter('apf_gain', 6.0).value                  # m/s at the surface
         self.apf_vel_cap = self.declare_parameter('apf_vel_cap', 6.0).value            # m/s
+        # --- Obstacle avoidance (MPC, roadmap step 2) ------------------------
+        # Off by default; mutually meaningful with apf_enable off (both patch
+        # the same MISSION-leg servo call — see _mpc_servo_to vs _servo_to).
+        # Front-end (A*) + back-end (safe flight corridor) live in planner.py;
+        # the QP-ish solve itself lives in mpc.py. obstacle_map (same file APF
+        # uses) doubles as the corridor's known-obstacle source.
+        self.mpc_enable = self.declare_parameter('mpc_enable', False).value
+        self.mpc_horizon = self.declare_parameter('mpc_horizon', 10).value
+        self.mpc_dt = self.declare_parameter('mpc_dt', 0.3).value              # s per horizon step
+        self.mpc_vmax = self.declare_parameter('mpc_vmax', 0.0).value          # 0 -> fall back to vel_max
+        # How often (s) to re-run A*+corridor from the current position toward
+        # the current target. Cheap A* on this grid is milliseconds, but there
+        # is no need to re-search every 50 ms tick when the target (a static
+        # patrol waypoint) hasn't moved -- also re-planned immediately if the
+        # drone drifts outside the current corridor box (see _mpc_servo_to).
+        self.mpc_replan_period_s = self.declare_parameter('mpc_replan_period_s', 2.0).value
+        self.mpc_corridor_margin = self.declare_parameter('mpc_corridor_margin', 1.5).value  # m
+        self.mpc_q_track = self.declare_parameter('mpc_q_track', 1.0).value
+        self.mpc_r_smooth = self.declare_parameter('mpc_r_smooth', 0.08).value
+        self.mpc_r_effort = self.declare_parameter('mpc_r_effort', 0.01).value
+        # Soft corridor-violation penalty weight -- deliberately large relative
+        # to q_track so the solver strongly prefers staying inside the box over
+        # cutting a corner toward the target (see mpc.py module docstring for
+        # why this is a soft penalty rather than a hard QP constraint).
+        self.mpc_corridor_weight = self.declare_parameter('mpc_corridor_weight', 40.0).value
+        self.mpc_iters = self.declare_parameter('mpc_iters', 60).value
+        # Re-solving the QP every 50 ms tick is unnecessary and, under a hard
+        # replan (target just outside the fresh corridor box), the line-search
+        # solve can take tens of ms -- measured up to ~65 ms in a stress test,
+        # more than one whole tick period. Decouple: actually re-solve at most
+        # this often, streaming the last solved (vE,vN) at full tick rate in
+        # between (same pattern real MPC/ROS integrations use -- fast setpoint
+        # stream, slower re-optimization).
+        self.mpc_solve_period_s = self.declare_parameter('mpc_solve_period_s', 0.15).value
+        self._mpc_corridor_box = None       # planner.Box currently constraining the servo
+        self._mpc_corridor_target = None    # (e, n) the current box was planned toward
+        self._mpc_local_target = None       # (e, n) next A* waypoint -- what the QP actually tracks
+        self._mpc_last_replan = None        # rclpy Time of the last A*+corridor solve
+        self._mpc_last_solve = None         # rclpy Time of the last actual QP solve
+        self._mpc_last_cmd = (0.0, 0.0)     # cached (vE, vN) between solves
+        if self.mpc_enable and not self.obstacle_map_path:
+            self.get_logger().warn(
+                'mpc_enable=true but obstacle_map is unset -- MPC will run with '
+                'no corridor (unconstrained tracking only).')
+        # --- Obstacle list, shared by APF and MPC's safety-net repulsion ----
+        # Loaded whenever EITHER avoidance mode needs it. MPC layers a light
+        # APF repulsion on top of its own command (_mpc_servo_to) as a
+        # redundant safety net: if A* ever fails to find ANY corridor to the
+        # requested target (e.g. the target itself sits inside another
+        # obstacle's inflated margin -- happens with the legacy single-point
+        # test aimed at obstacle_5, which is also close to obstacle_14's
+        # margin), _mpc_maybe_replan has nothing to constrain the QP with and
+        # would otherwise fly there completely unconstrained. Found by a
+        # closed-loop collision stress test, not by inspection -- an early
+        # version of this file actually crashed into obstacle_5 that way.
         self._obstacles = []
-        if self.apf_enable and self.obstacle_map_path:
+        if (self.apf_enable or self.mpc_enable) and self.obstacle_map_path:
             try:
                 self._obstacles = apf.load_obstacles(self.obstacle_map_path)
                 self.get_logger().info(
-                    f'APF: loaded {len(self._obstacles)} obstacles from {self.obstacle_map_path}')
+                    f'obstacles: loaded {len(self._obstacles)} from {self.obstacle_map_path}')
             except Exception as e:
                 self.get_logger().error(
-                    f'APF: failed to load obstacle_map "{self.obstacle_map_path}": {e}')
+                    f'obstacles: failed to load obstacle_map "{self.obstacle_map_path}": {e}')
         # --- Simulated battery budget (param-driven, predictable for the demo) --
         # battery_s counts DOWN from battery_capacity_s at consume_rate per second
         # while airborne. RETURN is triggered when the time still needed to reach
@@ -336,7 +393,10 @@ class MissionManagerNode(Node):
                     self.loiter_start = self.get_clock().now()
                     self._log(f'arrived at waypoint {self.patrol_idx} '
                               f'-> dwell {self.loiter_s:.0f}s')
-                self._servo_to(wp[0], wp[1])
+                if self.mpc_enable:
+                    self._mpc_servo_to(wp[0], wp[1])
+                else:
+                    self._servo_to(wp[0], wp[1])
                 self.cmd_vel[2] = self._clamp(
                     0.5 * (self.flight_alt - self.pos[2]), -0.5, 0.5)
                 self._face_velocity()
@@ -453,6 +513,121 @@ class MissionManagerNode(Node):
         self.cmd_vel[0] = vE
         self.cmd_vel[1] = vN
         return math.hypot(eE, eN)
+
+    # A*(front-end) -> safe-flight-corridor(back-end) -> MPC(QP-ish) servo
+    # toward a stationary ENU point; sets cmd_vel. Same role/signature as
+    # _servo_to (drop-in swap, gated by mpc_enable), targeting the SAME
+    # MISSION-leg waypoint so apf_enable/mpc_enable stay directly comparable
+    # for benchmarking. target_vel is (0,0) for every current caller (patrol
+    # waypoints and the legacy mission_area point are both static) -- mpc.py
+    # already supports a moving target/feed-forward for when this gets wired
+    # into a trailer-chasing leg later.
+    def _mpc_servo_to(self, target_e, target_n, target_vel_e=0.0, target_vel_n=0.0):
+        self._mpc_maybe_replan(target_e, target_n)
+
+        now = self.get_clock().now()
+        need_solve = (self._mpc_last_solve is None or
+                     (now - self._mpc_last_solve).nanoseconds * 1e-9
+                     >= self.mpc_solve_period_s)
+        if need_solve:
+            vmax = self.mpc_vmax if self.mpc_vmax > 0.0 else self.vel_max
+            # Track the LOCAL target (next A* waypoint), not the far goal --
+            # see the comment in _mpc_maybe_replan for why. target_vel is
+            # still the FAR target's feed-forward; harmless since every
+            # current caller passes (0,0) (both patrol waypoints and the
+            # legacy mission_area point are static) -- revisit if this gets
+            # wired to a genuinely moving target later.
+            local = self._mpc_local_target or (target_e, target_n)
+            vE, vN = mpc_solver.solve(
+                pos=(self.pos[0], self.pos[1]), vel=(self.cmd_vel[0], self.cmd_vel[1]),
+                target=local, target_vel=(target_vel_e, target_vel_n),
+                corridor_box=self._mpc_corridor_box, vmax=vmax, dt=self.mpc_dt,
+                horizon=self.mpc_horizon, q_track=self.mpc_q_track,
+                r_smooth=self.mpc_r_smooth, r_effort=self.mpc_r_effort,
+                corridor_weight=self.mpc_corridor_weight, iters=self.mpc_iters)
+            self._mpc_last_cmd = (vE, vN)
+            self._mpc_last_solve = now
+        else:
+            vE, vN = self._mpc_last_cmd
+
+        # Safety-net APF repulsion on top of the MPC command -- but ONLY when
+        # there is NO valid corridor box at all (A* has never succeeded from
+        # here), not unconditionally. Found by closed-loop simulation: running
+        # APF's repulsion at full strength ALONGSIDE an already-working
+        # corridor reintroduces APF's own local-minimum weakness right back
+        # into the box that was specifically shaped to avoid it -- the drone
+        # stalled indefinitely 11+ m short of a corridor-internal local
+        # target, MPC's pull and the safety-net's push exactly cancelling
+        # next to obstacle_2/8. The corridor is only genuinely unconstrained
+        # (needs the net) when _mpc_corridor_box is None, e.g. the requested
+        # target itself sits inside another obstacle's inflated margin (the
+        # legacy mission_area=(20,16) test, close to obstacle_14's margin).
+        if self._mpc_corridor_box is None and self._obstacles:
+            rE, rN = apf.repulsive_velocity(
+                self.pos[0], self.pos[1], self._obstacles,
+                self.apf_influence_radius, self.apf_gain, self.apf_vel_cap)
+            vE += rE
+            vN += rN
+
+        # Belt-and-braces vector clamp to vel_max, matching _servo_to's style.
+        speed = math.hypot(vE, vN)
+        if speed > self.vel_max and speed > 1e-6:
+            scale = self.vel_max / speed
+            vE *= scale
+            vN *= scale
+        self.cmd_vel[0] = vE
+        self.cmd_vel[1] = vN
+        return math.hypot(target_e - self.pos[0], target_n - self.pos[1])
+
+    # Re-run A*+corridor when: no box yet, the target changed (new patrol
+    # waypoint), the replan timer elapsed, the drone has drifted outside the
+    # current box, or it has reached the current local target (see below).
+    # Keeps the LAST good box/local-target on a failed/no-path replan rather
+    # than going unconstrained, unless there never was one.
+    def _mpc_maybe_replan(self, target_e, target_n):
+        now = self.get_clock().now()
+        target_changed = (self._mpc_corridor_target is None or
+                          self._dist((target_e, target_n), self._mpc_corridor_target) > 0.5)
+        timer_elapsed = (self._mpc_last_replan is None or
+                         (now - self._mpc_last_replan).nanoseconds * 1e-9
+                         >= self.mpc_replan_period_s)
+        drifted_out = (self._mpc_corridor_box is not None and not
+                       self._mpc_corridor_box.inflated(-0.5).contains(self.pos[0], self.pos[1]))
+        reached_local = (self._mpc_local_target is not None and
+                         self._dist(self.pos[:2], self._mpc_local_target) < self.arrive_radius)
+        if not (target_changed or timer_elapsed or drifted_out or reached_local):
+            return
+        self._mpc_last_replan = now
+        self._mpc_corridor_target = (target_e, target_n)
+        if not self.obstacle_map_path:
+            self._mpc_local_target = (target_e, target_n)   # no map -> aim straight at it
+            return
+        try:
+            _, simplified, corridor = planner.plan(
+                (self.pos[0], self.pos[1]), (target_e, target_n),
+                self.obstacle_map_path, safety_margin=self.mpc_corridor_margin)
+        except Exception as e:
+            self.get_logger().error(f'MPC: corridor replan failed: {e}')
+            return
+        if corridor is None:
+            self.get_logger().warn(
+                f'MPC: no A* path from {self.pos[:2]} to ({target_e:.1f},{target_n:.1f}) '
+                '-- keeping previous corridor box/local target')
+            return
+        self._mpc_corridor_box = corridor[0]   # box seeded at the START, i.e. here-and-now
+        # AIM AT THE NEXT BEND, NOT THE FAR GOAL. A single box only bounds
+        # local freedom of movement -- it carries none of A*'s routing
+        # information about WHICH WAY to detour. Servoing straight at a
+        # distant final target inside that box walks the tracking term right
+        # back into the same straight-line-at-the-obstacle local minimum APF
+        # alone has (documented in research_direction/obstacle_field_world) --
+        # found by closed-loop simulation: the drone stalled 12+ m short of
+        # goal, MPC's pull and the safety-net APF's push exactly cancelling
+        # next to an obstacle the direct line passed close to. Targeting the
+        # next waypoint of the (re-searched-from-HERE, so always current)
+        # simplified path keeps the servo always aimed the way A* actually
+        # wants to go.
+        self._mpc_local_target = simplified[1] if len(simplified) > 1 else (target_e, target_n)
 
     def _face_velocity(self):
         vE, vN = self.cmd_vel[0], self.cmd_vel[1]

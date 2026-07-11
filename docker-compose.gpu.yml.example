@@ -29,3 +29,18 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
+  # PX4 SITL 서비스(docker-compose.yml)도 같은 gz-sim 렌더러를 쓰므로 동일하게 필요.
+  sim-px4:
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: all
+      __GLX_VENDOR_LIBRARY_NAME: nvidia
+      __NV_PRIME_RENDER_OFFLOAD: "1"
+      __VK_LAYER_NV_optimus: NVIDIA_only
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
