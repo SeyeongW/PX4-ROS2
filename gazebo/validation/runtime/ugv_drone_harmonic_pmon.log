@@ -1,0 +1,4 @@
+# gpu         pid   type     sm    mem    enc    dec    jpg    ofa    command
+# Idx           #    C/G      %      %      %      %      %      %    name
+    0    1217401     G      -      -      -      -      -      -    gz sim server
+    0    1217403     G     12      2      -      -      -      -    gz sim gui

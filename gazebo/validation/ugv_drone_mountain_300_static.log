@@ -1,0 +1,24 @@
+PX4-ROS2 300 m mountain static validation
+status=PASS
+world_sdf=1.9
+terrain_bounds_m=x[-150,150] y[-150,150] z[0,40]
+summits_m=main:40.000000 second:19.921569
+launch_pad_terrain_z_m=0.000000
+terrain_vertices=66049
+terrain_triangles=131072
+heightmap_sha256=d25691a939651c845a4e7e0134b384d45be9eef7382913a2b63e6f2330e93f52
+visual_obj_sha256=0fd816bcdfc0426a7ae291261b16cec63a81bc59691329813d0e9ee5302bbeaf
+collision_obj_sha256=0fd816bcdfc0426a7ae291261b16cec63a81bc59691329813d0e9ee5302bbeaf
+natural_texture_sha256=84b2634630b6fbed3564e0845748f9968329ec278065d7e79b447e8510672e01
+natural_texture_blue_dominant_pixels=0
+scene_background=neutral_gray sky=disabled
+obstacle_links=1 compound_static=true
+obstacle_collisions=144 obstacle_visuals=216
+forest_sdf_sha256=cc46c732042199c14713e701fe545d807006eea1b2fe6d76008800dee4f4a562
+trees_total=72 pine=54 oak=18 tree_mesh_visuals=144
+tree_max_terrain_z_error_m=0.000000651
+tree_min_spacing_m=13.040337
+maze_source_entries=73 maze_unique_walls=72 height_m=3.75
+maze_aabb_m=x[-28.075059,28.075059] y[-16.075122,16.075210]
+operational_sim_assets_references=0
+runtime_gui_validation=PASS

@@ -13,8 +13,21 @@ fi
 
 echo "==> 기본 도구 설치"
 apt-get update
-apt-get install -y curl lsb-release gnupg cmake build-essential \
-  rapidjson-dev python3-rosdep python3-colcon-common-extensions
+apt-get install -y curl lsb-release gnupg software-properties-common cmake build-essential \
+  rapidjson-dev libopencv-dev \
+  libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+  gstreamer1.0-plugins-bad gstreamer1.0-libav gstreamer1.0-gl \
+  python3-rosdep python3-colcon-common-extensions python3-numpy python3-pil
+
+# Ubuntu 22.04's stock Gazebo Classic and Gazebo Harmonic both normally own a
+# binary named `gz`.  Install the official Open Robotics Gazebo 11 CLI variant
+# first so Classic remains available as `gz11` while Harmonic owns `gz`.
+if [[ "$(lsb_release -cs)" == "jammy" ]] && dpkg-query -W gazebo >/dev/null 2>&1; then
+  echo "==> Gazebo Classic 11 / Harmonic 병행 설치 준비"
+  add-apt-repository -y ppa:openrobotics/gazebo11-gz-cli
+  apt-get update
+  apt-get install -y gazebo11
+fi
 
 echo "==> Gazebo(OSRF) apt 저장소 등록"
 curl https://packages.osrfoundation.org/gazebo.gpg \
@@ -25,6 +38,16 @@ echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/pkgs-
 echo "==> Gazebo Harmonic + 플러그인 빌드 헤더 설치"
 apt-get update
 apt-get install -y gz-harmonic libgz-sim8-dev
+
+# The split Gazebo 11 package uses libgazebo11-dev as the compatible provider.
+# Request it explicitly, then restore the ROS 2 Classic integration packages.
+# --no-remove turns an unexpected future package conflict into a hard failure.
+if [[ "$(lsb_release -cs)" == "jammy" ]] && dpkg-query -W gazebo11 >/dev/null 2>&1; then
+  echo "==> ROS 2 Humble용 Gazebo Classic 플러그인 복원"
+  apt-get install -y --no-remove \
+    gazebo11 gz-harmonic libgz-sim8-dev libgazebo11-dev \
+    ros-humble-gazebo-ros-pkgs ros-humble-gazebo-ros2-control
+fi
 
 echo "==> 완료. 설치 버전:"
 gz sim --version || true

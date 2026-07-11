@@ -24,8 +24,15 @@ PX4-ROS2/
 ├── gazebo/                 # Gazebo Harmonic 시뮬레이션 자산
 │   ├── models/iris_with_down_camera/     # 하방 카메라 장착 Iris 모델
 │   ├── worlds/iris_down_camera_runway.sdf
+│   ├── worlds/ugv_drone.world            # 300 m 산악 드론 월드
+│   ├── worlds/ugv_drone_map.world        # 외부 의존성 없는 산악맵 + 프리뷰 드론
+│   ├── worlds/applepark_city/             # 500 m 도시맵 + 건물/도로/충돌 자산
 │   ├── launch/camera_bridge.launch.py    # Gazebo → ROS 2 카메라 브리지
 │   ├── install_apt_deps.sh
+│   ├── run_world.sh                      # city/mountain 저장소 단독 실행기
+│   ├── run_ugv_drone.sh                  # RTX GPU 산악 월드 실행기
+│   ├── MAPS.md                            # 두 맵 실행·좌표·검증 안내
+│   ├── MOUNTAIN_WORLD.md                 # 산악맵 좌표·실행·출처
 │   └── run_sim.sh
 └── config/                 # CycloneDDS 네트워크 설정 (PC ↔ Jetson)
     ├── cyclonedds_pc.xml
@@ -180,6 +187,39 @@ echo "source ~/ros_gz_ws/install/setup.bash" >> ~/.bashrc
 ---
 
 ## 시뮬레이션 실행 (ArduPilot SITL + Gazebo)
+
+### 저장소만으로 맵 + 드론 바로 확인
+
+```bash
+cd ~/PX4-ROS2
+./gazebo/run_world.sh city
+# 또는
+./gazebo/run_world.sh mountain
+```
+
+두 명령은 모든 world, mesh, texture와 프리뷰 드론을 저장소 내부에서
+읽으므로 `ardupilot_gazebo` 없이도 실행됩니다. 상세 내용은
+[`gazebo/MAPS.md`](gazebo/MAPS.md)를 참고하세요.
+
+### 산악 드론 월드
+
+300 x 300 m 지형, 40 m / 20 m 봉우리, 숲·미로 장애물을 사용하는 산악맵은 다음처럼 실행합니다.
+RTX 5060 선택, 모델 경로와 ArduPilot 플러그인 경로는 스크립트가 설정합니다.
+
+```bash
+cd ~/PX4-ROS2
+./gazebo/run_ugv_drone.sh
+```
+
+다른 터미널에서 SITL을 실행합니다.
+
+```bash
+cd ~/ardupilot
+sim_vehicle.py -v ArduCopter -f JSON -I0 --console --map
+```
+
+맵 좌표, 직접 실행 명령, GPU·실시간 배율 확인법과 참고한 오픈소스는
+[`gazebo/MOUNTAIN_WORLD.md`](gazebo/MOUNTAIN_WORLD.md)에 정리되어 있습니다.
 
 4개의 터미널이 필요합니다.
 

@@ -1,0 +1,11 @@
+
+Requesting state for world [ugv_drone_mountain]...
+
+[1;33mWarning [Utils.cc:132][0m [/sdf/model[@name="mountain_iris"]/model[@name="iris_with_standoffs"]/link[@name="imu_link"]/sensor[@name="imu_sensor"]/gz_frame_id:<data-string>:L251]: XML Element[gz_frame_id], child of element[sensor], not defined in SDF. Copying[gz_frame_id] as children of [sensor].
+[1;33mWarning [Utils.cc:132][0m [/sdf/model[@name="mountain_iris"]/link[@name="down_camera_link"]/sensor[@name="down_camera"]/gz_frame_id:<data-string>:L558]: XML Element[gz_frame_id], child of element[sensor], not defined in SDF. Copying[gz_frame_id] as children of [sensor].
+[1;33mWarning [Utils.cc:132][0m [/sdf/model[@name="iris_with_standoffs"]/link[@name="imu_link"]/sensor[@name="imu_sensor"]/gz_frame_id:<data-string>:L250]: XML Element[gz_frame_id], child of element[sensor], not defined in SDF. Copying[gz_frame_id] as children of [sensor].
+Model: [376]
+  - Name: mountain_iris
+  - Pose [ XYZ (m) ] [ RPY (rad) ]:
+    [-80.210700 -79.946900 0.354980]
+    [-0.000042 0.000353 0.222547]
