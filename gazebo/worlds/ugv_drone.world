@@ -16,7 +16,7 @@
     <atmosphere type="adiabatic"/>
 
     <!-- Retain the validated 2 ms / 500 Hz baseline while the larger terrain,
-         72 mesh trees and central collision maze undergo runtime testing. -->
+         288 mesh trees and central collision maze undergo runtime testing. -->
     <physics name="2ms" type="ignored">
       <max_step_size>0.002</max_step_size>
       <real_time_factor>1.0</real_time_factor>
@@ -163,7 +163,7 @@
       <pose>0 0 0 0 0 0</pose>
     </include>
 
-    <!-- One local static model contains 54 pines, 18 oaks and the 72-wall,
+    <!-- One local static model contains 216 pines, 72 oaks and the 72-wall,
          3.75 m-high central maze.  Every tree trunk and wall has collision. -->
     <include>
       <uri>model://ugv_mou_forest_obstacles</uri>

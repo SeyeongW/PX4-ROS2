@@ -14,7 +14,7 @@ ArduPilot system plugin continue to come from the documented
 - Smooth summits: approximately `(-75, 75, 40)` and `(55, 80, 19.92)`
 - Launch pad: `(-80, -80)`, top surface `z=0.16 m`
 - Drone spawn: `(-80, -80, 0.355)`, yaw 45 degrees
-- Forest: 72 textured trees (54 pines, 18 oaks) with trunk collisions
+- Forest: 288 textured trees (216 pines, 72 oaks) with trunk collisions
 - Maze: 72 unique collision walls, each 3.75 m high, near the map centre
   (the imported source snapshot keeps all 73 entries, including one exact duplicate)
 - Obstacle body: one static compound link containing all tree and maze geometry
@@ -81,13 +81,20 @@ known-good baseline retained from the previous map; record fresh real-time
 factor and RTX 5060 samples after every terrain or obstacle change. For
 map-only inspection, `PAUSED=1` avoids spending CPU on physics.
 
-The final 2026-07-11 GUI validation on this host passed. Across 137 stats
+The 72-tree baseline GUI validation on 2026-07-11 passed. Across 137 stats
 samples, one diagnostic-load transient was `0.5458`; the other 136 samples
 were `0.9987..1.0006` with mean `0.99988`. The GUI displayed `100.00%` RTF.
 RTX 5060 utilization was `12..14%` (mean `13.2%`) with 659 MiB VRAM, and
 the launch/resource error scan found 0 failures. The screenshot and raw logs
 are under `gazebo/validation/runtime/`; the concise result is
 `ugv_drone_harmonic_runtime.log`.
+
+After expanding the forest to 288 trees, the repository-only preview was run
+again on the RTX 5060. Across 99 samples the real-time factor was
+`0.988259..1.000703` with mean `0.999765`; observed GPU load was `10..17%`
+with 299 MiB VRAM. Gazebo Harmonic initialized the world and Bullet compound
+body without a model, resource or physics load error. The concise result is
+`mountain_tree288_runtime.log`.
 
 The visual and collision OBJ files each contain 66,049 vertices and 131,072
 triangles. If later additions reduce the real-time factor, decimate only the
@@ -99,8 +106,8 @@ construction is not implemented and would leave the mountain visual without a
 matching collision surface. `run_ugv_drone.sh` selects Bullet automatically.
 The forest and maze deliberately share one static link. Bullet Featherstone
 rejects a static model made from many unjointed links as multiple floating
-subtrees, disabling those links; the generated compound link keeps all 144
-collisions (72 trunks and 72 walls) and 216 visuals active without fake joints.
+subtrees, disabling those links; the generated compound link keeps all 360
+collisions (288 trunks and 72 walls) and 648 visuals active without fake joints.
 
 For a later high-fidelity dynamics comparison, change `max_step_size` back to
 `0.001` and `real_time_update_rate` to `1000`; expect slower-than-real-time

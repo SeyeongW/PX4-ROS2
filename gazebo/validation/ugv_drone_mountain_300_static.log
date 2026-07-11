@@ -13,11 +13,12 @@ natural_texture_sha256=84b2634630b6fbed3564e0845748f9968329ec278065d7e79b447e851
 natural_texture_blue_dominant_pixels=0
 scene_background=neutral_gray sky=disabled
 obstacle_links=1 compound_static=true
-obstacle_collisions=144 obstacle_visuals=216
-forest_sdf_sha256=cc46c732042199c14713e701fe545d807006eea1b2fe6d76008800dee4f4a562
-trees_total=72 pine=54 oak=18 tree_mesh_visuals=144
-tree_max_terrain_z_error_m=0.000000651
-tree_min_spacing_m=13.040337
+obstacle_collisions=360 obstacle_visuals=648
+forest_sdf_sha256=1ac5bf181e2bf0bcb339dc7e9f048f5e643ab28192a25a52cadb911b0eeaa320
+trees_total=288 pine=216 oak=72 tree_mesh_visuals=576
+tree_max_terrain_z_error_m=0.000000665
+tree_min_spacing_m=7.274243
+added_tree_launch_pad_clearance_m=26.440027
 maze_source_entries=73 maze_unique_walls=72 height_m=3.75
 maze_aabb_m=x[-28.075059,28.075059] y[-16.075122,16.075210]
 operational_sim_assets_references=0

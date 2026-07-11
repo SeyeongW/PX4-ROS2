@@ -201,6 +201,13 @@ cd ~/PX4-ROS2
 읽으므로 `ardupilot_gazebo` 없이도 실행됩니다. 상세 내용은
 [`gazebo/MAPS.md`](gazebo/MAPS.md)를 참고하세요.
 
+다른 사람에게 스크립트 없이 전달할 산악맵 직접 실행 명령은 다음 한 줄입니다.
+저장소 최상위 디렉터리에서 실행합니다.
+
+```bash
+GZ_SIM_RESOURCE_PATH="$PWD/gazebo/models:$PWD/gazebo/worlds" gz sim -v4 -r --physics-engine gz-physics-bullet-featherstone-plugin "$PWD/gazebo/worlds/ugv_drone_map.world"
+```
+
 ### 산악 드론 월드
 
 300 x 300 m 지형, 40 m / 20 m 봉우리, 숲·미로 장애물을 사용하는 산악맵은 다음처럼 실행합니다.

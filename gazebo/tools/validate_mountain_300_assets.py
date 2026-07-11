@@ -23,7 +23,7 @@ COLLISION_OBJ = TERRAIN / "meshes" / "ugv_mou_terrain_collision.obj"
 TREE_LAYOUT = FOREST / "source" / "tree_layout.source.xml"
 MAZE_LAYOUT = FOREST / "source" / "maze_layout.source.xml"
 LOG = GAZEBO_ROOT / "validation" / "ugv_drone_mountain_300_static.log"
-RUNTIME_LOG = GAZEBO_ROOT / "validation" / "runtime" / "ugv_drone_harmonic_runtime.log"
+RUNTIME_LOG = GAZEBO_ROOT / "validation" / "runtime" / "mountain_tree288_runtime.log"
 EXPECTED_HEIGHTMAP_SHA256 = (
     "d25691a939651c845a4e7e0134b384d45be9eef7382913a2b63e6f2330e93f52"
 )
@@ -199,9 +199,9 @@ def validate() -> list[str]:
     wall_names = set(wall_collisions)
     require(tree_names == set(tree_branches) == set(tree_barks), "tree collision/visual sets differ")
     require(wall_names == set(wall_visuals), "wall collision/visual sets differ")
-    require(len(tree_names) == 72 and len(wall_names) == 72, "obstacle instance counts differ")
-    require(len(collisions) == 144, "compound link must contain 72 trunk and 72 wall collisions")
-    require(len(visuals) == 216, "compound link must contain 144 tree and 72 wall visuals")
+    require(len(tree_names) == 288 and len(wall_names) == 72, "obstacle instance counts differ")
+    require(len(collisions) == 360, "compound link must contain 288 trunk and 72 wall collisions")
+    require(len(visuals) == 648, "compound link must contain 576 tree and 72 wall visuals")
     require(
         set(collision_by_name) == {f"{name}_trunk_collision" for name in tree_names}
         | {f"{name}_collision" for name in wall_names},
@@ -251,6 +251,7 @@ def validate() -> list[str]:
     pine_count = oak_count = 0
     z_errors = []
     tree_xy = []
+    added_tree_pad_clearances = []
     for name in sorted(tree_names):
         branch = tree_branches[name]
         bark = tree_barks[name]
@@ -284,15 +285,22 @@ def validate() -> list[str]:
         require(abs(collision_pose[2] - (pose[2] + trunk_offset)) < 1e-9, "tree trunk height was not composed into the root link")
         z_errors.append(abs(base_z - terrain_height(pixels, pose[0], pose[1])))
         tree_xy.append((pose[0], pose[1]))
+        require(abs(pose[0]) <= 140.0 and abs(pose[1]) <= 140.0, "tree crossed the 10 m map boundary margin")
         require(not (-36.1 <= pose[0] <= 36.1 and -24.1 <= pose[1] <= 24.1), "tree intersects maze exclusion")
-    require((pine_count, oak_count) == (54, 18), "pine/oak counts differ")
+        tree_index = int(name.rsplit("_", 1)[-1])
+        if tree_index >= 73:
+            require(not (-42.0 <= pose[0] <= 42.0 and -30.0 <= pose[1] <= 30.0), "added tree intersects expanded maze clearance")
+            added_tree_pad_clearances.append(math.hypot(pose[0] + 80.0, pose[1] + 80.0))
+    require((pine_count, oak_count) == (216, 72), "pine/oak counts differ")
     require(max(z_errors) < 1e-5, "a tree is not seated on the terrain")
+    require(len(added_tree_pad_clearances) == 216, "forest expansion tree count differs")
+    require(min(added_tree_pad_clearances) >= 24.0, "added tree entered the launch-pad clearance")
     min_tree_spacing = min(
         math.hypot(x1 - x2, y1 - y2)
         for index, (x1, y1) in enumerate(tree_xy)
         for x2, y2 in tree_xy[index + 1 :]
     )
-    require(min_tree_spacing >= 13.0, "tree spacing fell below 13 m")
+    require(min_tree_spacing >= 7.25, "tree spacing fell below 7.25 m")
 
     wall_min_x = wall_min_y = math.inf
     wall_max_x = wall_max_y = -math.inf
@@ -327,10 +335,11 @@ def validate() -> list[str]:
     require("/home/xogus/sim_assets" not in resource_text, "operational asset refers to sim_assets")
 
     runtime_status = "pending"
-    if RUNTIME_LOG.is_file() and "RUNTIME VALIDATION: PASS" in RUNTIME_LOG.read_text(
-        encoding="utf-8", errors="replace"
-    ):
-        runtime_status = "PASS"
+    if RUNTIME_LOG.is_file():
+        runtime_text = RUNTIME_LOG.read_text(encoding="utf-8", errors="replace")
+        current_forest_marker = f"forest_sdf_sha256={sha256(FOREST / 'model.sdf')}"
+        if "RUNTIME VALIDATION: PASS" in runtime_text and current_forest_marker in runtime_text:
+            runtime_status = "PASS"
 
     lines.extend(
         (
@@ -352,6 +361,7 @@ def validate() -> list[str]:
             f"trees_total={len(tree_names)} pine={pine_count} oak={oak_count} tree_mesh_visuals={len(tree_branches) + len(tree_barks)}",
             f"tree_max_terrain_z_error_m={max(z_errors):.9f}",
             f"tree_min_spacing_m={min_tree_spacing:.6f}",
+            f"added_tree_launch_pad_clearance_m={min(added_tree_pad_clearances):.6f}",
             f"maze_source_entries=73 maze_unique_walls={len(wall_names)} height_m=3.75",
             f"maze_aabb_m=x[{wall_min_x:.6f},{wall_max_x:.6f}] y[{wall_min_y:.6f},{wall_max_y:.6f}]",
             "operational_sim_assets_references=0",

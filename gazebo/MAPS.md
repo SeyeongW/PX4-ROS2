@@ -16,6 +16,12 @@ Both previews include the repository-local `map_preview_drone` on the launch
 pad, so a fresh clone displays the map and a drone without Fuel downloads or
 an `ardupilot_gazebo` checkout.
 
+The equivalent direct mountain command, without the launcher script, is:
+
+```bash
+GZ_SIM_RESOURCE_PATH="$PWD/gazebo/models:$PWD/gazebo/worlds" gz sim -v4 -r --physics-engine gz-physics-bullet-featherstone-plugin "$PWD/gazebo/worlds/ugv_drone_map.world"
+```
+
 ## City
 
 - world: `gazebo/worlds/applepark_city/applepark.world`
@@ -40,7 +46,7 @@ Road and building geometry originate from OpenStreetMap-derived data. See
 
 - world: `gazebo/worlds/ugv_drone_map.world`
 - size: 300 x 300 m
-- smooth 40 m and 20 m summits, 72 trees and 72 maze walls
+- smooth 40 m and 20 m summits, 288 trees and 72 maze walls
 - spawn: `(-80, -80)`
 
 For an actual ArduPilot-controlled Iris, install `ardupilot_gazebo` and run:
@@ -62,4 +68,4 @@ python3 gazebo/tools/validate_self_contained_maps.py
 
 The validation asserts asset hashes, local URI closure, drone presence, city
 road alignment and deterministic mountain geometry. Generated collision OBJ
-files are stored with Git LFS.
+files are committed directly so a fresh clone needs no separate LFS download.

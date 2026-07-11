@@ -321,7 +321,7 @@ def write_forest_sdf() -> tuple[dict[str, int], dict[str, int], int]:
         wall_type = add_wall_obstacles(obstacle_link, include)
         wall_counts[wall_type] += 1
 
-    if tree_counts != {"pine_tree": 54, "oak_tree": 18}:
+    if tree_counts != {"pine_tree": 216, "oak_tree": 72}:
         raise RuntimeError(f"unexpected tree counts: {tree_counts}")
     if source_wall_count != 73:
         raise RuntimeError(f"unexpected source maze entry count: {source_wall_count}")
