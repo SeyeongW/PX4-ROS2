@@ -14,7 +14,9 @@ cd PX4-ROS2
 
 Both previews include the repository-local `map_preview_drone` on the launch
 pad, so a fresh clone displays the map and a drone without Fuel downloads or
-an `ardupilot_gazebo` checkout.
+an `ardupilot_gazebo` checkout. This is a static map marker rather than a
+flyable vehicle. Its model origin is normalized to the landing-gear contact
+plane, which is seated exactly on each pad surface.
 
 The equivalent direct commands below force rendering onto the NVIDIA GPU on a
 hybrid laptop without using the launcher script:
@@ -32,6 +34,8 @@ GZ_SIM_RESOURCE_PATH="$PWD/gazebo/models:$PWD/gazebo/worlds" __NV_PRIME_RENDER_O
 - world: `gazebo/worlds/applepark_city/applepark.world`
 - size: 500 x 500 m
 - 274 buildings with deterministic 2–5x height scaling
+- terrain-seated building foundations; roofs and all XY footprints remain unchanged
+- visual and Bullet terrain surfaces share the same `-5.299..0.856 m` Z range
 - spawn: `(-120, 115)`
 - non-photographic OSM road / land-use texture
 - Bullet-compatible 129 x 129 terrain collision OBJ
@@ -47,11 +51,25 @@ Road and building geometry originate from OpenStreetMap-derived data. See
 `worlds/applepark_city/OSM_ATTRIBUTION.txt` and
 `licenses/applepark_terrain_BSD-3-Clause.txt`.
 
+The source terrain generator assigned one centroid elevation to each flat
+building base. On sloped ground that produced downhill gaps up to 0.732 m and
+uphill terrain intersections up to 2.485 m. The checked DAE now extends only
+the bottom vertices beneath both the visual heightmap and Bullet collision
+surface by at least 0.05 m. Roof elevations, 2–5x height scaling, roads and XY
+coordinates are unchanged. Exact per-building values are recorded in
+`gazebo/validation/city/building_foundation_alignment.csv`.
+
+Gazebo's OGRE2 renderer normalizes an image heightmap against the largest
+pixel actually present. The 500 m crop has a maximum value of 152 rather than
+255, so the visual height size is `26.6 * 152 / 255 = 15.855686274509806 m`.
+This keeps the rendered road surface exactly on the separately generated
+Bullet collision mesh instead of letting it cut through the buildings.
+
 ## Mountain
 
 - world: `gazebo/worlds/ugv_drone_map.world`
 - size: 300 x 300 m
-- smooth 40 m and 20 m summits, 288 trees and 72 maze walls
+- smooth 40 m and 20 m summits, 288 uniformly 2x-scaled trees and 72 maze walls
 - spawn: `(-80, -80)`
 
 For an actual ArduPilot-controlled Iris, install `ardupilot_gazebo` and run:

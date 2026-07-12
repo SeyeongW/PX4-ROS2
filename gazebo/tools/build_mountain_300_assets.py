@@ -42,6 +42,7 @@ WALL_SIZE = {
     "half_wall": (2.0, 0.15, 3.75),
     "long_wall": (32.0, 0.15, 3.75),
 }
+TREE_MESH_SCALE = (2.0, 2.0, 2.0)
 
 Pose = tuple[float, float, float, float, float, float]
 
@@ -227,11 +228,16 @@ def add_tree_obstacles(link: ET.Element, include: ET.Element) -> str:
 
     collision = child(link, "collision", name=f"{name}_trunk_collision")
     if tree_type == "pine_tree":
-        trunk_pose: Pose = (0.0, 0.0, 2.5, 0.0, 0.0, 0.0)
-        radius, length = "0.30", "5.0"
+        trunk_pose: Pose = (0.0, 0.0, 5.0, 0.0, 0.0, 0.0)
+        visual_pose = tree_pose
+        radius, length = "0.60", "10.0"
     else:
-        trunk_pose = (0.0, 0.0, 3.2, 0.0, 0.0, 0.0)
-        radius, length = "0.45", "6.5"
+        # The oak mesh extends 0.0703 m below its origin at 1x.  Its source
+        # pose already compensates for that amount, so lift the 2x visual by
+        # one additional 0.0703 m and measure the trunk from terrain contact.
+        trunk_pose = (0.0, 0.0, 6.4297, 0.0, 0.0, 0.0)
+        visual_pose = compose_pose(tree_pose, (0.0, 0.0, 0.0703, 0.0, 0.0, 0.0))
+        radius, length = "0.90", "13.0"
     child(collision, "pose", format_pose(compose_pose(tree_pose, trunk_pose)))
     geometry = child(collision, "geometry")
     cylinder = child(geometry, "cylinder")
@@ -246,11 +252,12 @@ def add_tree_obstacles(link: ET.Element, include: ET.Element) -> str:
     )
     for visual_name, submesh_name, texture, is_branch in parts:
         visual = child(link, "visual", name=f"{name}_{visual_name}_visual")
-        child(visual, "pose", format_pose(tree_pose))
+        child(visual, "pose", format_pose(visual_pose))
         child(visual, "cast_shadows", "true")
         geometry = child(visual, "geometry")
         mesh = child(geometry, "mesh")
         child(mesh, "uri", f"model://ugv_mou_forest_obstacles/meshes/{mesh_name}")
+        child(mesh, "scale", " ".join(f"{value:g}" for value in TREE_MESH_SCALE))
         submesh = child(mesh, "submesh")
         child(submesh, "name", submesh_name)
         child(submesh, "center", "false")

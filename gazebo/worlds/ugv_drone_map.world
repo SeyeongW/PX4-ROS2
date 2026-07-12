@@ -219,6 +219,7 @@
     <include>
       <uri>model://map_preview_drone</uri>
       <name>mountain_preview_drone</name>
+      <!-- The preview model origin is its landing-gear contact plane. -->
       <pose>-80 -80 0.16 0 0 0.785398</pose>
     </include>
   </world>

@@ -13,8 +13,9 @@ ArduPilot system plugin continue to come from the documented
 - Terrain elevation: 0..40 m
 - Smooth summits: approximately `(-75, 75, 40)` and `(55, 80, 19.92)`
 - Launch pad: `(-80, -80)`, top surface `z=0.16 m`
-- Drone spawn: `(-80, -80, 0.355)`, yaw 45 degrees
-- Forest: 288 textured trees (216 pines, 72 oaks) with trunk collisions
+- SITL Iris spawn: `(-80, -80, 0.355)`, yaw 45 degrees; its landing gear contacts the `z=0.16 m` pad exactly
+- Map-preview drone origin: `(-80, -80, 0.16)`, normalized to its landing-gear contact plane on the same pad
+- Forest: 288 uniformly 2x-scaled textured trees (216 pines, 72 oaks) with matching 2x trunk collisions
 - Maze: 72 unique collision walls, each 3.75 m high, near the map centre
   (the imported source snapshot keeps all 73 entries, including one exact duplicate)
 - Obstacle body: one static compound link containing all tree and maze geometry
@@ -89,11 +90,13 @@ the launch/resource error scan found 0 failures. The screenshot and raw logs
 are under `gazebo/validation/runtime/`; the concise result is
 `ugv_drone_harmonic_runtime.log`.
 
-After expanding the forest to 288 trees, the repository-only preview was run
-again on the RTX 5060. Across 99 samples the real-time factor was
-`0.988259..1.000703` with mean `0.999765`; observed GPU load was `10..17%`
-with 299 MiB VRAM. Gazebo Harmonic initialized the world and Bullet compound
-body without a model, resource or physics load error. The concise result is
+After expanding the forest to 288 trees and scaling every tree and trunk
+collision uniformly by 2x, the repository-only preview was run again on the
+RTX 5060. Across 29 post-initialization samples the real-time factor was
+`0.998634..1.001118` with mean `0.999906`; the sampled GPU load was `20%`
+with 677 MiB VRAM. Gazebo Harmonic initialized the world and Bullet compound
+body without a model, resource or physics load error, and reported the
+corrected preview pose as `(-80, -80, 0.16)`. The concise result is
 `mountain_tree288_runtime.log`.
 
 The visual and collision OBJ files each contain 66,049 vertices and 131,072

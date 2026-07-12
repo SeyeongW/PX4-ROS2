@@ -19,10 +19,21 @@ CITY_WORLD = CITY / "applepark.world"
 MOUNTAIN_WORLD = GAZEBO / "worlds/ugv_drone_map.world"
 LOG = GAZEBO / "validation/self_contained_maps_static.log"
 OVERLAP_CSV = GAZEBO / "validation/city/road_building_overlap_coordinates.csv"
+FOUNDATION_CSV = GAZEBO / "validation/city/building_foundation_alignment.csv"
+PREVIEW_CONTACT_Z = 0.0
+CITY_SOURCE_HEIGHT_SCALE_Z = 26.6
+CITY_HEIGHTMAP_POSITION_Z = -15.0
+CITY_HEIGHTMAP_UINT8_MAX = 255
+CITY_HEIGHTMAP_OBSERVED_MAX = 152
+CITY_RENDER_HEIGHT_SIZE_Z = (
+    CITY_SOURCE_HEIGHT_SCALE_Z
+    * CITY_HEIGHTMAP_OBSERVED_MAX
+    / CITY_HEIGHTMAP_UINT8_MAX
+)
 
 EXPECTED_CITY_HASHES = {
     "worlds/applepark_city/mesh/buildings.dae":
-        "9850924d0432da9df7985512dc649491c3ca1381f8a48c56673c606792a1d6c1",
+        "8e800314c1fce8009d7f862aa87ad68bbd847e80f80582901bd504c3ac703e7b",
     "worlds/applepark_city/mesh/height_map_city_500m.png":
         "5a84adc1f45dcffe507fa77d2642cd672c622c225e60ae41f98280bdcf9b24cf",
     "worlds/applepark_city/mesh/normal_map_city_500m.png":
@@ -35,6 +46,8 @@ EXPECTED_CITY_HASHES = {
         "f706303dc1fa8e4b456e1d235a73ee395be38c2897c62b6ebf19ad74646892fb",
     "validation/city/road_building_overlap_coordinates.csv":
         "b3a1f0eaee7eafc2595c9bd35e6f23a4a74749b65a0a0224dc78ad6d4ddf6601",
+    "validation/city/building_foundation_alignment.csv":
+        "251cc93369133f1e31a353b4587fc00025b39e94fad843a1cb8d1148dd8368e3",
     "validation/city/road_building_overlap_after_fix.png":
         "9f7f73b2dc958fde45e8e6bc1c660125d48e90d7afc3eaa1c398aa8cb98aae9c",
 }
@@ -112,7 +125,21 @@ def validate_city() -> dict[str, object]:
     require(len(heightmaps) == 1, "city visual heightmap")
     for heightmap in heightmaps:
         require(heightmap.findtext("uri") == "mesh/height_map_city_500m.png", "height URI")
-        require(heightmap.findtext("size") == "500 500 26.6", "heightmap size")
+        heightmap_size = [float(value) for value in heightmap.findtext("size", "").split()]
+        heightmap_position = [
+            float(value) for value in heightmap.findtext("pos", "").split()
+        ]
+        require(len(heightmap_size) == 3, "heightmap size vector")
+        require(len(heightmap_position) == 3, "heightmap position vector")
+        require(heightmap_size[:2] == [500.0, 500.0], "heightmap XY size")
+        require(
+            abs(heightmap_size[2] - CITY_RENDER_HEIGHT_SIZE_Z) < 1e-12,
+            "OGRE2-normalized heightmap Z size",
+        )
+        require(
+            heightmap_position == [0.0, 0.0, CITY_HEIGHTMAP_POSITION_Z],
+            "heightmap position",
+        )
     require(
         terrain.findtext(".//collision//mesh/uri")
         == "mesh/city_terrain_collision.obj",
@@ -154,7 +181,12 @@ def validate_city() -> dict[str, object]:
         None,
     )
     require(pad is not None, "city drone spawn pad")
-    require(pad.findtext("pose", "").startswith("-120 115 "), "city spawn XY")
+    require(pad.findtext("pose") == "-120 115 -3.269558902 0 0 0", "city spawn pad pose")
+    require(
+        pad.findtext(".//collision//cylinder/length") == "0.5"
+        and pad.findtext(".//visual//cylinder/length") == "0.5",
+        "city spawn pad foundation depth",
+    )
     city_drone = next(
         (
             include
@@ -164,8 +196,15 @@ def validate_city() -> dict[str, object]:
         None,
     )
     require(city_drone is not None, "city repository-local preview drone")
-    require(city_drone.findtext("pose", "").startswith("-120 115 "), "city drone pose")
-    validate_model_uri("model://map_preview_drone")
+    require(city_drone.findtext("pose") == "-120 115 -3.019558902 0 0 0", "city drone contact pose")
+    preview_contact_z = validate_preview_drone_model()
+    pad_pose_z = float(pad.findtext("pose", "").split()[2])
+    pad_height = float(pad.findtext(".//collision//cylinder/length", "nan"))
+    drone_pose_z = float(city_drone.findtext("pose", "").split()[2])
+    require(
+        abs(drone_pose_z + preview_contact_z - (pad_pose_z + pad_height / 2.0)) < 1e-9,
+        "city preview landing gear is not seated on the pad",
+    )
 
     expected_images = {
         "mesh/road_surface_city_500m.png": (2048, 2048, "RGB"),
@@ -176,6 +215,28 @@ def validate_city() -> dict[str, object]:
         with Image.open(CITY / relative) as image:
             require(image.size == (width, height), f"image size: {relative}")
             require(image.mode == mode, f"image mode: {relative}")
+
+    with Image.open(CITY / "mesh/height_map_city_500m.png") as image:
+        height_pixels = list(image.getdata())
+    require(max(height_pixels) == CITY_HEIGHTMAP_OBSERVED_MAX, "city heightmap maximum")
+    # Ogre2 scales image pixels by the maximum value actually present.  The
+    # corrected SDF size makes that renderer formula identical to the source
+    # elevation / Bullet collision formula at every uint8 pixel value.
+    visual_heights = [
+        CITY_HEIGHTMAP_POSITION_Z
+        + pixel / CITY_HEIGHTMAP_OBSERVED_MAX * CITY_RENDER_HEIGHT_SIZE_Z
+        for pixel in height_pixels
+    ]
+    source_heights = [
+        CITY_HEIGHTMAP_POSITION_Z
+        + pixel / CITY_HEIGHTMAP_UINT8_MAX * CITY_SOURCE_HEIGHT_SCALE_Z
+        for pixel in height_pixels
+    ]
+    render_alignment_error = max(
+        abs(visual - source)
+        for visual, source in zip(visual_heights, source_heights)
+    )
+    require(render_alignment_error < 1e-12, "city visual / collision terrain Z alignment")
 
     with OVERLAP_CSV.open("r", encoding="utf-8", newline="") as stream:
         rows = list(csv.DictReader(stream))
@@ -197,6 +258,19 @@ def validate_city() -> dict[str, object]:
     require(corrected_semantic == 677, "coordinate-corrected semantic road pixel audit")
     require(corrected_ordinals == {1046, 1107, 1171, 1519, 1530, 1589}, "corrected buildings")
 
+    with FOUNDATION_CSV.open("r", encoding="utf-8", newline="") as stream:
+        foundation_rows = list(csv.DictReader(stream))
+    require(len(foundation_rows) == 274, "city foundation audit building count")
+    foundation_extensions = [
+        float(row["foundation_extension_m"]) for row in foundation_rows
+    ]
+    require(min(foundation_extensions) > 0.109, "city minimum foundation extension")
+    require(max(foundation_extensions) < 0.899, "city maximum foundation extension")
+    foundation_check = run_checked(
+        ["python3", str(GAZEBO / "tools/align_city_building_foundations.py"), "--check"]
+    )
+    require("result=PASS" in foundation_check, "city deterministic foundation validator")
+
     run_checked(["xmllint", "--noout", str(CITY_WORLD)])
     run_checked(["xmllint", "--noout", str(CITY / "mesh/buildings.dae")])
     return {
@@ -205,6 +279,11 @@ def validate_city() -> dict[str, object]:
         "corrected_asphalt_pixels_before_clearance": corrected_asphalt,
         "corrected_semantic_pixels_before_clearance": corrected_semantic,
         "final_visible_road_pixels": 0,
+        "foundation_min_extension_m": min(foundation_extensions),
+        "foundation_max_extension_m": max(foundation_extensions),
+        "terrain_visual_collision_z_error_m": render_alignment_error,
+        "terrain_min_z_m": min(source_heights),
+        "terrain_max_z_m": max(source_heights),
         "road_sha256": EXPECTED_CITY_HASHES[
             "worlds/applepark_city/mesh/road_surface_city_500m.png"
         ],
@@ -222,6 +301,25 @@ def validate_model_uri(uri: str) -> Path:
     return model_root
 
 
+def validate_preview_drone_model() -> float:
+    model_root = validate_model_uri("model://map_preview_drone")
+    model = ET.parse(model_root / "model.sdf").getroot().find("model")
+    require(model is not None and model.findtext("static") == "true", "preview drone is not static")
+    gear_bottoms = []
+    for gear_name in ("landing_gear_left", "landing_gear_right"):
+        gear = model.find(f".//visual[@name='{gear_name}']")
+        require(gear is not None, f"preview drone gear missing: {gear_name}")
+        pose = [float(value) for value in gear.findtext("pose", "").split()]
+        size = [float(value) for value in gear.findtext("./geometry/box/size", "").split()]
+        require(len(pose) == 6 and len(size) == 3, f"preview drone gear geometry: {gear_name}")
+        gear_bottoms.append(pose[2] - size[2] / 2.0)
+    require(
+        max(abs(bottom - PREVIEW_CONTACT_Z) for bottom in gear_bottoms) < 1e-12,
+        "preview drone contact plane changed",
+    )
+    return PREVIEW_CONTACT_Z
+
+
 def validate_mountain() -> dict[str, object]:
     world = world_element(MOUNTAIN_WORLD)
     require(world.attrib.get("name") == "ugv_drone_mountain_map", "mountain map world name")
@@ -236,6 +334,16 @@ def validate_mountain() -> dict[str, object]:
         f"mountain map-only includes: {include_uris}",
     )
     require("iris_with_down_camera" not in MOUNTAIN_WORLD.read_text(encoding="utf-8"), "external Iris in map-only world")
+    preview = next(include for include in world.findall("include") if include.findtext("name") == "mountain_preview_drone")
+    require(preview.findtext("pose") == "-80 -80 0.16 0 0 0.785398", "mountain preview contact pose")
+    pad = next(model for model in world.findall("model") if model.attrib.get("name") == "drone_launch_pad")
+    pad_pose_z = float(pad.findtext("pose", "").split()[2])
+    pad_height = float(pad.findtext(".//collision//box/size", "").split()[2])
+    preview_pose_z = float(preview.findtext("pose", "").split()[2])
+    require(
+        abs(preview_pose_z + validate_preview_drone_model() - (pad_pose_z + pad_height / 2.0)) < 1e-9,
+        "mountain preview landing gear is not seated on the pad",
+    )
     model_roots = [validate_model_uri(uri) for uri in include_uris]
     for model_root in model_roots:
         model = ET.parse(model_root / "model.sdf").getroot()
@@ -287,6 +395,13 @@ def main() -> None:
             "city_coordinate_corrected_semantic_pixels_before_clearance="
             f"{city['corrected_semantic_pixels_before_clearance']}",
             f"city_final_visible_road_overlap_pixels={city['final_visible_road_pixels']}",
+            "city_building_foundation_alignment=PASS",
+            f"city_foundation_extension_m={city['foundation_min_extension_m']:.6f}..{city['foundation_max_extension_m']:.6f}",
+            "city_visual_collision_terrain_z_alignment=PASS",
+            "city_visual_collision_terrain_z_max_error_m="
+            f"{city['terrain_visual_collision_z_error_m']:.12f}",
+            "city_terrain_z_range_m="
+            f"{city['terrain_min_z_m']:.6f}..{city['terrain_max_z_m']:.6f}",
             f"city_road_sha256={city['road_sha256']}",
             "city_xmllint_and_local_uri_closure=PASS",
             "mountain_engine=Gazebo Harmonic",

@@ -291,7 +291,14 @@
 
         <!-- OGRE2 keeps the checked 257 px heightmap visual.  Bullet
              Featherstone receives a deterministic 129 px triangle mesh for
-             collision because it does not construct SDF heightmap geometry. -->
+             collision because it does not construct SDF heightmap geometry.
+
+             gz-rendering normalizes an image heightmap by the largest pixel
+             present in that image, not by the uint8 maximum (255).  This crop
+             has max(pixel)=152, so its render height must be
+             26.6 * 152 / 255 = 15.855686274509806 m.  Using 26.6 directly
+             raises the rendered ground to +1.28..+11.6 m and submerges the
+             buildings, while the collision mesh remains at -5.30..+0.86 m. -->
         <model name="applepark">
             <static>true</static>
             <pose>0 0 0 0 0 0</pose>
@@ -315,7 +322,7 @@
                                 <size>500</size>
                             </texture>
                             <uri>mesh/height_map_city_500m.png</uri>
-                            <size>500 500 26.6</size>
+                            <size>500 500 15.855686274509806</size>
                             <!-- OGRE2 ignores model/link <pose> for heightmaps; <pos> is world frame -->
                             <pos>0 0 -15.0</pos>
                             <!-- sampling: mesh vertices per heightmap pixel (SDF 1.8+ default = 1).
@@ -366,16 +373,17 @@
                 </collision>
             </link>
         </model>
-        <!-- Center-sampled ground Z is -3.219558901961 m at local (-120, 115). -->
+        <!-- Keep the pad top at the drone contact plane (-3.019558902 m),
+             while extending its foundation below the full sloped footprint. -->
         <model name="drone_spawn_pad">
             <static>true</static>
-            <pose>-120 115 -3.119558902 0 0 0</pose>
+            <pose>-120 115 -3.269558902 0 0 0</pose>
             <link name="pad_link">
                 <collision name="collision">
                     <geometry>
                         <cylinder>
                             <radius>4</radius>
-                            <length>0.2</length>
+                            <length>0.5</length>
                         </cylinder>
                     </geometry>
                 </collision>
@@ -384,7 +392,7 @@
                     <geometry>
                         <cylinder>
                             <radius>4</radius>
-                            <length>0.2</length>
+                            <length>0.5</length>
                         </cylinder>
                     </geometry>
                     <material>
@@ -403,6 +411,7 @@
         <include>
             <uri>model://map_preview_drone</uri>
             <name>city_preview_drone</name>
+            <!-- The preview model origin is its landing-gear contact plane. -->
             <pose>-120 115 -3.019558902 0 0 0</pose>
         </include>
 

@@ -251,6 +251,7 @@ def validate() -> list[str]:
     pine_count = oak_count = 0
     z_errors = []
     tree_xy = []
+    tree_trunks = []
     added_tree_pad_clearances = []
     for name in sorted(tree_names):
         branch = tree_branches[name]
@@ -262,29 +263,38 @@ def validate() -> list[str]:
         require(len(pose) == len(bark_pose) == len(collision_pose) == 6, "tree has an invalid absolute pose")
         require(pose == bark_pose, "tree branch and bark poses differ")
         source_tree_type, source_pose = expected_trees[name]
-        require(max(abs(pose[index] - source_pose[index]) for index in range(6)) < 1e-9, "tree visual pose differs from source layout")
         mesh_uri = branch.findtext("./geometry/mesh/uri", "")
         require(mesh_uri == bark.findtext("./geometry/mesh/uri", ""), "tree mesh pair differs")
+        branch_scale = [float(value) for value in branch.findtext("./geometry/mesh/scale", "").split()]
+        bark_scale = [float(value) for value in bark.findtext("./geometry/mesh/scale", "").split()]
+        require(branch_scale == bark_scale == [2.0, 2.0, 2.0], "tree visual is not uniformly scaled 2x")
         if mesh_uri.endswith("pine_tree.dae"):
             require(source_tree_type == "pine_tree", "generated pine differs from source type")
             pine_count += 1
             base_z = pose[2] - 0.0001
-            trunk_offset, radius, length = 2.5, 0.30, 5.0
+            visual_lift, trunk_offset, radius, length = 0.0, 5.0, 0.60, 10.0
         elif mesh_uri.endswith("oak_tree.dae"):
             require(source_tree_type == "oak_tree", "generated oak differs from source type")
             oak_count += 1
-            base_z = pose[2] - 0.0703
-            trunk_offset, radius, length = 3.2, 0.45, 6.5
+            base_z = pose[2] - 0.1406
+            visual_lift, trunk_offset, radius, length = 0.0703, 6.4297, 0.90, 13.0
         else:
             raise RuntimeError("tree has an unexpected mesh")
+        expected_visual_pose = source_pose.copy()
+        expected_visual_pose[2] += visual_lift
+        require(
+            max(abs(pose[index] - expected_visual_pose[index]) for index in range(6)) < 1e-9,
+            "tree visual pose differs from the terrain-seated 2x source layout",
+        )
         require(branch.findtext("./geometry/mesh/submesh/name") == "Branch", "tree branch submesh changed")
         require(bark.findtext("./geometry/mesh/submesh/name") == "Bark", "tree bark submesh changed")
         require(abs(float(collision.findtext("./geometry/cylinder/radius", "nan")) - radius) < 1e-12, "tree trunk radius changed")
         require(abs(float(collision.findtext("./geometry/cylinder/length", "nan")) - length) < 1e-12, "tree trunk length changed")
-        require(max(abs(pose[index] - collision_pose[index]) for index in (0, 1, 3, 4, 5)) < 1e-9, "tree trunk pose was not composed into the root link")
-        require(abs(collision_pose[2] - (pose[2] + trunk_offset)) < 1e-9, "tree trunk height was not composed into the root link")
+        require(max(abs(source_pose[index] - collision_pose[index]) for index in (0, 1, 3, 4, 5)) < 1e-9, "tree trunk pose was not composed into the root link")
+        require(abs(collision_pose[2] - (source_pose[2] + trunk_offset)) < 1e-9, "tree trunk height was not composed into the root link")
         z_errors.append(abs(base_z - terrain_height(pixels, pose[0], pose[1])))
         tree_xy.append((pose[0], pose[1]))
+        tree_trunks.append((pose[0], pose[1], radius))
         require(abs(pose[0]) <= 140.0 and abs(pose[1]) <= 140.0, "tree crossed the 10 m map boundary margin")
         require(not (-36.1 <= pose[0] <= 36.1 and -24.1 <= pose[1] <= 24.1), "tree intersects maze exclusion")
         tree_index = int(name.rsplit("_", 1)[-1])
@@ -301,6 +311,12 @@ def validate() -> list[str]:
         for x2, y2 in tree_xy[index + 1 :]
     )
     require(min_tree_spacing >= 7.25, "tree spacing fell below 7.25 m")
+    min_trunk_clearance = min(
+        math.hypot(x1 - x2, y1 - y2) - radius1 - radius2
+        for index, (x1, y1, radius1) in enumerate(tree_trunks)
+        for x2, y2, radius2 in tree_trunks[index + 1 :]
+    )
+    require(min_trunk_clearance > 5.0, "2x tree trunk collisions overlap or lost clearance")
 
     wall_min_x = wall_min_y = math.inf
     wall_max_x = wall_max_y = -math.inf
@@ -359,8 +375,10 @@ def validate() -> list[str]:
             f"obstacle_collisions={len(collisions)} obstacle_visuals={len(visuals)}",
             f"forest_sdf_sha256={sha256(FOREST / 'model.sdf')}",
             f"trees_total={len(tree_names)} pine={pine_count} oak={oak_count} tree_mesh_visuals={len(tree_branches) + len(tree_barks)}",
+            "tree_mesh_scale=2 2 2",
             f"tree_max_terrain_z_error_m={max(z_errors):.9f}",
             f"tree_min_spacing_m={min_tree_spacing:.6f}",
+            f"tree_trunk_min_clearance_m={min_trunk_clearance:.6f}",
             f"added_tree_launch_pad_clearance_m={min(added_tree_pad_clearances):.6f}",
             f"maze_source_entries=73 maze_unique_walls={len(wall_names)} height_m=3.75",
             f"maze_aabb_m=x[{wall_min_x:.6f},{wall_max_x:.6f}] y[{wall_min_y:.6f},{wall_max_y:.6f}]",
