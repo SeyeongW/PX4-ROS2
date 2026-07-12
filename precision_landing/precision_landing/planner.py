@@ -59,9 +59,15 @@ def load_obstacle_boxes(path: str) -> List[Box]:
     with open(path) as f:
         data = yaml.safe_load(f)
     fw, fd = data['footprint']
-    hw, hd = fw / 2.0, fd / 2.0
-    return [Box(o['e'] - hw, o['e'] + hw, o['n'] - hd, o['n'] + hd)
-            for o in data['obstacles']]
+    boxes = []
+    for o in data['obstacles']:
+        # Per-obstacle footprint override -- needed for maps like
+        # obstacle_map_city.yaml where each building has its own real
+        # footprint instead of one size shared by every obstacle.
+        ow, od = o.get('footprint', (fw, fd))
+        hw, hd = ow / 2.0, od / 2.0
+        boxes.append(Box(o['e'] - hw, o['e'] + hw, o['n'] - hd, o['n'] + hd))
+    return boxes
 
 
 # --- A* front-end -------------------------------------------------------

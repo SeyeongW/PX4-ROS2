@@ -159,7 +159,7 @@
     </light>
 
     <include>
-      <uri>model://ugv_mou_terrain</uri>
+      <uri>model://mountain_terrain</uri>
       <name>mountain_terrain</name>
       <pose>0 0 0 0 0 0</pose>
     </include>
@@ -167,7 +167,7 @@
     <!-- One local static model contains 216 pines, 72 oaks and the 72-wall,
          3.75 m-high central maze.  Every tree trunk and wall has collision. -->
     <include>
-      <uri>model://ugv_mou_forest_obstacles</uri>
+      <uri>model://mountain_forest</uri>
       <name>mountain_forest</name>
       <pose>0 0 0 0 0 0</pose>
     </include>

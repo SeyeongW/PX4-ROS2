@@ -23,15 +23,15 @@ hybrid laptop without using the launcher script:
 
 ```bash
 # Mountain
-GZ_SIM_RESOURCE_PATH="$PWD/gazebo/models:$PWD/gazebo/worlds" __NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia __VK_LAYER_NV_optimus=NVIDIA_only QT_QPA_PLATFORM=xcb gz sim -v4 -r --physics-engine gz-physics-bullet-featherstone-plugin "$PWD/gazebo/worlds/ugv_drone_map.world"
+GZ_SIM_RESOURCE_PATH="$PWD/gazebo/models:$PWD/gazebo/worlds" __NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia __VK_LAYER_NV_optimus=NVIDIA_only QT_QPA_PLATFORM=xcb gz sim -v4 -r --physics-engine gz-physics-bullet-featherstone-plugin "$PWD/gazebo/worlds/mountain_map.world"
 
 # City
-GZ_SIM_RESOURCE_PATH="$PWD/gazebo/models:$PWD/gazebo/worlds" __NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia __VK_LAYER_NV_optimus=NVIDIA_only QT_QPA_PLATFORM=xcb gz sim -v4 -r --physics-engine gz-physics-bullet-featherstone-plugin "$PWD/gazebo/worlds/applepark_city/applepark.world"
+GZ_SIM_RESOURCE_PATH="$PWD/gazebo/models:$PWD/gazebo/worlds" __NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia __VK_LAYER_NV_optimus=NVIDIA_only QT_QPA_PLATFORM=xcb gz sim -v4 -r --physics-engine gz-physics-bullet-featherstone-plugin "$PWD/gazebo/worlds/city_map/city_map.world"
 ```
 
 ## City
 
-- world: `gazebo/worlds/applepark_city/applepark.world`
+- world: `gazebo/worlds/city_map/city_map.world`
 - size: 500 x 500 m
 - 274 buildings; each checked-in pre-update height is further scaled by a
   deterministic pseudo-random factor in `2.001288..3.476403`
@@ -50,7 +50,7 @@ casing pixels; final visible road/building overlap is zero. Coordinates are in
 `gazebo/validation/city/road_building_overlap_coordinates.csv`.
 
 Road and building geometry originate from OpenStreetMap-derived data. See
-`worlds/applepark_city/OSM_ATTRIBUTION.txt` and
+`worlds/city_map/OSM_ATTRIBUTION.txt` and
 `licenses/applepark_terrain_BSD-3-Clause.txt`.
 
 The source terrain generator assigned one centroid elevation to each flat
@@ -72,10 +72,11 @@ Bullet collision mesh instead of letting it cut through the buildings.
 
 ## Mountain
 
-- world: `gazebo/worlds/ugv_drone_map.world`
+- world: `gazebo/worlds/mountain_map.world`
 - size: 300 x 300 m
 - retained 40 m / 20.078 m summits plus seven deterministic branching ridges
-- 288 uniformly 2x-scaled trees and 72 maze walls on exact protected contact patches
+- 288 uniformly 2x-scaled trees on exact protected contact patches (the
+  original 72-wall central maze was removed 2026-07-13; see MOUNTAIN_WORLD.md)
 - spawn: `(-80, -80)`
 
 For an actual ArduPilot-controlled Iris, install `ardupilot_gazebo` and run:

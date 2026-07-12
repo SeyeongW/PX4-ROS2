@@ -4,6 +4,13 @@
 The checked-in inputs live below ``gazebo/models``.  This script never reads
 from the original ``sim_assets`` workspace, so the PX4-ROS2 copy remains
 portable after the import is complete.
+
+2026-07-13: the checked-in mountain_forest/model.sdf had its 72-wall central
+maze deleted by hand (a UGV-navigation structure, not part of this drone
+capstone's obstacle set) -- rerunning this script as-is will regenerate the
+maze from source/maze_layout.source.xml and undo that removal. Drop the maze
+step (search this file for "maze") before rebuilding, or delete
+source/maze_layout.source.xml first so this script fails loudly instead.
 """
 
 from __future__ import annotations
@@ -19,13 +26,13 @@ from PIL import Image
 
 
 GAZEBO_ROOT = Path(__file__).resolve().parents[1]
-TERRAIN_ROOT = GAZEBO_ROOT / "models" / "ugv_mou_terrain"
-FOREST_ROOT = GAZEBO_ROOT / "models" / "ugv_mou_forest_obstacles"
+TERRAIN_ROOT = GAZEBO_ROOT / "models" / "mountain_terrain"
+FOREST_ROOT = GAZEBO_ROOT / "models" / "mountain_forest"
 HEIGHTMAP = TERRAIN_ROOT / "materials" / "textures" / "mountain_height_300.png"
 NATURAL_TEXTURE = TERRAIN_ROOT / "materials" / "textures" / "natural_ground.png"
-VISUAL_OBJ = TERRAIN_ROOT / "meshes" / "ugv_mou_terrain_visual.obj"
-COLLISION_OBJ = TERRAIN_ROOT / "meshes" / "ugv_mou_terrain_collision.obj"
-MTL = TERRAIN_ROOT / "meshes" / "ugv_mou_terrain.mtl"
+VISUAL_OBJ = TERRAIN_ROOT / "meshes" / "mountain_terrain_visual.obj"
+COLLISION_OBJ = TERRAIN_ROOT / "meshes" / "mountain_terrain_collision.obj"
+MTL = TERRAIN_ROOT / "meshes" / "mountain_terrain.mtl"
 TREE_LAYOUT = FOREST_ROOT / "source" / "tree_layout.source.xml"
 MAZE_LAYOUT = FOREST_ROOT / "source" / "maze_layout.source.xml"
 FOREST_SDF = FOREST_ROOT / "model.sdf"
@@ -379,8 +386,8 @@ def write_terrain_obj(path: Path, pixels: np.ndarray) -> None:
     nx, ny, nz = nx / norm, ny / norm, nz / norm
 
     with path.open("w", encoding="ascii", newline="\n") as stream:
-        stream.write("mtllib ugv_mou_terrain.mtl\n")
-        stream.write("o ugv_mou_terrain_300m\n")
+        stream.write("mtllib mountain_terrain.mtl\n")
+        stream.write("o mountain_terrain_300m\n")
         for row in range(rows):
             y = MAP_SIZE_M / 2.0 - row * spacing_y
             for col in range(cols):
@@ -434,7 +441,7 @@ def add_pbr_material(visual: ET.Element, texture: str, branch: bool) -> None:
     child(material, "specular", "0.02 0.02 0.02 1")
     pbr = child(material, "pbr")
     metal = child(pbr, "metal")
-    child(metal, "albedo_map", f"model://ugv_mou_forest_obstacles/materials/textures/{texture}")
+    child(metal, "albedo_map", f"model://mountain_forest/materials/textures/{texture}")
     child(metal, "metalness", "0.0")
     child(metal, "roughness", "0.92")
 
@@ -479,7 +486,7 @@ def add_tree_obstacles(link: ET.Element, include: ET.Element) -> str:
         child(visual, "cast_shadows", "true")
         geometry = child(visual, "geometry")
         mesh = child(geometry, "mesh")
-        child(mesh, "uri", f"model://ugv_mou_forest_obstacles/meshes/{mesh_name}")
+        child(mesh, "uri", f"model://mountain_forest/meshes/{mesh_name}")
         child(mesh, "scale", " ".join(f"{value:g}" for value in TREE_MESH_SCALE))
         submesh = child(mesh, "submesh")
         child(submesh, "name", submesh_name)
@@ -520,7 +527,7 @@ def add_wall_obstacles(link: ET.Element, include: ET.Element) -> str:
 
 def write_forest_sdf() -> tuple[dict[str, int], dict[str, int], int]:
     root = ET.Element("sdf", version="1.9")
-    model = child(root, "model", name="ugv_mou_forest_obstacles")
+    model = child(root, "model", name="mountain_forest")
     child(model, "static", "true")
     # Bullet Featherstone accepts this static compound body as one rooted
     # collision tree.  Multiple unjointed links would be interpreted as

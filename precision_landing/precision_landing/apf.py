@@ -26,9 +26,20 @@ class Obstacle:
 def load_obstacles(path: str) -> List[Obstacle]:
     with open(path) as f:
         data = yaml.safe_load(f)
-    fw, fd = data['footprint']             # [east_size, north_size] metres
-    radius = math.hypot(fw, fd) / 2.0      # bounding circle around the square
-    return [Obstacle(float(o['e']), float(o['n']), radius) for o in data['obstacles']]
+    fw, fd = data['footprint']             # [east_size, north_size] metres, default
+    default_radius = math.hypot(fw, fd) / 2.0
+    obstacles = []
+    for o in data['obstacles']:
+        # Per-obstacle footprint override -- needed for maps like
+        # obstacle_map_city.yaml where each building has its own real
+        # footprint instead of one size shared by every obstacle.
+        if 'footprint' in o:
+            ow, od = o['footprint']
+            radius = math.hypot(ow, od) / 2.0
+        else:
+            radius = default_radius
+        obstacles.append(Obstacle(float(o['e']), float(o['n']), radius))
+    return obstacles
 
 
 def repulsive_velocity(pos_e: float, pos_n: float, obstacles: List[Obstacle],

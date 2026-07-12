@@ -14,9 +14,9 @@ from PIL import Image
 
 GAZEBO = Path(__file__).resolve().parents[1]
 REPO = GAZEBO.parent
-CITY = GAZEBO / "worlds/applepark_city"
-CITY_WORLD = CITY / "applepark.world"
-MOUNTAIN_WORLD = GAZEBO / "worlds/ugv_drone_map.world"
+CITY = GAZEBO / "worlds/city_map"
+CITY_WORLD = CITY / "city_map.world"
+MOUNTAIN_WORLD = GAZEBO / "worlds/mountain_map.world"
 LOG = GAZEBO / "validation/self_contained_maps_static.log"
 OVERLAP_CSV = GAZEBO / "validation/city/road_building_overlap_coordinates.csv"
 FOUNDATION_CSV = GAZEBO / "validation/city/building_foundation_alignment.csv"
@@ -33,17 +33,17 @@ CITY_RENDER_HEIGHT_SIZE_Z = (
 )
 
 EXPECTED_CITY_HASHES = {
-    "worlds/applepark_city/mesh/buildings.dae":
+    "worlds/city_map/mesh/buildings.dae":
         "e5fab82529fcc0f9d5819797346af76d763d6b973eed96ad8a7de324a7a253ce",
-    "worlds/applepark_city/mesh/height_map_city_500m.png":
+    "worlds/city_map/mesh/height_map_city_500m.png":
         "5a84adc1f45dcffe507fa77d2642cd672c622c225e60ae41f98280bdcf9b24cf",
-    "worlds/applepark_city/mesh/normal_map_city_500m.png":
+    "worlds/city_map/mesh/normal_map_city_500m.png":
         "13e0f51751c556904b3b2eb92ad118ec3dd20d5f4a2a4e72d4344a6907556266",
-    "worlds/applepark_city/mesh/road_surface_city_500m.png":
+    "worlds/city_map/mesh/road_surface_city_500m.png":
         "f43cc932dd4c101c605c15c0a202e4e946fbea77e0c568763dbec217dc123a08",
-    "worlds/applepark_city/mesh/city_terrain_collision.obj":
+    "worlds/city_map/mesh/city_terrain_collision.obj":
         "99d8fae1ed193321dc3f2801b68a549b019a12068cf0cdff17210c78e0fe2024",
-    "worlds/applepark_city/OSM_ATTRIBUTION.txt":
+    "worlds/city_map/OSM_ATTRIBUTION.txt":
         "f706303dc1fa8e4b456e1d235a73ee395be38c2897c62b6ebf19ad74646892fb",
     "validation/city/road_building_overlap_coordinates.csv":
         "b3a1f0eaee7eafc2595c9bd35e6f23a4a74749b65a0a0224dc78ad6d4ddf6601",
@@ -100,7 +100,7 @@ def validate_city() -> dict[str, object]:
         require(sha256(path) == expected, f"city asset hash changed: {relative}")
 
     world = world_element(CITY_WORLD)
-    require(world.attrib.get("name") == "applepark_city", "city world name")
+    require(world.attrib.get("name") == "city_map", "city world name")
     expected_plugins = {
         "gz-sim-physics-system",
         "gz-sim-user-commands-system",
@@ -316,7 +316,7 @@ def validate_city() -> dict[str, object]:
         "terrain_min_z_m": min(source_heights),
         "terrain_max_z_m": max(source_heights),
         "road_sha256": EXPECTED_CITY_HASHES[
-            "worlds/applepark_city/mesh/road_surface_city_500m.png"
+            "worlds/city_map/mesh/road_surface_city_500m.png"
         ],
     }
 
@@ -353,13 +353,13 @@ def validate_preview_drone_model() -> float:
 
 def validate_mountain() -> dict[str, object]:
     world = world_element(MOUNTAIN_WORLD)
-    require(world.attrib.get("name") == "ugv_drone_mountain_map", "mountain map world name")
+    require(world.attrib.get("name") == "mountain_map", "mountain map world name")
     include_uris = [include.findtext("uri", "") for include in world.findall("include")]
     require(
         include_uris
         == [
-            "model://ugv_mou_terrain",
-            "model://ugv_mou_forest_obstacles",
+            "model://mountain_terrain",
+            "model://mountain_forest",
             "model://map_preview_drone",
         ],
         f"mountain map-only includes: {include_uris}",
@@ -397,8 +397,8 @@ def validate_no_external_runtime_paths() -> None:
         CITY_WORLD,
         MOUNTAIN_WORLD,
         GAZEBO / "run_world.sh",
-        GAZEBO / "models/ugv_mou_terrain/model.sdf",
-        GAZEBO / "models/ugv_mou_forest_obstacles/model.sdf",
+        GAZEBO / "models/mountain_terrain/model.sdf",
+        GAZEBO / "models/mountain_forest/model.sdf",
     ]
     for path in active_paths:
         content = path.read_text(encoding="utf-8")

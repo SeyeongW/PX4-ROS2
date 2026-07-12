@@ -1,7 +1,18 @@
 # UGV drone mountain world
 
+**2026-07-13: the 72-wall central maze described below was removed from the
+runtime obstacle model** (`gazebo/models/mountain_forest/model.sdf`,
+now trees only, 288 collisions) — a UGV-navigation structure that didn't fit
+this drone capstone's obstacle set. The maze-related sections further down
+(build pipeline, validation, licenses) are kept as historical/provenance
+notes for how the asset *was* built, not a description of what's in the map
+now. `source/maze_layout.source.xml` and `build_mountain_300_assets.py`'s
+maze logic still exist on disk but must NOT be used to rebuild the compound
+obstacle model as-is, or the maze comes back — drop the maze step from the
+builder first if this asset is ever regenerated.
+
 `worlds/ugv_drone.world` is the Gazebo Harmonic version of the local 300 m
-mountain flight map. Its terrain, texture, tree and maze collision assets are
+mountain flight map. Its terrain, texture and tree collision assets are
 self-contained under `gazebo/models`, so those map assets require neither a
 Gazebo Fuel download nor the `sim_assets` workspace. The Iris vehicle and
 ArduPilot system plugin continue to come from the documented
@@ -19,9 +30,7 @@ ArduPilot system plugin continue to come from the documented
 - Map-preview drone origin: `(-80, -80, 0.16)`, normalized to its landing-gear contact plane on the same pad
 - Forest: 288 uniformly 2x-scaled textured trees (216 pines, 72 oaks) with
   matching 2x trunk collisions and an exact local terrain seat under every trunk disk
-- Maze: 72 unique collision walls, each 3.75 m high, near the map centre
-  (the imported source snapshot keeps all 73 entries, including one exact duplicate)
-- Obstacle body: one static compound link containing all tree and maze geometry
+- Obstacle body: one static compound link containing all tree geometry (maze removed, see note above)
 - Vehicle: `iris_with_down_camera`, ArduPilot JSON FDM UDP port 9002
 - Physics: Bullet Featherstone, 2 ms step / 500 Hz
 

@@ -12,8 +12,8 @@ from PIL import Image
 
 
 GAZEBO = Path(__file__).resolve().parents[1]
-HEIGHTMAP = GAZEBO / "worlds/applepark_city/mesh/height_map_city_500m.png"
-OUTPUT = GAZEBO / "worlds/applepark_city/mesh/city_terrain_collision.obj"
+HEIGHTMAP = GAZEBO / "worlds/city_map/mesh/height_map_city_500m.png"
+OUTPUT = GAZEBO / "worlds/city_map/mesh/city_terrain_collision.obj"
 EXPECTED_HEIGHT_SHA256 = (
     "5a84adc1f45dcffe507fa77d2642cd672c622c225e60ae41f98280bdcf9b24cf"
 )

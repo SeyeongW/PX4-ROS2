@@ -10,16 +10,16 @@ fi
 
 case "$MAP" in
   city)
-    WORLD="$SCRIPT_DIR/worlds/applepark_city/applepark.world"
-    DESCRIPTION="Apple Park 500 x 500 m city"
+    WORLD="$SCRIPT_DIR/worlds/city_map/city_map.world"
+    DESCRIPTION="500 x 500 m city"
     ;;
   mountain)
-    WORLD="$SCRIPT_DIR/worlds/ugv_drone_map.world"
-    DESCRIPTION="UGV/drone 300 x 300 m mountain (map-only)"
+    WORLD="$SCRIPT_DIR/worlds/mountain_map.world"
+    DESCRIPTION="300 x 300 m mountain (map-only)"
     ;;
   mountain-sitl)
     WORLD="$SCRIPT_DIR/worlds/ugv_drone.world"
-    DESCRIPTION="UGV/drone 300 x 300 m mountain with ArduPilot SITL model"
+    DESCRIPTION="300 x 300 m mountain with ArduPilot SITL model"
     ;;
   -h|--help|help|"")
     cat <<EOF

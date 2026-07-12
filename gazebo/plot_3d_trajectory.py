@@ -134,9 +134,12 @@ def simulate_return_and_descend(start_e, start_n, start_t, platform_e, platform_
 
 def load_obstacle_boxes_and_height(obstacle_map_path):
     data = yaml.safe_load(open(obstacle_map_path))
-    height = data['height']
+    default_height = data['height']
+    # Per-obstacle height override (e.g. obstacle_map_city.yaml, where every
+    # building has its own real height instead of one shared default).
+    heights = [o.get('height', default_height) for o in data['obstacles']]
     boxes = planner.load_obstacle_boxes(obstacle_map_path)
-    return boxes, height
+    return boxes, heights
 
 
 def draw_prism(ax, e_min, e_max, n_min, n_max, z_min, z_max, color, alpha, edgecolor):
@@ -173,7 +176,7 @@ def main():
 
     global apf_obs
     apf_obs = apf.load_obstacles(args.map)
-    obstacles, obs_height = load_obstacle_boxes_and_height(args.map)
+    obstacles, obs_heights = load_obstacle_boxes_and_height(args.map)
 
     corridors = []
     if args.log:
@@ -203,7 +206,7 @@ def main():
     fig = plt.figure(figsize=(9, 7.5))
     ax = fig.add_subplot(111, projection='3d')
 
-    for ob in obstacles:
+    for ob, obs_height in zip(obstacles, obs_heights):
         draw_prism(ax, ob.e_min, ob.e_max, ob.n_min, ob.n_max, 0.0, obs_height,
                   color='#6b7680', alpha=0.35, edgecolor='#3a4750')
 

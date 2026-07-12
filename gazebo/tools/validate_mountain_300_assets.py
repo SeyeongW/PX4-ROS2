@@ -15,13 +15,13 @@ from PIL import Image
 
 GAZEBO_ROOT = Path(__file__).resolve().parents[1]
 WORLD = GAZEBO_ROOT / "worlds" / "ugv_drone.world"
-MAP_WORLD = GAZEBO_ROOT / "worlds" / "ugv_drone_map.world"
-TERRAIN = GAZEBO_ROOT / "models" / "ugv_mou_terrain"
-FOREST = GAZEBO_ROOT / "models" / "ugv_mou_forest_obstacles"
+MAP_WORLD = GAZEBO_ROOT / "worlds" / "mountain_map.world"
+TERRAIN = GAZEBO_ROOT / "models" / "mountain_terrain"
+FOREST = GAZEBO_ROOT / "models" / "mountain_forest"
 HEIGHTMAP = TERRAIN / "materials" / "textures" / "mountain_height_300.png"
 TEXTURE = TERRAIN / "materials" / "textures" / "natural_ground.png"
-VISUAL_OBJ = TERRAIN / "meshes" / "ugv_mou_terrain_visual.obj"
-COLLISION_OBJ = TERRAIN / "meshes" / "ugv_mou_terrain_collision.obj"
+VISUAL_OBJ = TERRAIN / "meshes" / "mountain_terrain_visual.obj"
+COLLISION_OBJ = TERRAIN / "meshes" / "mountain_terrain_collision.obj"
 TREE_LAYOUT = FOREST / "source" / "tree_layout.source.xml"
 MAZE_LAYOUT = FOREST / "source" / "maze_layout.source.xml"
 LOG = GAZEBO_ROOT / "validation" / "ugv_drone_mountain_300_static.log"
@@ -168,8 +168,8 @@ def validate() -> list[str]:
     includes = {include.findtext("uri") for include in world.findall("include")}
     require(
         {
-            "model://ugv_mou_terrain",
-            "model://ugv_mou_forest_obstacles",
+            "model://mountain_terrain",
+            "model://mountain_forest",
             "model://iris_with_down_camera",
         }
         <= includes,
@@ -231,7 +231,7 @@ def validate() -> list[str]:
     rgb = np.asarray(Image.open(TEXTURE).convert("RGB"), dtype=np.uint8)
     blue_dominant = int(((rgb[:, :, 2] > rgb[:, :, 0]) & (rgb[:, :, 2] > rgb[:, :, 1])).sum())
     require(blue_dominant == 0, "terrain texture contains blue-dominant pixels")
-    mtl_text = (TERRAIN / "meshes" / "ugv_mou_terrain.mtl").read_text(encoding="utf-8")
+    mtl_text = (TERRAIN / "meshes" / "mountain_terrain.mtl").read_text(encoding="utf-8")
     require("natural_ground.png" in mtl_text and "blue_ground" not in mtl_text, "terrain MTL is stale")
 
     visual_stats = obj_stats(VISUAL_OBJ)
@@ -248,8 +248,8 @@ def validate() -> list[str]:
     require(
         terrain_uris
         == {
-            "model://ugv_mou_terrain/meshes/ugv_mou_terrain_collision.obj",
-            "model://ugv_mou_terrain/meshes/ugv_mou_terrain_visual.obj",
+            "model://mountain_terrain/meshes/mountain_terrain_collision.obj",
+            "model://mountain_terrain/meshes/mountain_terrain_visual.obj",
         },
         "terrain model has a non-local URI",
     )
