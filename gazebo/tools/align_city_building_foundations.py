@@ -30,12 +30,16 @@ HEIGHTMAP = CITY / "mesh" / "height_map_city_500m.png"
 COLLISION = CITY / "mesh" / "city_terrain_collision.obj"
 BUILDING_CSV = GAZEBO / "validation" / "city" / "road_building_overlap_coordinates.csv"
 AUDIT_CSV = GAZEBO / "validation" / "city" / "building_foundation_alignment.csv"
+HEIGHT_AUDIT_CSV = GAZEBO / "validation" / "city" / "building_height_scaling.csv"
 
 EXPECTED_ORIGINAL_DAE_SHA256 = (
     "9850924d0432da9df7985512dc649491c3ca1381f8a48c56673c606792a1d6c1"
 )
-EXPECTED_ALIGNED_DAE_SHA256 = (
+EXPECTED_PRE_HEIGHT_ALIGNED_DAE_SHA256 = (
     "8e800314c1fce8009d7f862aa87ad68bbd847e80f80582901bd504c3ac703e7b"
+)
+EXPECTED_ALIGNED_DAE_SHA256 = (
+    "e5fab82529fcc0f9d5819797346af76d763d6b973eed96ad8a7de324a7a253ce"
 )
 EXPECTED_HEIGHTMAP_SHA256 = (
     "5a84adc1f45dcffe507fa77d2642cd672c622c225e60ae41f98280bdcf9b24cf"
@@ -45,6 +49,12 @@ EXPECTED_COLLISION_SHA256 = (
 )
 EXPECTED_BUILDING_CSV_SHA256 = (
     "b3a1f0eaee7eafc2595c9bd35e6f23a4a74749b65a0a0224dc78ad6d4ddf6601"
+)
+EXPECTED_HEIGHT_AUDIT_CSV_SHA256 = (
+    "bc7b14dac3c2cc5244804f37b3eeed8f629dad7e5f4ac955c504222bd15b4543"
+)
+EXPECTED_FOUNDATION_AUDIT_CSV_SHA256 = (
+    "db0247ad555cd41fd3d902fa827bdc98125d06635c18598e4eb613bcb631e12f"
 )
 
 NS = "http://www.collada.org/2005/11/COLLADASchema"
@@ -235,12 +245,20 @@ def csv_output(records: list[dict[str, object]]) -> str:
     return output.getvalue()
 
 
-def analyze(data: DaeData, *, modify: bool) -> tuple[list[dict[str, object]], int]:
+def analyze(
+    data: DaeData, *, modify: bool, scaled: bool
+) -> tuple[list[dict[str, object]], int]:
     components = find_components(data)
     require(len(components) == EXPECTED_COMPONENTS, "building component count changed")
     with BUILDING_CSV.open("r", encoding="utf-8", newline="") as stream:
         source_rows = list(csv.DictReader(stream))
     require(len(source_rows) == len(components), "building CSV/component count differs")
+    height_rows: list[dict[str, str]] = []
+    if scaled:
+        require(HEIGHT_AUDIT_CSV.is_file(), "building height audit CSV is missing")
+        with HEIGHT_AUDIT_CSV.open("r", encoding="utf-8", newline="") as stream:
+            height_rows = list(csv.DictReader(stream))
+        require(len(height_rows) == len(components), "height CSV/component count differs")
 
     pixels = np.asarray(Image.open(HEIGHTMAP).convert("L"), dtype=np.float64)
     require(pixels.shape == (257, 257), "city heightmap shape changed")
@@ -264,7 +282,31 @@ def analyze(data: DaeData, *, modify: bool) -> tuple[list[dict[str, object]], in
         )
         actual_xy = np.array([low[0], low[1], high[0], high[1]])
         require(np.max(np.abs(actual_xy - expected_xy)) < 1e-6, f"building {ordinal} XY changed")
-        require(abs(high[2] - float(row["top_z"])) < 1e-6, f"building {ordinal} roof changed")
+        expected_roof = float(row["top_z"])
+        if scaled:
+            height_row = height_rows[ordinal - 1]
+            require(
+                int(height_row["output_component_ordinal"]) == ordinal,
+                f"building {ordinal} height audit order changed",
+            )
+            require(
+                height_row["post_height_component_ordinal"]
+                == row["post_height_component_ordinal"],
+                f"building {ordinal} height audit identity changed",
+            )
+            require(
+                abs(float(height_row["old_roof_z"]) - expected_roof) < 1e-9,
+                f"building {ordinal} pre-scale roof reference changed",
+            )
+            require(
+                abs(float(height_row["reference_base_z"]) - original_base) < 1e-9,
+                f"building {ordinal} height reference base changed",
+            )
+            expected_roof = float(height_row["new_roof_z"])
+        require(
+            abs(high[2] - expected_roof) < 1e-6,
+            f"building {ordinal} roof is {high[2]:.9f}, expected {expected_roof:.9f}",
+        )
 
         current_base = float(low[2])
         triangles = data.positions[data.position_indices[faces]]
@@ -330,11 +372,30 @@ def validate_inputs(*, check: bool) -> None:
     if check:
         require(bool(EXPECTED_ALIGNED_DAE_SHA256), "aligned DAE hash is not configured")
         require(current == EXPECTED_ALIGNED_DAE_SHA256, "aligned building DAE hash changed")
+        require(HEIGHT_AUDIT_CSV.is_file(), "building height audit CSV is missing")
+        require(AUDIT_CSV.is_file(), "building foundation audit CSV is missing")
+        require(
+            sha256(HEIGHT_AUDIT_CSV) == EXPECTED_HEIGHT_AUDIT_CSV_SHA256,
+            "building height audit CSV changed",
+        )
+        require(
+            sha256(AUDIT_CSV) == EXPECTED_FOUNDATION_AUDIT_CSV_SHA256,
+            "building foundation audit CSV changed",
+        )
     else:
-        allowed = {EXPECTED_ORIGINAL_DAE_SHA256}
+        allowed = {
+            EXPECTED_ORIGINAL_DAE_SHA256,
+            EXPECTED_PRE_HEIGHT_ALIGNED_DAE_SHA256,
+        }
         if EXPECTED_ALIGNED_DAE_SHA256:
             allowed.add(EXPECTED_ALIGNED_DAE_SHA256)
         require(current in allowed, "building DAE is neither the source nor aligned asset")
+        if current == EXPECTED_ALIGNED_DAE_SHA256:
+            require(HEIGHT_AUDIT_CSV.is_file(), "building height audit CSV is missing")
+            require(
+                sha256(HEIGHT_AUDIT_CSV) == EXPECTED_HEIGHT_AUDIT_CSV_SHA256,
+                "building height audit CSV changed",
+            )
 
 
 def report(records: list[dict[str, object]], bottom_vectors: int, result: str) -> None:
@@ -364,8 +425,10 @@ def main() -> None:
     require(len(data.position_indices) == EXPECTED_TRIANGLES, "triangle count changed")
     require(len(data.positions) == EXPECTED_VECTORS, "position vector count changed")
 
+    current = sha256(BUILDINGS)
+    scaled = current == EXPECTED_ALIGNED_DAE_SHA256
     if args.check:
-        records, bottom_vectors = analyze(data, modify=False)
+        records, bottom_vectors = analyze(data, modify=False, scaled=True)
         require(AUDIT_CSV.is_file(), "foundation audit CSV is missing")
         require(
             AUDIT_CSV.read_text(encoding="utf-8") == csv_output(records),
@@ -374,13 +437,21 @@ def main() -> None:
         report(records, bottom_vectors, "PASS")
         return
 
-    current = sha256(BUILDINGS)
-    records, _ = analyze(data, modify=current == EXPECTED_ORIGINAL_DAE_SHA256)
+    records, _ = analyze(
+        data,
+        modify=current == EXPECTED_ORIGINAL_DAE_SHA256,
+        scaled=scaled,
+    )
     if current == EXPECTED_ORIGINAL_DAE_SHA256:
         write_aligned(data, records)
     else:
         require(AUDIT_CSV.read_text(encoding="utf-8") == csv_output(records), "audit CSV changed")
-    checked_records, bottom_vectors = analyze(DaeData(BUILDINGS), modify=False)
+    checked_current = sha256(BUILDINGS)
+    checked_records, bottom_vectors = analyze(
+        DaeData(BUILDINGS),
+        modify=False,
+        scaled=checked_current == EXPECTED_ALIGNED_DAE_SHA256,
+    )
     require(csv_output(checked_records) == csv_output(records), "post-write foundation drift")
     report(checked_records, bottom_vectors, "PASS")
 

@@ -51,8 +51,17 @@ TARGET_WINDOW="$WINDOW_ID" perl -MX11::Protocol -e '
 sleep 3
 import -window "$WINDOW_ID" "$SCREENSHOT"
 
+STATS_TOPIC="$(
+  gz topic -l |
+    awk '/^\/world\/(ugv_drone_mountain_map|ugv_drone_mountain)\/stats$/ && !topic {topic=$0} END {print topic}'
+)"
+if [[ -z "$STATS_TOPIC" ]]; then
+  echo "No mountain-world stats topic was found in the active Gazebo partition." >&2
+  exit 3
+fi
+
 set +e
-timeout 14s gz topic -e -t /world/ugv_drone_mountain/stats >"$STATS_LOG" 2>&1 &
+timeout 14s gz topic -e -t "$STATS_TOPIC" >"$STATS_LOG" 2>&1 &
 STATS_PID=$!
 set -e
 
@@ -71,6 +80,10 @@ STATS_STATUS=$?
 set -e
 if [[ "$STATS_STATUS" -ne 0 && "$STATS_STATUS" -ne 124 ]]; then
   echo "gz topic stats exited with status $STATS_STATUS" >&2
+fi
+if ! grep -q 'real_time_factor:' "$STATS_LOG"; then
+  echo "Gazebo stats capture contains no real-time-factor sample: $STATS_TOPIC" >&2
+  exit 4
 fi
 
 nvidia-smi pmon -c 1 >"$PMON_LOG" 2>&1
@@ -104,6 +117,7 @@ awk -F',' '
 ' "$GPU_LOG"
 
 printf 'server_pid=%s gui_pid=%s window_id=%s\n' "$SERVER_PID" "$GUI_PID" "$WINDOW_ID"
+printf 'stats_topic=%s\n' "$STATS_TOPIC"
 printf 'load_error_count=%s\n' "$ERROR_COUNT"
 printf 'screenshot=%s\n' "$SCREENSHOT"
 printf 'stats_log=%s\n' "$STATS_LOG"

@@ -20,6 +20,7 @@ MOUNTAIN_WORLD = GAZEBO / "worlds/ugv_drone_map.world"
 LOG = GAZEBO / "validation/self_contained_maps_static.log"
 OVERLAP_CSV = GAZEBO / "validation/city/road_building_overlap_coordinates.csv"
 FOUNDATION_CSV = GAZEBO / "validation/city/building_foundation_alignment.csv"
+HEIGHT_SCALING_CSV = GAZEBO / "validation/city/building_height_scaling.csv"
 PREVIEW_CONTACT_Z = 0.0
 CITY_SOURCE_HEIGHT_SCALE_Z = 26.6
 CITY_HEIGHTMAP_POSITION_Z = -15.0
@@ -33,7 +34,7 @@ CITY_RENDER_HEIGHT_SIZE_Z = (
 
 EXPECTED_CITY_HASHES = {
     "worlds/applepark_city/mesh/buildings.dae":
-        "8e800314c1fce8009d7f862aa87ad68bbd847e80f80582901bd504c3ac703e7b",
+        "e5fab82529fcc0f9d5819797346af76d763d6b973eed96ad8a7de324a7a253ce",
     "worlds/applepark_city/mesh/height_map_city_500m.png":
         "5a84adc1f45dcffe507fa77d2642cd672c622c225e60ae41f98280bdcf9b24cf",
     "worlds/applepark_city/mesh/normal_map_city_500m.png":
@@ -47,7 +48,9 @@ EXPECTED_CITY_HASHES = {
     "validation/city/road_building_overlap_coordinates.csv":
         "b3a1f0eaee7eafc2595c9bd35e6f23a4a74749b65a0a0224dc78ad6d4ddf6601",
     "validation/city/building_foundation_alignment.csv":
-        "251cc93369133f1e31a353b4587fc00025b39e94fad843a1cb8d1148dd8368e3",
+        "db0247ad555cd41fd3d902fa827bdc98125d06635c18598e4eb613bcb631e12f",
+    "validation/city/building_height_scaling.csv":
+        "bc7b14dac3c2cc5244804f37b3eeed8f629dad7e5f4ac955c504222bd15b4543",
     "validation/city/road_building_overlap_after_fix.png":
         "9f7f73b2dc958fde45e8e6bc1c660125d48e90d7afc3eaa1c398aa8cb98aae9c",
 }
@@ -270,6 +273,29 @@ def validate_city() -> dict[str, object]:
         ["python3", str(GAZEBO / "tools/align_city_building_foundations.py"), "--check"]
     )
     require("result=PASS" in foundation_check, "city deterministic foundation validator")
+    height_check = run_checked(
+        ["python3", str(GAZEBO / "tools/scale_city_building_heights.py"), "--check"]
+    )
+    require("result=PASS" in height_check, "city deterministic height validator")
+
+    with HEIGHT_SCALING_CSV.open("r", encoding="utf-8", newline="") as stream:
+        height_rows = list(csv.DictReader(stream))
+    require(len(height_rows) == 274, "city height audit building count")
+    height_factors = [float(row["factor"]) for row in height_rows]
+    new_heights = [float(row["new_above_ground_height_m"]) for row in height_rows]
+    new_roofs = [float(row["new_roof_z"]) for row in height_rows]
+    require(min(height_factors) >= 2.0 and max(height_factors) <= 3.5, "city height factor range")
+    require(
+        all(
+            abs(
+                float(row["new_above_ground_height_m"])
+                - float(row["old_above_ground_height_m"]) * float(row["factor"])
+            )
+            < 1e-5
+            for row in height_rows
+        ),
+        "city height audit multiplication",
+    )
 
     run_checked(["xmllint", "--noout", str(CITY_WORLD)])
     run_checked(["xmllint", "--noout", str(CITY / "mesh/buildings.dae")])
@@ -281,6 +307,11 @@ def validate_city() -> dict[str, object]:
         "final_visible_road_pixels": 0,
         "foundation_min_extension_m": min(foundation_extensions),
         "foundation_max_extension_m": max(foundation_extensions),
+        "height_factor_min": min(height_factors),
+        "height_factor_max": max(height_factors),
+        "height_min_m": min(new_heights),
+        "height_max_m": max(new_heights),
+        "roof_max_z_m": max(new_roofs),
         "terrain_visual_collision_z_error_m": render_alignment_error,
         "terrain_min_z_m": min(source_heights),
         "terrain_max_z_m": max(source_heights),
@@ -397,6 +428,10 @@ def main() -> None:
             f"city_final_visible_road_overlap_pixels={city['final_visible_road_pixels']}",
             "city_building_foundation_alignment=PASS",
             f"city_foundation_extension_m={city['foundation_min_extension_m']:.6f}..{city['foundation_max_extension_m']:.6f}",
+            "city_building_height_scaling=PASS",
+            f"city_current_height_random_factor={city['height_factor_min']:.6f}..{city['height_factor_max']:.6f}",
+            f"city_new_above_ground_height_m={city['height_min_m']:.6f}..{city['height_max_m']:.6f}",
+            f"city_max_roof_z_m={city['roof_max_z_m']:.6f}",
             "city_visual_collision_terrain_z_alignment=PASS",
             "city_visual_collision_terrain_z_max_error_m="
             f"{city['terrain_visual_collision_z_error_m']:.12f}",

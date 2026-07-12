@@ -32,9 +32,24 @@ FOREST_SDF = FOREST_ROOT / "model.sdf"
 
 MAP_SIZE_M = 300.0
 HEIGHT_SCALE_M = 40.0
+PIXELS = 257
+TERRAIN_SEED = 20260711
 EXPECTED_HEIGHTMAP_SHA256 = (
-    "d25691a939651c845a4e7e0134b384d45be9eef7382913a2b63e6f2330e93f52"
+    "df89f99598d4fe11ef06650c7b468eb01edd51c868fe4aab141378c27dca51be"
 )
+MAIN_CENTER = (-75.0, 75.0)
+MAIN_RADIUS = 75.0
+MAIN_AMPLITUDE = 40.0
+SECOND_CENTER = (55.0, 80.0)
+SECOND_RADIUS = 70.0
+SECOND_AMPLITUDE = 20.0
+PROFILE_EXPONENT = 0.10
+MAZE_FLAT_BOUNDS = (-42.0, 42.0, -30.0, 30.0)
+MAZE_TRANSITION_M = 14.0
+LAUNCH_CENTER = (-80.0, -80.0)
+LAUNCH_FLAT_RADIUS_M = 11.0
+LAUNCH_TRANSITION_RADIUS_M = 24.0
+EDGE_TAPER_M = 18.0
 MAZE_TRANSLATION = (-12.0, 0.0)
 MAZE_YAW = 1.5708
 WALL_SIZE = {
@@ -43,6 +58,22 @@ WALL_SIZE = {
     "long_wall": (32.0, 0.15, 3.75),
 }
 TREE_MESH_SCALE = (2.0, 2.0, 2.0)
+TREE_GROUND_COMPENSATION = {"pine_tree": 0.0001, "oak_tree": 0.0703}
+TREE_TRUNK_RADIUS = {"pine_tree": 0.60, "oak_tree": 0.90}
+
+# Compact, anisotropic ridges surround the two retained source hills.  Their
+# amplitudes stay below the 40 m / 20 m summits and leave a flyable central
+# valley.  The fixed seed and analytic envelopes make the asset reproducible.
+# (center_x, center_y, half_length, half_width, yaw, amplitude)
+RIDGES = (
+    (-5.0, 127.0, 132.0, 27.0, 0.02, 16.0),
+    (-122.0, 26.0, 73.0, 20.0, 1.39, 22.0),
+    (111.0, 43.0, 72.0, 23.0, 1.87, 18.5),
+    (99.0, -69.0, 78.0, 27.0, 2.28, 18.0),
+    (4.0, -122.0, 105.0, 22.0, 0.08, 14.5),
+    (-132.0, -13.0, 58.0, 18.0, 1.48, 16.5),
+    (-4.0, 91.0, 76.0, 17.0, 0.01, 15.0),
+)
 
 Pose = tuple[float, float, float, float, float, float]
 
@@ -114,16 +145,205 @@ def format_pose(pose: Pose) -> str:
     return " ".join(f"{value:.6f}" for value in values)
 
 
-def load_heightmap() -> np.ndarray:
-    if sha256(HEIGHTMAP) != EXPECTED_HEIGHTMAP_SHA256:
-        raise RuntimeError("heightmap checksum differs from the validated 40 m / 20 m asset")
-    pixels = np.asarray(Image.open(HEIGHTMAP).convert("L"), dtype=np.uint8)
-    if pixels.shape != (257, 257):
-        raise RuntimeError(f"expected a 257x257 heightmap, got {pixels.shape}")
-    edge = np.concatenate((pixels[0], pixels[-1], pixels[:, 0], pixels[:, -1]))
-    if int(edge.max()) != 0:
-        raise RuntimeError("heightmap boundary must be zero to avoid a vertical map-edge skirt")
+def smoothstep(value: np.ndarray) -> np.ndarray:
+    clipped = np.clip(value, 0.0, 1.0)
+    return clipped * clipped * (3.0 - 2.0 * clipped)
+
+
+def smooth_hill_profile(normalized_radius: np.ndarray) -> np.ndarray:
+    """Compact C1 radial mound used by the original 40 m / 20 m hills."""
+
+    radius = np.clip(normalized_radius, 0.0, 1.0)
+    samples = np.linspace(0.0, 1.0, 16385)
+    density = np.power(samples * (1.0 - samples), PROFILE_EXPONENT)
+    cdf_samples = np.zeros_like(samples)
+    cdf_samples[1:] = np.cumsum(
+        0.5 * (density[:-1] + density[1:]) * np.diff(samples)
+    )
+    cdf_samples /= cdf_samples[-1]
+    cdf = np.interp(radius, samples, cdf_samples)
+    return np.where(normalized_radius < 1.0, 1.0 - cdf, 0.0)
+
+
+def interpolated_value_noise(rng: np.random.Generator, controls: int) -> np.ndarray:
+    """Pure-NumPy low-frequency value noise, stable across image libraries."""
+
+    control = rng.uniform(-1.0, 1.0, size=(controls, controls))
+    source_axis = np.linspace(0.0, PIXELS - 1.0, controls)
+    target_axis = np.arange(PIXELS, dtype=np.float64)
+    horizontal = np.vstack(
+        [np.interp(target_axis, source_axis, row) for row in control]
+    )
+    return np.vstack(
+        [np.interp(target_axis, source_axis, horizontal[:, column]) for column in range(PIXELS)]
+    ).T
+
+
+def terrain_height(heights: np.ndarray, x: float, y: float) -> float:
+    """Bilinearly sample a 257x257 world-height array in metres."""
+
+    column = (x + MAP_SIZE_M / 2.0) / MAP_SIZE_M * (PIXELS - 1)
+    row = (MAP_SIZE_M / 2.0 - y) / MAP_SIZE_M * (PIXELS - 1)
+    column = min(max(column, 0.0), PIXELS - 1.0)
+    row = min(max(row, 0.0), PIXELS - 1.0)
+    c0, r0 = int(math.floor(column)), int(math.floor(row))
+    c1, r1 = min(c0 + 1, PIXELS - 1), min(r0 + 1, PIXELS - 1)
+    tx, ty = column - c0, row - r0
+    return float(
+        (1.0 - tx) * (1.0 - ty) * heights[r0, c0]
+        + tx * (1.0 - ty) * heights[r0, c1]
+        + (1.0 - tx) * ty * heights[r1, c0]
+        + tx * ty * heights[r1, c1]
+    )
+
+
+def source_tree_specs() -> list[tuple[str, float, float]]:
+    specs = []
+    root = ET.parse(TREE_LAYOUT).getroot()
+    for include in root.findall("./model/include"):
+        tree_type = include.findtext("uri", "").removeprefix("model://")
+        if tree_type not in TREE_TRUNK_RADIUS:
+            continue
+        pose = parse_pose(include.findtext("pose", ""), include.findtext("name", "tree"))
+        specs.append((tree_type, pose[0], pose[1]))
+    if len(specs) != 288:
+        raise RuntimeError(f"expected 288 tree source poses, got {len(specs)}")
+    return specs
+
+
+def flatten_tree_contact_patches(heights: np.ndarray) -> np.ndarray:
+    """Create exact local seats under every cylindrical trunk collision.
+
+    A core extends one grid-cell diagonal beyond the trunk radius.  Therefore
+    every triangle / bilinear cell which can intersect the trunk disk has four
+    equal-height vertices; the entire collision bottom, not only its centre,
+    is coincident with a flat terrain patch.
+    """
+
+    spacing = MAP_SIZE_M / (PIXELS - 1)
+    axis_x = np.linspace(-MAP_SIZE_M / 2.0, MAP_SIZE_M / 2.0, PIXELS)
+    axis_y = np.linspace(MAP_SIZE_M / 2.0, -MAP_SIZE_M / 2.0, PIXELS)
+    x_grid, y_grid = np.meshgrid(axis_x, axis_y)
+    output = heights.copy()
+    initial = heights.copy()
+    for tree_type, x, y in source_tree_specs():
+        target = terrain_height(initial, x, y)
+        # Quantize the platform before the whole map is quantized, ensuring all
+        # core vertices and the generated tree pose resolve to one exact code.
+        target = round(target / HEIGHT_SCALE_M * 255.0) / 255.0 * HEIGHT_SCALE_M
+        core = TREE_TRUNK_RADIUS[tree_type] + math.sqrt(2.0) * spacing
+        # 0.9 m keeps even two oak feather regions disjoint at the measured
+        # 7.25 m minimum tree spacing, so no later patch can disturb another.
+        outer = core + 0.90
+        distance = np.hypot(x_grid - x, y_grid - y)
+        weight = 1.0 - smoothstep((distance - core) / (outer - core))
+        weight[distance >= outer] = 0.0
+        output = output * (1.0 - weight) + target * weight
+    return output
+
+
+def build_heightmap() -> np.ndarray:
+    """Generate retained hills plus deterministic ridges and protected seats."""
+
+    x_axis = np.linspace(-MAP_SIZE_M / 2.0, MAP_SIZE_M / 2.0, PIXELS)
+    y_axis = np.linspace(MAP_SIZE_M / 2.0, -MAP_SIZE_M / 2.0, PIXELS)
+    x_grid, y_grid = np.meshgrid(x_axis, y_axis)
+
+    main = MAIN_AMPLITUDE * smooth_hill_profile(
+        np.hypot(x_grid - MAIN_CENTER[0], y_grid - MAIN_CENTER[1]) / MAIN_RADIUS
+    )
+    second = SECOND_AMPLITUDE * smooth_hill_profile(
+        np.hypot(x_grid - SECOND_CENTER[0], y_grid - SECOND_CENTER[1]) / SECOND_RADIUS
+    )
+    retained_hills = main + second
+    retained_hills *= HEIGHT_SCALE_M / float(retained_hills.max())
+
+    rng = np.random.default_rng(TERRAIN_SEED)
+    warp_x = 4.8 * (
+        0.62 * interpolated_value_noise(rng, 7)
+        + 0.38 * interpolated_value_noise(rng, 13)
+    )
+    warp_y = 4.8 * (
+        0.62 * interpolated_value_noise(rng, 8)
+        + 0.38 * interpolated_value_noise(rng, 15)
+    )
+    ridge_noise = (
+        0.55 * interpolated_value_noise(rng, 9)
+        + 0.30 * interpolated_value_noise(rng, 17)
+        + 0.15 * interpolated_value_noise(rng, 33)
+    )
+    ridge_texture = 0.82 + 0.18 * (1.0 - np.clip(np.abs(ridge_noise), 0.0, 1.0))
+
+    ridges = np.zeros_like(retained_hills)
+    warped_x, warped_y = x_grid + warp_x, y_grid + warp_y
+    for center_x, center_y, half_length, half_width, yaw, amplitude in RIDGES:
+        dx, dy = warped_x - center_x, warped_y - center_y
+        along = math.cos(yaw) * dx + math.sin(yaw) * dy
+        across = -math.sin(yaw) * dx + math.cos(yaw) * dy
+        radius = np.hypot(along / half_length, across / half_width)
+        ridges = np.maximum(
+            ridges,
+            amplitude * smooth_hill_profile(radius) * ridge_texture,
+        )
+    # Nothing east of x=0 may eclipse the retained 20 m summit; likewise all
+    # western additions remain below the retained 40 m summit.
+    ridges = np.minimum(ridges, np.where(x_grid > 0.0, 19.0, 36.0))
+    heights = np.maximum(retained_hills, ridges)
+
+    xmin, xmax, ymin, ymax = MAZE_FLAT_BOUNDS
+    rectangle_distance = np.maximum.reduce(
+        (xmin - x_grid, x_grid - xmax, ymin - y_grid, y_grid - ymax)
+    )
+    maze_mask = smoothstep(rectangle_distance / MAZE_TRANSITION_M)
+    launch_distance = np.hypot(x_grid - LAUNCH_CENTER[0], y_grid - LAUNCH_CENTER[1])
+    launch_mask = smoothstep(
+        (launch_distance - LAUNCH_FLAT_RADIUS_M)
+        / (LAUNCH_TRANSITION_RADIUS_M - LAUNCH_FLAT_RADIUS_M)
+    )
+    edge_distance = np.minimum(
+        MAP_SIZE_M / 2.0 - np.abs(x_grid),
+        MAP_SIZE_M / 2.0 - np.abs(y_grid),
+    )
+    edge_mask = smoothstep(edge_distance / EDGE_TAPER_M)
+    heights *= maze_mask * launch_mask * edge_mask
+    heights = flatten_tree_contact_patches(heights)
+    heights = np.clip(heights, 0.0, HEIGHT_SCALE_M)
+
+    pixels = np.rint(heights / HEIGHT_SCALE_M * 255.0).astype(np.uint8)
+    pixels[0, :] = pixels[-1, :] = 0
+    pixels[:, 0] = pixels[:, -1] = 0
+    # Preserve both canonical summit codes after all protective operations.
+    main_column = int(round((MAIN_CENTER[0] + 150.0) / MAP_SIZE_M * 256.0))
+    main_row = int(round((150.0 - MAIN_CENTER[1]) / MAP_SIZE_M * 256.0))
+    pixels[main_row, main_column] = 255
+    second_column = int(round((SECOND_CENTER[0] + 150.0) / MAP_SIZE_M * 256.0))
+    second_row = int(round((150.0 - SECOND_CENTER[1]) / MAP_SIZE_M * 256.0))
+    pixels[second_row, second_column] = 128
     return pixels
+
+
+def write_heightmap(pixels: np.ndarray) -> None:
+    Image.fromarray(pixels, mode="L").save(HEIGHTMAP, optimize=True)
+    if EXPECTED_HEIGHTMAP_SHA256 and sha256(HEIGHTMAP) != EXPECTED_HEIGHTMAP_SHA256:
+        raise RuntimeError("generated mountain heightmap checksum is not the pinned asset")
+    edge = np.concatenate((pixels[0], pixels[-1], pixels[:, 0], pixels[:, -1]))
+    if pixels.shape != (PIXELS, PIXELS) or int(edge.max()) != 0:
+        raise RuntimeError("mountain heightmap shape or zero-height boundary is invalid")
+
+
+def seat_tree_layout(pixels: np.ndarray) -> None:
+    heights = pixels.astype(np.float64) / 255.0 * HEIGHT_SCALE_M
+    document = ET.parse(TREE_LAYOUT)
+    for include in document.getroot().findall("./model/include"):
+        tree_type = include.findtext("uri", "").removeprefix("model://")
+        if tree_type not in TREE_GROUND_COMPENSATION:
+            continue
+        name = include.findtext("name", "tree")
+        pose = list(parse_pose(include.findtext("pose", ""), name))
+        pose[2] = terrain_height(heights, pose[0], pose[1]) + TREE_GROUND_COMPENSATION[tree_type]
+        include.find("pose").text = format_pose(tuple(pose))  # type: ignore[arg-type]
+    ET.indent(document, space="  ")
+    document.write(TREE_LAYOUT, encoding="UTF-8", xml_declaration=True)
 
 
 def write_mtl() -> None:
@@ -228,7 +448,10 @@ def add_tree_obstacles(link: ET.Element, include: ET.Element) -> str:
 
     collision = child(link, "collision", name=f"{name}_trunk_collision")
     if tree_type == "pine_tree":
-        trunk_pose: Pose = (0.0, 0.0, 5.0, 0.0, 0.0, 0.0)
+        # The visual mesh extends 0.1 mm below its origin.  The source pose
+        # compensates for that visual extent, while this matching -0.1 mm
+        # collision offset keeps the cylinder bottom on the exact terrain.
+        trunk_pose: Pose = (0.0, 0.0, 4.9999, 0.0, 0.0, 0.0)
         visual_pose = tree_pose
         radius, length = "0.60", "10.0"
     else:
@@ -343,7 +566,9 @@ def write_forest_sdf() -> tuple[dict[str, int], dict[str, int], int]:
 def main() -> None:
     if not NATURAL_TEXTURE.is_file():
         raise RuntimeError(f"missing natural terrain texture: {NATURAL_TEXTURE}")
-    pixels = load_heightmap()
+    pixels = build_heightmap()
+    write_heightmap(pixels)
+    seat_tree_layout(pixels)
     write_mtl()
     write_terrain_obj(VISUAL_OBJ, pixels)
     shutil.copy2(VISUAL_OBJ, COLLISION_OBJ)

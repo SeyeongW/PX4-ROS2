@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import math
 from pathlib import Path
 import xml.etree.ElementTree as ET
@@ -14,6 +15,7 @@ from PIL import Image
 
 GAZEBO_ROOT = Path(__file__).resolve().parents[1]
 WORLD = GAZEBO_ROOT / "worlds" / "ugv_drone.world"
+MAP_WORLD = GAZEBO_ROOT / "worlds" / "ugv_drone_map.world"
 TERRAIN = GAZEBO_ROOT / "models" / "ugv_mou_terrain"
 FOREST = GAZEBO_ROOT / "models" / "ugv_mou_forest_obstacles"
 HEIGHTMAP = TERRAIN / "materials" / "textures" / "mountain_height_300.png"
@@ -25,7 +27,7 @@ MAZE_LAYOUT = FOREST / "source" / "maze_layout.source.xml"
 LOG = GAZEBO_ROOT / "validation" / "ugv_drone_mountain_300_static.log"
 RUNTIME_LOG = GAZEBO_ROOT / "validation" / "runtime" / "mountain_tree288_runtime.log"
 EXPECTED_HEIGHTMAP_SHA256 = (
-    "d25691a939651c845a4e7e0134b384d45be9eef7382913a2b63e6f2330e93f52"
+    "df89f99598d4fe11ef06650c7b468eb01edd51c868fe4aab141378c27dca51be"
 )
 MAZE_TRANSLATION = (-12.0, 0.0)
 MAZE_YAW = 1.5708
@@ -57,6 +59,74 @@ def terrain_height(pixels: np.ndarray, x: float, y: float) -> float:
         + tx * ty * float(pixels[r1, c1])
     )
     return value / 255.0 * 40.0
+
+
+def generated_heightmap() -> np.ndarray:
+    """Load the repository generator and reproduce its canonical pixels."""
+
+    path = GAZEBO_ROOT / "tools" / "build_mountain_300_assets.py"
+    spec = importlib.util.spec_from_file_location("px4_mountain_builder", path)
+    require(spec is not None and spec.loader is not None, "mountain generator cannot be loaded")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.build_heightmap()
+
+
+def disk_terrain_samples(
+    pixels: np.ndarray, x: float, y: float, radius: float
+) -> list[float]:
+    values = [terrain_height(pixels, x, y)]
+    for sample_radius in np.linspace(radius / 4.0, radius, 4):
+        for angle in np.linspace(0.0, 2.0 * math.pi, 128, endpoint=False):
+            values.append(
+                terrain_height(
+                    pixels,
+                    x + float(sample_radius) * math.cos(float(angle)),
+                    y + float(sample_radius) * math.sin(float(angle)),
+                )
+            )
+    return values
+
+
+def oriented_box_terrain_samples(
+    pixels: np.ndarray, pose: list[float], size: list[float], step: float = 0.25
+) -> list[float]:
+    along = np.linspace(
+        -size[0] / 2.0,
+        size[0] / 2.0,
+        max(2, int(math.ceil(size[0] / step)) + 1),
+    )
+    across = np.linspace(
+        -size[1] / 2.0,
+        size[1] / 2.0,
+        max(2, int(math.ceil(size[1] / step)) + 1),
+    )
+    cosine, sine = math.cos(pose[5]), math.sin(pose[5])
+    return [
+        terrain_height(
+            pixels,
+            pose[0] + cosine * float(local_x) - sine * float(local_y),
+            pose[1] + sine * float(local_x) + cosine * float(local_y),
+        )
+        for local_x in along
+        for local_y in across
+    ]
+
+
+def point_to_oriented_box_gap(
+    x: float,
+    y: float,
+    radius: float,
+    pose: list[float],
+    size: list[float],
+) -> float:
+    dx, dy = x - pose[0], y - pose[1]
+    cosine, sine = math.cos(pose[5]), math.sin(pose[5])
+    local_x = cosine * dx + sine * dy
+    local_y = -sine * dx + cosine * dy
+    outside_x = max(abs(local_x) - size[0] / 2.0, 0.0)
+    outside_y = max(abs(local_y) - size[1] / 2.0, 0.0)
+    return math.hypot(outside_x, outside_y) - radius
 
 
 def obj_stats(path: Path) -> tuple[int, int, tuple[float, ...]]:
@@ -120,6 +190,10 @@ def validate() -> list[str]:
     pixels = np.asarray(Image.open(HEIGHTMAP).convert("L"), dtype=np.uint8)
     require(pixels.shape == (257, 257), "heightmap is not 257x257")
     require(sha256(HEIGHTMAP) == EXPECTED_HEIGHTMAP_SHA256, "heightmap checksum mismatch")
+    require(
+        np.array_equal(pixels, generated_heightmap()),
+        "heightmap differs from the deterministic retained-hill/ridge generator",
+    )
     edge = np.concatenate((pixels[0], pixels[-1], pixels[:, 0], pixels[:, -1]))
     require(int(edge.max()) == 0, "heightmap edge is nonzero")
     require(int(pixels.max()) == 255, "40 m summit is absent")
@@ -129,6 +203,30 @@ def validate() -> list[str]:
     x_axis = np.linspace(-150.0, 150.0, 257)
     second_peak = float(pixels[:, x_axis > 0.0].max()) / 255.0 * 40.0
     require(main_peak > 39.8 and 19.5 < second_peak < 20.2, "40 m / 20 m summit check failed")
+    nonzero_ratio = float(np.count_nonzero(pixels)) / float(pixels.size)
+    unique_elevations = len(np.unique(pixels))
+    require(0.50 < nonzero_ratio < 0.65, "mountain coverage no longer forms a ridge landscape")
+    require(unique_elevations >= 240, "mountain elevation detail was lost")
+    heights = pixels.astype(np.float64) / 255.0 * 40.0
+    spacing = 300.0 / 256.0
+    gradient_row, gradient_x = np.gradient(heights, spacing, spacing)
+    slopes = np.hypot(gradient_x, -gradient_row)
+    slope_p99 = float(np.percentile(slopes, 99.0))
+    max_slope = float(slopes.max())
+    require(slope_p99 < 1.40 and max_slope < 3.20, "terrain acquired an unintended cliff")
+    y_axis = np.linspace(150.0, -150.0, 257)
+    maze_nodes = pixels[
+        (np.abs(y_axis[:, None]) <= 30.0)
+        & (np.abs(x_axis[None, :]) <= 42.0)
+    ]
+    require(int(maze_nodes.max()) == 0, "central maze protection plateau is not z=0")
+
+    pad_samples = [
+        terrain_height(pixels, float(x), float(y))
+        for x in np.linspace(-86.0, -74.0, 49)
+        for y in np.linspace(-86.0, -74.0, 49)
+    ]
+    require(max(abs(value) for value in pad_samples) < 1e-12, "launch pad footprint is not flat z=0")
 
     rgb = np.asarray(Image.open(TEXTURE).convert("RGB"), dtype=np.uint8)
     blue_dominant = int(((rgb[:, :, 2] > rgb[:, :, 0]) & (rgb[:, :, 2] > rgb[:, :, 1])).sum())
@@ -139,6 +237,7 @@ def validate() -> list[str]:
     visual_stats = obj_stats(VISUAL_OBJ)
     collision_stats = obj_stats(COLLISION_OBJ)
     require(visual_stats == collision_stats, "visual and collision OBJ geometry differ")
+    require(sha256(VISUAL_OBJ) == sha256(COLLISION_OBJ), "visual/collision OBJ bytes differ")
     vertices, faces, bounds = visual_stats
     require(vertices == 66049 and faces == 131072, "unexpected terrain mesh topology")
     require(bounds == (-150.0, -150.0, 0.0, 150.0, 150.0, 40.0), f"terrain bounds differ: {bounds}")
@@ -252,6 +351,8 @@ def validate() -> list[str]:
     z_errors = []
     tree_xy = []
     tree_trunks = []
+    tree_disk_errors = []
+    tree_disk_reliefs = []
     added_tree_pad_clearances = []
     for name in sorted(tree_names):
         branch = tree_branches[name]
@@ -272,7 +373,7 @@ def validate() -> list[str]:
             require(source_tree_type == "pine_tree", "generated pine differs from source type")
             pine_count += 1
             base_z = pose[2] - 0.0001
-            visual_lift, trunk_offset, radius, length = 0.0, 5.0, 0.60, 10.0
+            visual_lift, trunk_offset, radius, length = 0.0, 4.9999, 0.60, 10.0
         elif mesh_uri.endswith("oak_tree.dae"):
             require(source_tree_type == "oak_tree", "generated oak differs from source type")
             oak_count += 1
@@ -293,6 +394,12 @@ def validate() -> list[str]:
         require(max(abs(source_pose[index] - collision_pose[index]) for index in (0, 1, 3, 4, 5)) < 1e-9, "tree trunk pose was not composed into the root link")
         require(abs(collision_pose[2] - (source_pose[2] + trunk_offset)) < 1e-9, "tree trunk height was not composed into the root link")
         z_errors.append(abs(base_z - terrain_height(pixels, pose[0], pose[1])))
+        collision_bottom = collision_pose[2] - length / 2.0
+        disk_samples = disk_terrain_samples(pixels, pose[0], pose[1], radius)
+        tree_disk_errors.append(
+            max(abs(value - collision_bottom) for value in disk_samples)
+        )
+        tree_disk_reliefs.append(max(disk_samples) - min(disk_samples))
         tree_xy.append((pose[0], pose[1]))
         tree_trunks.append((pose[0], pose[1], radius))
         require(abs(pose[0]) <= 140.0 and abs(pose[1]) <= 140.0, "tree crossed the 10 m map boundary margin")
@@ -303,6 +410,8 @@ def validate() -> list[str]:
             added_tree_pad_clearances.append(math.hypot(pose[0] + 80.0, pose[1] + 80.0))
     require((pine_count, oak_count) == (216, 72), "pine/oak counts differ")
     require(max(z_errors) < 1e-5, "a tree is not seated on the terrain")
+    require(max(tree_disk_errors) < 1e-5, "a trunk collision disk floats above or cuts into terrain")
+    require(max(tree_disk_reliefs) < 1e-9, "a tree contact patch is not exactly flat")
     require(len(added_tree_pad_clearances) == 216, "forest expansion tree count differs")
     require(min(added_tree_pad_clearances) >= 24.0, "added tree entered the launch-pad clearance")
     min_tree_spacing = min(
@@ -321,6 +430,8 @@ def validate() -> list[str]:
     wall_min_x = wall_min_y = math.inf
     wall_max_x = wall_max_y = -math.inf
     wall_signatures = set()
+    wall_geometry = []
+    wall_contact_errors = []
     for name in sorted(wall_names):
         collision = wall_collisions[name]
         visual = wall_visuals[name]
@@ -341,8 +452,29 @@ def validate() -> list[str]:
         wall_min_x, wall_max_x = min(wall_min_x, pose[0] - hx), max(wall_max_x, pose[0] + hx)
         wall_min_y, wall_max_y = min(wall_min_y, pose[1] - hy), max(wall_max_y, pose[1] + hy)
         require(size[2] == 3.75, "maze wall height is not 3.75 m")
+        wall_bottom = pose[2] - size[2] / 2.0
+        footprint_samples = oriented_box_terrain_samples(pixels, pose, size)
+        wall_contact_errors.append(
+            max(abs(value - wall_bottom) for value in footprint_samples)
+        )
+        wall_geometry.append((pose, size))
     require(wall_min_x > -28.1 and wall_max_x < 28.1, "maze x bounds changed")
     require(wall_min_y > -16.1 and wall_max_y < 16.1, "maze y bounds changed")
+    require(max(wall_contact_errors) < 1e-12, "a maze wall floats above or cuts into terrain")
+
+    min_tree_wall_gap = min(
+        point_to_oriented_box_gap(x, y, radius, pose, size)
+        for x, y, radius in tree_trunks
+        for pose, size in wall_geometry
+    )
+    require(min_tree_wall_gap > 5.0, "a tree trunk overlaps or crowds a maze wall")
+    pad_pose = [-80.0, -80.0, 0.08, 0.0, 0.0, 0.0]
+    pad_size = [12.0, 12.0, 0.16]
+    min_tree_pad_gap = min(
+        point_to_oriented_box_gap(x, y, radius, pad_pose, pad_size)
+        for x, y, radius in tree_trunks
+    )
+    require(min_tree_pad_gap > 5.0, "a tree trunk overlaps or crowds the launch pad")
 
     resource_text = "\n".join(
         path.read_text(encoding="utf-8", errors="ignore")
@@ -353,8 +485,16 @@ def validate() -> list[str]:
     runtime_status = "pending"
     if RUNTIME_LOG.is_file():
         runtime_text = RUNTIME_LOG.read_text(encoding="utf-8", errors="replace")
-        current_forest_marker = f"forest_sdf_sha256={sha256(FOREST / 'model.sdf')}"
-        if "RUNTIME VALIDATION: PASS" in runtime_text and current_forest_marker in runtime_text:
+        current_runtime_markers = {
+            "RUNTIME VALIDATION: PASS",
+            "runtime_process_tree_stopped=PASS",
+            f"world_sha256={sha256(MAP_WORLD)}",
+            f"forest_sdf_sha256={sha256(FOREST / 'model.sdf')}",
+            f"heightmap_sha256={sha256(HEIGHTMAP)}",
+            f"terrain_visual_obj_sha256={sha256(VISUAL_OBJ)}",
+            f"terrain_collision_obj_sha256={sha256(COLLISION_OBJ)}",
+        }
+        if all(marker in runtime_text for marker in current_runtime_markers):
             runtime_status = "PASS"
 
     lines.extend(
@@ -362,7 +502,11 @@ def validate() -> list[str]:
             "world_sdf=1.9",
             "terrain_bounds_m=x[-150,150] y[-150,150] z[0,40]",
             f"summits_m=main:{main_peak:.6f} second:{second_peak:.6f}",
+            f"terrain_nonzero_area_ratio={nonzero_ratio:.6f}",
+            f"terrain_unique_elevations={unique_elevations}",
+            f"terrain_slope_p99={slope_p99:.6f} terrain_slope_max={max_slope:.6f}",
             f"launch_pad_terrain_z_m={launch_height:.6f}",
+            f"launch_pad_footprint_max_contact_error_m={max(abs(value) for value in pad_samples):.9f}",
             f"terrain_vertices={vertices}",
             f"terrain_triangles={faces}",
             f"heightmap_sha256={sha256(HEIGHTMAP)}",
@@ -377,11 +521,16 @@ def validate() -> list[str]:
             f"trees_total={len(tree_names)} pine={pine_count} oak={oak_count} tree_mesh_visuals={len(tree_branches) + len(tree_barks)}",
             "tree_mesh_scale=2 2 2",
             f"tree_max_terrain_z_error_m={max(z_errors):.9f}",
+            f"tree_disk_max_contact_error_m={max(tree_disk_errors):.9f}",
+            f"tree_disk_max_relief_m={max(tree_disk_reliefs):.9f}",
             f"tree_min_spacing_m={min_tree_spacing:.6f}",
             f"tree_trunk_min_clearance_m={min_trunk_clearance:.6f}",
+            f"tree_maze_min_clearance_m={min_tree_wall_gap:.6f}",
+            f"tree_launch_pad_min_clearance_m={min_tree_pad_gap:.6f}",
             f"added_tree_launch_pad_clearance_m={min(added_tree_pad_clearances):.6f}",
             f"maze_source_entries=73 maze_unique_walls={len(wall_names)} height_m=3.75",
             f"maze_aabb_m=x[{wall_min_x:.6f},{wall_max_x:.6f}] y[{wall_min_y:.6f},{wall_max_y:.6f}]",
+            f"maze_wall_footprint_max_contact_error_m={max(wall_contact_errors):.9f}",
             "operational_sim_assets_references=0",
             f"runtime_gui_validation={runtime_status}",
         )

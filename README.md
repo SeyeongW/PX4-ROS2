@@ -111,7 +111,7 @@ pip3 install pyrealsense2
 ```bash
 mkdir -p ~/ros2_ws/src
 cd ~/ros2_ws/src
-git clone -b wang https://github.com/SeyeongW/PX4-ROS2.git
+git clone -b jo https://github.com/SeyeongW/PX4-ROS2.git
 cd ~/ros2_ws
 
 # 의존성 자동 설치
@@ -191,7 +191,7 @@ echo "source ~/ros_gz_ws/install/setup.bash" >> ~/.bashrc
 ### 저장소만으로 맵 + 드론 바로 확인
 
 ```bash
-cd ~/PX4-ROS2
+cd ~/ros2_ws/src/PX4-ROS2
 ./gazebo/run_world.sh city
 # 또는
 ./gazebo/run_world.sh mountain
@@ -214,7 +214,7 @@ GZ_SIM_RESOURCE_PATH="$PWD/gazebo/models:$PWD/gazebo/worlds" __NV_PRIME_RENDER_O
 
 ### 산악 드론 월드
 
-300 x 300 m 지형, 40 m / 20 m 봉우리, 숲·미로 장애물을 사용하는 산악맵은 다음처럼 실행합니다.
+300 x 300 m 지형, 기존 40 m / 20 m 봉우리와 추가 능선, 숲·미로 장애물을 사용하는 산악맵은 다음처럼 실행합니다.
 RTX 5060 선택, 모델 경로와 ArduPilot 플러그인 경로는 스크립트가 설정합니다.
 
 ```bash

@@ -33,8 +33,10 @@ GZ_SIM_RESOURCE_PATH="$PWD/gazebo/models:$PWD/gazebo/worlds" __NV_PRIME_RENDER_O
 
 - world: `gazebo/worlds/applepark_city/applepark.world`
 - size: 500 x 500 m
-- 274 buildings with deterministic 2–5x height scaling
-- terrain-seated building foundations; roofs and all XY footprints remain unchanged
+- 274 buildings; each checked-in pre-update height is further scaled by a
+  deterministic pseudo-random factor in `2.001288..3.476403`
+- terrain-seated foundations and every XY footprint remain unchanged; only
+  roof vectors are raised (`15.907114..109.621338 m` above ground)
 - visual and Bullet terrain surfaces share the same `-5.299..0.856 m` Z range
 - spawn: `(-120, 115)`
 - non-photographic OSM road / land-use texture
@@ -53,11 +55,14 @@ Road and building geometry originate from OpenStreetMap-derived data. See
 
 The source terrain generator assigned one centroid elevation to each flat
 building base. On sloped ground that produced downhill gaps up to 0.732 m and
-uphill terrain intersections up to 2.485 m. The checked DAE now extends only
-the bottom vertices beneath both the visual heightmap and Bullet collision
-surface by at least 0.05 m. Roof elevations, 2–5x height scaling, roads and XY
-coordinates are unchanged. Exact per-building values are recorded in
-`gazebo/validation/city/building_foundation_alignment.csv`.
+uphill terrain intersections up to 2.485 m. The checked DAE extends the bottom
+vertices beneath both the visual heightmap and Bullet collision surface by at
+least 0.05 m. The latest height pass then preserves those exact foundations,
+all roads and all XY coordinates while raising only the 13,872 roof vectors.
+Foundation values are recorded in
+`gazebo/validation/city/building_foundation_alignment.csv`; the stable
+SHA-256-derived factor, old roof and new roof for every component are in
+`gazebo/validation/city/building_height_scaling.csv`.
 
 Gazebo's OGRE2 renderer normalizes an image heightmap against the largest
 pixel actually present. The 500 m crop has a maximum value of 152 rather than
@@ -69,7 +74,8 @@ Bullet collision mesh instead of letting it cut through the buildings.
 
 - world: `gazebo/worlds/ugv_drone_map.world`
 - size: 300 x 300 m
-- smooth 40 m and 20 m summits, 288 uniformly 2x-scaled trees and 72 maze walls
+- retained 40 m / 20.078 m summits plus seven deterministic branching ridges
+- 288 uniformly 2x-scaled trees and 72 maze walls on exact protected contact patches
 - spawn: `(-80, -80)`
 
 For an actual ArduPilot-controlled Iris, install `ardupilot_gazebo` and run:
@@ -90,5 +96,8 @@ python3 gazebo/tools/validate_self_contained_maps.py
 ```
 
 The validation asserts asset hashes, local URI closure, drone presence, city
-road alignment and deterministic mountain geometry. Generated collision OBJ
-files are committed directly so a fresh clone needs no separate LFS download.
+road alignment, deterministic building-height factors and deterministic
+mountain geometry. It samples every maze footprint, launch-pad footprint and
+every tree trunk disk against the final quantized terrain. Generated collision
+OBJ files are committed directly so a fresh clone needs no separate LFS
+download.

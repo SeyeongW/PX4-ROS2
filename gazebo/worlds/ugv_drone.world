@@ -4,7 +4,8 @@
     300 x 300 m mountain flight world for Gazebo Harmonic.
 
     Terrain bounds: x/y = -150..150 m, z = 0..40 m.
-    The two smooth summits are approximately 40 m and 20 m high.
+    The retained summits are approximately 40 m and 20 m high, surrounded by
+    deterministic warped ridges and foothills with protected contact patches.
     The launch pad is on the flat south-west corner at (-80, -80).
     ArduPilotPlugin in iris_with_down_camera listens on FDM UDP port 9002.
     Launch with gz-physics-bullet-featherstone-plugin so the OBJ collision is
