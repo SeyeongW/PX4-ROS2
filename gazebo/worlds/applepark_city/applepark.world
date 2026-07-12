@@ -38,6 +38,33 @@
                 name="gz::sim::systems::NavSat">
         </plugin>
 
+        <!-- Added for PX4 SITL (px4_sitl_default/../gz_bridge/server.config parity):
+             the map-only plugin set above only had physics/sensors/imu/navsat, so
+             PX4's EKF2 saw "barometer missing"/"0 compass" on the x500 vehicle
+             until these were added (2026-07-12, found by actually attaching PX4
+             and reading the preflight-check warnings, not from docs). -->
+        <plugin filename="gz-sim-air-pressure-system"
+                name="gz::sim::systems::AirPressure">
+        </plugin>
+        <plugin filename="gz-sim-air-speed-system"
+                name="gz::sim::systems::AirSpeed">
+        </plugin>
+        <plugin filename="gz-sim-magnetometer-system"
+                name="gz::sim::systems::Magnetometer">
+        </plugin>
+        <plugin filename="gz-sim-contact-system"
+                name="gz::sim::systems::Contact">
+        </plugin>
+        <plugin filename="gz-sim-apply-link-wrench-system"
+                name="gz::sim::systems::ApplyLinkWrench">
+        </plugin>
+        <plugin filename="libOpticalFlowSystem.so"
+                name="custom::OpticalFlowSystem">
+        </plugin>
+        <plugin filename="libGstCameraSystem.so"
+                name="custom::GstCameraSystem">
+        </plugin>
+
         <light type="directional" name="sun">
             <cast_shadows>true</cast_shadows>
             <pose>0 -7000 7000 0 0 0</pose>
@@ -408,12 +435,11 @@
             <pose>-120 115 -3.019558902 0 0 0</pose>
         </frame>
 
-        <include>
-            <uri>model://map_preview_drone</uri>
-            <name>city_preview_drone</name>
-            <!-- The preview model origin is its landing-gear contact plane. -->
-            <pose>-120 115 -3.019558902 0 0 0</pose>
-        </include>
+        <!-- No baked-in vehicle here: PX4 SITL spawns its own x500_mono_cam_down
+             standalone at the drone_spawn frame pose above (see
+             gazebo/run_px4_sitl.sh MAP=city). model://map_preview_drone (a
+             non-flyable decoration) was removed to avoid a duplicate model
+             sitting at the same spawn point. -->
 
     </world>
 </sdf>

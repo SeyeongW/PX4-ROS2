@@ -38,6 +38,25 @@
       name="gz::sim::systems::Imu"/>
     <plugin filename="gz-sim-navsat-system"
       name="gz::sim::systems::NavSat"/>
+    <!-- Added for PX4 SITL (px4_sitl_default/../gz_bridge/server.config parity):
+         the map-only plugin set above only had physics/sensors/imu/navsat, so
+         PX4's EKF2 saw "barometer missing"/"0 compass" on the x500 vehicle
+         until these were added (2026-07-12, found by actually attaching PX4
+         and reading the preflight-check warnings, not from docs). -->
+    <plugin filename="gz-sim-air-pressure-system"
+      name="gz::sim::systems::AirPressure"/>
+    <plugin filename="gz-sim-air-speed-system"
+      name="gz::sim::systems::AirSpeed"/>
+    <plugin filename="gz-sim-magnetometer-system"
+      name="gz::sim::systems::Magnetometer"/>
+    <plugin filename="gz-sim-contact-system"
+      name="gz::sim::systems::Contact"/>
+    <plugin filename="gz-sim-apply-link-wrench-system"
+      name="gz::sim::systems::ApplyLinkWrench"/>
+    <plugin filename="libOpticalFlowSystem.so"
+      name="custom::OpticalFlowSystem"/>
+    <plugin filename="libGstCameraSystem.so"
+      name="custom::GstCameraSystem"/>
 
     <spherical_coordinates>
       <surface_model>EARTH_WGS84</surface_model>
@@ -215,13 +234,9 @@
       </link>
     </model>
 
-    <!-- Map-only entry point: no external ArduPilot model or plugin is needed.
-         Use ugv_drone.world through run_ugv_drone.sh for SITL integration. -->
-    <include>
-      <uri>model://map_preview_drone</uri>
-      <name>mountain_preview_drone</name>
-      <!-- The preview model origin is its landing-gear contact plane. -->
-      <pose>-80 -80 0.16 0 0 0.785398</pose>
-    </include>
+    <!-- No baked-in vehicle here: PX4 SITL spawns its own x500_mono_cam_down
+         standalone above the pad (see gazebo/run_px4_sitl.sh MAP=mountain).
+         model://map_preview_drone (a non-flyable decoration) was removed to
+         avoid a duplicate model sitting at the same spawn point. -->
   </world>
 </sdf>

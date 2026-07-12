@@ -74,6 +74,24 @@ if [[ "$MAP" == "mountain-sitl" ]]; then
   RESOURCE_PATHS+=("$AP_GAZEBO/models" "$AP_GAZEBO/worlds")
   export GZ_SIM_SYSTEM_PLUGIN_PATH="$AP_GAZEBO/build${GZ_SIM_SYSTEM_PLUGIN_PATH:+:$GZ_SIM_SYSTEM_PLUGIN_PATH}"
 fi
+# city/mountain (map-only) declare libOpticalFlowSystem.so/libGstCameraSystem.so
+# for the PX4 x500_mono_cam_down vehicle (see run_px4_sitl.sh MAP=city|mountain)
+# -- those .so files, and x500_mono_cam_down's own model:// sub-includes, live
+# in PX4-Autopilot's own build/Tools output, not this repo, so point
+# GZ_SIM_SYSTEM_PLUGIN_PATH/GZ_SIM_RESOURCE_PATH at them when present. Without
+# the resource path piece specifically, the model still "spawns" (entity +
+# correct sensor topics all show up) but every sensor topic stays silent
+# forever -- found by actually attaching PX4 and comparing gz topic -e output
+# against the known-good truck_mission_px4 world (2026-07-12), not from docs.
+# Harmless no-op otherwise (plain ArduPilot/no-PX4 preview never needs this).
+PX4_HOME="${PX4_HOME:-$HOME/PX4-Autopilot}"
+PX4_GZ_PLUGINS="$PX4_HOME/build/px4_sitl_default/src/modules/simulation/gz_plugins"
+PX4_GZ_MODELS="$PX4_HOME/Tools/simulation/gz/models"
+PX4_GZ_WORLDS="$PX4_HOME/Tools/simulation/gz/worlds"
+if [[ "$MAP" != "mountain-sitl" && -d "$PX4_GZ_PLUGINS" ]]; then
+  export GZ_SIM_SYSTEM_PLUGIN_PATH="$PX4_GZ_PLUGINS${GZ_SIM_SYSTEM_PLUGIN_PATH:+:$GZ_SIM_SYSTEM_PLUGIN_PATH}"
+  RESOURCE_PATHS+=("$PX4_GZ_MODELS" "$PX4_GZ_WORLDS")
+fi
 if [[ -n "${GZ_SIM_RESOURCE_PATH:-}" ]]; then
   RESOURCE_PATHS+=("$GZ_SIM_RESOURCE_PATH")
 fi
