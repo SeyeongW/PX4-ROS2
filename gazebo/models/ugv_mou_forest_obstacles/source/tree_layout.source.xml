@@ -1,0 +1,1449 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<sdf version="1.6">
+  <model name="quad_map">
+    <include>
+      <pose>-12 0 0 0 0 1.5708</pose>
+      <uri>model://quad_maze</uri>
+    </include>
+    <include>
+      <name>mountain_tree_001</name>
+      <pose>9.051065 44.917143 3.137355 0.000000 0.000000 2.257501</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_002</name>
+      <pose>-17.852665 80.474088 8.784414 0.000000 0.000000 -0.042045</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_003</name>
+      <pose>97.073538 65.082020 9.568727 0.000000 0.000000 -3.079300</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_004</name>
+      <pose>-13.854763 66.769170 6.658535 0.000000 0.000000 -2.775210</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_005</name>
+      <pose>-58.094246 67.907034 30.745198 0.000000 0.000000 1.905970</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_006</name>
+      <pose>25.484919 80.135078 11.607943 0.000000 0.000000 2.165843</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_007</name>
+      <pose>-87.752767 65.782195 32.156963 0.000000 0.000000 1.756136</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_008</name>
+      <pose>67.024466 38.330219 7.599712 0.000000 0.000000 -2.084120</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_009</name>
+      <pose>16.751369 30.600805 0.000100 0.000000 0.000000 -0.195855</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_010</name>
+      <pose>87.729134 75.852958 10.666767 0.000000 0.000000 -1.659041</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_011</name>
+      <pose>81.066696 21.060493 1.411865 0.000000 0.000000 0.835484</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_012</name>
+      <pose>76.826185 110.065279 9.482065 0.000000 0.000000 1.048413</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_013</name>
+      <pose>-39.598327 18.586046 0.000100 0.000000 0.000000 -3.036239</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_014</name>
+      <pose>58.519951 93.726716 16.156963 0.000000 0.000000 1.466930</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_015</name>
+      <pose>28.700869 116.378518 7.372649 0.000000 0.000000 2.681941</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_016</name>
+      <pose>31.552139 132.986910 10.580104 0.000000 0.000000 2.251428</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_017</name>
+      <pose>-85.533969 4.742491 1.725590 0.000000 0.000000 -3.121591</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_018</name>
+      <pose>18.571939 131.735987 12.392257 0.000000 0.000000 -0.843113</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_019</name>
+      <pose>13.332406 90.219161 10.196178 0.000000 0.000000 0.540285</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_020</name>
+      <pose>-45.237250 113.269624 13.874222 0.000000 0.000000 0.820591</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_021</name>
+      <pose>-66.939355 79.352235 35.607943 0.000000 0.000000 -0.651730</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_022</name>
+      <pose>-71.318588 16.502818 8.156963 0.000000 0.000000 -2.955758</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_023</name>
+      <pose>-74.141412 129.761051 10.353041 0.000000 0.000000 -0.760894</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_024</name>
+      <pose>66.331320 70.803705 16.227163 0.000000 0.000000 0.354960</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_025</name>
+      <pose>-70.218092 2.706447 1.098139 0.000000 0.000000 2.743379</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_026</name>
+      <pose>33.896513 24.450106 0.000100 0.000000 0.000000 -1.833261</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_027</name>
+      <pose>58.779224 26.892839 4.549120 0.000000 0.000000 -2.234939</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_028</name>
+      <pose>-118.010582 20.058724 15.285986 0.000000 0.000000 0.217818</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_029</name>
+      <pose>-134.708403 62.627972 6.431473 0.000000 0.000000 1.073383</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_030</name>
+      <pose>-132.001121 84.059832 8.627551 0.000000 0.000000 1.689888</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_031</name>
+      <pose>-51.727163 55.087728 23.843237 0.000000 0.000000 -2.147704</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_032</name>
+      <pose>10.311219 108.270212 4.776182 0.000000 0.000000 -0.181548</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_033</name>
+      <pose>2.321126 68.118725 4.235394 0.000000 0.000000 1.919230</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_034</name>
+      <pose>113.197223 108.626359 1.255002 0.000000 0.000000 -0.496775</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_035</name>
+      <pose>-17.371446 51.690485 6.274610 0.000000 0.000000 0.519085</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_036</name>
+      <pose>-74.326142 46.853548 25.325202 0.000000 0.000000 -1.629188</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_037</name>
+      <pose>-33.556271 124.520258 12.078531 0.000000 0.000000 -1.926785</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_038</name>
+      <pose>93.132777 102.623913 7.215786 0.000000 0.000000 -1.381116</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_039</name>
+      <pose>81.958800 36.723757 5.176571 0.000000 0.000000 -2.553985</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_040</name>
+      <pose>-4.664111 111.162297 5.874222 0.000000 0.000000 -2.096581</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_041</name>
+      <pose>-130.913322 45.966296 5.804022 0.000000 0.000000 2.794407</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_042</name>
+      <pose>46.540300 47.149582 10.353041 0.000000 0.000000 -1.165719</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_043</name>
+      <pose>53.638241 65.448872 16.156963 0.000000 0.000000 -1.873857</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_044</name>
+      <pose>112.803517 80.583202 5.089908 0.000000 0.000000 -2.092047</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_045</name>
+      <pose>37.346938 86.574160 14.902061 0.000000 0.000000 -1.279379</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_046</name>
+      <pose>-1.890442 94.935830 11.607943 0.000000 0.000000 1.066104</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_047</name>
+      <pose>-79.368918 83.346691 35.451080 0.000000 0.000000 -2.533128</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_048</name>
+      <pose>91.953944 119.632295 4.305594 0.000000 0.000000 0.143709</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_049</name>
+      <pose>77.719798 -5.874827 0.000100 0.000000 0.000000 0.183458</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_050</name>
+      <pose>128.858282 -122.614216 1.568727 0.000000 0.000000 -2.288472</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_051</name>
+      <pose>-68.683929 -71.564496 0.000100 0.000000 0.000000 -0.040556</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_052</name>
+      <pose>79.136480 126.467232 5.717359 0.000000 0.000000 -2.172073</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_053</name>
+      <pose>61.664928 119.709692 8.470688 0.000000 0.000000 -1.053865</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_054</name>
+      <pose>84.525773 -89.326616 1.882453 0.000000 0.000000 2.189593</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_055</name>
+      <pose>-115.626424 -83.901816 0.000100 0.000000 0.000000 -1.389918</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_056</name>
+      <pose>33.233605 -131.824797 5.246771 0.000000 0.000000 2.709307</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_057</name>
+      <pose>-113.638259 -4.730032 5.176571 0.000000 0.000000 -0.547109</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_058</name>
+      <pose>-121.389356 -112.489113 0.000100 0.000000 0.000000 -2.246220</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_059</name>
+      <pose>82.892666 58.541305 9.882453 0.000000 0.000000 -2.618804</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_060</name>
+      <pose>51.832363 -107.017577 3.678143 0.000000 0.000000 -0.802638</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_061</name>
+      <pose>133.165952 24.224771 3.294218 0.000000 0.000000 0.244017</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_062</name>
+      <pose>96.014818 50.068574 8.313825 0.000000 0.000000 -1.273234</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_063</name>
+      <pose>-99.968828 10.042566 2.509904 0.000000 0.000000 2.407428</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_064</name>
+      <pose>5.097453 121.596290 11.050692 0.000000 0.000000 1.278684</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_065</name>
+      <pose>-98.126803 113.458922 15.843237 0.000000 0.000000 0.121468</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_066</name>
+      <pose>-115.937486 -42.575701 0.000100 0.000000 0.000000 -0.327013</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_067</name>
+      <pose>115.958138 128.937234 1.255002 0.000000 0.000000 1.427559</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_068</name>
+      <pose>-33.920537 -71.047634 0.070300 0.000000 0.000000 0.219570</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_069</name>
+      <pose>16.546363 -51.162885 0.000100 0.000000 0.000000 0.188234</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_070</name>
+      <pose>37.934643 -95.246239 0.000100 0.000000 0.000000 0.013714</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_071</name>
+      <pose>-93.103060 -91.483832 0.000100 0.000000 0.000000 -0.972774</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_072</name>
+      <pose>25.564423 -70.134582 0.070300 0.000000 0.000000 -2.536021</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_073</name>
+      <pose>107.250204 30.244930 12.862845 0.000000 0.000000 1.079180</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_074</name>
+      <pose>-91.303087 -24.551708 0.000100 0.000000 0.000000 2.507607</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_075</name>
+      <pose>49.893821 114.644777 10.039316 0.000000 0.000000 -2.192502</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_076</name>
+      <pose>-16.943447 104.561867 4.776182 0.000000 0.000000 2.377523</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_077</name>
+      <pose>-99.669983 46.160608 19.764806 0.000000 0.000000 -1.783195</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_078</name>
+      <pose>-14.052465 112.704886 6.274610 0.000000 0.000000 -2.680198</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_079</name>
+      <pose>-110.112728 83.880868 20.705982 0.000000 0.000000 1.532054</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_080</name>
+      <pose>-119.462099 29.565580 19.678143 0.000000 0.000000 2.438439</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_081</name>
+      <pose>94.132384 -93.410223 4.705982 0.000000 0.000000 -1.212109</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_082</name>
+      <pose>-30.530586 51.782419 12.862845 0.000000 0.000000 -1.309545</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_083</name>
+      <pose>108.934831 101.596039 3.137355 0.000000 0.000000 -0.120417</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_084</name>
+      <pose>-32.745943 105.503331 11.835006 0.000000 0.000000 -2.036094</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_085</name>
+      <pose>42.054637 100.165252 13.333433 0.000000 0.000000 0.320941</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_086</name>
+      <pose>25.856033 45.357396 6.902061 0.000000 0.000000 -1.940142</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_087</name>
+      <pose>131.202454 55.606711 0.000100 0.000000 0.000000 2.591713</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_088</name>
+      <pose>45.268831 108.509392 11.521280 0.000000 0.000000 -3.112508</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_089</name>
+      <pose>130.839911 48.137629 0.941276 0.000000 0.000000 -0.840016</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_090</name>
+      <pose>-120.026578 55.204505 13.490296 0.000000 0.000000 -1.363553</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_091</name>
+      <pose>86.003772 -27.270857 2.509904 0.000000 0.000000 2.239542</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_092</name>
+      <pose>93.895978 92.123493 8.384025 0.000000 0.000000 1.786325</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_093</name>
+      <pose>69.194988 -42.813050 7.372649 0.000000 0.000000 1.430735</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_094</name>
+      <pose>40.548142 -110.453029 5.333433 0.000000 0.000000 -0.938915</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_095</name>
+      <pose>-131.935400 -61.650801 1.882453 0.000000 0.000000 -3.069676</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_096</name>
+      <pose>-68.948664 69.710083 36.305594 0.000000 0.000000 -1.879212</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_097</name>
+      <pose>-97.189147 39.256050 17.411865 0.000000 0.000000 -0.240929</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_098</name>
+      <pose>106.168294 -104.523065 5.019708 0.000000 0.000000 0.589423</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_099</name>
+      <pose>49.424753 123.598713 8.470688 0.000000 0.000000 -0.342412</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_100</name>
+      <pose>73.974560 41.186978 7.599712 0.000000 0.000000 0.619867</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_101</name>
+      <pose>-63.226101 126.601253 11.294218 0.000000 0.000000 0.028900</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_102</name>
+      <pose>-93.649710 121.306389 13.019708 0.000000 0.000000 -0.472995</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_103</name>
+      <pose>-82.006017 91.308577 31.058924 0.000000 0.000000 -0.957202</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_104</name>
+      <pose>138.737693 36.157121 0.070300 0.000000 0.000000 1.250773</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_105</name>
+      <pose>117.748043 36.339879 13.176571 0.000000 0.000000 -3.042570</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_106</name>
+      <pose>132.254949 81.720751 0.000100 0.000000 0.000000 -2.896655</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_107</name>
+      <pose>-125.396263 96.972081 10.196178 0.000000 0.000000 0.564980</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_108</name>
+      <pose>70.384587 30.249918 4.933045 0.000000 0.000000 2.662000</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_109</name>
+      <pose>56.905151 101.120599 14.117747 0.000000 0.000000 -1.862773</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_110</name>
+      <pose>17.444120 -131.439800 7.058924 0.000000 0.000000 -1.798051</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_111</name>
+      <pose>31.130159 63.888230 11.921669 0.000000 0.000000 -2.470357</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_112</name>
+      <pose>-91.210008 20.192618 9.011476 0.000000 0.000000 -1.805809</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_113</name>
+      <pose>105.392763 -114.426845 0.313825 0.000000 0.000000 0.562607</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_114</name>
+      <pose>-108.242206 76.095926 22.431473 0.000000 0.000000 1.367194</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_115</name>
+      <pose>93.408673 -57.165331 13.804022 0.000000 0.000000 2.602619</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_116</name>
+      <pose>-23.830878 -109.318785 2.109516 0.000000 0.000000 0.264299</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_117</name>
+      <pose>69.301368 50.626876 10.666767 0.000000 0.000000 1.152283</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_118</name>
+      <pose>-105.666513 -133.477534 0.000100 0.000000 0.000000 0.929383</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_119</name>
+      <pose>71.934558 -77.005362 1.568727 0.000000 0.000000 -0.197546</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_120</name>
+      <pose>49.977640 90.598168 17.011476 0.000000 0.000000 0.629961</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_121</name>
+      <pose>109.666955 67.514080 10.980492 0.000000 0.000000 -1.202539</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_122</name>
+      <pose>-42.609022 98.475688 18.509904 0.000000 0.000000 -0.394315</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_123</name>
+      <pose>87.257745 -39.023402 7.843237 0.000000 0.000000 0.437011</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_124</name>
+      <pose>-68.534588 35.255447 18.580104 0.000000 0.000000 2.471530</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_125</name>
+      <pose>-32.005369 66.797161 16.470688 0.000000 0.000000 -1.484607</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_126</name>
+      <pose>-107.349938 -89.839448 0.000100 0.000000 0.000000 1.914612</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_127</name>
+      <pose>75.840991 -64.081161 8.313825 0.000000 0.000000 -1.358570</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_128</name>
+      <pose>55.007523 54.310001 12.933045 0.000000 0.000000 2.199948</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_129</name>
+      <pose>-123.657595 -98.409328 0.000100 0.000000 0.000000 2.798628</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_130</name>
+      <pose>-109.996762 36.682102 11.921669 0.000000 0.000000 1.245471</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_131</name>
+      <pose>-125.423557 -56.090975 0.941276 0.000000 0.000000 -1.698779</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_132</name>
+      <pose>-77.292402 -116.593094 0.697751 0.000000 0.000000 2.801072</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_133</name>
+      <pose>-52.908966 96.244689 23.843237 0.000000 0.000000 -2.504037</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_134</name>
+      <pose>-53.166406 107.690760 18.980492 0.000000 0.000000 -2.766394</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_135</name>
+      <pose>-50.026010 -123.184835 6.117747 0.000000 0.000000 2.235618</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_136</name>
+      <pose>119.757954 114.926155 0.070300 0.000000 0.000000 -2.866820</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_137</name>
+      <pose>-23.699790 -96.179929 0.000100 0.000000 0.000000 1.410921</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_138</name>
+      <pose>-104.193882 -120.528171 0.000100 0.000000 0.000000 0.397622</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_139</name>
+      <pose>66.819248 -118.176085 5.333433 0.000000 0.000000 2.107210</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_140</name>
+      <pose>-118.060614 68.560390 16.697751 0.000000 0.000000 2.045720</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_141</name>
+      <pose>120.251252 14.909750 10.823629 0.000000 0.000000 0.472191</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_142</name>
+      <pose>70.047871 -86.185207 0.000100 0.000000 0.000000 -2.923078</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_143</name>
+      <pose>-101.560338 95.197756 22.274610 0.000000 0.000000 -1.092823</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_144</name>
+      <pose>-62.162269 -110.661082 0.070300 0.000000 0.000000 2.771574</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_145</name>
+      <pose>-43.660524 -86.136367 0.000100 0.000000 0.000000 -0.343136</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_146</name>
+      <pose>66.147949 -130.953691 1.098139 0.000000 0.000000 -1.173690</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_147</name>
+      <pose>-63.420287 116.282687 16.941276 0.000000 0.000000 -2.826106</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_148</name>
+      <pose>43.814878 60.170214 13.717359 0.000000 0.000000 1.578615</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_149</name>
+      <pose>51.019324 -41.480633 0.313825 0.000000 0.000000 0.457198</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_150</name>
+      <pose>-85.068114 42.754571 22.117747 0.000000 0.000000 -0.405446</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_151</name>
+      <pose>122.552388 26.464239 10.509904 0.000000 0.000000 0.399020</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_152</name>
+      <pose>-61.315556 88.029933 30.501673 0.000000 0.000000 -1.678703</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_153</name>
+      <pose>-29.844300 -133.382859 7.215786 0.000000 0.000000 -1.291625</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_154</name>
+      <pose>63.772947 -79.796384 0.000100 0.000000 0.000000 -0.371438</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_155</name>
+      <pose>-13.351643 41.848192 2.039316 0.000000 0.000000 -2.891069</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_156</name>
+      <pose>-84.472422 78.078558 35.364418 0.000000 0.000000 0.783058</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_157</name>
+      <pose>109.383182 -86.781241 12.392257 0.000000 0.000000 -1.538876</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_158</name>
+      <pose>-108.546543 -101.359445 0.000100 0.000000 0.000000 1.389173</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_159</name>
+      <pose>-136.466698 36.398028 2.823629 0.000000 0.000000 -0.546754</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_160</name>
+      <pose>79.945835 80.715175 13.089908 0.000000 0.000000 1.898198</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_161</name>
+      <pose>94.831269 -16.144181 0.000100 0.000000 0.000000 -1.986830</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_162</name>
+      <pose>-14.806037 138.538297 6.902061 0.000000 0.000000 1.181794</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_163</name>
+      <pose>71.401072 92.562832 14.274610 0.000000 0.000000 -1.845918</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_164</name>
+      <pose>6.499058 130.341959 13.560496 0.000000 0.000000 -0.293350</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_165</name>
+      <pose>64.811527 107.930481 11.607943 0.000000 0.000000 2.608884</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_166</name>
+      <pose>-109.063005 21.873916 6.431473 0.000000 0.000000 2.433006</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_167</name>
+      <pose>-97.211387 83.517368 27.764806 0.000000 0.000000 0.165932</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_168</name>
+      <pose>112.734314 -6.780552 2.736967 0.000000 0.000000 1.624823</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_169</name>
+      <pose>-32.447269 38.184953 5.960884 0.000000 0.000000 0.420165</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_170</name>
+      <pose>17.352055 -106.528906 2.353041 0.000000 0.000000 1.043118</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_171</name>
+      <pose>3.583337 -137.484870 3.921669 0.000000 0.000000 -1.014421</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_172</name>
+      <pose>-128.834328 54.379387 8.854614 0.000000 0.000000 0.119804</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_173</name>
+      <pose>-73.866585 104.721900 24.313825 0.000000 0.000000 0.194347</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_174</name>
+      <pose>-76.016536 -108.993795 0.000100 0.000000 0.000000 1.593564</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_175</name>
+      <pose>53.588301 77.475164 19.294218 0.000000 0.000000 -2.190445</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_176</name>
+      <pose>104.094979 -53.129614 7.756575 0.000000 0.000000 -0.639170</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_177</name>
+      <pose>-109.972695 11.875816 5.804022 0.000000 0.000000 0.052311</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_178</name>
+      <pose>29.444977 -89.767271 0.000100 0.000000 0.000000 -1.903132</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_179</name>
+      <pose>40.804297 -118.102437 8.941276 0.000000 0.000000 2.168911</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_180</name>
+      <pose>122.848231 67.890494 2.109516 0.000000 0.000000 1.142850</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_181</name>
+      <pose>139.761495 57.692199 0.000100 0.000000 0.000000 2.752500</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_182</name>
+      <pose>-100.441799 28.767320 11.451080 0.000000 0.000000 -0.399603</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_183</name>
+      <pose>-111.787789 -61.154920 0.000100 0.000000 0.000000 -1.293215</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_184</name>
+      <pose>-111.593828 -69.217759 0.070300 0.000000 0.000000 -0.219302</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_185</name>
+      <pose>22.108276 -96.978592 0.000100 0.000000 0.000000 2.318975</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_186</name>
+      <pose>-34.310913 114.659568 9.255002 0.000000 0.000000 0.915598</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_187</name>
+      <pose>-113.384300 61.648651 18.196178 0.000000 0.000000 1.513244</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_188</name>
+      <pose>-54.511719 -88.608501 0.070300 0.000000 0.000000 -1.670436</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_189</name>
+      <pose>-98.595999 106.164858 19.137355 0.000000 0.000000 -2.000252</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_190</name>
+      <pose>40.598973 133.410943 9.411865 0.000000 0.000000 -0.488155</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_191</name>
+      <pose>-62.513810 41.175985 20.862845 0.000000 0.000000 0.113402</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_192</name>
+      <pose>-124.272997 88.945491 12.305594 0.000000 0.000000 1.521115</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_193</name>
+      <pose>-31.529921 -116.821846 5.960884 0.000000 0.000000 -1.158538</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_194</name>
+      <pose>-87.277553 -119.224286 0.313825 0.000000 0.000000 -1.376367</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_195</name>
+      <pose>28.730817 71.242428 12.235394 0.000000 0.000000 -1.363957</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_196</name>
+      <pose>89.016974 -11.547454 0.070300 0.000000 0.000000 0.392992</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_197</name>
+      <pose>-19.050889 118.548218 9.098139 0.000000 0.000000 2.354884</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_198</name>
+      <pose>22.110008 88.947439 10.353041 0.000000 0.000000 2.035887</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_199</name>
+      <pose>87.480932 24.903385 1.411865 0.000000 0.000000 1.724975</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_200</name>
+      <pose>-133.070089 -43.783838 7.442849 0.000000 0.000000 -1.955446</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_201</name>
+      <pose>130.067527 34.872028 3.921669 0.000000 0.000000 0.430210</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_202</name>
+      <pose>65.652078 100.175099 13.647159 0.000000 0.000000 -3.016960</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_203</name>
+      <pose>-50.454179 81.419994 26.823629 0.000000 0.000000 2.079204</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_204</name>
+      <pose>-122.797792 36.914612 16.384025 0.000000 0.000000 1.605762</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_205</name>
+      <pose>60.904319 -102.747046 1.725590 0.000000 0.000000 -2.264849</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_206</name>
+      <pose>15.058360 -90.376002 0.000100 0.000000 0.000000 0.014990</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_207</name>
+      <pose>138.175949 16.620471 0.627551 0.000000 0.000000 1.749892</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_208</name>
+      <pose>21.377025 115.695166 7.129124 0.000000 0.000000 -2.586795</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_209</name>
+      <pose>49.917789 97.947211 14.902061 0.000000 0.000000 2.217088</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_210</name>
+      <pose>-133.664630 -31.926468 10.509904 0.000000 0.000000 2.720626</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_211</name>
+      <pose>-2.689304 -108.627189 3.607943 0.000000 0.000000 -1.719837</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_212</name>
+      <pose>-110.142512 109.188615 13.560496 0.000000 0.000000 -0.010789</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_213</name>
+      <pose>-15.756330 89.340461 11.921669 0.000000 0.000000 1.564585</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_214</name>
+      <pose>71.293159 60.202659 12.862845 0.000000 0.000000 2.895309</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_215</name>
+      <pose>-87.663865 108.638919 20.862845 0.000000 0.000000 -1.102856</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_216</name>
+      <pose>-92.086345 94.436824 26.580104 0.000000 0.000000 -1.451543</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_217</name>
+      <pose>16.141686 59.116309 7.215786 0.000000 0.000000 -1.274009</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_218</name>
+      <pose>71.821541 -16.635064 1.098139 0.000000 0.000000 -0.659933</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_219</name>
+      <pose>-107.139360 -1.108274 1.098139 0.000000 0.000000 0.885716</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_220</name>
+      <pose>-66.424751 55.947060 29.403633 0.000000 0.000000 -1.410910</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_221</name>
+      <pose>49.670312 -95.787686 0.000100 0.000000 0.000000 -1.407223</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_222</name>
+      <pose>126.590366 41.343424 5.333433 0.000000 0.000000 -1.429438</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_223</name>
+      <pose>10.529040 -65.188167 0.000100 0.000000 0.000000 3.140406</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_224</name>
+      <pose>87.937288 67.927813 10.109516 0.000000 0.000000 -1.586802</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_225</name>
+      <pose>-81.646293 121.773409 14.431473 0.000000 0.000000 -2.123254</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_226</name>
+      <pose>104.081297 109.499831 3.294218 0.000000 0.000000 -3.078082</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_227</name>
+      <pose>-113.770972 -50.912831 0.000100 0.000000 0.000000 0.873592</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_228</name>
+      <pose>-41.610226 -105.546190 0.070300 0.000000 0.000000 -0.111785</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_229</name>
+      <pose>-107.281092 57.539972 20.392257 0.000000 0.000000 2.679774</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_230</name>
+      <pose>85.883115 111.990424 7.215786 0.000000 0.000000 2.498587</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_231</name>
+      <pose>-96.417921 -117.290620 0.000100 0.000000 0.000000 -2.363477</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_232</name>
+      <pose>-93.744052 -14.320951 0.070300 0.000000 0.000000 2.513765</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_233</name>
+      <pose>47.427620 -66.382482 0.000100 0.000000 0.000000 -0.408157</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_234</name>
+      <pose>-37.181493 -82.551390 0.000100 0.000000 0.000000 -1.285751</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_235</name>
+      <pose>-5.979726 80.634491 4.862845 0.000000 0.000000 -0.418980</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_236</name>
+      <pose>-102.762630 66.886866 24.854614 0.000000 0.000000 -2.783319</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_237</name>
+      <pose>100.472186 -72.256676 16.470688 0.000000 0.000000 2.939725</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_238</name>
+      <pose>-25.605641 -82.840095 0.000100 0.000000 0.000000 0.892917</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_239</name>
+      <pose>90.290590 -79.086378 9.568727 0.000000 0.000000 1.091901</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_240</name>
+      <pose>-98.324925 -99.059700 0.070300 0.000000 0.000000 1.461147</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_241</name>
+      <pose>103.321109 -9.552460 0.000100 0.000000 0.000000 -2.468511</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_242</name>
+      <pose>89.509462 39.710154 4.549120 0.000000 0.000000 2.720108</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_243</name>
+      <pose>106.042091 92.922301 4.705982 0.000000 0.000000 -2.239896</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_244</name>
+      <pose>40.809818 -76.768153 0.070300 0.000000 0.000000 -1.237596</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_245</name>
+      <pose>100.115829 122.992072 2.353041 0.000000 0.000000 -2.157341</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_246</name>
+      <pose>93.276877 2.298444 0.000100 0.000000 0.000000 1.074799</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_247</name>
+      <pose>-8.820929 104.156658 3.137355 0.000000 0.000000 1.584739</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_248</name>
+      <pose>120.205928 60.522770 6.187947 0.000000 0.000000 1.153166</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_249</name>
+      <pose>-123.724363 -39.199148 4.392257 0.000000 0.000000 1.760368</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_250</name>
+      <pose>-44.769528 105.971095 16.784414 0.000000 0.000000 -1.477797</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_251</name>
+      <pose>-89.275671 84.633750 31.372649 0.000000 0.000000 0.919664</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_252</name>
+      <pose>43.346270 38.295220 4.776182 0.000000 0.000000 3.120452</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_253</name>
+      <pose>-102.499710 121.776051 10.666767 0.000000 0.000000 2.689194</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_254</name>
+      <pose>-116.276741 90.927571 16.156963 0.000000 0.000000 -2.913231</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_255</name>
+      <pose>-40.825823 133.063271 10.039316 0.000000 0.000000 2.082875</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_256</name>
+      <pose>-92.313350 -42.034827 0.070300 0.000000 0.000000 2.741090</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_257</name>
+      <pose>-86.794076 32.437683 16.313825 0.000000 0.000000 -0.569177</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_258</name>
+      <pose>81.522409 49.894986 8.470688 0.000000 0.000000 0.068873</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_259</name>
+      <pose>-47.166882 -99.742960 0.000100 0.000000 0.000000 2.028818</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_260</name>
+      <pose>-18.179349 -135.885834 5.717359 0.000000 0.000000 1.513653</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_261</name>
+      <pose>-8.572601 -123.188552 11.451080 0.000000 0.000000 0.977944</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_262</name>
+      <pose>-32.754094 134.724684 10.039316 0.000000 0.000000 1.978205</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_263</name>
+      <pose>-70.896270 117.924318 16.784414 0.000000 0.000000 1.291262</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_264</name>
+      <pose>36.870669 126.932037 10.736967 0.000000 0.000000 -0.687851</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_265</name>
+      <pose>-96.773328 56.949084 25.255002 0.000000 0.000000 -2.395577</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_266</name>
+      <pose>111.041565 -37.966107 0.000100 0.000000 0.000000 -0.995955</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_267</name>
+      <pose>101.849962 -94.899032 7.686375 0.000000 0.000000 -0.751411</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_268</name>
+      <pose>92.661004 -32.359336 2.736967 0.000000 0.000000 3.048538</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_269</name>
+      <pose>-53.979791 36.384466 15.372649 0.000000 0.000000 2.932926</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_270</name>
+      <pose>89.328020 83.815677 10.196178 0.000000 0.000000 3.088331</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_271</name>
+      <pose>53.925687 43.544078 9.568727 0.000000 0.000000 -2.405193</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_272</name>
+      <pose>138.648818 46.135236 0.070300 0.000000 0.000000 2.431376</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_273</name>
+      <pose>129.248703 -31.471260 0.000100 0.000000 0.000000 1.849996</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_274</name>
+      <pose>107.038892 0.256097 2.039316 0.000000 0.000000 -0.968785</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_275</name>
+      <pose>-87.166756 51.068166 26.039316 0.000000 0.000000 2.133856</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_276</name>
+      <pose>-45.894183 138.281158 5.246771 0.000000 0.000000 -3.067287</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_277</name>
+      <pose>-79.727274 58.501378 31.372649 0.000000 0.000000 2.383120</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_278</name>
+      <pose>-125.725965 -84.843901 0.000100 0.000000 0.000000 2.751977</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_279</name>
+      <pose>-119.089132 108.103654 10.039316 0.000000 0.000000 0.372643</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_280</name>
+      <pose>84.222135 92.235783 11.050692 0.000000 0.000000 0.434088</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_281</name>
+      <pose>-36.308416 -123.877347 8.313825 0.000000 0.000000 -0.817165</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_282</name>
+      <pose>108.865184 11.766221 7.372649 0.000000 0.000000 -0.956527</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_283</name>
+      <pose>-117.464432 -93.860570 0.000100 0.000000 0.000000 -0.532101</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_284</name>
+      <pose>109.311813 53.629392 15.129124 0.000000 0.000000 2.927412</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_285</name>
+      <pose>-65.351709 -29.006839 0.000100 0.000000 0.000000 1.609621</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_286</name>
+      <pose>-39.788322 79.982383 21.019708 0.000000 0.000000 -3.110516</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_287</name>
+      <pose>107.635152 45.097813 16.313825 0.000000 0.000000 2.574324</pose>
+      <uri>model://pine_tree</uri>
+    </include>
+    <include>
+      <name>mountain_tree_288</name>
+      <pose>-3.321038 122.719255 11.364418 0.000000 0.000000 -0.429448</pose>
+      <uri>model://oak_tree</uri>
+    </include>
+  </model>
+</sdf>

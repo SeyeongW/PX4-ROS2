@@ -1,0 +1,19 @@
+Apple Park road/building alignment runtime validation
+timestamp=2026-07-11T05:50:30-04:00
+result=PASS
+root_pid=2033050
+gui_pid=2033077
+window_id=0x2600014
+screenshot_info=PNG 781x952 363383B
+rtf_samples=98 rtf_min=0.997300 rtf_mean=0.999920 rtf_max=1.001000
+gpu_name=NVIDIA GeForce RTX 5060 Laptop GPU
+gpu_samples=5 gpu_min=14.000 gpu_mean=14.400 gpu_max=16.000 vram_min=290.000 vram_mean=290.000 vram_max=290.000 power_mean=27.320
+rtx_5060_nonzero_render_load=PASS
+load_error_count=0
+libegl_warning_count=1
+screenshot=/home/xogus/sim_assets/logs/applepark_city_road_alignment_gazebo.png
+window_capture=/home/xogus/sim_assets/logs/applepark_city_road_alignment_window.png
+stats=/home/xogus/sim_assets/logs/applepark_city_road_alignment_stats.log
+gpu_samples=/home/xogus/sim_assets/logs/applepark_city_road_alignment_gpu.csv
+processes=/home/xogus/sim_assets/logs/applepark_city_road_alignment_processes.log
+error_scan=/home/xogus/sim_assets/logs/applepark_city_road_alignment_error_scan.log

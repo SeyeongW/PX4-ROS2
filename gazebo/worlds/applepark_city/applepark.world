@@ -1,0 +1,419 @@
+<?xml version="1.0" ?>
+<sdf version="1.9">
+    <world name="applepark_city">
+
+        <!-- Plugin for simulating physics -->
+        <plugin
+                filename="gz-sim-physics-system"
+                name="gz::sim::systems::Physics">
+        </plugin>
+
+        <!-- Plugin for handling user commands -->
+        <plugin
+                filename="gz-sim-user-commands-system"
+                name="gz::sim::systems::UserCommands">
+        </plugin>
+
+        <!-- Plugin for broadcasting scene updates -->
+        <plugin
+                filename="gz-sim-scene-broadcaster-system"
+                name="gz::sim::systems::SceneBroadcaster">
+        </plugin>
+
+        <!-- Plugin for handling sensors like the LIDAR -->
+        <plugin
+                filename="gz-sim-sensors-system"
+                name="gz::sim::systems::Sensors">
+            <render_engine>ogre2</render_engine>
+        </plugin>
+
+        <!-- Plugin for IMU -->
+        <plugin filename="gz-sim-imu-system"
+                name="gz::sim::systems::Imu">
+        </plugin>
+
+        <!-- plugin for GPS  -->
+        <plugin
+                filename="gz-sim-navsat-system"
+                name="gz::sim::systems::NavSat">
+        </plugin>
+
+        <light type="directional" name="sun">
+            <cast_shadows>true</cast_shadows>
+            <pose>0 -7000 7000 0 0 0</pose>
+            <diffuse>0.9 0.88 0.82 1</diffuse>
+            <!-- Zero specular prevents glint/reflection artifacts on terrain -->
+            <specular>0 0 0 1</specular>
+            <!-- gz-sim/OGRE2 bug: shadow map artifact appears when both X and Y are non-zero.
+                 Workaround: keep one horizontal component zero. Y-only = sun from north. -->
+            <direction>0.0 0.6 -0.6</direction>
+        </light>
+
+        <scene>
+            <!-- Ambient fills in shadows — simulates sky/bounce light -->
+            <ambient>0.45 0.48 0.55 1</ambient>
+            <grid>false</grid>
+            <origin_visual>false</origin_visual>
+            <!-- Procedural sky with atmosphere scattering and clouds -->
+            <sky>
+                <time>10</time>
+                <sunrise>6</sunrise>
+                <sunset>20</sunset>
+                <clouds>
+                    <speed>12</speed>
+                </clouds>
+            </sky>
+        </scene>
+
+        <!-- Polymath standard physics simulation engine config,
+        ODE does not behave correctly with heightmaps, we'll use bullet instead -->
+        <!--        <physics type='ode'>-->
+        <!--            <max_step_size>0.005</max_step_size>-->
+        <!--            <real_time_factor>1</real_time_factor>-->
+        <!--            <real_time_update_rate>200</real_time_update_rate>-->
+        <!--        </physics>-->
+        <!-- A 2 ms / 500 Hz step keeps PX4-class control simulation responsive
+             while avoiding the measured 1000 Hz CPU bottleneck in this city. -->
+        <physics name="2ms" type="ignored">
+            <max_step_size>0.002</max_step_size>
+            <real_time_factor>1</real_time_factor>
+            <real_time_update_rate>500</real_time_update_rate>
+        </physics>
+        <gravity>0 0 -9.8066</gravity>
+
+        <gui fullscreen='0'>
+            <!-- 3D scene sized for the 500 x 500 m city crop. -->
+            <plugin filename="MinimalScene" name="3D View">
+                <gz-gui>
+                    <title>3D View</title>
+                    <property type="bool" key="showTitleBar">false</property>
+                    <property type="string" key="state">docked</property>
+                </gz-gui>
+                <engine>ogre2</engine>
+                <scene>scene</scene>
+                <ambient_light>0.4 0.4 0.4</ambient_light>
+                <background_color>0.8 0.8 0.8</background_color>
+                <!-- Offset south so the 80-degree downward view is centered on the crop. -->
+                <camera_pose>0 -84.64 480 0 1.3963 1.5708</camera_pose>
+                <camera_clip>
+                    <near>0.1</near>
+                    <far>50000</far>
+                </camera_clip>
+            </plugin>
+            <plugin filename="EntityContextMenuPlugin" name="Entity context menu">
+                <gz-gui>
+                    <property key="state" type="string">floating</property>
+                    <property key="width" type="double">5</property>
+                    <property key="height" type="double">5</property>
+                    <property key="showTitleBar" type="bool">false</property>
+                </gz-gui>
+            </plugin>
+            <plugin filename="GzSceneManager" name="Scene Manager">
+                <gz-gui>
+                    <property key="resizable" type="bool">false</property>
+                    <property key="width" type="double">5</property>
+                    <property key="height" type="double">5</property>
+                    <property key="state" type="string">floating</property>
+                    <property key="showTitleBar" type="bool">false</property>
+                </gz-gui>
+            </plugin>
+            <plugin filename="InteractiveViewControl" name="Interactive view control">
+                <gz-gui>
+                    <property key="resizable" type="bool">false</property>
+                    <property key="width" type="double">5</property>
+                    <property key="height" type="double">5</property>
+                    <property key="state" type="string">floating</property>
+                    <property key="showTitleBar" type="bool">false</property>
+                </gz-gui>
+            </plugin>
+            <plugin filename="CameraTracking" name="Camera Tracking">
+                <gz-gui>
+                    <property key="resizable" type="bool">false</property>
+                    <property key="width" type="double">5</property>
+                    <property key="height" type="double">5</property>
+                    <property key="state" type="string">floating</property>
+                    <property key="showTitleBar" type="bool">false</property>
+                </gz-gui>
+            </plugin>
+            <plugin filename="MarkerManager" name="Marker manager">
+                <gz-gui>
+                    <property key="resizable" type="bool">false</property>
+                    <property key="width" type="double">5</property>
+                    <property key="height" type="double">5</property>
+                    <property key="state" type="string">floating</property>
+                    <property key="showTitleBar" type="bool">false</property>
+                </gz-gui>
+            </plugin>
+            <plugin filename="SelectEntities" name="Select Entities">
+                <gz-gui>
+                    <property key="resizable" type="bool">false</property>
+                    <property key="width" type="double">5</property>
+                    <property key="height" type="double">5</property>
+                    <property key="state" type="string">floating</property>
+                    <property key="showTitleBar" type="bool">false</property>
+                </gz-gui>
+            </plugin>
+            <plugin filename="Spawn" name="Spawn Entities">
+                <gz-gui>
+                    <property key="resizable" type="bool">false</property>
+                    <property key="width" type="double">5</property>
+                    <property key="height" type="double">5</property>
+                    <property key="state" type="string">floating</property>
+                    <property key="showTitleBar" type="bool">false</property>
+                </gz-gui>
+            </plugin>
+            <plugin filename="VisualizationCapabilities" name="Visualization Capabilities">
+                <gz-gui>
+                    <property key="resizable" type="bool">false</property>
+                    <property key="width" type="double">5</property>
+                    <property key="height" type="double">5</property>
+                    <property key="state" type="string">floating</property>
+                    <property key="showTitleBar" type="bool">false</property>
+                </gz-gui>
+            </plugin>
+            <plugin filename="WorldControl" name="World control">
+                <gz-gui>
+                    <title>World control</title>
+                    <property type="bool" key="showTitleBar">false</property>
+                    <property type="bool" key="resizable">false</property>
+                    <property type="double" key="height">72</property>
+                    <property type="double" key="z">1</property>
+                    <property type="string" key="state">floating</property>
+                    <anchors target="3D View">
+                        <line own="left" target="left"/>
+                        <line own="bottom" target="bottom"/>
+                    </anchors>
+                </gz-gui>
+                <play_pause>true</play_pause>
+                <step>true</step>
+                <start_paused>true</start_paused>
+                <use_event>true</use_event>
+            </plugin>
+            <plugin filename="WorldStats" name="World stats">
+                <gz-gui>
+                    <title>World stats</title>
+                    <property type="bool" key="showTitleBar">false</property>
+                    <property type="bool" key="resizable">false</property>
+                    <property type="double" key="height">110</property>
+                    <property type="double" key="width">290</property>
+                    <property type="double" key="z">1</property>
+                    <property type="string" key="state">floating</property>
+                    <anchors target="3D View">
+                        <line own="right" target="right"/>
+                        <line own="bottom" target="bottom"/>
+                    </anchors>
+                </gz-gui>
+                <sim_time>true</sim_time>
+                <real_time>true</real_time>
+                <real_time_factor>true</real_time_factor>
+                <iterations>true</iterations>
+            </plugin>
+            <plugin filename="Shapes" name="Shapes">
+                <gz-gui>
+                    <property key="resizable" type="bool">false</property>
+                    <property key="x" type="double">0</property>
+                    <property key="y" type="double">0</property>
+                    <property key="width" type="double">250</property>
+                    <property key="height" type="double">50</property>
+                    <property key="state" type="string">floating</property>
+                    <property key="showTitleBar" type="bool">false</property>
+                    <property key="cardBackground" type="string">#666666</property>
+                </gz-gui>
+            </plugin>
+            <plugin filename="Lights" name="Lights">
+                <gz-gui>
+                    <property key="resizable" type="bool">false</property>
+                    <property key="x" type="double">250</property>
+                    <property key="y" type="double">0</property>
+                    <property key="width" type="double">150</property>
+                    <property key="height" type="double">50</property>
+                    <property key="state" type="string">floating</property>
+                    <property key="showTitleBar" type="bool">false</property>
+                    <property key="cardBackground" type="string">#666666</property>
+                </gz-gui>
+            </plugin>
+            <plugin filename="TransformControl" name="Transform control">
+                <gz-gui>
+                    <property key="resizable" type="bool">false</property>
+                    <property key="x" type="double">0</property>
+                    <property key="y" type="double">50</property>
+                    <property key="width" type="double">250</property>
+                    <property key="height" type="double">50</property>
+                    <property key="state" type="string">floating</property>
+                    <property key="showTitleBar" type="bool">false</property>
+                    <property key="cardBackground" type="string">#777777</property>
+                </gz-gui>
+            </plugin>
+            <plugin filename="Screenshot" name="Screenshot">
+                <gz-gui>
+                    <property key="resizable" type="bool">false</property>
+                    <property key="x" type="double">250</property>
+                    <property key="y" type="double">50</property>
+                    <property key="width" type="double">50</property>
+                    <property key="height" type="double">50</property>
+                    <property key="state" type="string">floating</property>
+                    <property key="showTitleBar" type="bool">false</property>
+                    <property key="cardBackground" type="string">#777777</property>
+                </gz-gui>
+            </plugin>
+            <plugin filename="CopyPaste" name="CopyPaste">
+                <gz-gui>
+                    <property key="resizable" type="bool">false</property>
+                    <property key="x" type="double">300</property>
+                    <property key="y" type="double">50</property>
+                    <property key="width" type="double">100</property>
+                    <property key="height" type="double">50</property>
+                    <property key="state" type="string">floating</property>
+                    <property key="showTitleBar" type="bool">false</property>
+                    <property key="cardBackground" type="string">#777777</property>
+                </gz-gui>
+            </plugin>
+            <plugin filename="ComponentInspector" name="Component inspector">
+                <gz-gui>
+                    <property type="bool" key="showTitleBar">false</property>
+                    <property type="string" key="state">docked</property>
+                </gz-gui>
+            </plugin>
+            <plugin filename="EntityTree" name="Entity tree">
+                <gz-gui>
+                    <property type="bool" key="showTitleBar">false</property>
+                    <property type="string" key="state">docked</property>
+                </gz-gui>
+            </plugin>
+        </gui>
+
+        <spherical_coordinates>
+            <surface_model>EARTH_WGS84</surface_model>
+            <latitude_deg>37.32977431415926</latitude_deg>
+            <longitude_deg>-121.99860517699835</longitude_deg>
+            <elevation>50.600000000000364</elevation>
+        </spherical_coordinates>
+
+        <!-- OGRE2 keeps the checked 257 px heightmap visual.  Bullet
+             Featherstone receives a deterministic 129 px triangle mesh for
+             collision because it does not construct SDF heightmap geometry.
+
+             gz-rendering normalizes an image heightmap by the largest pixel
+             present in that image, not by the uint8 maximum (255).  This crop
+             has max(pixel)=152, so its render height must be
+             26.6 * 152 / 255 = 15.855686274509806 m.  Using 26.6 directly
+             raises the rendered ground to +1.28..+11.6 m and submerges the
+             buildings, while the collision mesh remains at -5.30..+0.86 m. -->
+        <model name="applepark">
+            <static>true</static>
+            <pose>0 0 0 0 0 0</pose>
+
+            <link name="ground">
+                <collision name="collision">
+                    <geometry>
+                        <mesh>
+                            <uri>mesh/city_terrain_collision.obj</uri>
+                            <scale>1 1 1</scale>
+                        </mesh>
+                    </geometry>
+                </collision>
+                <visual name="ground_visual">
+                    <geometry>
+                        <heightmap>
+                            <use_terrain_paging>false</use_terrain_paging>
+                            <texture>
+                                <diffuse>mesh/road_surface_city_500m.png</diffuse>
+                                <normal>mesh/normal_map_city_500m.png</normal>
+                                <size>500</size>
+                            </texture>
+                            <uri>mesh/height_map_city_500m.png</uri>
+                            <size>500 500 15.855686274509806</size>
+                            <!-- OGRE2 ignores model/link <pose> for heightmaps; <pos> is world frame -->
+                            <pos>0 0 -15.0</pos>
+                            <!-- sampling: mesh vertices per heightmap pixel (SDF 1.8+ default = 1).
+                                 Tested with 16-bit heightmaps at sampling 1, 4, 8: no visual or
+                                 physics difference observed — OGRE2 interpolates extra vertices but
+                                 the result is indistinguishable at SRTM source resolution. Higher
+                                 values only increase vertex buffer memory (cost scales as sampling²).
+                                 sdformat PR #459 changed default from 2->1: "no good reason to
+                                 subsample by default". Explicitly set to 1 to match intent. -->
+                            <sampling>1</sampling>
+                        </heightmap>
+                    </geometry>
+                </visual>
+            </link>
+        </model>
+
+
+        <!-- ===================== -->
+        <!-- Buildings model -->
+        <!-- ===================== -->
+        <model name="applepark_buildings">
+            <static>true</static>
+            <!-- The cropped DAE is already centered at raw terrain coordinate (575, -350). -->
+            <pose>0 0 0 0 0 0</pose>
+            <link name="buildings">
+                <visual name="buildings_visual">
+                    <geometry>
+                        <mesh>
+                            <uri>mesh/buildings.dae</uri>
+                            <scale>1 1 1</scale>
+                        </mesh>
+                    </geometry>
+                    <material>
+                        <!-- Light grey -->
+                        <ambient>0.75 0.75 0.75 1</ambient>
+                        <diffuse>0.85 0.85 0.85 1</diffuse>
+                        <specular>0.05 0.05 0.05 1</specular>
+                        <emissive>0 0 0 1</emissive>
+                    </material>
+                </visual>
+                <collision name="buildings_collision">
+                    <geometry>
+                        <mesh>
+                            <uri>mesh/buildings.dae</uri>
+                            <scale>1 1 1</scale>
+                        </mesh>
+                    </geometry>
+                </collision>
+            </link>
+        </model>
+        <!-- Keep the pad top at the drone contact plane (-3.019558902 m),
+             while extending its foundation below the full sloped footprint. -->
+        <model name="drone_spawn_pad">
+            <static>true</static>
+            <pose>-120 115 -3.269558902 0 0 0</pose>
+            <link name="pad_link">
+                <collision name="collision">
+                    <geometry>
+                        <cylinder>
+                            <radius>4</radius>
+                            <length>0.5</length>
+                        </cylinder>
+                    </geometry>
+                </collision>
+                <visual name="visual">
+                    <cast_shadows>false</cast_shadows>
+                    <geometry>
+                        <cylinder>
+                            <radius>4</radius>
+                            <length>0.5</length>
+                        </cylinder>
+                    </geometry>
+                    <material>
+                        <ambient>0.08 0.32 0.08 1</ambient>
+                        <diffuse>0.15 0.75 0.18 1</diffuse>
+                        <specular>0.05 0.05 0.05 1</specular>
+                    </material>
+                </visual>
+            </link>
+        </model>
+
+        <frame name="drone_spawn">
+            <pose>-120 115 -3.019558902 0 0 0</pose>
+        </frame>
+
+        <include>
+            <uri>model://map_preview_drone</uri>
+            <name>city_preview_drone</name>
+            <!-- The preview model origin is its landing-gear contact plane. -->
+            <pose>-120 115 -3.019558902 0 0 0</pose>
+        </include>
+
+    </world>
+</sdf>

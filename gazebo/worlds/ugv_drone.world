@@ -1,0 +1,226 @@
+<?xml version="1.0" encoding="utf-8"?>
+<sdf version="1.9">
+  <!--
+    300 x 300 m mountain flight world for Gazebo Harmonic.
+
+    Terrain bounds: x/y = -150..150 m, z = 0..40 m.
+    The retained summits are approximately 40 m and 20 m high, surrounded by
+    deterministic warped ridges and foothills with protected contact patches.
+    The launch pad is on the flat south-west corner at (-80, -80).
+    ArduPilotPlugin in iris_with_down_camera listens on FDM UDP port 9002.
+    Launch with gz-physics-bullet-featherstone-plugin so the OBJ collision is
+    constructed (the Harmonic 8 DART backend does not construct SDF meshes).
+  -->
+  <world name="ugv_drone_mountain">
+    <gravity>0 0 -9.8</gravity>
+    <magnetic_field>6.0e-6 2.3e-5 -4.2e-5</magnetic_field>
+    <atmosphere type="adiabatic"/>
+
+    <!-- Retain the validated 2 ms / 500 Hz baseline while the larger terrain,
+         288 mesh trees and central collision maze undergo runtime testing. -->
+    <physics name="2ms" type="ignored">
+      <max_step_size>0.002</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+      <real_time_update_rate>500</real_time_update_rate>
+    </physics>
+
+    <plugin filename="gz-sim-physics-system"
+      name="gz::sim::systems::Physics"/>
+    <plugin filename="gz-sim-sensors-system"
+      name="gz::sim::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+    <plugin filename="gz-sim-user-commands-system"
+      name="gz::sim::systems::UserCommands"/>
+    <plugin filename="gz-sim-scene-broadcaster-system"
+      name="gz::sim::systems::SceneBroadcaster"/>
+    <plugin filename="gz-sim-imu-system"
+      name="gz::sim::systems::Imu"/>
+    <plugin filename="gz-sim-navsat-system"
+      name="gz::sim::systems::NavSat"/>
+
+    <spherical_coordinates>
+      <surface_model>EARTH_WGS84</surface_model>
+      <world_frame_orientation>ENU</world_frame_orientation>
+      <latitude_deg>37.6189</latitude_deg>
+      <longitude_deg>-122.3750</longitude_deg>
+      <elevation>0</elevation>
+      <heading_deg>0</heading_deg>
+    </spherical_coordinates>
+
+    <scene>
+      <ambient>0.53 0.53 0.50 1</ambient>
+      <background>0.42 0.42 0.42 1</background>
+      <shadows>true</shadows>
+    </scene>
+
+    <!-- Start with a useful overview instead of placing the GUI camera inside
+         the terrain around world origin. -->
+    <gui fullscreen="0">
+      <plugin filename="MinimalScene" name="3D View">
+        <gz-gui>
+          <title>3D View</title>
+          <property type="bool" key="showTitleBar">false</property>
+          <property type="string" key="state">docked</property>
+        </gz-gui>
+        <engine>ogre2</engine>
+        <scene>scene</scene>
+        <ambient_light>0.53 0.53 0.50</ambient_light>
+        <background_color>0.42 0.42 0.42</background_color>
+        <camera_pose>190 -205 145 0 0.58 2.34</camera_pose>
+      </plugin>
+      <plugin filename="EntityContextMenuPlugin" name="Entity context menu">
+        <gz-gui>
+          <property key="resizable" type="bool">false</property>
+          <property key="width" type="double">5</property>
+          <property key="height" type="double">5</property>
+          <property key="state" type="string">floating</property>
+          <property key="showTitleBar" type="bool">false</property>
+        </gz-gui>
+      </plugin>
+      <plugin filename="GzSceneManager" name="Scene Manager">
+        <gz-gui>
+          <property key="resizable" type="bool">false</property>
+          <property key="width" type="double">5</property>
+          <property key="height" type="double">5</property>
+          <property key="state" type="string">floating</property>
+          <property key="showTitleBar" type="bool">false</property>
+        </gz-gui>
+      </plugin>
+      <plugin filename="InteractiveViewControl" name="Interactive view control">
+        <gz-gui>
+          <property key="resizable" type="bool">false</property>
+          <property key="width" type="double">5</property>
+          <property key="height" type="double">5</property>
+          <property key="state" type="string">floating</property>
+          <property key="showTitleBar" type="bool">false</property>
+        </gz-gui>
+      </plugin>
+      <plugin filename="CameraTracking" name="Camera Tracking">
+        <gz-gui>
+          <property key="resizable" type="bool">false</property>
+          <property key="width" type="double">5</property>
+          <property key="height" type="double">5</property>
+          <property key="state" type="string">floating</property>
+          <property key="showTitleBar" type="bool">false</property>
+        </gz-gui>
+      </plugin>
+      <plugin filename="WorldControl" name="World control">
+        <gz-gui>
+          <title>World control</title>
+          <property type="bool" key="showTitleBar">false</property>
+          <property type="bool" key="resizable">false</property>
+          <property type="double" key="height">72</property>
+          <property type="double" key="z">1</property>
+          <property type="string" key="state">floating</property>
+          <anchors target="3D View">
+            <line own="left" target="left"/>
+            <line own="bottom" target="bottom"/>
+          </anchors>
+        </gz-gui>
+        <play_pause>true</play_pause>
+        <step>true</step>
+        <start_paused>false</start_paused>
+        <use_event>true</use_event>
+      </plugin>
+      <plugin filename="WorldStats" name="World stats">
+        <gz-gui>
+          <title>World stats</title>
+          <property type="bool" key="showTitleBar">false</property>
+          <property type="bool" key="resizable">false</property>
+          <property type="double" key="height">110</property>
+          <property type="double" key="width">290</property>
+          <property type="double" key="z">1</property>
+          <property type="string" key="state">floating</property>
+          <anchors target="3D View">
+            <line own="right" target="right"/>
+            <line own="bottom" target="bottom"/>
+          </anchors>
+        </gz-gui>
+        <sim_time>true</sim_time>
+        <real_time>true</real_time>
+        <real_time_factor>true</real_time_factor>
+        <iterations>true</iterations>
+      </plugin>
+    </gui>
+
+    <light name="mountain_sun" type="directional">
+      <cast_shadows>true</cast_shadows>
+      <pose>-70 -80 120 0 0 0</pose>
+      <diffuse>0.96 0.91 0.78 1</diffuse>
+      <specular>0.22 0.20 0.18 1</specular>
+      <attenuation>
+        <range>1000</range>
+        <constant>0.9</constant>
+        <linear>0.01</linear>
+        <quadratic>0.001</quadratic>
+      </attenuation>
+      <direction>-0.45 0.22 -0.86</direction>
+    </light>
+
+    <include>
+      <uri>model://ugv_mou_terrain</uri>
+      <name>mountain_terrain</name>
+      <pose>0 0 0 0 0 0</pose>
+    </include>
+
+    <!-- One local static model contains 216 pines, 72 oaks and the 72-wall,
+         3.75 m-high central maze.  Every tree trunk and wall has collision. -->
+    <include>
+      <uri>model://ugv_mou_forest_obstacles</uri>
+      <name>mountain_forest</name>
+      <pose>0 0 0 0 0 0</pose>
+    </include>
+
+    <!-- Flat, high-contrast pad above the z=0 south-west staging area. -->
+    <model name="drone_launch_pad">
+      <static>true</static>
+      <pose>-80 -80 0.08 0 0 0</pose>
+      <link name="pad_link">
+        <collision name="pad_collision">
+          <geometry>
+            <box><size>12 12 0.16</size></box>
+          </geometry>
+        </collision>
+        <visual name="pad_visual">
+          <geometry>
+            <box><size>12 12 0.16</size></box>
+          </geometry>
+          <material>
+            <ambient>0.18 0.18 0.20 1</ambient>
+            <diffuse>0.24 0.24 0.27 1</diffuse>
+            <specular>0.04 0.04 0.04 1</specular>
+          </material>
+        </visual>
+        <visual name="north_marker">
+          <pose>0 2.2 0.085 0 0 0</pose>
+          <geometry>
+            <box><size>0.7 4.0 0.02</size></box>
+          </geometry>
+          <material>
+            <ambient>0.9 0.15 0.10 1</ambient>
+            <diffuse>1.0 0.18 0.12 1</diffuse>
+          </material>
+        </visual>
+        <visual name="east_marker">
+          <pose>2.2 0 0.085 0 0 0</pose>
+          <geometry>
+            <box><size>4.0 0.7 0.02</size></box>
+          </geometry>
+          <material>
+            <ambient>0.1 0.45 0.9 1</ambient>
+            <diffuse>0.12 0.55 1.0 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- iris origin is positioned 0.195 m above its contact plane.  Pad top
+         is z=0.16, therefore 0.355 m places it on the pad without overlap. -->
+    <include>
+      <uri>model://iris_with_down_camera</uri>
+      <name>mountain_iris</name>
+      <pose degrees="true">-80 -80 0.355 0 0 45</pose>
+    </include>
+  </world>
+</sdf>

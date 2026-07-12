@@ -1,0 +1,39 @@
+<?xml version="1.0" ?>
+<sdf version="1.9">
+  <model name="bird_combined">
+    <static>false</static>
+    <pose>0 0 0 0 0 0</pose>
+
+    <link name="body">
+      <gravity>false</gravity>
+      <kinematic>true</kinematic>
+
+      <inertial>
+        <mass>0.3</mass>
+        <inertia>
+          <ixx>0.05</ixx>
+          <iyy>0.05</iyy>
+          <izz>0.05</izz>
+        </inertia>
+      </inertial>
+
+      <collision name="collision">
+        <geometry>
+          <box>
+            <size>1 1 1</size>
+          </box>
+        </geometry>
+      </collision>
+
+      <visual name="visual">
+        <geometry>
+          <mesh>
+            <uri>model://bird/meshes/bird.dae</uri>
+            <scale>1 1 1</scale>
+          </mesh>
+        </geometry>
+      </visual>
+
+    </link>
+  </model>
+</sdf>
