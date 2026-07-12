@@ -10,6 +10,7 @@ from pathlib import Path
 import xml.etree.ElementTree as ET
 
 from PIL import Image
+import yaml
 
 
 GAZEBO = Path(__file__).resolve().parents[1]
@@ -105,8 +106,11 @@ def validate_city() -> dict[str, object]:
         "gz-sim-physics-system",
         "gz-sim-user-commands-system",
         "gz-sim-scene-broadcaster-system",
+        "gz-sim-contact-system",
         "gz-sim-sensors-system",
         "gz-sim-imu-system",
+        "gz-sim-air-pressure-system",
+        "gz-sim-magnetometer-system",
         "gz-sim-navsat-system",
     }
     plugins = {plugin.attrib.get("filename", "") for plugin in world.findall("plugin")}
@@ -190,23 +194,15 @@ def validate_city() -> dict[str, object]:
         and pad.findtext(".//visual//cylinder/length") == "0.5",
         "city spawn pad foundation depth",
     )
-    city_drone = next(
-        (
-            include
-            for include in world.findall("include")
-            if include.findtext("uri") == "model://map_preview_drone"
-        ),
-        None,
+    require(
+        all(include.findtext("uri") != "model://map_preview_drone" for include in world.findall("include")),
+        "city contains the removed static preview drone",
     )
-    require(city_drone is not None, "city repository-local preview drone")
-    require(city_drone.findtext("pose") == "-120 115 -3.019558902 0 0 0", "city drone contact pose")
-    preview_contact_z = validate_preview_drone_model()
     pad_pose_z = float(pad.findtext("pose", "").split()[2])
     pad_height = float(pad.findtext(".//collision//cylinder/length", "nan"))
-    drone_pose_z = float(city_drone.findtext("pose", "").split()[2])
     require(
-        abs(drone_pose_z + preview_contact_z - (pad_pose_z + pad_height / 2.0)) < 1e-9,
-        "city preview landing gear is not seated on the pad",
+        abs(-3.019558902 - (pad_pose_z + pad_height / 2.0)) < 1e-9,
+        "city PX4 spawn contact plane differs from the pad top",
     )
 
     expected_images = {
@@ -332,25 +328,6 @@ def validate_model_uri(uri: str) -> Path:
     return model_root
 
 
-def validate_preview_drone_model() -> float:
-    model_root = validate_model_uri("model://map_preview_drone")
-    model = ET.parse(model_root / "model.sdf").getroot().find("model")
-    require(model is not None and model.findtext("static") == "true", "preview drone is not static")
-    gear_bottoms = []
-    for gear_name in ("landing_gear_left", "landing_gear_right"):
-        gear = model.find(f".//visual[@name='{gear_name}']")
-        require(gear is not None, f"preview drone gear missing: {gear_name}")
-        pose = [float(value) for value in gear.findtext("pose", "").split()]
-        size = [float(value) for value in gear.findtext("./geometry/box/size", "").split()]
-        require(len(pose) == 6 and len(size) == 3, f"preview drone gear geometry: {gear_name}")
-        gear_bottoms.append(pose[2] - size[2] / 2.0)
-    require(
-        max(abs(bottom - PREVIEW_CONTACT_Z) for bottom in gear_bottoms) < 1e-12,
-        "preview drone contact plane changed",
-    )
-    return PREVIEW_CONTACT_Z
-
-
 def validate_mountain() -> dict[str, object]:
     world = world_element(MOUNTAIN_WORLD)
     require(world.attrib.get("name") == "ugv_drone_mountain_map", "mountain map world name")
@@ -360,20 +337,30 @@ def validate_mountain() -> dict[str, object]:
         == [
             "model://ugv_mou_terrain",
             "model://ugv_mou_forest_obstacles",
-            "model://map_preview_drone",
         ],
-        f"mountain map-only includes: {include_uris}",
+        f"mountain map includes: {include_uris}",
     )
     require("iris_with_down_camera" not in MOUNTAIN_WORLD.read_text(encoding="utf-8"), "external Iris in map-only world")
-    preview = next(include for include in world.findall("include") if include.findtext("name") == "mountain_preview_drone")
-    require(preview.findtext("pose") == "-80 -80 0.16 0 0 0.785398", "mountain preview contact pose")
+    require("map_preview_drone" not in MOUNTAIN_WORLD.read_text(encoding="utf-8"), "static preview drone remains")
+    expected_plugins = {
+        "gz-sim-physics-system",
+        "gz-sim-sensors-system",
+        "gz-sim-user-commands-system",
+        "gz-sim-scene-broadcaster-system",
+        "gz-sim-contact-system",
+        "gz-sim-imu-system",
+        "gz-sim-air-pressure-system",
+        "gz-sim-magnetometer-system",
+        "gz-sim-navsat-system",
+    }
+    plugins = {plugin.attrib.get("filename", "") for plugin in world.findall("plugin")}
+    require(plugins == expected_plugins, f"mountain PX4 system plugins: {sorted(plugins)}")
     pad = next(model for model in world.findall("model") if model.attrib.get("name") == "drone_launch_pad")
     pad_pose_z = float(pad.findtext("pose", "").split()[2])
     pad_height = float(pad.findtext(".//collision//box/size", "").split()[2])
-    preview_pose_z = float(preview.findtext("pose", "").split()[2])
     require(
-        abs(preview_pose_z + validate_preview_drone_model() - (pad_pose_z + pad_height / 2.0)) < 1e-9,
-        "mountain preview landing gear is not seated on the pad",
+        abs(0.16 - (pad_pose_z + pad_height / 2.0)) < 1e-9,
+        "mountain PX4 spawn contact plane differs from the pad top",
     )
     model_roots = [validate_model_uri(uri) for uri in include_uris]
     for model_root in model_roots:
@@ -407,10 +394,51 @@ def validate_no_external_runtime_paths() -> None:
         require("file://" not in content, f"file URI dependency: {path}")
 
 
+def validate_px4_contracts() -> dict[str, object]:
+    launch = GAZEBO / "run_px4_map.sh"
+    require(launch.is_file() and launch.stat().st_mode & 0o111, "PX4 map launcher is not executable")
+    launch_text = launch.read_text(encoding="utf-8")
+    for marker in (
+        "PX4_GZ_STANDALONE=1",
+        'PX4_GZ_WORLD="$WORLD_NAME"',
+        'PX4_GZ_MODEL_POSE="$SPAWN_POSE"',
+        'PX4_SYS_AUTOSTART="$AUTOSTART_ID"',
+        'PX4_SIM_MODEL="$SIM_MODEL"',
+    ):
+        require(marker in launch_text, f"PX4 launcher contract missing: {marker}")
+    expected = {
+        "city": ("applepark_city", (-120.0, 115.0, -3.019558902), 274),
+        "mountain": ("ugv_drone_mountain_map", (-80.0, -80.0, 0.16), 288),
+    }
+    counts = {}
+    for name, (world_name, spawn_xyz, obstacle_count) in expected.items():
+        path = GAZEBO / "maps" / f"{name}_coordinates.yaml"
+        document = yaml.safe_load(path.read_text(encoding="utf-8"))
+        require(document["map"]["gazebo_world_name"] == world_name, f"{name} YAML world")
+        require(document["px4_vehicle"]["airframe_autostart_id"] == 4014, f"{name} PX4 airframe")
+        require(document["px4_vehicle"]["simulation_model"] == "gz_x500_mono_cam_down", f"{name} PX4 model")
+        pose = document["spawn"]["gazebo_spawn_pose_enu"]
+        require(tuple(pose[axis] for axis in ("x", "y", "z")) == spawn_xyz, f"{name} spawn")
+        if name == "city":
+            actual = len(document["obstacles"]["buildings"])
+        else:
+            require(document["obstacles"]["maze_walls"] == [], "mountain YAML maze is not empty")
+            actual = len(document["obstacles"]["trees"])
+        require(actual == obstacle_count, f"{name} obstacle coordinate count")
+        counts[name] = actual
+    generator = run_checked(
+        ["python3", str(GAZEBO / "tools/generate_path_planning_assets.py"), "--check"]
+    )
+    require("buildings=274" in generator and "trees=288 maze_walls=0" in generator,
+            "path-planning asset generator validation")
+    return counts
+
+
 def main() -> None:
     city = validate_city()
     mountain = validate_mountain()
     validate_no_external_runtime_paths()
+    coordinates = validate_px4_contracts()
     LOG.parent.mkdir(parents=True, exist_ok=True)
     output = "\n".join(
         [
@@ -445,6 +473,10 @@ def main() -> None:
             f"mountain_local_models={','.join(mountain['local_models'])}",
             f"mountain_external_runtime_assets={mountain['external_runtime_assets']}",
             "mountain_deterministic_validator=PASS",
+            "static_preview_drones=0",
+            "px4_dynamic_model=gz_x500_mono_cam_down autostart=4014",
+            f"coordinate_yaml_obstacles=city:{coordinates['city']} mountain_trees:{coordinates['mountain']} maze:0",
+            "path_planning_reference_images=PASS",
             "active_sim_assets_or_absolute_home_references=0",
             "repository_only_asset_closure=PASS",
         ]

@@ -1,11 +1,9 @@
 # UGV drone mountain world
 
-`worlds/ugv_drone.world` is the Gazebo Harmonic version of the local 300 m
-mountain flight map. Its terrain, texture, tree and maze collision assets are
-self-contained under `gazebo/models`, so those map assets require neither a
-Gazebo Fuel download nor the `sim_assets` workspace. The Iris vehicle and
-ArduPilot system plugin continue to come from the documented
-`~/ardupilot_gazebo` installation.
+`worlds/ugv_drone_map.world` is the Gazebo Harmonic 300 m mountain flight map.
+Its terrain, texture and tree collision assets are self-contained under
+`gazebo/models`. `run_px4_map.sh` connects that world to the existing PX4 SITL
+build and PX4 dynamically spawns the real `x500_mono_cam_down` vehicle.
 
 ## Map layout
 
@@ -15,21 +13,19 @@ ArduPilot system plugin continue to come from the documented
 - Mountain relief: seven warped, low-frequency ridge / foothill envelopes
   around the retained hills; nonzero relief covers 56.68% of the map
 - Launch pad: `(-80, -80)`, top surface `z=0.16 m`
-- SITL Iris spawn: `(-80, -80, 0.355)`, yaw 45 degrees; its landing gear contacts the `z=0.16 m` pad exactly
-- Map-preview drone origin: `(-80, -80, 0.16)`, normalized to its landing-gear contact plane on the same pad
+- PX4 x500 spawn: `(-80, -80, 0.16)`, yaw `0.785398 rad`; its landing gear settles approximately 1.3 cm onto the pad
 - Forest: 288 uniformly 2x-scaled textured trees (216 pines, 72 oaks) with
   matching 2x trunk collisions and an exact local terrain seat under every trunk disk
-- Maze: 72 unique collision walls, each 3.75 m high, near the map centre
-  (the imported source snapshot keeps all 73 entries, including one exact duplicate)
-- Obstacle body: one static compound link containing all tree and maze geometry
-- Vehicle: `iris_with_down_camera`, ArduPilot JSON FDM UDP port 9002
+- Maze: removed; runtime wall collisions and visuals are both zero
+- Obstacle body: one static compound link containing only the 288 tree trunks / 576 tree visuals
+- Vehicle: PX4 airframe 4014, `gz_x500_mono_cam_down`, runtime entity `x500_mono_cam_down_0`
 - Physics: Bullet Featherstone, 2 ms step / 500 Hz
 
-The central maze core (`x=-42..42`, `y=-30..30`) and the complete 12 x 12 m
+The central flight clearing (`x=-42..42`, `y=-30..30`) and the complete 12 x 12 m
 launch-pad footprint are explicitly held at `z=0`. The generator also expands
 each tree's flat core by one 1.171875 m grid-cell diagonal beyond the trunk
 radius. Consequently no wall or tree collision is positioned from a centre
-sample alone: their full contact footprints are checked against the same
+sample alone: every trunk's full contact footprint is checked against the same
 8-bit height field that generates both OBJ meshes.
 
 The flat south-west pad is deliberate: the generated heightmap is exactly zero
@@ -39,43 +35,45 @@ the route after checking actual clearance.
 
 ## Run
 
-Gazebo and SITL run in separate terminals. The order does not matter.
-
-Terminal 1, from the `PX4-ROS2` repository root:
+From the `PX4-ROS2` repository root, one command starts Gazebo, the optional
+Micro XRCE-DDS Agent and PX4 SITL in the correct order:
 
 ```bash
-./gazebo/run_ugv_drone.sh
+./gazebo/run_px4_map.sh mountain
 ```
 
-The launcher sets `GZ_SIM_RESOURCE_PATH`, the ArduPilot plugin path, the
-Wayland/XWayland workaround and the NVIDIA PRIME variables for the RTX 5060.
-The equivalent direct command is:
+On a fresh PC, run `./gazebo/setup_px4_sitl.sh` once first. An existing
+`~/PX4-Autopilot` checkout or firmware version is never changed. The launcher
+sets the resource paths, standalone PX4 environment, Wayland/XWayland
+workaround and NVIDIA PRIME variables for the RTX 5060.
+
+The exact two-process equivalent is:
 
 ```bash
-export GZ_SIM_RESOURCE_PATH="$PWD/gazebo/models:$PWD/gazebo/worlds:$HOME/ardupilot_gazebo/models:$HOME/ardupilot_gazebo/worlds"
-export GZ_SIM_SYSTEM_PLUGIN_PATH="$HOME/ardupilot_gazebo/build"
+export GZ_SIM_RESOURCE_PATH="$PWD/gazebo/models:$PWD/gazebo/worlds:$HOME/PX4-Autopilot/Tools/simulation/gz/models"
 __NV_PRIME_RENDER_OFFLOAD=1 \
 __GLX_VENDOR_LIBRARY_NAME=nvidia \
 __VK_LAYER_NV_optimus=NVIDIA_only \
 QT_QPA_PLATFORM=xcb \
 gz sim -v4 -r \
   --physics-engine gz-physics-bullet-featherstone-plugin \
-  gazebo/worlds/ugv_drone.world
-```
+  gazebo/worlds/ugv_drone_map.world
 
-Terminal 2:
-
-```bash
-cd ~/ardupilot
-sim_vehicle.py -v ArduCopter -f JSON -I0 --console --map
+# second terminal, after Gazebo reports ready
+cd ~/PX4-Autopilot/build/px4_sitl_default/rootfs
+source ./gz_env.sh
+PX4_GZ_STANDALONE=1 PX4_GZ_WORLD=ugv_drone_mountain_map \
+PX4_GZ_MODEL_POSE='-80,-80,0.16,0,0,0.785398' \
+PX4_SYS_AUTOSTART=4014 PX4_SIM_MODEL=gz_x500_mono_cam_down \
+../bin/px4
 ```
 
 Useful launcher switches:
 
 ```bash
-PAUSED=1 ./gazebo/run_ugv_drone.sh       # inspect before physics starts
-HEADLESS=1 ./gazebo/run_ugv_drone.sh     # server-only performance test
-USE_NVIDIA=0 ./gazebo/run_ugv_drone.sh   # GPU troubleshooting only
+HEADLESS=1 ./gazebo/run_px4_map.sh mountain    # server-only performance test
+START_XRCE=0 ./gazebo/run_px4_map.sh mountain  # PX4/Gazebo without ROS 2 DDS
+USE_NVIDIA=0 ./gazebo/run_px4_map.sh mountain  # GPU troubleshooting only
 ```
 
 Verify that rendering is on the RTX GPU in another terminal:
@@ -115,10 +113,10 @@ Do not omit the Bullet Featherstone argument when launching this first map
 version. Harmonic 8's default DART backend logs that SDF mesh collision
 construction is not implemented and would leave the mountain visual without a
 matching collision surface. `run_ugv_drone.sh` selects Bullet automatically.
-The forest and maze deliberately share one static link. Bullet Featherstone
-rejects a static model made from many unjointed links as multiple floating
-subtrees, disabling those links; the generated compound link keeps all 360
-collisions (288 trunks and 72 walls) and 648 visuals active without fake joints.
+The forest deliberately uses one static link. Bullet Featherstone rejects a
+static model made from many unjointed links as multiple floating subtrees;
+the generated compound link keeps all 288 trunk collisions and 576 visuals
+active without fake joints.
 
 For a later high-fidelity dynamics comparison, change `max_step_size` back to
 `0.001` and `real_time_update_rate` to `1000`; expect slower-than-real-time
@@ -141,8 +139,8 @@ The checked result is written to
 `gazebo/validation/ugv_drone_mountain_300_static.log`. The validator asserts
 the 300 m bounds, 40 m / 20 m summits, deterministic ridge pixels, unchanged
 spawn, collision counts, the one-link Bullet-compatible obstacle structure,
-all absolute poses against the preserved source layouts, source-maze
-deduplication, all 72 oriented wall footprints, all 288 trunk disks, the full
+all absolute poses against the preserved source layouts, zero maze runtime
+entities, all 288 trunk disks, the full
 launch-pad footprint, zero blue-dominant terrain pixels, byte-identical
 visual/collision geometry, neutral scene background and the absence of
 operational references to `sim_assets`.
@@ -163,8 +161,9 @@ The first Harmonic port copied the following local models from `FSD_Vehicle`:
 - the original `ugv_mou_forest_obstacles` 177-tree primitive model
 - `bird` (DAE and its PNG texture, used by `worlds/ugv.world`)
 
-The central maze layout is derived from the local modified
-`engcang/gazebo_maps` Height Maze asset. The active 300 m terrain is generated
+The removed central maze was derived from the local modified
+`engcang/gazebo_maps` Height Maze asset; its old source snapshot is retained
+for provenance but is not read by the builder or included at runtime. The active 300 m terrain is generated
 locally from analytic compact hills, anisotropic ridges, deterministic value
 noise, protected plateaus and edge tapering; no third-party DEM or satellite
 image is embedded. Pine and oak DAE models are from the Gazebo model collection

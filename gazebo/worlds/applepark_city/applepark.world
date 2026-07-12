@@ -1,6 +1,8 @@
 <?xml version="1.0" ?>
 <sdf version="1.9">
     <world name="applepark_city">
+        <magnetic_field>6.0e-6 2.3e-5 -4.2e-5</magnetic_field>
+        <atmosphere type="adiabatic"/>
 
         <!-- Plugin for simulating physics -->
         <plugin
@@ -20,6 +22,10 @@
                 name="gz::sim::systems::SceneBroadcaster">
         </plugin>
 
+        <plugin filename="gz-sim-contact-system"
+                name="gz::sim::systems::Contact">
+        </plugin>
+
         <!-- Plugin for handling sensors like the LIDAR -->
         <plugin
                 filename="gz-sim-sensors-system"
@@ -30,6 +36,14 @@
         <!-- Plugin for IMU -->
         <plugin filename="gz-sim-imu-system"
                 name="gz::sim::systems::Imu">
+        </plugin>
+
+        <!-- PX4 x500 barometer and compass sensor systems. -->
+        <plugin filename="gz-sim-air-pressure-system"
+                name="gz::sim::systems::AirPressure">
+        </plugin>
+        <plugin filename="gz-sim-magnetometer-system"
+                name="gz::sim::systems::Magnetometer">
         </plugin>
 
         <!-- plugin for GPS  -->
@@ -408,12 +422,8 @@
             <pose>-120 115 -3.019558902 0 0 0</pose>
         </frame>
 
-        <include>
-            <uri>model://map_preview_drone</uri>
-            <name>city_preview_drone</name>
-            <!-- The preview model origin is its landing-gear contact plane. -->
-            <pose>-120 115 -3.019558902 0 0 0</pose>
-        </include>
+        <!-- The real PX4 SITL x500_mono_cam_down is spawned dynamically by
+             gazebo/run_px4_map.sh.  No static drone surrogate lives here. -->
 
     </world>
 </sdf>

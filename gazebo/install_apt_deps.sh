@@ -17,7 +17,8 @@ apt-get install -y curl lsb-release gnupg software-properties-common cmake build
   rapidjson-dev libopencv-dev \
   libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
   gstreamer1.0-plugins-bad gstreamer1.0-libav gstreamer1.0-gl \
-  python3-rosdep python3-colcon-common-extensions python3-numpy python3-pil
+  python3-rosdep python3-colcon-common-extensions python3-numpy python3-pil \
+  python3-yaml python3-opencv python3-matplotlib
 
 # Ubuntu 22.04's stock Gazebo Classic and Gazebo Harmonic both normally own a
 # binary named `gz`.  Install the official Open Robotics Gazebo 11 CLI variant

@@ -27,7 +27,6 @@ VISUAL_OBJ = TERRAIN_ROOT / "meshes" / "ugv_mou_terrain_visual.obj"
 COLLISION_OBJ = TERRAIN_ROOT / "meshes" / "ugv_mou_terrain_collision.obj"
 MTL = TERRAIN_ROOT / "meshes" / "ugv_mou_terrain.mtl"
 TREE_LAYOUT = FOREST_ROOT / "source" / "tree_layout.source.xml"
-MAZE_LAYOUT = FOREST_ROOT / "source" / "maze_layout.source.xml"
 FOREST_SDF = FOREST_ROOT / "model.sdf"
 
 MAP_SIZE_M = 300.0
@@ -44,19 +43,15 @@ SECOND_CENTER = (55.0, 80.0)
 SECOND_RADIUS = 70.0
 SECOND_AMPLITUDE = 20.0
 PROFILE_EXPONENT = 0.10
-MAZE_FLAT_BOUNDS = (-42.0, 42.0, -30.0, 30.0)
-MAZE_TRANSITION_M = 14.0
+# Keep the already validated low central flight corridor after removing the
+# artificial maze.  This is terrain shaping only; no wall visual/collision is
+# generated anywhere in the runtime map.
+CENTRAL_CLEARING_BOUNDS = (-42.0, 42.0, -30.0, 30.0)
+CENTRAL_CLEARING_TRANSITION_M = 14.0
 LAUNCH_CENTER = (-80.0, -80.0)
 LAUNCH_FLAT_RADIUS_M = 11.0
 LAUNCH_TRANSITION_RADIUS_M = 24.0
 EDGE_TAPER_M = 18.0
-MAZE_TRANSLATION = (-12.0, 0.0)
-MAZE_YAW = 1.5708
-WALL_SIZE = {
-    "unit_wall": (4.0, 0.15, 3.75),
-    "half_wall": (2.0, 0.15, 3.75),
-    "long_wall": (32.0, 0.15, 3.75),
-}
 TREE_MESH_SCALE = (2.0, 2.0, 2.0)
 TREE_GROUND_COMPENSATION = {"pine_tree": 0.0001, "oak_tree": 0.0703}
 TREE_TRUNK_RADIUS = {"pine_tree": 0.60, "oak_tree": 0.90}
@@ -290,11 +285,13 @@ def build_heightmap() -> np.ndarray:
     ridges = np.minimum(ridges, np.where(x_grid > 0.0, 19.0, 36.0))
     heights = np.maximum(retained_hills, ridges)
 
-    xmin, xmax, ymin, ymax = MAZE_FLAT_BOUNDS
+    xmin, xmax, ymin, ymax = CENTRAL_CLEARING_BOUNDS
     rectangle_distance = np.maximum.reduce(
         (xmin - x_grid, x_grid - xmax, ymin - y_grid, y_grid - ymax)
     )
-    maze_mask = smoothstep(rectangle_distance / MAZE_TRANSITION_M)
+    clearing_mask = smoothstep(
+        rectangle_distance / CENTRAL_CLEARING_TRANSITION_M
+    )
     launch_distance = np.hypot(x_grid - LAUNCH_CENTER[0], y_grid - LAUNCH_CENTER[1])
     launch_mask = smoothstep(
         (launch_distance - LAUNCH_FLAT_RADIUS_M)
@@ -305,7 +302,7 @@ def build_heightmap() -> np.ndarray:
         MAP_SIZE_M / 2.0 - np.abs(y_grid),
     )
     edge_mask = smoothstep(edge_distance / EDGE_TAPER_M)
-    heights *= maze_mask * launch_mask * edge_mask
+    heights *= clearing_mask * launch_mask * edge_mask
     heights = flatten_tree_contact_patches(heights)
     heights = np.clip(heights, 0.0, HEIGHT_SCALE_M)
 
@@ -488,37 +485,7 @@ def add_tree_obstacles(link: ET.Element, include: ET.Element) -> str:
     return tree_type
 
 
-def add_wall_obstacles(link: ET.Element, include: ET.Element) -> str:
-    name = include.findtext("name", "wall")
-    wall_type = include.findtext("uri", "").split("model://", 1)[-1]
-    if wall_type not in WALL_SIZE:
-        raise RuntimeError(f"unsupported wall type: {wall_type}")
-    source_pose = parse_pose(include.findtext("pose", ""), name)
-    maze_pose: Pose = (*MAZE_TRANSLATION, 0.0, 0.0, 0.0, MAZE_YAW)
-    wall_base_pose = compose_pose(maze_pose, source_pose)
-    wall_geometry_pose = compose_pose(wall_base_pose, (0.0, 0.0, 1.875, 0.0, 0.0, 0.0))
-    size = WALL_SIZE[wall_type]
-    size_text = " ".join(f"{value:g}" for value in size)
-
-    collision = child(link, "collision", name=f"maze_{name}_collision")
-    child(collision, "pose", format_pose(wall_geometry_pose))
-    geometry = child(collision, "geometry")
-    box = child(geometry, "box")
-    child(box, "size", size_text)
-    add_surface(collision)
-    visual = child(link, "visual", name=f"maze_{name}_visual")
-    child(visual, "pose", format_pose(wall_geometry_pose))
-    geometry = child(visual, "geometry")
-    box = child(geometry, "box")
-    child(box, "size", size_text)
-    material = child(visual, "material")
-    child(material, "ambient", "0.30 0.27 0.22 1")
-    child(material, "diffuse", "0.48 0.43 0.34 1")
-    child(material, "specular", "0.03 0.03 0.03 1")
-    return wall_type
-
-
-def write_forest_sdf() -> tuple[dict[str, int], dict[str, int], int]:
+def write_forest_sdf() -> dict[str, int]:
     root = ET.Element("sdf", version="1.9")
     model = child(root, "model", name="ugv_mou_forest_obstacles")
     child(model, "static", "true")
@@ -536,31 +503,12 @@ def write_forest_sdf() -> tuple[dict[str, int], dict[str, int], int]:
         tree_type = add_tree_obstacles(obstacle_link, include)
         tree_counts[tree_type] += 1
 
-    wall_counts = {key: 0 for key in WALL_SIZE}
-    maze_root = ET.parse(MAZE_LAYOUT).getroot()
-    seen_walls: set[tuple[str, tuple[float, ...]]] = set()
-    source_wall_count = 0
-    for include in maze_root.findall("./model/include"):
-        source_wall_count += 1
-        wall_type = include.findtext("uri", "").split("model://", 1)[-1]
-        pose = tuple(float(value) for value in include.findtext("pose", "").split())
-        signature = (wall_type, pose)
-        if signature in seen_walls:
-            continue
-        seen_walls.add(signature)
-        wall_type = add_wall_obstacles(obstacle_link, include)
-        wall_counts[wall_type] += 1
-
     if tree_counts != {"pine_tree": 216, "oak_tree": 72}:
         raise RuntimeError(f"unexpected tree counts: {tree_counts}")
-    if source_wall_count != 73:
-        raise RuntimeError(f"unexpected source maze entry count: {source_wall_count}")
-    if wall_counts != {"unit_wall": 64, "half_wall": 2, "long_wall": 6}:
-        raise RuntimeError(f"unexpected maze wall counts: {wall_counts}")
 
     ET.indent(root, space="  ")
     ET.ElementTree(root).write(FOREST_SDF, encoding="UTF-8", xml_declaration=True)
-    return tree_counts, wall_counts, source_wall_count
+    return tree_counts
 
 
 def main() -> None:
@@ -572,16 +520,13 @@ def main() -> None:
     write_mtl()
     write_terrain_obj(VISUAL_OBJ, pixels)
     shutil.copy2(VISUAL_OBJ, COLLISION_OBJ)
-    tree_counts, wall_counts, source_wall_count = write_forest_sdf()
+    tree_counts = write_forest_sdf()
     print(f"heightmap={HEIGHTMAP} sha256={sha256(HEIGHTMAP)}")
     print(f"terrain_peak_m={pixels.max() / 255.0 * HEIGHT_SCALE_M:.6f}")
     print(f"visual_obj={VISUAL_OBJ} sha256={sha256(VISUAL_OBJ)}")
     print(f"collision_obj={COLLISION_OBJ} sha256={sha256(COLLISION_OBJ)}")
     print(f"trees={sum(tree_counts.values())} counts={tree_counts}")
-    print(
-        f"maze_walls_unique={sum(wall_counts.values())} "
-        f"source_entries={source_wall_count} counts={wall_counts}"
-    )
+    print("maze_walls_unique=0")
     print(f"forest_sdf={FOREST_SDF} sha256={sha256(FOREST_SDF)}")
 
 

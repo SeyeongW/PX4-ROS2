@@ -1,5 +1,10 @@
 # ArduPilot ROS 2 오프보드 제어 + YOLO 추적
 
+> **`jo` 브랜치의 도시/산악맵 실행은 PX4 SITL을 사용합니다.** 기존
+> ArduPilot/MAVROS 노드는 레거시로 남아 있지만, 아래
+> `gazebo/run_px4_map.sh`는 PX4 airframe 4014의 실제 동적
+> `x500_mono_cam_down`을 생성합니다. 정적 드론 모형은 사용하지 않습니다.
+
 ArduPilot 기반 드론을 ROS 2로 Offboard 제어하며, 하방 카메라 + YOLO로 지상 표적을 추적하는 시스템입니다.
 
 ## 프로젝트 구성
@@ -25,11 +30,13 @@ PX4-ROS2/
 │   ├── models/iris_with_down_camera/     # 하방 카메라 장착 Iris 모델
 │   ├── worlds/iris_down_camera_runway.sdf
 │   ├── worlds/ugv_drone.world            # 300 m 산악 드론 월드
-│   ├── worlds/ugv_drone_map.world        # 외부 의존성 없는 산악맵 + 프리뷰 드론
+│   ├── worlds/ugv_drone_map.world        # 300 m 산악맵(PX4 런타임 스폰 대상)
 │   ├── worlds/applepark_city/             # 500 m 도시맵 + 건물/도로/충돌 자산
 │   ├── launch/camera_bridge.launch.py    # Gazebo → ROS 2 카메라 브리지
 │   ├── install_apt_deps.sh
-│   ├── run_world.sh                      # city/mountain 저장소 단독 실행기
+│   ├── run_world.sh                      # city/mountain 맵 전용 실행기
+│   ├── run_px4_map.sh                    # 맵 + 실제 PX4 x500 통합 실행기
+│   ├── maps/                             # 정확한 ENU 장애물·PX4 NED 변환 YAML
 │   ├── run_ugv_drone.sh                  # RTX GPU 산악 월드 실행기
 │   ├── MAPS.md                            # 두 맵 실행·좌표·검증 안내
 │   ├── MOUNTAIN_WORLD.md                 # 산악맵 좌표·실행·출처
@@ -188,18 +195,35 @@ echo "source ~/ros_gz_ws/install/setup.bash" >> ~/.bashrc
 
 ## 시뮬레이션 실행 (ArduPilot SITL + Gazebo)
 
-### 저장소만으로 맵 + 드론 바로 확인
+### PX4로 동작하는 맵 + 드론 실행
 
 ```bash
 cd ~/ros2_ws/src/PX4-ROS2
-./gazebo/run_world.sh city
+# 새 PC에서만 1회 (기존 ~/PX4-Autopilot이 있으면 버전/파일을 변경하지 않음)
+./gazebo/setup_px4_sitl.sh
+
+# 도시맵 + PX4 x500
+./gazebo/run_px4_map.sh city
+
 # 또는
-./gazebo/run_world.sh mountain
+# 산악맵 + PX4 x500
+./gazebo/run_px4_map.sh mountain
 ```
 
-두 명령은 모든 world, mesh, texture와 프리뷰 드론을 저장소 내부에서
-읽으므로 `ardupilot_gazebo` 없이도 실행됩니다. 상세 내용은
+두 명령은 Gazebo를 먼저 실행한 뒤 동일한 world에 PX4 SITL이 실제
+`x500_mono_cam_down_0` 엔티티를 동적으로 스폰합니다. 로컬
+`MicroXRCEAgent`가 있으면 UDP 8888 에이전트도 함께 실행하므로 ROS 2
+`/fmu/*` 토픽을 사용할 수 있습니다. 좌표와 장애물은
+`gazebo/maps/city_coordinates.yaml` 및 `mountain_coordinates.yaml`에
+Gazebo ENU와 PX4 NED 변환을 분리해 기록했습니다. 상세 내용은
 [`gazebo/MAPS.md`](gazebo/MAPS.md)를 참고하세요.
+
+드론 없이 맵 형상만 빠르게 확인할 때만 다음을 사용합니다.
+
+```bash
+./gazebo/run_world.sh city
+./gazebo/run_world.sh mountain
+```
 
 다른 사람에게 스크립트 없이 전달할 RTX/NVIDIA 직접 실행 명령은 다음과
 같습니다. 저장소 최상위 디렉터리에서 실행합니다.
@@ -214,7 +238,7 @@ GZ_SIM_RESOURCE_PATH="$PWD/gazebo/models:$PWD/gazebo/worlds" __NV_PRIME_RENDER_O
 
 ### 산악 드론 월드
 
-300 x 300 m 지형, 기존 40 m / 20 m 봉우리와 추가 능선, 숲·미로 장애물을 사용하는 산악맵은 다음처럼 실행합니다.
+300 x 300 m 지형, 기존 40 m / 20 m 봉우리와 추가 능선, 숲 장애물(미로 제거)을 사용하는 산악맵은 다음처럼 실행합니다.
 RTX 5060 선택, 모델 경로와 ArduPilot 플러그인 경로는 스크립트가 설정합니다.
 
 ```bash

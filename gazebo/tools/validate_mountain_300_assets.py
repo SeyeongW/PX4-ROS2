@@ -14,8 +14,8 @@ from PIL import Image
 
 
 GAZEBO_ROOT = Path(__file__).resolve().parents[1]
-WORLD = GAZEBO_ROOT / "worlds" / "ugv_drone.world"
 MAP_WORLD = GAZEBO_ROOT / "worlds" / "ugv_drone_map.world"
+WORLD = MAP_WORLD
 TERRAIN = GAZEBO_ROOT / "models" / "ugv_mou_terrain"
 FOREST = GAZEBO_ROOT / "models" / "ugv_mou_forest_obstacles"
 HEIGHTMAP = TERRAIN / "materials" / "textures" / "mountain_height_300.png"
@@ -23,14 +23,11 @@ TEXTURE = TERRAIN / "materials" / "textures" / "natural_ground.png"
 VISUAL_OBJ = TERRAIN / "meshes" / "ugv_mou_terrain_visual.obj"
 COLLISION_OBJ = TERRAIN / "meshes" / "ugv_mou_terrain_collision.obj"
 TREE_LAYOUT = FOREST / "source" / "tree_layout.source.xml"
-MAZE_LAYOUT = FOREST / "source" / "maze_layout.source.xml"
 LOG = GAZEBO_ROOT / "validation" / "ugv_drone_mountain_300_static.log"
-RUNTIME_LOG = GAZEBO_ROOT / "validation" / "runtime" / "mountain_tree288_runtime.log"
+RUNTIME_LOG = GAZEBO_ROOT / "validation" / "runtime" / "px4_dynamic_map_validation.log"
 EXPECTED_HEIGHTMAP_SHA256 = (
     "df89f99598d4fe11ef06650c7b468eb01edd51c868fe4aab141378c27dca51be"
 )
-MAZE_TRANSLATION = (-12.0, 0.0)
-MAZE_YAW = 1.5708
 
 
 def require(condition: bool, message: str) -> None:
@@ -161,7 +158,10 @@ def validate() -> list[str]:
         "gz-sim-sensors-system",
         "gz-sim-user-commands-system",
         "gz-sim-scene-broadcaster-system",
+        "gz-sim-contact-system",
         "gz-sim-imu-system",
+        "gz-sim-air-pressure-system",
+        "gz-sim-magnetometer-system",
         "gz-sim-navsat-system",
     }
     require(required_plugins <= plugins, "one or more Harmonic systems disappeared")
@@ -170,10 +170,9 @@ def validate() -> list[str]:
         {
             "model://ugv_mou_terrain",
             "model://ugv_mou_forest_obstacles",
-            "model://iris_with_down_camera",
         }
-        <= includes,
-        "world resource include is missing",
+        == includes,
+        "mountain PX4 map resource includes changed",
     )
     require(world.findtext("./scene/background") == "0.42 0.42 0.42 1", "background is not neutral")
     require(world.find("./scene/sky") is None, "active sky can reintroduce blue outside the map")
@@ -182,10 +181,9 @@ def validate() -> list[str]:
         "MinimalScene background is not neutral",
     )
     require(world.findtext("./model[@name='drone_launch_pad']/pose") == "-80 -80 0.08 0 0 0", "pad moved")
-    iris = next(include for include in world.findall("include") if include.findtext("name") == "mountain_iris")
-    require(iris.findtext("pose") == "-80 -80 0.355 0 0 45", "drone spawn moved")
     world_text = WORLD.read_text(encoding="utf-8").lower()
     require("blue_ground" not in world_text and "sim_assets" not in world_text, "world has a stale resource reference")
+    require("map_preview_drone" not in world_text, "static preview drone remains in PX4 map")
 
     pixels = np.asarray(Image.open(HEIGHTMAP).convert("L"), dtype=np.uint8)
     require(pixels.shape == (257, 257), "heightmap is not 257x257")
@@ -215,11 +213,11 @@ def validate() -> list[str]:
     max_slope = float(slopes.max())
     require(slope_p99 < 1.40 and max_slope < 3.20, "terrain acquired an unintended cliff")
     y_axis = np.linspace(150.0, -150.0, 257)
-    maze_nodes = pixels[
+    clearing_nodes = pixels[
         (np.abs(y_axis[:, None]) <= 30.0)
         & (np.abs(x_axis[None, :]) <= 42.0)
     ]
-    require(int(maze_nodes.max()) == 0, "central maze protection plateau is not z=0")
+    require(int(clearing_nodes.max()) == 0, "central flight clearing is not z=0")
 
     pad_samples = [
         terrain_height(pixels, float(x), float(y))
@@ -297,18 +295,18 @@ def validate() -> list[str]:
     tree_names = set(tree_collisions)
     wall_names = set(wall_collisions)
     require(tree_names == set(tree_branches) == set(tree_barks), "tree collision/visual sets differ")
-    require(wall_names == set(wall_visuals), "wall collision/visual sets differ")
-    require(len(tree_names) == 288 and len(wall_names) == 72, "obstacle instance counts differ")
-    require(len(collisions) == 360, "compound link must contain 288 trunk and 72 wall collisions")
-    require(len(visuals) == 648, "compound link must contain 576 tree and 72 wall visuals")
+    require(not wall_names and not wall_visuals, "maze collision or visual remains")
+    require(len(tree_names) == 288, "tree instance count differs")
+    require(len(collisions) == 288, "compound link must contain only 288 trunk collisions")
+    require(len(visuals) == 576, "compound link must contain only 576 tree visuals")
     require(
         set(collision_by_name) == {f"{name}_trunk_collision" for name in tree_names}
-        | {f"{name}_collision" for name in wall_names},
+        ,
         "compound link has an unexpected collision",
     )
     require(
         set(visual_by_name) == {f"{name}_{part}_visual" for name in tree_names for part in ("branch", "bark")}
-        | {f"{name}_visual" for name in wall_names},
+        ,
         "compound link has an unexpected visual",
     )
 
@@ -322,30 +320,6 @@ def validate() -> list[str]:
         if include.findtext("uri", "") in {"model://pine_tree", "model://oak_tree"}
     }
     require(tree_names == set(expected_trees), "generated tree names differ from the source layout")
-
-    maze_source = ET.parse(MAZE_LAYOUT).getroot()
-    source_wall_entries = []
-    expected_walls = {}
-    source_signatures = set()
-    for include in maze_source.findall("./model/include"):
-        wall_type = include.findtext("uri", "").split("model://", 1)[-1]
-        source_pose = tuple(float(value) for value in include.findtext("pose", "").split())
-        source_wall_entries.append((wall_type, source_pose))
-        signature = (wall_type, source_pose)
-        if signature in source_signatures:
-            continue
-        source_signatures.add(signature)
-        x, y, z, roll, pitch, yaw = source_pose
-        world_x = MAZE_TRANSLATION[0] + math.cos(MAZE_YAW) * x - math.sin(MAZE_YAW) * y
-        world_y = MAZE_TRANSLATION[1] + math.sin(MAZE_YAW) * x + math.cos(MAZE_YAW) * y
-        world_yaw = math.atan2(math.sin(yaw + MAZE_YAW), math.cos(yaw + MAZE_YAW))
-        expected_walls[f"maze_{include.findtext('name', 'wall')}"] = (
-            wall_type,
-            (world_x, world_y, z + 1.875, roll, pitch, world_yaw),
-        )
-    require(len(source_wall_entries) == 73, "maze source entry count differs")
-    require(len(source_signatures) == 72, "maze source must contain one exact duplicate")
-    require(wall_names == set(expected_walls), "generated wall names differ from deduplicated source layout")
 
     pine_count = oak_count = 0
     z_errors = []
@@ -403,10 +377,10 @@ def validate() -> list[str]:
         tree_xy.append((pose[0], pose[1]))
         tree_trunks.append((pose[0], pose[1], radius))
         require(abs(pose[0]) <= 140.0 and abs(pose[1]) <= 140.0, "tree crossed the 10 m map boundary margin")
-        require(not (-36.1 <= pose[0] <= 36.1 and -24.1 <= pose[1] <= 24.1), "tree intersects maze exclusion")
+        require(not (-36.1 <= pose[0] <= 36.1 and -24.1 <= pose[1] <= 24.1), "tree intersects central flight clearing")
         tree_index = int(name.rsplit("_", 1)[-1])
         if tree_index >= 73:
-            require(not (-42.0 <= pose[0] <= 42.0 and -30.0 <= pose[1] <= 30.0), "added tree intersects expanded maze clearance")
+            require(not (-42.0 <= pose[0] <= 42.0 and -30.0 <= pose[1] <= 30.0), "added tree intersects expanded flight clearing")
             added_tree_pad_clearances.append(math.hypot(pose[0] + 80.0, pose[1] + 80.0))
     require((pine_count, oak_count) == (216, 72), "pine/oak counts differ")
     require(max(z_errors) < 1e-5, "a tree is not seated on the terrain")
@@ -427,47 +401,6 @@ def validate() -> list[str]:
     )
     require(min_trunk_clearance > 5.0, "2x tree trunk collisions overlap or lost clearance")
 
-    wall_min_x = wall_min_y = math.inf
-    wall_max_x = wall_max_y = -math.inf
-    wall_signatures = set()
-    wall_geometry = []
-    wall_contact_errors = []
-    for name in sorted(wall_names):
-        collision = wall_collisions[name]
-        visual = wall_visuals[name]
-        pose = [float(value) for value in collision.findtext("pose", "").split()]
-        visual_pose = [float(value) for value in visual.findtext("pose", "").split()]
-        size = [float(value) for value in collision.findtext("./geometry/box/size", "").split()]
-        visual_size = [float(value) for value in visual.findtext("./geometry/box/size", "").split()]
-        require(len(pose) == 6 and pose == visual_pose, "wall collision and visual absolute poses differ")
-        require(size == visual_size, "wall collision and visual sizes differ")
-        require(abs(pose[2] - 1.875) < 1e-9 and max(abs(value) for value in pose[3:5]) < 1e-9, "wall local offset was not composed into the root link")
-        _, expected_pose = expected_walls[name]
-        require(max(abs(pose[index] - expected_pose[index]) for index in range(6)) < 1e-6, "wall absolute pose differs from composed source layout")
-        signature = (tuple(round(value, 6) for value in pose), tuple(size))
-        require(signature not in wall_signatures, "maze contains a duplicate physical wall")
-        wall_signatures.add(signature)
-        hx = abs(math.cos(pose[5])) * size[0] / 2.0 + abs(math.sin(pose[5])) * size[1] / 2.0
-        hy = abs(math.sin(pose[5])) * size[0] / 2.0 + abs(math.cos(pose[5])) * size[1] / 2.0
-        wall_min_x, wall_max_x = min(wall_min_x, pose[0] - hx), max(wall_max_x, pose[0] + hx)
-        wall_min_y, wall_max_y = min(wall_min_y, pose[1] - hy), max(wall_max_y, pose[1] + hy)
-        require(size[2] == 3.75, "maze wall height is not 3.75 m")
-        wall_bottom = pose[2] - size[2] / 2.0
-        footprint_samples = oriented_box_terrain_samples(pixels, pose, size)
-        wall_contact_errors.append(
-            max(abs(value - wall_bottom) for value in footprint_samples)
-        )
-        wall_geometry.append((pose, size))
-    require(wall_min_x > -28.1 and wall_max_x < 28.1, "maze x bounds changed")
-    require(wall_min_y > -16.1 and wall_max_y < 16.1, "maze y bounds changed")
-    require(max(wall_contact_errors) < 1e-12, "a maze wall floats above or cuts into terrain")
-
-    min_tree_wall_gap = min(
-        point_to_oriented_box_gap(x, y, radius, pose, size)
-        for x, y, radius in tree_trunks
-        for pose, size in wall_geometry
-    )
-    require(min_tree_wall_gap > 5.0, "a tree trunk overlaps or crowds a maze wall")
     pad_pose = [-80.0, -80.0, 0.08, 0.0, 0.0, 0.0]
     pad_size = [12.0, 12.0, 0.16]
     min_tree_pad_gap = min(
@@ -525,12 +458,9 @@ def validate() -> list[str]:
             f"tree_disk_max_relief_m={max(tree_disk_reliefs):.9f}",
             f"tree_min_spacing_m={min_tree_spacing:.6f}",
             f"tree_trunk_min_clearance_m={min_trunk_clearance:.6f}",
-            f"tree_maze_min_clearance_m={min_tree_wall_gap:.6f}",
             f"tree_launch_pad_min_clearance_m={min_tree_pad_gap:.6f}",
             f"added_tree_launch_pad_clearance_m={min(added_tree_pad_clearances):.6f}",
-            f"maze_source_entries=73 maze_unique_walls={len(wall_names)} height_m=3.75",
-            f"maze_aabb_m=x[{wall_min_x:.6f},{wall_max_x:.6f}] y[{wall_min_y:.6f},{wall_max_y:.6f}]",
-            f"maze_wall_footprint_max_contact_error_m={max(wall_contact_errors):.9f}",
+            "maze_runtime_collisions=0 maze_runtime_visuals=0",
             "operational_sim_assets_references=0",
             f"runtime_gui_validation={runtime_status}",
         )

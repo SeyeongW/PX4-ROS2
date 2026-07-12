@@ -15,7 +15,7 @@ case "$MAP" in
     ;;
   mountain)
     WORLD="$SCRIPT_DIR/worlds/ugv_drone_map.world"
-    DESCRIPTION="UGV/drone 300 x 300 m mountain (map-only)"
+    DESCRIPTION="UGV/drone 300 x 300 m mountain (map-only, no vehicle)"
     ;;
   mountain-sitl)
     WORLD="$SCRIPT_DIR/worlds/ugv_drone.world"
@@ -25,8 +25,8 @@ case "$MAP" in
     cat <<EOF
 Usage: $(basename "$0") <city|mountain|mountain-sitl> [gz sim options]
 
-  city          500 x 500 m city, fully self-contained
-  mountain      300 x 300 m mountain, fully self-contained map preview
+  city          500 x 500 m city map only (no vehicle)
+  mountain      300 x 300 m mountain map only (no vehicle)
   mountain-sitl Mountain plus Iris/ArduPilot integration (external plugin needed)
 
 Environment:
@@ -35,6 +35,10 @@ Environment:
   USE_NVIDIA=0   Disable NVIDIA PRIME variables
   GZ_BIN=gz      Override the Gazebo CLI
   AP_GAZEBO=...  Override ardupilot_gazebo for mountain-sitl
+
+For a dynamically spawned, controllable PX4 x500 use:
+  ./gazebo/run_px4_map.sh city
+  ./gazebo/run_px4_map.sh mountain
 EOF
     exit 0
     ;;

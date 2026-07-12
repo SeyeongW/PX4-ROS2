@@ -1,0 +1,58 @@
+PX4-ROS2 dynamic PX4 map runtime validation
+RUNTIME VALIDATION: PASS
+date=2026-07-12
+result=PASS
+runtime_process_tree_stopped=PASS
+world_sha256=2ffe8ecddeb78e32734f40abd298a428a0b9a498913e2d0479005f846e5896ea
+forest_sdf_sha256=0abfd4e1119627cd7c23da71de0317c7911f676b1cce7d7ad4768f9f1cf61b58
+heightmap_sha256=df89f99598d4fe11ef06650c7b468eb01edd51c868fe4aab141378c27dca51be
+terrain_visual_obj_sha256=5e16d670b5a5bbc2009c231836e4530056a4aa052946912439e362011af98738
+terrain_collision_obj_sha256=5e16d670b5a5bbc2009c231836e4530056a4aa052946912439e362011af98738
+
+host_os=Ubuntu 22.04
+gazebo=Harmonic 8.14.0
+px4_version=v1.17.0
+px4_commit=d6f12ad1c4f70ad3230afd7d86e971421e02fef4
+px4_airframe_autostart=4014
+px4_sim_model=gz_x500_mono_cam_down
+runtime_entity=x500_mono_cam_down_0
+static_preview_entities=0
+
+city_command=HEADLESS=1 START_XRCE=0 ./gazebo/run_px4_map.sh city
+city_world=applepark_city
+city_spawn_requested_enu=-120.0,115.0,-3.019558902,0,0,0
+city_settled_model_pose_enu=-120.000000,115.000000,-3.032560,0.000001,0.000000,-0.000007
+city_gear_settle_m=0.013001
+city_entity_list=applepark,applepark_buildings,drone_spawn_pad,x500_mono_cam_down_0
+city_px4_gz_bridge=PASS
+city_sensor_topics=imu,magnetometer,air_pressure,down_camera
+city_motor_command_topic=/x500_mono_cam_down_0/command/motor_speed
+city_rtf_sample_range=0.999487263..1.000484234
+
+mountain_command=HEADLESS=1 START_XRCE=1 ./gazebo/run_px4_map.sh mountain
+mountain_world=ugv_drone_mountain_map
+mountain_spawn_requested_enu=-80.0,-80.0,0.16,0,0,0.785398
+mountain_settled_model_pose_enu=-80.000000,-80.000000,0.146999,0,0,0.785398
+mountain_gear_settle_m=0.013001
+mountain_entity_list=mountain_terrain,mountain_forest,drone_launch_pad,x500_mono_cam_down_0
+mountain_px4_gz_bridge=PASS
+mountain_sensor_topics=imu,magnetometer,air_pressure,down_camera
+mountain_motor_command_topic=/x500_mono_cam_down_0/command/motor_speed
+mountain_rtf_sample_range=0.999501748..1.000313098
+mountain_maze_collisions=0
+mountain_maze_visuals=0
+
+micro_xrce_agent=2.4.3 UDP/8888 PASS
+ros2_fmu_input_topics_include=offboard_control_mode,trajectory_setpoint,vehicle_command
+ros2_fmu_output_topics_include=sensor_combined,vehicle_attitude,vehicle_local_position_v1,vehicle_odometry,vehicle_status_v1
+ros2_vehicle_odometry_sample=PASS
+
+gui_runtime=PASS
+gui_vehicle_screenshot=gazebo/validation/runtime/px4_mountain_vehicle_gui.png
+gpu=NVIDIA GeForce RTX 5060 Laptop GPU
+gpu_driver=580.159.03
+gpu_gz_gui_utilization_sample=10_percent
+gpu_total_utilization_sample=13_percent
+gpu_memory_used_sample=705_MiB
+
+notes=PX4/Gazebo warnings about gz_frame_id are emitted by the upstream PX4 v1.17 model parser and do not prevent sensor publication. Headless EGL dri2 warnings are non-fatal. No model, bridge, physics, resource, or process crash was observed.

@@ -16,8 +16,8 @@
     <magnetic_field>6.0e-6 2.3e-5 -4.2e-5</magnetic_field>
     <atmosphere type="adiabatic"/>
 
-    <!-- Retain the validated 2 ms / 500 Hz baseline while the larger terrain,
-         288 mesh trees and central collision maze undergo runtime testing. -->
+    <!-- Retain the validated 2 ms / 500 Hz baseline for the larger terrain
+         and 288 mesh-tree collision scene. -->
     <physics name="2ms" type="ignored">
       <max_step_size>0.002</max_step_size>
       <real_time_factor>1.0</real_time_factor>
@@ -164,8 +164,8 @@
       <pose>0 0 0 0 0 0</pose>
     </include>
 
-    <!-- One local static model contains 216 pines, 72 oaks and the 72-wall,
-         3.75 m-high central maze.  Every tree trunk and wall has collision. -->
+    <!-- One local static model contains 216 pines and 72 oaks. Every tree
+         trunk has collision; the former artificial maze has been removed. -->
     <include>
       <uri>model://ugv_mou_forest_obstacles</uri>
       <name>mountain_forest</name>

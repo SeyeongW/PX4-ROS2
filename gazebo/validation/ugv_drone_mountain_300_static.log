@@ -17,8 +17,8 @@ natural_texture_sha256=84b2634630b6fbed3564e0845748f9968329ec278065d7e79b447e851
 natural_texture_blue_dominant_pixels=0
 scene_background=neutral_gray sky=disabled
 obstacle_links=1 compound_static=true
-obstacle_collisions=360 obstacle_visuals=648
-forest_sdf_sha256=6cbdebfa0800384b0c9ec21478c56014381bba3f4600158b4d938d0269478bb6
+obstacle_collisions=288 obstacle_visuals=576
+forest_sdf_sha256=0abfd4e1119627cd7c23da71de0317c7911f676b1cce7d7ad4768f9f1cf61b58
 trees_total=288 pine=216 oak=72 tree_mesh_visuals=576
 tree_mesh_scale=2 2 2
 tree_max_terrain_z_error_m=0.000000490
@@ -26,11 +26,8 @@ tree_disk_max_contact_error_m=0.000000490
 tree_disk_max_relief_m=0.000000000
 tree_min_spacing_m=7.274243
 tree_trunk_min_clearance_m=5.714312
-tree_maze_min_clearance_m=9.642482
 tree_launch_pad_min_clearance_m=5.247417
 added_tree_launch_pad_clearance_m=26.440027
-maze_source_entries=73 maze_unique_walls=72 height_m=3.75
-maze_aabb_m=x[-28.075059,28.075059] y[-16.075122,16.075210]
-maze_wall_footprint_max_contact_error_m=0.000000000
+maze_runtime_collisions=0 maze_runtime_visuals=0
 operational_sim_assets_references=0
 runtime_gui_validation=PASS

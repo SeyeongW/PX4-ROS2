@@ -7,7 +7,7 @@
     The retained summits are approximately 40 m and 20 m high, surrounded by
     deterministic warped ridges and foothills with protected contact patches.
     The launch pad is on the flat south-west corner at (-80, -80).
-    This map-only entry point has no external vehicle or system plugin.
+    gazebo/run_px4_map.sh dynamically spawns a real PX4 SITL x500 vehicle.
     Launch with gz-physics-bullet-featherstone-plugin so the OBJ collision is
     constructed (the Harmonic 8 DART backend does not construct SDF meshes).
   -->
@@ -16,8 +16,8 @@
     <magnetic_field>6.0e-6 2.3e-5 -4.2e-5</magnetic_field>
     <atmosphere type="adiabatic"/>
 
-    <!-- Retain the validated 2 ms / 500 Hz baseline while the larger terrain,
-         288 mesh trees and central collision maze undergo runtime testing. -->
+    <!-- Retain the validated 2 ms / 500 Hz baseline for the larger terrain
+         and 288 mesh-tree collision scene. -->
     <physics name="2ms" type="ignored">
       <max_step_size>0.002</max_step_size>
       <real_time_factor>1.0</real_time_factor>
@@ -34,8 +34,14 @@
       name="gz::sim::systems::UserCommands"/>
     <plugin filename="gz-sim-scene-broadcaster-system"
       name="gz::sim::systems::SceneBroadcaster"/>
+    <plugin filename="gz-sim-contact-system"
+      name="gz::sim::systems::Contact"/>
     <plugin filename="gz-sim-imu-system"
       name="gz::sim::systems::Imu"/>
+    <plugin filename="gz-sim-air-pressure-system"
+      name="gz::sim::systems::AirPressure"/>
+    <plugin filename="gz-sim-magnetometer-system"
+      name="gz::sim::systems::Magnetometer"/>
     <plugin filename="gz-sim-navsat-system"
       name="gz::sim::systems::NavSat"/>
 
@@ -164,8 +170,8 @@
       <pose>0 0 0 0 0 0</pose>
     </include>
 
-    <!-- One local static model contains 216 pines, 72 oaks and the 72-wall,
-         3.75 m-high central maze.  Every tree trunk and wall has collision. -->
+    <!-- One local static model contains 216 pines and 72 oaks. Every tree
+         trunk has collision; the former artificial maze has been removed. -->
     <include>
       <uri>model://ugv_mou_forest_obstacles</uri>
       <name>mountain_forest</name>
@@ -215,13 +221,6 @@
       </link>
     </model>
 
-    <!-- Map-only entry point: no external ArduPilot model or plugin is needed.
-         Use ugv_drone.world through run_ugv_drone.sh for SITL integration. -->
-    <include>
-      <uri>model://map_preview_drone</uri>
-      <name>mountain_preview_drone</name>
-      <!-- The preview model origin is its landing-gear contact plane. -->
-      <pose>-80 -80 0.16 0 0 0.785398</pose>
-    </include>
+    <!-- The actual x500_mono_cam_down entity is created by PX4 at runtime. -->
   </world>
 </sdf>

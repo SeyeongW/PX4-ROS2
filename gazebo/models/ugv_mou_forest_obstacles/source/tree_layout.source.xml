@@ -2,10 +2,6 @@
 <sdf version="1.6">
   <model name="quad_map">
     <include>
-      <pose>-12 0 0 0 0 1.5708</pose>
-      <uri>model://quad_maze</uri>
-    </include>
-    <include>
       <name>mountain_tree_001</name>
       <pose>9.051065 44.917143 3.137355 0.000000 0.000000 2.257501</pose>
       <uri>model://pine_tree</uri>
