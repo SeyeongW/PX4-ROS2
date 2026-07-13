@@ -23,9 +23,9 @@ OVERLAP_CSV = GAZEBO / "validation/city/road_building_overlap_coordinates.csv"
 FOUNDATION_CSV = GAZEBO / "validation/city/building_foundation_alignment.csv"
 HEIGHT_SCALING_CSV = GAZEBO / "validation/city/building_height_scaling.csv"
 PREVIEW_CONTACT_Z = 0.0
-CITY_HEIGHTMAP_POSITION_Z = -1.0
+CITY_HEIGHTMAP_POSITION_Z = -0.001
 CITY_HEIGHTMAP_OBSERVED_MAX = 255
-CITY_RENDER_HEIGHT_SIZE_Z = 1.0
+CITY_RENDER_HEIGHT_SIZE_Z = 0.001
 
 EXPECTED_CITY_HASHES = {
     "worlds/applepark_city/mesh/buildings.dae":
@@ -122,6 +122,12 @@ def validate_city() -> dict[str, object]:
         None,
     )
     require(terrain is not None, "city terrain model")
+    ground_visual = terrain.find("./link/visual[@name='ground_visual']")
+    require(ground_visual is not None, "city terrain visual")
+    require(
+        ground_visual.findtext("cast_shadows") == "false",
+        "city terrain visual must not cast a heightmap-volume shadow",
+    )
     heightmaps = terrain.findall(".//heightmap")
     require(len(heightmaps) == 1, "city visual heightmap")
     for heightmap in heightmaps:
@@ -140,6 +146,10 @@ def validate_city() -> dict[str, object]:
         require(
             heightmap_position == [0.0, 0.0, CITY_HEIGHTMAP_POSITION_Z],
             "heightmap position",
+        )
+        require(
+            abs(heightmap_position[2] + heightmap_size[2]) < 1e-12,
+            "city all-white heightmap top must stay at z=0",
         )
     require(
         terrain.findtext(".//collision//mesh/uri")
@@ -462,6 +472,7 @@ def main() -> None:
             "city_visual_collision_terrain_z_alignment=PASS",
             "city_visual_collision_terrain_z_max_error_m="
             f"{city['terrain_visual_collision_z_error_m']:.12f}",
+            f"city_heightmap_visual_skirt_depth_m={CITY_RENDER_HEIGHT_SIZE_Z:.6f}",
             "city_terrain_z_range_m="
             f"{city['terrain_min_z_m']:.6f}..{city['terrain_max_z_m']:.6f}",
             f"city_road_sha256={city['road_sha256']}",

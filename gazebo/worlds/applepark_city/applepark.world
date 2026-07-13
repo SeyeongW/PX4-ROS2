@@ -303,9 +303,11 @@
             <elevation>50.600000000000364</elevation>
         </spherical_coordinates>
 
-        <!-- Trailer-safe city datum.  The all-255 visual heightmap with
-             size_z=1 and pos_z=-1 renders exactly at z=0.  Bullet receives a
-             matching 129x129 triangle mesh whose every vertex is also z=0. -->
+        <!-- Trailer-safe city datum. The all-255 visual heightmap's top is
+             exactly z=0. OGRE2 represents a heightmap as a volume down to
+             <pos>; keep that visual skirt only 1 mm deep so no 500 x 500 m
+             3-D slab appears below the city. Bullet receives a separate
+             matching 129x129 triangle mesh whose every vertex is z=0. -->
         <model name="applepark">
             <static>true</static>
             <pose>0 0 0 0 0 0</pose>
@@ -320,6 +322,9 @@
                     </geometry>
                 </collision>
                 <visual name="ground_visual">
+                    <!-- The terrain receives building shadows but does not cast
+                         a giant heightmap-volume shadow below the map. -->
+                    <cast_shadows>false</cast_shadows>
                     <geometry>
                         <heightmap>
                             <use_terrain_paging>false</use_terrain_paging>
@@ -329,9 +334,10 @@
                                 <size>500</size>
                             </texture>
                             <uri>mesh/height_map_city_500m.png</uri>
-                            <size>500 500 1</size>
-                            <!-- OGRE2 ignores model/link <pose> for heightmaps; <pos> is world frame -->
-                            <pos>0 0 -1</pos>
+                            <size>500 500 0.001</size>
+                            <!-- OGRE2 ignores model/link <pose> for heightmaps; <pos> is world frame.
+                                 all-255 pixels map to -0.001 + 0.001 = z=0. -->
+                            <pos>0 0 -0.001</pos>
                             <!-- sampling: mesh vertices per heightmap pixel (SDF 1.8+ default = 1).
                                  Tested with 16-bit heightmaps at sampling 1, 4, 8: no visual or
                                  physics difference observed — OGRE2 interpolates extra vertices but

@@ -76,9 +76,11 @@ Foundation values are recorded in
 SHA-256-derived factor, old roof and new roof for every component are in
 `gazebo/validation/city/building_height_scaling.csv`.
 
-The visual asset is an all-255 257×257 heightmap with `<size_z>1` and
-`<pos_z>-1`; OGRE2 therefore draws it at exactly `z=0`. The committed 129×129
-Bullet OBJ has the same `z=0` value at every vertex.
+The visual asset is an all-255 257×257 heightmap with `<size_z>0.001` and
+`<pos_z>-0.001`; OGRE2 therefore draws its top at exactly `z=0` while its
+otherwise-visible heightmap skirt is only 1 mm deep. The terrain visual does
+not cast a large backing-volume shadow. The committed 129×129 Bullet OBJ has
+the same `z=0` value at every vertex.
 
 ## Mountain
 

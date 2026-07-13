@@ -16,6 +16,7 @@ city_new_above_ground_height_m=15.907114..109.621338
 city_max_roof_z_m=109.621338
 city_visual_collision_terrain_z_alignment=PASS
 city_visual_collision_terrain_z_max_error_m=0.000000000000
+city_heightmap_visual_skirt_depth_m=0.001000
 city_terrain_z_range_m=0.000000..0.000000
 city_road_sha256=f43cc932dd4c101c605c15c0a202e4e946fbea77e0c568763dbec217dc123a08
 city_xmllint_and_local_uri_closure=PASS
