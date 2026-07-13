@@ -30,9 +30,9 @@ frames:
       z_down_m: -(z_enu - origin_z)
       yaw_ned_rad: normalize(pi/2 - yaw_enu)
 px4_vehicle:
-  airframe_autostart_id: 4014
-  simulation_model: gz_x500_mono_cam_down
-  runtime_entity_name: x500_mono_cam_down_0
+  airframe_autostart_id: 4001
+  simulation_model: gz_x500_depth_lidar
+  runtime_entity_name: x500_depth_lidar_0
 terrain:
   type: completely_flat_heightmap_and_triangle_mesh
   image: gazebo/worlds/applepark_city/mesh/height_map_city_500m.png

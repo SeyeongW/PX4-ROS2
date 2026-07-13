@@ -20,15 +20,20 @@ case "$MAP" in
     cat <<EOF
 Usage: $(basename "$0") <city|mountain> [additional gz sim options]
 
-Starts Gazebo Harmonic, waits for the selected world, then starts PX4 SITL
-airframe 4014. PX4 itself creates the dynamic x500_mono_cam_down vehicle.
+Starts Gazebo Harmonic, waits for the selected world, then starts PX4 SITL.
+PX4 itself creates the dynamic x500_depth_lidar vehicle (default x500 quad
+with a forward depth camera and a downward lidar rangefinder).
 The seo-branch flat_platform trailer is included in both maps.
 
 Environment:
   PX4_DIR=~/PX4-Autopilot  Existing PX4 source/build (firmware is not changed)
   HEADLESS=1              Gazebo server only
   START_XRCE=0            Do not start Micro XRCE-DDS Agent
-  FOLLOW_DRONE=0          Keep the map overview instead of following x500
+  START_MAVROS=0         Do not start MAVROS (MAVLink->ROS 2 bridge)
+  MAVROS_FCU_URL=...     Override MAVROS fcu_url (default udp://:14540@127.0.0.1:14580)
+  START_BRIDGE=0         Do not start the ros_gz camera/lidar bridge
+  ROS_SETUP=...          ROS 2 setup.bash to source for MAVROS + bridge (default humble)
+  FOLLOW_DRONE=1          Lock the gz camera to follow the drone (default: free camera)
   DRIVE_TRAILER=1         Drive the included trailer through YAML waypoints
   TRAILER_ROUTE_LOOPS=1   Stop the driver after one complete route (0=repeat)
   TRAILER_ROUTE=slope     Mountain-only terrain-follow safeguard test
@@ -102,9 +107,18 @@ run ./gazebo/setup_px4_sitl.sh once, then retry this command.
 EOF
   exit 3
 fi
-for model in x500_mono_cam_down x500 x500_base mono_cam; do
+CUSTOM_MODEL="${SIM_MODEL#gz_}"
+for model in "$CUSTOM_MODEL" x500 x500_base OakD-Lite LW20; do
   [[ -f "$PX4_DIR/Tools/simulation/gz/models/$model/model.sdf" ]] || {
     echo "ERROR: PX4 Gazebo model asset is missing: $model" >&2
+    if [[ "$model" == "$CUSTOM_MODEL" ]]; then
+      cat >&2 <<EOF
+       Install the checked-in custom model into your PX4 tree first:
+         ln -s "$REPO_DIR/px4_models/$CUSTOM_MODEL" \\
+               "$PX4_DIR/Tools/simulation/gz/models/$CUSTOM_MODEL"
+       See px4_models/README.md for details.
+EOF
+    fi
     exit 3
   }
 done
@@ -132,7 +146,7 @@ fi
 if [[ "${XDG_SESSION_TYPE:-}" == "wayland" && -z "${QT_QPA_PLATFORM:-}" ]]; then
   export QT_QPA_PLATFORM=xcb
 fi
-if [[ "${HEADLESS:-0}" != "1" && "${FOLLOW_DRONE:-1}" == "1" ]]; then
+if [[ "${HEADLESS:-0}" != "1" && "${FOLLOW_DRONE:-0}" == "1" ]]; then
   export PX4_GZ_FOLLOW=1
   export PX4_GZ_FOLLOW_OFFSET_X="${PX4_GZ_FOLLOW_OFFSET_X:--4.0}"
   export PX4_GZ_FOLLOW_OFFSET_Y="${PX4_GZ_FOLLOW_OFFSET_Y:--4.0}"
@@ -146,9 +160,13 @@ mkdir -p "$RUNTIME_DIR"
 GAZEBO_LOG="$RUNTIME_DIR/${MAP}_gazebo.log"
 XRCE_LOG="$RUNTIME_DIR/${MAP}_xrce.log"
 TRAILER_LOG="$RUNTIME_DIR/${MAP}_trailer.log"
+MAVROS_LOG="$RUNTIME_DIR/${MAP}_mavros.log"
+BRIDGE_LOG="$RUNTIME_DIR/${MAP}_sensor_bridge.log"
 GAZEBO_PID=""
 XRCE_PID=""
 TRAILER_PID=""
+MAVROS_PID=""
+BRIDGE_PID=""
 
 cleanup() {
   local status=$?
@@ -170,6 +188,14 @@ cleanup() {
         status=6
       fi
     fi
+  fi
+  if [[ -n "$BRIDGE_PID" ]] && kill -0 "$BRIDGE_PID" 2>/dev/null; then
+    kill "$BRIDGE_PID" 2>/dev/null || true
+    wait "$BRIDGE_PID" 2>/dev/null || true
+  fi
+  if [[ -n "$MAVROS_PID" ]] && kill -0 "$MAVROS_PID" 2>/dev/null; then
+    kill "$MAVROS_PID" 2>/dev/null || true
+    wait "$MAVROS_PID" 2>/dev/null || true
   fi
   if [[ -n "$XRCE_PID" ]] && kill -0 "$XRCE_PID" 2>/dev/null; then
     kill "$XRCE_PID" 2>/dev/null || true
@@ -272,6 +298,54 @@ if [[ "${DRIVE_TRAILER:-0}" == "1" ]]; then
   echo "Trailer route    : active (log: $TRAILER_LOG)"
 else
   echo "Trailer route    : spawned, stationary (set DRIVE_TRAILER=1 to drive)"
+fi
+
+if [[ "${START_MAVROS:-1}" == "1" ]]; then
+  MAVROS_FCU_URL="${MAVROS_FCU_URL:-udp://:14540@127.0.0.1:14580}"
+  ROS_SETUP="${ROS_SETUP:-/opt/ros/${ROS_DISTRO:-humble}/setup.bash}"
+  if [[ -f "$ROS_SETUP" ]]; then
+    echo "MAVROS           : $MAVROS_FCU_URL (log: $MAVROS_LOG)"
+    (
+      set +u
+      # shellcheck disable=SC1090
+      source "$ROS_SETUP"
+      exec ros2 launch mavros px4.launch "fcu_url:=$MAVROS_FCU_URL"
+    ) >"$MAVROS_LOG" 2>&1 &
+    MAVROS_PID=$!
+    sleep 2
+    if ! kill -0 "$MAVROS_PID" 2>/dev/null; then
+      echo "WARN: MAVROS failed to start; PX4 flight still works. Log:" >&2
+      tail -30 "$MAVROS_LOG" >&2 || true
+      MAVROS_PID=""
+    fi
+  else
+    echo "WARN: ROS 2 setup not found at $ROS_SETUP; skipping MAVROS." >&2
+    echo "      Set ROS_SETUP=/path/to/setup.bash, or START_MAVROS=0 to silence." >&2
+  fi
+fi
+
+if [[ "${START_BRIDGE:-1}" == "1" ]]; then
+  ROS_SETUP="${ROS_SETUP:-/opt/ros/${ROS_DISTRO:-humble}/setup.bash}"
+  BRIDGE_LAUNCH="$SCRIPT_DIR/launch/sensor_bridge.launch.py"
+  if [[ -f "$ROS_SETUP" && -f "$BRIDGE_LAUNCH" ]]; then
+    echo "ros_gz bridge    : world=$WORLD_NAME model=$ENTITY_NAME (log: $BRIDGE_LOG)"
+    (
+      set +u
+      # shellcheck disable=SC1090
+      source "$ROS_SETUP"
+      exec ros2 launch "$BRIDGE_LAUNCH" "world:=$WORLD_NAME" "model:=$ENTITY_NAME"
+    ) >"$BRIDGE_LOG" 2>&1 &
+    BRIDGE_PID=$!
+    sleep 2
+    if ! kill -0 "$BRIDGE_PID" 2>/dev/null; then
+      echo "WARN: ros_gz sensor bridge failed to start; simulation still runs. Log:" >&2
+      tail -30 "$BRIDGE_LOG" >&2 || true
+      BRIDGE_PID=""
+    fi
+  else
+    echo "WARN: ros_gz bridge skipped (need $ROS_SETUP and $BRIDGE_LAUNCH)." >&2
+    echo "      Set START_BRIDGE=0 to silence." >&2
+  fi
 fi
 
 echo "Gazebo is ready. Starting the PX4 console; Ctrl-C stops this complete launch."
