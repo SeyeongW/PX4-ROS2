@@ -93,6 +93,12 @@ class FollowPreclandNode(Node):
         self.lat_swap = self.declare_parameter('lat_swap', False).value
         self.lat_sign_fwd = self.declare_parameter('lat_sign_fwd', 1.0).value
         self.lat_sign_left = self.declare_parameter('lat_sign_left', 1.0).value
+        # Camera lever arm: the down camera sits cam_offset_fwd m forward (+X body)
+        # and cam_offset_left m left (+Y body) of the DRONE CENTRE. Added when
+        # projecting the marker to world so the servo lands the drone centre -- not
+        # the camera -- on the marker (else it lands cam_offset off-target).
+        self.cam_offset_fwd = self.declare_parameter('cam_offset_fwd', 0.0).value
+        self.cam_offset_left = self.declare_parameter('cam_offset_left', 0.0).value
         self.yaw_track_min_speed = self.declare_parameter('yaw_track_min_speed', 0.5).value
         self.marker_confirm_frames = self.declare_parameter('marker_confirm_frames', 3).value
         # AUTO.FOLLOW_TARGET follow height (m). If follow_set_height=true the node
@@ -444,6 +450,10 @@ class FollowPreclandNode(Node):
         gy = iy * half_h
         fwd = sign_fwd * (-gy)
         left = sign_left * (-gx)
+        # Add the camera lever arm (camera is forward/left of the drone centre) so
+        # the returned point is the marker relative to the DRONE CENTRE.
+        fwd += self.get_parameter('cam_offset_fwd').value
+        left += self.get_parameter('cam_offset_left').value
         c, s = math.cos(self.yaw), math.sin(self.yaw)
         de = c * fwd - s * left
         dn = s * fwd + c * left

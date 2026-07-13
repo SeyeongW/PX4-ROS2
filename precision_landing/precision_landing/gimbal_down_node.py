@@ -90,9 +90,10 @@ class GimbalDownNode(Node):
         # Re-assert the angle at this period so a bump / mode change can't leave
         # the gimbal off-nadir mid-landing (set-angle is idempotent).
         self.reassert_s = self.declare_parameter('reassert_period_s', 1.0).value
-        # always_down: point down continuously (also before arming, e.g. preflight
-        # camera check). Default false = only once armed ("시동과 동시에").
-        self.always = self.declare_parameter('always_down', False).value
+        # always_down (default TRUE): point straight down the moment the node
+        # starts and hold it, regardless of arm state. Set false to instead wait
+        # for ARM before pointing down.
+        self.always = self.declare_parameter('always_down', True).value
         # Optionally recentre the gimbal (yaw0/pitch0) when the vehicle disarms.
         self.center_on_disarm = self.declare_parameter('center_on_disarm', False).value
 

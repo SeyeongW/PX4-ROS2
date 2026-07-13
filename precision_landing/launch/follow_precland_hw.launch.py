@@ -43,6 +43,8 @@ def generate_launch_description():
     image_topic = LaunchConfiguration('image_topic')
     cam_hfov = LaunchConfiguration('cam_hfov')
     cam_aspect = LaunchConfiguration('cam_aspect')
+    cam_offset_fwd = LaunchConfiguration('cam_offset_fwd')
+    cam_offset_left = LaunchConfiguration('cam_offset_left')
     flight_alt = LaunchConfiguration('flight_alt')
     platform_height = LaunchConfiguration('platform_height')
     vel_gain = LaunchConfiguration('vel_gain')
@@ -150,6 +152,8 @@ def generate_launch_description():
             'vel_max': ParameterValue(vel_max, value_type=float),
             'cam_hfov': ParameterValue(cam_hfov, value_type=float),
             'cam_aspect': ParameterValue(cam_aspect, value_type=float),
+            'cam_offset_fwd': ParameterValue(cam_offset_fwd, value_type=float),
+            'cam_offset_left': ParameterValue(cam_offset_left, value_type=float),
             'lat_swap': ParameterValue(lat_swap, value_type=bool),
             'lat_sign_fwd': ParameterValue(lat_sign_fwd, value_type=float),
             'lat_sign_left': ParameterValue(lat_sign_left, value_type=float),
@@ -180,6 +184,10 @@ def generate_launch_description():
         #    (16:9)=1.777, 640x480(4:3)=1.333. cam_hfov 은 카메라 데이터시트 기준.
         DeclareLaunchArgument('cam_hfov', default_value='1.20'),
         DeclareLaunchArgument('cam_aspect', default_value='1.7777'),
+        # 카메라 렌즈-암: 드론 중심 기준 전방 0.15 m (좌측 0). 드론 '중심'이
+        # 마커에 착륙하도록 마커 월드 좌표에 반영됨. 장착 위치 바뀌면 여기 수정.
+        DeclareLaunchArgument('cam_offset_fwd', default_value='0.15'),
+        DeclareLaunchArgument('cam_offset_left', default_value='0.0'),
         DeclareLaunchArgument('flight_alt', default_value='5.0'),
         DeclareLaunchArgument('platform_height', default_value='0.0'),
         DeclareLaunchArgument('vel_gain', default_value='0.4'),
