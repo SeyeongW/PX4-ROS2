@@ -16,6 +16,7 @@ import xml.etree.ElementTree as ET
 
 import numpy as np
 from PIL import Image
+from scipy.ndimage import distance_transform_edt
 
 
 GAZEBO_ROOT = Path(__file__).resolve().parents[1]
@@ -34,7 +35,7 @@ HEIGHT_SCALE_M = 40.0
 PIXELS = 257
 TERRAIN_SEED = 20260711
 EXPECTED_HEIGHTMAP_SHA256 = (
-    "df89f99598d4fe11ef06650c7b468eb01edd51c868fe4aab141378c27dca51be"
+    "dea9d2ca2f6a4f357037e0f626a90ab2bfb815d6b1185659cc8d53b1ed63548c"
 )
 MAIN_CENTER = (-75.0, 75.0)
 MAIN_RADIUS = 75.0
@@ -46,8 +47,7 @@ PROFILE_EXPONENT = 0.10
 # Keep the already validated low central flight corridor after removing the
 # artificial maze.  This is terrain shaping only; no wall visual/collision is
 # generated anywhere in the runtime map.
-CENTRAL_CLEARING_BOUNDS = (-42.0, 42.0, -30.0, 30.0)
-CENTRAL_CLEARING_TRANSITION_M = 14.0
+CENTRAL_CLEARING_RADII_M = (42.0, 30.0)
 LAUNCH_CENTER = (-80.0, -80.0)
 LAUNCH_FLAT_RADIUS_M = 11.0
 LAUNCH_TRANSITION_RADIUS_M = 24.0
@@ -56,19 +56,24 @@ TREE_MESH_SCALE = (2.0, 2.0, 2.0)
 TREE_GROUND_COMPENSATION = {"pine_tree": 0.0001, "oak_tree": 0.0703}
 TREE_TRUNK_RADIUS = {"pine_tree": 0.60, "oak_tree": 0.90}
 
-# Compact, anisotropic ridges surround the two retained source hills.  Their
-# amplitudes stay below the 40 m / 20 m summits and leave a flyable central
-# valley.  The fixed seed and analytic envelopes make the asset reproducible.
+# Broad, low ridges surround the retained 40 m / 20 m summits.  Every analytic
+# cone is gentler than the global cap below; the cap also guarantees a gradual
+# connection to the exact-flat trailer corridor, launch pad and map boundary.
 # (center_x, center_y, half_length, half_width, yaw, amplitude)
 RIDGES = (
-    (-5.0, 127.0, 132.0, 27.0, 0.02, 16.0),
-    (-122.0, 26.0, 73.0, 20.0, 1.39, 22.0),
-    (111.0, 43.0, 72.0, 23.0, 1.87, 18.5),
-    (99.0, -69.0, 78.0, 27.0, 2.28, 18.0),
-    (4.0, -122.0, 105.0, 22.0, 0.08, 14.5),
-    (-132.0, -13.0, 58.0, 18.0, 1.48, 16.5),
-    (-4.0, 91.0, 76.0, 17.0, 0.01, 15.0),
+    (-5.0, 126.0, 132.0, 38.0, 0.02, 12.0),
+    (-124.0, 24.0, 82.0, 39.0, 1.39, 15.0),
+    (110.0, 43.0, 84.0, 38.0, 1.87, 13.0),
+    (98.0, -72.0, 90.0, 42.0, 2.28, 12.0),
+    (3.0, -124.0, 112.0, 36.0, 0.08, 10.0),
+    (-132.0, -13.0, 70.0, 35.0, 1.48, 11.0),
 )
+
+# An elliptical exact-flat corridor avoids a sharp rectangular corner in the
+# triangle mesh while preserving ample room around the complete cross route.
+# The 40 m peak and zero boundary make roughly 0.54 rise/run unavoidable;
+# 0.60 leaves a small deterministic margin without clipping either summit.
+MAX_DESIGN_GRADE = 0.60
 
 Pose = tuple[float, float, float, float, float, float]
 
@@ -206,104 +211,46 @@ def source_tree_specs() -> list[tuple[str, float, float]]:
     return specs
 
 
-def flatten_tree_contact_patches(heights: np.ndarray) -> np.ndarray:
-    """Create exact local seats under every cylindrical trunk collision.
-
-    A core extends one grid-cell diagonal beyond the trunk radius.  Therefore
-    every triangle / bilinear cell which can intersect the trunk disk has four
-    equal-height vertices; the entire collision bottom, not only its centre,
-    is coincident with a flat terrain patch.
-    """
-
-    spacing = MAP_SIZE_M / (PIXELS - 1)
-    axis_x = np.linspace(-MAP_SIZE_M / 2.0, MAP_SIZE_M / 2.0, PIXELS)
-    axis_y = np.linspace(MAP_SIZE_M / 2.0, -MAP_SIZE_M / 2.0, PIXELS)
-    x_grid, y_grid = np.meshgrid(axis_x, axis_y)
-    output = heights.copy()
-    initial = heights.copy()
-    for tree_type, x, y in source_tree_specs():
-        target = terrain_height(initial, x, y)
-        # Quantize the platform before the whole map is quantized, ensuring all
-        # core vertices and the generated tree pose resolve to one exact code.
-        target = round(target / HEIGHT_SCALE_M * 255.0) / 255.0 * HEIGHT_SCALE_M
-        core = TREE_TRUNK_RADIUS[tree_type] + math.sqrt(2.0) * spacing
-        # 0.9 m keeps even two oak feather regions disjoint at the measured
-        # 7.25 m minimum tree spacing, so no later patch can disturb another.
-        outer = core + 0.90
-        distance = np.hypot(x_grid - x, y_grid - y)
-        weight = 1.0 - smoothstep((distance - core) / (outer - core))
-        weight[distance >= outer] = 0.0
-        output = output * (1.0 - weight) + target * weight
-    return output
-
-
 def build_heightmap() -> np.ndarray:
-    """Generate retained hills plus deterministic ridges and protected seats."""
+    """Generate retained summits, broad ridges and slope-bounded transitions."""
 
     x_axis = np.linspace(-MAP_SIZE_M / 2.0, MAP_SIZE_M / 2.0, PIXELS)
     y_axis = np.linspace(MAP_SIZE_M / 2.0, -MAP_SIZE_M / 2.0, PIXELS)
     x_grid, y_grid = np.meshgrid(x_axis, y_axis)
 
-    main = MAIN_AMPLITUDE * smooth_hill_profile(
-        np.hypot(x_grid - MAIN_CENTER[0], y_grid - MAIN_CENTER[1]) / MAIN_RADIUS
-    )
-    second = SECOND_AMPLITUDE * smooth_hill_profile(
-        np.hypot(x_grid - SECOND_CENTER[0], y_grid - SECOND_CENTER[1]) / SECOND_RADIUS
-    )
-    retained_hills = main + second
-    retained_hills *= HEIGHT_SCALE_M / float(retained_hills.max())
-
-    rng = np.random.default_rng(TERRAIN_SEED)
-    warp_x = 4.8 * (
-        0.62 * interpolated_value_noise(rng, 7)
-        + 0.38 * interpolated_value_noise(rng, 13)
-    )
-    warp_y = 4.8 * (
-        0.62 * interpolated_value_noise(rng, 8)
-        + 0.38 * interpolated_value_noise(rng, 15)
-    )
-    ridge_noise = (
-        0.55 * interpolated_value_noise(rng, 9)
-        + 0.30 * interpolated_value_noise(rng, 17)
-        + 0.15 * interpolated_value_noise(rng, 33)
-    )
-    ridge_texture = 0.82 + 0.18 * (1.0 - np.clip(np.abs(ridge_noise), 0.0, 1.0))
+    main_distance = np.hypot(x_grid - MAIN_CENTER[0], y_grid - MAIN_CENTER[1])
+    second_distance = np.hypot(x_grid - SECOND_CENTER[0], y_grid - SECOND_CENTER[1])
+    main = np.maximum(MAIN_AMPLITUDE - 0.56 * main_distance, 0.0)
+    second = np.maximum(SECOND_AMPLITUDE - 0.34 * second_distance, 0.0)
+    retained_hills = np.maximum(main, second)
 
     ridges = np.zeros_like(retained_hills)
-    warped_x, warped_y = x_grid + warp_x, y_grid + warp_y
     for center_x, center_y, half_length, half_width, yaw, amplitude in RIDGES:
-        dx, dy = warped_x - center_x, warped_y - center_y
+        dx, dy = x_grid - center_x, y_grid - center_y
         along = math.cos(yaw) * dx + math.sin(yaw) * dy
         across = -math.sin(yaw) * dx + math.cos(yaw) * dy
         radius = np.hypot(along / half_length, across / half_width)
         ridges = np.maximum(
             ridges,
-            amplitude * smooth_hill_profile(radius) * ridge_texture,
+            amplitude * np.maximum(1.0 - radius, 0.0),
         )
     # Nothing east of x=0 may eclipse the retained 20 m summit; likewise all
     # western additions remain below the retained 40 m summit.
     ridges = np.minimum(ridges, np.where(x_grid > 0.0, 19.0, 36.0))
     heights = np.maximum(retained_hills, ridges)
 
-    xmin, xmax, ymin, ymax = CENTRAL_CLEARING_BOUNDS
-    rectangle_distance = np.maximum.reduce(
-        (xmin - x_grid, x_grid - xmax, ymin - y_grid, y_grid - ymax)
-    )
-    clearing_mask = smoothstep(
-        rectangle_distance / CENTRAL_CLEARING_TRANSITION_M
-    )
+    radius_x, radius_y = CENTRAL_CLEARING_RADII_M
     launch_distance = np.hypot(x_grid - LAUNCH_CENTER[0], y_grid - LAUNCH_CENTER[1])
-    launch_mask = smoothstep(
-        (launch_distance - LAUNCH_FLAT_RADIUS_M)
-        / (LAUNCH_TRANSITION_RADIUS_M - LAUNCH_FLAT_RADIUS_M)
+    protected_zero = (
+        (((x_grid / radius_x) ** 2 + (y_grid / radius_y) ** 2) <= 1.0)
+        | (launch_distance <= LAUNCH_FLAT_RADIUS_M)
     )
-    edge_distance = np.minimum(
-        MAP_SIZE_M / 2.0 - np.abs(x_grid),
-        MAP_SIZE_M / 2.0 - np.abs(y_grid),
-    )
-    edge_mask = smoothstep(edge_distance / EDGE_TAPER_M)
-    heights *= clearing_mask * launch_mask * edge_mask
-    heights = flatten_tree_contact_patches(heights)
+    protected_zero[0, :] = protected_zero[-1, :] = True
+    protected_zero[:, 0] = protected_zero[:, -1] = True
+    spacing = MAP_SIZE_M / (PIXELS - 1)
+    distance_to_zero = distance_transform_edt(~protected_zero) * spacing
+    heights = np.minimum(heights, MAX_DESIGN_GRADE * distance_to_zero)
+    heights[protected_zero] = 0.0
     heights = np.clip(heights, 0.0, HEIGHT_SCALE_M)
 
     pixels = np.rint(heights / HEIGHT_SCALE_M * 255.0).astype(np.uint8)
@@ -337,7 +284,25 @@ def seat_tree_layout(pixels: np.ndarray) -> None:
             continue
         name = include.findtext("name", "tree")
         pose = list(parse_pose(include.findtext("pose", ""), name))
-        pose[2] = terrain_height(heights, pose[0], pose[1]) + TREE_GROUND_COMPENSATION[tree_type]
+        # Do not mutate the terrain into hundreds of tiny flat shelves: their
+        # former 0.9 m blend bands created the map's worst artificial cliffs.
+        # Instead, bury the static trunk bottom to the minimum terrain sampled
+        # beneath its collision disk.  The visual remains naturally seated and
+        # no part of the cylindrical collision can float above the slope.
+        radius = TREE_TRUNK_RADIUS[tree_type]
+        samples = [terrain_height(heights, pose[0], pose[1])]
+        for sample_radius in np.linspace(radius / 4.0, radius, 4):
+            for angle in np.linspace(0.0, 2.0 * math.pi, 64, endpoint=False):
+                samples.append(
+                    terrain_height(
+                        heights,
+                        pose[0] + float(sample_radius) * math.cos(float(angle)),
+                        pose[1] + float(sample_radius) * math.sin(float(angle)),
+                    )
+                )
+        # A 3 mm burial allowance covers extrema between the deterministic
+        # radial samples without creating a visible gap.
+        pose[2] = min(samples) - 0.003 + TREE_GROUND_COMPENSATION[tree_type]
         include.find("pose").text = format_pose(tuple(pose))  # type: ignore[arg-type]
     ET.indent(document, space="  ")
     document.write(TREE_LAYOUT, encoding="UTF-8", xml_declaration=True)

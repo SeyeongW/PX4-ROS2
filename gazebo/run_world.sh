@@ -15,7 +15,7 @@ case "$MAP" in
     ;;
   mountain)
     WORLD="$SCRIPT_DIR/worlds/ugv_drone_map.world"
-    DESCRIPTION="UGV/drone 300 x 300 m mountain (map-only, no vehicle)"
+    DESCRIPTION="UGV/drone 300 x 300 m mountain (trailer included, no PX4 drone)"
     ;;
   mountain-sitl)
     WORLD="$SCRIPT_DIR/worlds/ugv_drone.world"
@@ -25,8 +25,8 @@ case "$MAP" in
     cat <<EOF
 Usage: $(basename "$0") <city|mountain|mountain-sitl> [gz sim options]
 
-  city          500 x 500 m city map only (no vehicle)
-  mountain      300 x 300 m mountain map only (no vehicle)
+  city          500 x 500 m city + stationary trailer (no PX4 drone)
+  mountain      300 x 300 m mountain + stationary trailer (no PX4 drone)
   mountain-sitl Mountain plus Iris/ArduPilot integration (external plugin needed)
 
 Environment:

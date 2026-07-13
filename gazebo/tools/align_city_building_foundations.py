@@ -56,6 +56,9 @@ EXPECTED_HEIGHT_AUDIT_CSV_SHA256 = (
 EXPECTED_FOUNDATION_AUDIT_CSV_SHA256 = (
     "db0247ad555cd41fd3d902fa827bdc98125d06635c18598e4eb613bcb631e12f"
 )
+FLAT_CITY_DAE_SHA256 = (
+    "199c0a3dbe471d319b01582670c327d03e1668cdf007791b10929a435f6c7449"
+)
 
 NS = "http://www.collada.org/2005/11/COLLADASchema"
 Q = lambda tag: f"{{{NS}}}{tag}"
@@ -420,6 +423,14 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--check", action="store_true", help="validate without writing")
     args = parser.parse_args()
+    if sha256(BUILDINGS) == FLAT_CITY_DAE_SHA256:
+        # The final trailer-safe map supersedes the old sloped-foundation
+        # stage. Preserve this historical entry point as a compatible alias.
+        from flatten_city_assets import main as flat_city_main
+
+        print("NOTICE: city datum is flat; delegating to flatten_city_assets.py")
+        flat_city_main()
+        return
     validate_inputs(check=args.check)
     data = DaeData(BUILDINGS)
     require(len(data.position_indices) == EXPECTED_TRIANGLES, "triangle count changed")

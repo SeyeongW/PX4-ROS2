@@ -146,7 +146,10 @@ echo "source ~/ros2_ws/install/setup.bash" >> ~/.bashrc
 sudo bash ~/ros2_ws/src/PX4-ROS2/gazebo/install_apt_deps.sh
 ```
 
-이 스크립트는 다음을 설치합니다: `gz-harmonic`, `libgz-sim8-dev`, `cmake`, `build-essential`, `rapidjson-dev`
+이 스크립트는 요청된 ROS 2 Humble 데스크톱·Navigation2·SLAM·비전·PCL·
+MAVROS 패키지와 Python 과학 계산 도구, 빌드 도구, Git/LFS, Docker 및
+Gazebo Classic 11/Harmonic 병행 환경을 한 번에 설치합니다. 전체 목록은
+스크립트 안에 고정되어 있습니다.
 
 ### 5-2. ArduPilot 소스 클론 및 SITL 빌드
 
@@ -199,7 +202,8 @@ echo "source ~/ros_gz_ws/install/setup.bash" >> ~/.bashrc
 
 ```bash
 cd ~/ros2_ws/src/PX4-ROS2
-# 새 PC에서만 1회 (기존 ~/PX4-Autopilot이 있으면 버전/파일을 변경하지 않음)
+# 새 PC에서만 1회. PX4 공식 Ubuntu 일반 의존성도 설치하므로 sudo를 한 번 요청할 수 있음.
+# 기존 ~/PX4-Autopilot이 있으면 브랜치/버전/펌웨어 파일은 변경하지 않음.
 ./gazebo/setup_px4_sitl.sh
 
 # 도시맵 + PX4 x500
@@ -208,9 +212,16 @@ cd ~/ros2_ws/src/PX4-ROS2
 # 또는
 # 산악맵 + PX4 x500
 ./gazebo/run_px4_map.sh mountain
+
+# PX4 드론 + seo 기반 트레일러 웨이포인트 주행을 함께 실행
+DRIVE_TRAILER=1 TRAILER_ROUTE_LOOPS=1 ./gazebo/run_px4_map.sh city
+# 또는 산악맵 중앙 평탄 통행로
+DRIVE_TRAILER=1 TRAILER_ROUTE_LOOPS=1 ./gazebo/run_px4_map.sh mountain
 ```
 
-두 명령은 Gazebo를 먼저 실행한 뒤 동일한 world에 PX4 SITL이 실제
+두 맵에는 `seo` 브랜치의 5×5 m `flat_platform` 트레일러가 기본으로
+소환됩니다. 기본 상태는 정지이며 `DRIVE_TRAILER=1`일 때 좌표 YAML의
+웨이포인트를 주행합니다. 두 명령은 Gazebo를 먼저 실행한 뒤 동일한 world에 PX4 SITL이 실제
 `x500_mono_cam_down_0` 엔티티를 동적으로 스폰합니다. 로컬
 `MicroXRCEAgent`가 있으면 UDP 8888 에이전트도 함께 실행하므로 ROS 2
 `/fmu/*` 토픽을 사용할 수 있습니다. 좌표와 장애물은

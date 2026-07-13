@@ -10,23 +10,25 @@ build and PX4 dynamically spawns the real `x500_mono_cam_down` vehicle.
 - Bounds: 300 x 300 m (`x`, `y` = -150..150 m)
 - Terrain elevation: 0..40 m
 - Retained summits: approximately `(-75, 75, 40)` and `(55, 80, 20.078)`
-- Mountain relief: seven warped, low-frequency ridge / foothill envelopes
-  around the retained hills; nonzero relief covers 56.68% of the map
+- Mountain relief: six broad deterministic ridge / foothill envelopes around
+  the retained hills; nonzero relief covers 70.4795% of the map
+- Actual collision-triangle grade: p99 `66.9281%`, maximum `78.0509%`
 - Launch pad: `(-80, -80)`, top surface `z=0.16 m`
 - PX4 x500 spawn: `(-80, -80, 0.16)`, yaw `0.785398 rad`; its landing gear settles approximately 1.3 cm onto the pad
 - Forest: 288 uniformly 2x-scaled textured trees (216 pines, 72 oaks) with
-  matching 2x trunk collisions and an exact local terrain seat under every trunk disk
+  matching 2x trunk collisions seated 3 mm below each terrain-disk minimum
 - Maze: removed; runtime wall collisions and visuals are both zero
 - Obstacle body: one static compound link containing only the 288 tree trunks / 576 tree visuals
 - Vehicle: PX4 airframe 4014, `gz_x500_mono_cam_down`, runtime entity `x500_mono_cam_down_0`
+- Moving platform: `flat_platform`, selectively ported from the `seo` branch
 - Physics: Bullet Featherstone, 2 ms step / 500 Hz
 
-The central flight clearing (`x=-42..42`, `y=-30..30`) and the complete 12 x 12 m
-launch-pad footprint are explicitly held at `z=0`. The generator also expands
-each tree's flat core by one 1.171875 m grid-cell diagonal beyond the trunk
-radius. Consequently no wall or tree collision is positioned from a centre
-sample alone: every trunk's full contact footprint is checked against the same
-8-bit height field that generates both OBJ meshes.
+The central exact-flat clearing is the ellipse
+`(x/42)^2 + (y/30)^2 <= 1`; the complete 12 x 12 m launch-pad footprint is also
+held at `z=0`. Tree collisions are conservatively buried to the minimum sampled
+height under their complete disk. This avoids the former short tree shelves,
+which created artificial slope spikes, while keeping static trunks from
+floating above the terrain.
 
 The flat south-west pad is deliberate: the generated heightmap is exactly zero
 at `(-80, -80)`, so the vehicle retains a deterministic contact surface. Keep
@@ -42,8 +44,9 @@ Micro XRCE-DDS Agent and PX4 SITL in the correct order:
 ./gazebo/run_px4_map.sh mountain
 ```
 
-On a fresh PC, run `./gazebo/setup_px4_sitl.sh` once first. An existing
-`~/PX4-Autopilot` checkout or firmware version is never changed. The launcher
+On a fresh PC, run `./gazebo/setup_px4_sitl.sh` once first. It runs PX4's
+official Ubuntu general-prerequisite helper, which may request sudo once. An
+existing `~/PX4-Autopilot` checkout or firmware version is never changed. The launcher
 sets the resource paths, standalone PX4 environment, Wayland/XWayland
 workaround and NVIDIA PRIME variables for the RTX 5060.
 
@@ -74,6 +77,7 @@ Useful launcher switches:
 HEADLESS=1 ./gazebo/run_px4_map.sh mountain    # server-only performance test
 START_XRCE=0 ./gazebo/run_px4_map.sh mountain  # PX4/Gazebo without ROS 2 DDS
 USE_NVIDIA=0 ./gazebo/run_px4_map.sh mountain  # GPU troubleshooting only
+DRIVE_TRAILER=1 TRAILER_ROUTE_LOOPS=1 ./gazebo/run_px4_map.sh mountain
 ```
 
 Verify that rendering is on the RTX GPU in another terminal:
@@ -96,14 +100,12 @@ the launch/resource error scan found 0 failures. The screenshot and raw logs
 are under `gazebo/validation/runtime/`; the concise result is
 `ugv_drone_harmonic_runtime.log`.
 
-After adding the ridges and exact contact patches to the 288-tree / 2x forest,
-the repository-only preview was run again on the RTX 5060. Across 58
-post-initialization samples the real-time factor was `0.986500..1.018512`
-with mean `1.000001`; the Gazebo GUI GPU process sampled at `18%` with
-376 MiB total VRAM in use. Gazebo Harmonic initialized the world and Bullet
-compound body without a model, resource or physics load error, and reported
-the preview pose as `(-80, -80, 0.16)`. The concise result is
-`mountain_tree288_runtime.log`.
+The older GUI performance logs remain under `gazebo/validation/runtime/` as
+historical baselines. The current terrain / trailer revision has its own
+runtime record in `trailer_waypoint_validation.log`: all nine central-flat
+waypoints and all nine optional terrain-follow safeguard waypoints passed with
+no impulse launch or excessive tilt. The latter is kinematic height following,
+not physical wheel / suspension traction.
 
 The visual and collision OBJ files each contain 66,049 vertices and 131,072
 triangles. If later additions reduce the real-time factor, decimate only the
@@ -140,7 +142,7 @@ The checked result is written to
 the 300 m bounds, 40 m / 20 m summits, deterministic ridge pixels, unchanged
 spawn, collision counts, the one-link Bullet-compatible obstacle structure,
 all absolute poses against the preserved source layouts, zero maze runtime
-entities, all 288 trunk disks, the full
+entities, all 288 conservatively buried trunk disks, the full
 launch-pad footprint, zero blue-dominant terrain pixels, byte-identical
 visual/collision geometry, neutral scene background and the absence of
 operational references to `sim_assets`.
@@ -164,8 +166,8 @@ The first Harmonic port copied the following local models from `FSD_Vehicle`:
 The removed central maze was derived from the local modified
 `engcang/gazebo_maps` Height Maze asset; its old source snapshot is retained
 for provenance but is not read by the builder or included at runtime. The active 300 m terrain is generated
-locally from analytic compact hills, anisotropic ridges, deterministic value
-noise, protected plateaus and edge tapering; no third-party DEM or satellite
+locally from analytic compact hills, broad anisotropic ridges, an elliptical
+trailer clearing and deterministic grade caps; no third-party DEM or satellite
 image is embedded. Pine and oak DAE models are from the Gazebo model collection
 included with the source asset. The corresponding license texts are preserved as:
 

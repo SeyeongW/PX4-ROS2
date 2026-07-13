@@ -13,17 +13,24 @@ fi
 
 echo "==> 기본 도구 설치"
 apt-get update
-apt-get install -y curl lsb-release gnupg software-properties-common cmake build-essential \
-  rapidjson-dev libopencv-dev \
+apt-get install -y \
+  curl lsb-release gnupg software-properties-common \
+  build-essential cmake git git-lfs docker.io rapidjson-dev libopencv-dev \
   libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
   gstreamer1.0-plugins-bad gstreamer1.0-libav gstreamer1.0-gl \
-  python3-rosdep python3-colcon-common-extensions python3-numpy python3-pil \
-  python3-yaml python3-opencv python3-matplotlib
+  python3-colcon-common-extensions python3-rosdep python3-vcstool python3-pip \
+  python3-opencv python3-numpy python3-scipy python3-matplotlib python3-pil python3-yaml \
+  ros-humble-desktop ros-humble-navigation2 ros-humble-nav2-bringup \
+  ros-humble-slam-toolbox ros-humble-rviz2 ros-humble-xacro \
+  ros-humble-robot-state-publisher ros-humble-joint-state-publisher \
+  ros-humble-tf2-ros ros-humble-cv-bridge ros-humble-image-transport \
+  ros-humble-vision-msgs ros-humble-pcl-ros \
+  ros-humble-mavros ros-humble-mavros-msgs ros-humble-mavros-extras
 
 # Ubuntu 22.04's stock Gazebo Classic and Gazebo Harmonic both normally own a
 # binary named `gz`.  Install the official Open Robotics Gazebo 11 CLI variant
 # first so Classic remains available as `gz11` while Harmonic owns `gz`.
-if [[ "$(lsb_release -cs)" == "jammy" ]] && dpkg-query -W gazebo >/dev/null 2>&1; then
+if [[ "$(lsb_release -cs)" == "jammy" ]]; then
   echo "==> Gazebo Classic 11 / Harmonic 병행 설치 준비"
   add-apt-repository -y ppa:openrobotics/gazebo11-gz-cli
   apt-get update

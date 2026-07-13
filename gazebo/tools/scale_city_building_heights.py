@@ -43,6 +43,9 @@ OUTPUT_FOUNDATION_CSV_SHA256 = (
 HEIGHT_AUDIT_CSV_SHA256 = (
     "bc7b14dac3c2cc5244804f37b3eeed8f629dad7e5f4ac955c504222bd15b4543"
 )
+FLAT_CITY_DAE_SHA256 = (
+    "199c0a3dbe471d319b01582670c327d03e1668cdf007791b10929a435f6c7449"
+)
 
 FACTOR_SEED = "px4-ros2-city-height-v2"
 MIN_FACTOR_MILLIONTHS = 2_000_000
@@ -332,6 +335,14 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--check", action="store_true", help="validate without writing")
     args = parser.parse_args()
+    if sha256(BUILDINGS) == FLAT_CITY_DAE_SHA256:
+        # Height factors are already preserved by the final flat-datum pass.
+        # Keep the former public checker working after that pipeline change.
+        from flatten_city_assets import main as flat_city_main
+
+        print("NOTICE: city datum is flat; delegating to flatten_city_assets.py")
+        flat_city_main()
+        return
     validate_static_inputs()
     current_hash = sha256(BUILDINGS)
     if args.check:

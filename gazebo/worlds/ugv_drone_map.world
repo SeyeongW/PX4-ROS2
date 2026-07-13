@@ -5,7 +5,8 @@
 
     Terrain bounds: x/y = -150..150 m, z = 0..40 m.
     The retained summits are approximately 40 m and 20 m high, surrounded by
-    deterministic warped ridges and foothills with protected contact patches.
+    broad, grade-capped ridges and foothills.  The central trailer corridor is
+    an exact z=0 plane; the fixed-height seo platform must use that corridor.
     The launch pad is on the flat south-west corner at (-80, -80).
     gazebo/run_px4_map.sh dynamically spawns a real PX4 SITL x500 vehicle.
     Launch with gz-physics-bullet-featherstone-plugin so the OBJ collision is
@@ -175,6 +176,14 @@
     <include>
       <uri>model://ugv_mou_forest_obstacles</uri>
       <name>mountain_forest</name>
+      <pose>0 0 0 0 0 0</pose>
+    </include>
+
+    <!-- seo-branch 5x5 moving platform.  Its validated cross route remains
+         wholly inside the exact-flat x=+-42, y=+-30 central clearing. -->
+    <include>
+      <uri>model://moving_platform_track</uri>
+      <name>flat_platform</name>
       <pose>0 0 0 0 0 0</pose>
     </include>
 

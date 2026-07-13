@@ -4,6 +4,7 @@ set -Eeuo pipefail
 
 PX4_DIR="$(realpath -m "${PX4_DIR:-$HOME/PX4-Autopilot}")"
 PX4_VERSION="${PX4_VERSION:-v1.17.0}"
+PX4_INSTALL_PREREQS="${PX4_INSTALL_PREREQS:-1}"
 
 if [[ -e "$PX4_DIR" ]]; then
   if [[ ! -d "$PX4_DIR/.git" ]]; then
@@ -18,6 +19,17 @@ else
 fi
 
 if [[ ! -x "$PX4_DIR/build/px4_sitl_default/bin/px4" ]]; then
+  if [[ "$PX4_INSTALL_PREREQS" == "1" ]]; then
+    PREREQ_SCRIPT="$PX4_DIR/Tools/setup/ubuntu.sh"
+    if [[ ! -x "$PREREQ_SCRIPT" ]]; then
+      echo "ERROR: PX4 prerequisite helper is missing: $PREREQ_SCRIPT" >&2
+      exit 3
+    fi
+    echo "Installing PX4's official Ubuntu prerequisites (sudo may prompt once)"
+    "$PREREQ_SCRIPT" --no-nuttx --no-sim-tools
+  else
+    echo "Skipping PX4 prerequisites because PX4_INSTALL_PREREQS=0."
+  fi
   echo "Building PX4 SITL (this does not launch Gazebo)"
   make -C "$PX4_DIR" px4_sitl_default
 else

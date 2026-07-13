@@ -26,7 +26,7 @@ TREE_LAYOUT = FOREST / "source" / "tree_layout.source.xml"
 LOG = GAZEBO_ROOT / "validation" / "ugv_drone_mountain_300_static.log"
 RUNTIME_LOG = GAZEBO_ROOT / "validation" / "runtime" / "px4_dynamic_map_validation.log"
 EXPECTED_HEIGHTMAP_SHA256 = (
-    "df89f99598d4fe11ef06650c7b468eb01edd51c868fe4aab141378c27dca51be"
+    "dea9d2ca2f6a4f357037e0f626a90ab2bfb815d6b1185659cc8d53b1ed63548c"
 )
 
 
@@ -170,6 +170,7 @@ def validate() -> list[str]:
         {
             "model://ugv_mou_terrain",
             "model://ugv_mou_forest_obstacles",
+            "model://moving_platform_track",
         }
         == includes,
         "mountain PX4 map resource includes changed",
@@ -203,19 +204,27 @@ def validate() -> list[str]:
     require(main_peak > 39.8 and 19.5 < second_peak < 20.2, "40 m / 20 m summit check failed")
     nonzero_ratio = float(np.count_nonzero(pixels)) / float(pixels.size)
     unique_elevations = len(np.unique(pixels))
-    require(0.50 < nonzero_ratio < 0.65, "mountain coverage no longer forms a ridge landscape")
+    require(0.65 < nonzero_ratio < 0.75, "mountain coverage no longer forms a ridge landscape")
     require(unique_elevations >= 240, "mountain elevation detail was lost")
     heights = pixels.astype(np.float64) / 255.0 * 40.0
     spacing = 300.0 / 256.0
-    gradient_row, gradient_x = np.gradient(heights, spacing, spacing)
-    slopes = np.hypot(gradient_x, -gradient_row)
+    # Measure the actual two planes written for every OBJ cell.  A centered
+    # node gradient can hide the steeper diagonal plane at a grid corner.
+    triangle_one_slopes = np.hypot(
+        (heights[:-1, 1:] - heights[:-1, :-1]) / spacing,
+        (heights[:-1, :-1] - heights[1:, :-1]) / spacing,
+    )
+    triangle_two_slopes = np.hypot(
+        (heights[1:, 1:] - heights[1:, :-1]) / spacing,
+        (heights[:-1, 1:] - heights[1:, 1:]) / spacing,
+    )
+    slopes = np.concatenate((triangle_one_slopes.ravel(), triangle_two_slopes.ravel()))
     slope_p99 = float(np.percentile(slopes, 99.0))
     max_slope = float(slopes.max())
-    require(slope_p99 < 1.40 and max_slope < 3.20, "terrain acquired an unintended cliff")
+    require(slope_p99 < 0.68 and max_slope < 0.79, "terrain acquired an unintended cliff")
     y_axis = np.linspace(150.0, -150.0, 257)
     clearing_nodes = pixels[
-        (np.abs(y_axis[:, None]) <= 30.0)
-        & (np.abs(x_axis[None, :]) <= 42.0)
+        (x_axis[None, :] / 42.0) ** 2 + (y_axis[:, None] / 30.0) ** 2 <= 1.0
     ]
     require(int(clearing_nodes.max()) == 0, "central flight clearing is not z=0")
 
@@ -367,12 +376,10 @@ def validate() -> list[str]:
         require(abs(float(collision.findtext("./geometry/cylinder/length", "nan")) - length) < 1e-12, "tree trunk length changed")
         require(max(abs(source_pose[index] - collision_pose[index]) for index in (0, 1, 3, 4, 5)) < 1e-9, "tree trunk pose was not composed into the root link")
         require(abs(collision_pose[2] - (source_pose[2] + trunk_offset)) < 1e-9, "tree trunk height was not composed into the root link")
-        z_errors.append(abs(base_z - terrain_height(pixels, pose[0], pose[1])))
         collision_bottom = collision_pose[2] - length / 2.0
         disk_samples = disk_terrain_samples(pixels, pose[0], pose[1], radius)
-        tree_disk_errors.append(
-            max(abs(value - collision_bottom) for value in disk_samples)
-        )
+        z_errors.append(max(0.0, min(disk_samples) - base_z))
+        tree_disk_errors.append(max(0.0, collision_bottom - min(disk_samples)))
         tree_disk_reliefs.append(max(disk_samples) - min(disk_samples))
         tree_xy.append((pose[0], pose[1]))
         tree_trunks.append((pose[0], pose[1], radius))
@@ -383,9 +390,9 @@ def validate() -> list[str]:
             require(not (-42.0 <= pose[0] <= 42.0 and -30.0 <= pose[1] <= 30.0), "added tree intersects expanded flight clearing")
             added_tree_pad_clearances.append(math.hypot(pose[0] + 80.0, pose[1] + 80.0))
     require((pine_count, oak_count) == (216, 72), "pine/oak counts differ")
-    require(max(z_errors) < 1e-5, "a tree is not seated on the terrain")
-    require(max(tree_disk_errors) < 1e-5, "a trunk collision disk floats above or cuts into terrain")
-    require(max(tree_disk_reliefs) < 1e-9, "a tree contact patch is not exactly flat")
+    require(max(z_errors) < 0.005, "a tree burial allowance exceeded 5 mm")
+    require(max(tree_disk_errors) < 1e-5, "a trunk collision bottom floats above terrain")
+    require(max(tree_disk_reliefs) < 1.40, "terrain relief under a trunk is excessive")
     require(len(added_tree_pad_clearances) == 216, "forest expansion tree count differs")
     require(min(added_tree_pad_clearances) >= 24.0, "added tree entered the launch-pad clearance")
     min_tree_spacing = min(
@@ -437,7 +444,7 @@ def validate() -> list[str]:
             f"summits_m=main:{main_peak:.6f} second:{second_peak:.6f}",
             f"terrain_nonzero_area_ratio={nonzero_ratio:.6f}",
             f"terrain_unique_elevations={unique_elevations}",
-            f"terrain_slope_p99={slope_p99:.6f} terrain_slope_max={max_slope:.6f}",
+            f"terrain_triangle_slope_p99={slope_p99:.6f} terrain_triangle_slope_max={max_slope:.6f}",
             f"launch_pad_terrain_z_m={launch_height:.6f}",
             f"launch_pad_footprint_max_contact_error_m={max(abs(value) for value in pad_samples):.9f}",
             f"terrain_vertices={vertices}",

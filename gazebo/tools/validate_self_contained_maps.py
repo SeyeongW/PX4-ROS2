@@ -23,35 +23,29 @@ OVERLAP_CSV = GAZEBO / "validation/city/road_building_overlap_coordinates.csv"
 FOUNDATION_CSV = GAZEBO / "validation/city/building_foundation_alignment.csv"
 HEIGHT_SCALING_CSV = GAZEBO / "validation/city/building_height_scaling.csv"
 PREVIEW_CONTACT_Z = 0.0
-CITY_SOURCE_HEIGHT_SCALE_Z = 26.6
-CITY_HEIGHTMAP_POSITION_Z = -15.0
-CITY_HEIGHTMAP_UINT8_MAX = 255
-CITY_HEIGHTMAP_OBSERVED_MAX = 152
-CITY_RENDER_HEIGHT_SIZE_Z = (
-    CITY_SOURCE_HEIGHT_SCALE_Z
-    * CITY_HEIGHTMAP_OBSERVED_MAX
-    / CITY_HEIGHTMAP_UINT8_MAX
-)
+CITY_HEIGHTMAP_POSITION_Z = -1.0
+CITY_HEIGHTMAP_OBSERVED_MAX = 255
+CITY_RENDER_HEIGHT_SIZE_Z = 1.0
 
 EXPECTED_CITY_HASHES = {
     "worlds/applepark_city/mesh/buildings.dae":
-        "e5fab82529fcc0f9d5819797346af76d763d6b973eed96ad8a7de324a7a253ce",
+        "199c0a3dbe471d319b01582670c327d03e1668cdf007791b10929a435f6c7449",
     "worlds/applepark_city/mesh/height_map_city_500m.png":
-        "5a84adc1f45dcffe507fa77d2642cd672c622c225e60ae41f98280bdcf9b24cf",
+        "0f3bc9604b38368ec071fbc9666bfcf4594c74ebcdae700b9fea0f2bed8ffa06",
     "worlds/applepark_city/mesh/normal_map_city_500m.png":
-        "13e0f51751c556904b3b2eb92ad118ec3dd20d5f4a2a4e72d4344a6907556266",
+        "9d9011a129993a5386b2d31885510354f39fd0b71a4694040d3494428b9de900",
     "worlds/applepark_city/mesh/road_surface_city_500m.png":
         "f43cc932dd4c101c605c15c0a202e4e946fbea77e0c568763dbec217dc123a08",
     "worlds/applepark_city/mesh/city_terrain_collision.obj":
-        "99d8fae1ed193321dc3f2801b68a549b019a12068cf0cdff17210c78e0fe2024",
+        "21745ec52bde2da3fca56c7a4a90fe5e5b872577beb9e8aaa058253e355e783f",
     "worlds/applepark_city/OSM_ATTRIBUTION.txt":
         "f706303dc1fa8e4b456e1d235a73ee395be38c2897c62b6ebf19ad74646892fb",
     "validation/city/road_building_overlap_coordinates.csv":
         "b3a1f0eaee7eafc2595c9bd35e6f23a4a74749b65a0a0224dc78ad6d4ddf6601",
     "validation/city/building_foundation_alignment.csv":
-        "db0247ad555cd41fd3d902fa827bdc98125d06635c18598e4eb613bcb631e12f",
+        "f21a33763f4da4916286cecfe6aa351d06b0afa79d8b4dbbf831507fd255f4a7",
     "validation/city/building_height_scaling.csv":
-        "bc7b14dac3c2cc5244804f37b3eeed8f629dad7e5f4ac955c504222bd15b4543",
+        "c640743e72bddbc9254a1feffa8522b0ee8b58a9a15e739b2fce798e54534526",
     "validation/city/road_building_overlap_after_fix.png":
         "9f7f73b2dc958fde45e8e6bc1c660125d48e90d7afc3eaa1c398aa8cb98aae9c",
 }
@@ -188,20 +182,28 @@ def validate_city() -> dict[str, object]:
         None,
     )
     require(pad is not None, "city drone spawn pad")
-    require(pad.findtext("pose") == "-120 115 -3.269558902 0 0 0", "city spawn pad pose")
+    require(pad.findtext("pose") == "-120 115 0.08 0 0 0", "city spawn pad pose")
     require(
-        pad.findtext(".//collision//cylinder/length") == "0.5"
-        and pad.findtext(".//visual//cylinder/length") == "0.5",
+        pad.findtext(".//collision//cylinder/length") == "0.16"
+        and pad.findtext(".//visual//cylinder/length") == "0.16",
         "city spawn pad foundation depth",
     )
     require(
         all(include.findtext("uri") != "model://map_preview_drone" for include in world.findall("include")),
         "city contains the removed static preview drone",
     )
+    city_includes = world.findall("include")
+    require(
+        [include.findtext("uri") for include in city_includes]
+        == ["model://moving_platform_track"],
+        "city trailer include changed",
+    )
+    require(city_includes[0].findtext("name") == "flat_platform", "city trailer entity")
+    require(city_includes[0].findtext("pose") == "-175 140 0 0 0 0", "city trailer spawn")
     pad_pose_z = float(pad.findtext("pose", "").split()[2])
     pad_height = float(pad.findtext(".//collision//cylinder/length", "nan"))
     require(
-        abs(-3.019558902 - (pad_pose_z + pad_height / 2.0)) < 1e-9,
+        abs(0.16 - (pad_pose_z + pad_height / 2.0)) < 1e-9,
         "city PX4 spawn contact plane differs from the pad top",
     )
 
@@ -217,24 +219,17 @@ def validate_city() -> dict[str, object]:
 
     with Image.open(CITY / "mesh/height_map_city_500m.png") as image:
         height_pixels = list(image.getdata())
-    require(max(height_pixels) == CITY_HEIGHTMAP_OBSERVED_MAX, "city heightmap maximum")
-    # Ogre2 scales image pixels by the maximum value actually present.  The
-    # corrected SDF size makes that renderer formula identical to the source
-    # elevation / Bullet collision formula at every uint8 pixel value.
+    require(
+        min(height_pixels) == max(height_pixels) == CITY_HEIGHTMAP_OBSERVED_MAX,
+        "city heightmap is not completely flat",
+    )
     visual_heights = [
         CITY_HEIGHTMAP_POSITION_Z
         + pixel / CITY_HEIGHTMAP_OBSERVED_MAX * CITY_RENDER_HEIGHT_SIZE_Z
         for pixel in height_pixels
     ]
-    source_heights = [
-        CITY_HEIGHTMAP_POSITION_Z
-        + pixel / CITY_HEIGHTMAP_UINT8_MAX * CITY_SOURCE_HEIGHT_SCALE_Z
-        for pixel in height_pixels
-    ]
-    render_alignment_error = max(
-        abs(visual - source)
-        for visual, source in zip(visual_heights, source_heights)
-    )
+    source_heights = [0.0 for _ in height_pixels]
+    render_alignment_error = max(abs(visual) for visual in visual_heights)
     require(render_alignment_error < 1e-12, "city visual / collision terrain Z alignment")
 
     with OVERLAP_CSV.open("r", encoding="utf-8", newline="") as stream:
@@ -263,16 +258,14 @@ def validate_city() -> dict[str, object]:
     foundation_extensions = [
         float(row["foundation_extension_m"]) for row in foundation_rows
     ]
-    require(min(foundation_extensions) > 0.109, "city minimum foundation extension")
-    require(max(foundation_extensions) < 0.899, "city maximum foundation extension")
+    require(
+        max(abs(value - 0.05) for value in foundation_extensions) < 1e-12,
+        "city foundations are not exactly 5 cm below the flat datum",
+    )
     foundation_check = run_checked(
-        ["python3", str(GAZEBO / "tools/align_city_building_foundations.py"), "--check"]
+        ["python3", str(GAZEBO / "tools/flatten_city_assets.py"), "--check"]
     )
     require("result=PASS" in foundation_check, "city deterministic foundation validator")
-    height_check = run_checked(
-        ["python3", str(GAZEBO / "tools/scale_city_building_heights.py"), "--check"]
-    )
-    require("result=PASS" in height_check, "city deterministic height validator")
 
     with HEIGHT_SCALING_CSV.open("r", encoding="utf-8", newline="") as stream:
         height_rows = list(csv.DictReader(stream))
@@ -337,6 +330,7 @@ def validate_mountain() -> dict[str, object]:
         == [
             "model://ugv_mou_terrain",
             "model://ugv_mou_forest_obstacles",
+            "model://moving_platform_track",
         ],
         f"mountain map includes: {include_uris}",
     )
@@ -386,6 +380,7 @@ def validate_no_external_runtime_paths() -> None:
         GAZEBO / "run_world.sh",
         GAZEBO / "models/ugv_mou_terrain/model.sdf",
         GAZEBO / "models/ugv_mou_forest_obstacles/model.sdf",
+        GAZEBO / "models/moving_platform_track/model.sdf",
     ]
     for path in active_paths:
         content = path.read_text(encoding="utf-8")
@@ -407,7 +402,7 @@ def validate_px4_contracts() -> dict[str, object]:
     ):
         require(marker in launch_text, f"PX4 launcher contract missing: {marker}")
     expected = {
-        "city": ("applepark_city", (-120.0, 115.0, -3.019558902), 274),
+        "city": ("applepark_city", (-120.0, 115.0, 0.16), 274),
         "mountain": ("ugv_drone_mountain_map", (-80.0, -80.0, 0.16), 288),
     }
     counts = {}
@@ -425,6 +420,10 @@ def validate_px4_contracts() -> dict[str, object]:
             require(document["obstacles"]["maze_walls"] == [], "mountain YAML maze is not empty")
             actual = len(document["obstacles"]["trees"])
         require(actual == obstacle_count, f"{name} obstacle coordinate count")
+        trailer = document["trailer"]
+        require(trailer["entity_name"] == "flat_platform", f"{name} trailer entity")
+        require(trailer["model_uri"] == "model://moving_platform_track", f"{name} trailer URI")
+        require(len(trailer["waypoints_enu_m"]) >= 8, f"{name} trailer waypoint route")
         counts[name] = actual
     generator = run_checked(
         ["python3", str(GAZEBO / "tools/generate_path_planning_assets.py"), "--check"]
@@ -474,6 +473,8 @@ def main() -> None:
             f"mountain_external_runtime_assets={mountain['external_runtime_assets']}",
             "mountain_deterministic_validator=PASS",
             "static_preview_drones=0",
+            "seo_trailer_model=flat_platform maps=city,mountain",
+            "trailer_waypoint_driver=gazebo_transport_no_mavros",
             "px4_dynamic_model=gz_x500_mono_cam_down autostart=4014",
             f"coordinate_yaml_obstacles=city:{coordinates['city']} mountain_trees:{coordinates['mountain']} maze:0",
             "path_planning_reference_images=PASS",

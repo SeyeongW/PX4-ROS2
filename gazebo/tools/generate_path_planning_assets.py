@@ -14,6 +14,7 @@ import hashlib
 import math
 from pathlib import Path
 import shutil
+import tempfile
 import xml.etree.ElementTree as ET
 
 import cv2
@@ -280,16 +281,17 @@ def frame_contract(spawn: list[float]) -> dict[str, object]:
     }
 
 
+def yaml_text(document: dict[str, object]) -> str:
+    return yaml.safe_dump(document, sort_keys=False, allow_unicode=True, width=120)
+
+
 def write_yaml(path: Path, document: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        yaml.safe_dump(document, sort_keys=False, allow_unicode=True, width=120),
-        encoding="utf-8",
-    )
+    path.write_text(yaml_text(document), encoding="utf-8")
 
 
 def city_document(buildings: list[dict[str, object]]) -> dict[str, object]:
-    spawn = [-120.0, 115.0, -3.019558902, 0.0, 0.0, 0.0]
+    spawn = [-120.0, 115.0, 0.16, 0.0, 0.0, 0.0]
     return {
         "schema_version": 1,
         "map": {
@@ -305,7 +307,7 @@ def city_document(buildings: list[dict[str, object]]) -> dict[str, object]:
             "runtime_entity_name": "x500_mono_cam_down_0",
         },
         "terrain": {
-            "type": "heightmap",
+            "type": "completely_flat_heightmap_and_triangle_mesh",
             "image": "gazebo/worlds/applepark_city/mesh/height_map_city_500m.png",
             "collision_mesh": "gazebo/worlds/applepark_city/mesh/city_terrain_collision.obj",
             "rows": 257,
@@ -314,13 +316,31 @@ def city_document(buildings: list[dict[str, object]]) -> dict[str, object]:
             "row_0_y_m": 250.0,
             "column_0_x_m": -250.0,
             "row_direction": "decreasing_y",
-            "height_formula_m": "-15.0 + pixel/255*26.6",
+            "height_formula_m": "0.0 (all visual pixels=255; every collision vertex z=0)",
+            "height_range_m": [0.0, 0.0],
         },
         "spawn": {
             "name": "city_drone_spawn",
             "gazebo_spawn_pose_enu": dict(zip(("x", "y", "z", "roll", "pitch", "yaw"), spawn)),
-            "pad": {"shape": "cylinder", "center_enu_m": [-120.0, 115.0, -3.269558902],
-                    "radius_m": 4.0, "length_m": 0.5, "top_z_m": -3.019558902},
+            "pad": {"shape": "cylinder", "center_enu_m": [-120.0, 115.0, 0.08],
+                    "radius_m": 4.0, "length_m": 0.16, "top_z_m": 0.16},
+        },
+        "trailer": {
+            "entity_name": "flat_platform",
+            "model_uri": "model://moving_platform_track",
+            "spawn_pose_enu": {"x": -175.0, "y": 140.0, "z": 0.0,
+                               "roll": 0.0, "pitch": 0.0, "yaw": 0.0},
+            "body_footprint_m": [5.0, 5.0],
+            "command_topic": "/model/flat_platform/cmd_vel",
+            "pose_topic": "/world/applepark_city/dynamic_pose/info",
+            "waypoints_enu_m": [
+                [-175.0, 140.0], [-150.0, 140.0], [-175.0, 140.0],
+                [-200.0, 140.0], [-175.0, 140.0], [-175.0, 165.0],
+                [-175.0, 140.0], [-175.0, 115.0], [-175.0, 140.0],
+            ],
+            "cruise_speed_m_s": 1.5,
+            "waypoint_tolerance_m": 0.5,
+            "route_surface": "exact_z0_flat_city_datum",
         },
         "planner_defaults": {"obstacle_inflation_m": SAFETY_INFLATION_M},
         "obstacles": {"buildings": buildings},
@@ -368,6 +388,29 @@ def mountain_document(trees: list[dict[str, object]]) -> dict[str, object]:
             "gazebo_spawn_pose_enu": dict(zip(("x", "y", "z", "roll", "pitch", "yaw"), spawn)),
             "pad": {"shape": "box", "center_enu_m": [-80.0, -80.0, 0.08],
                     "size_m": [12.0, 12.0, 0.16], "top_z_m": 0.16},
+        },
+        "trailer": {
+            "entity_name": "flat_platform",
+            "model_uri": "model://moving_platform_track",
+            "spawn_pose_enu": {"x": 0.0, "y": 0.0, "z": 0.0,
+                               "roll": 0.0, "pitch": 0.0, "yaw": 0.0},
+            "body_footprint_m": [5.0, 5.0],
+            "command_topic": "/model/flat_platform/cmd_vel",
+            "pose_topic": "/world/ugv_drone_mountain_map/dynamic_pose/info",
+            "waypoints_enu_m": [
+                [0.0, 0.0], [25.0, 0.0], [0.0, 0.0], [-25.0, 0.0],
+                [0.0, 0.0], [0.0, 15.0], [0.0, 0.0], [0.0, -15.0],
+                [0.0, 0.0],
+            ],
+            "slope_validation_waypoints_enu_m": [
+                [0.0, 0.0], [-20.0, 5.0], [-40.0, 10.0], [-50.0, 12.5],
+                [-55.0, 13.75], [-50.0, 12.5], [-40.0, 10.0], [-20.0, 5.0],
+                [0.0, 0.0],
+            ],
+            "cruise_speed_m_s": 1.0,
+            "waypoint_tolerance_m": 0.5,
+            "route_surface": "exact_z0_central_trailer_corridor",
+            "off_route_note": "seo platform is not wheeled; use terrain-follow safeguard outside the flat corridor",
         },
         "planner_defaults": {
             "obstacle_inflation_m": SAFETY_INFLATION_M,
@@ -463,7 +506,13 @@ def plot_occupancy(ax: plt.Axes, raw: np.ndarray, inflated: np.ndarray, bounds: 
     ], loc="upper left", fontsize=8, framealpha=0.92)
 
 
-def plot_city(buildings: list[dict[str, object]], raw: np.ndarray, inflated: np.ndarray) -> None:
+def plot_city(
+    buildings: list[dict[str, object]],
+    raw: np.ndarray,
+    inflated: np.ndarray,
+    output_path: Path = CITY_FIGURE,
+    home_copy: Path | None = HOME_CITY_FIGURE,
+) -> None:
     with Image.open(CITY_ROADS) as image:
         roads = np.asarray(image.convert("RGB"))
     figure, axes = plt.subplots(1, 2, figsize=(16, 8), dpi=200, constrained_layout=True)
@@ -481,13 +530,20 @@ def plot_city(buildings: list[dict[str, object]], raw: np.ndarray, inflated: np.
     plot_occupancy(axes[1], raw, inflated, 250.0, (-120.0, 115.0),
                    "City SLAM-style occupancy reference (0.25 m/cell)")
     figure.suptitle("PX4-ROS2 city path-planning coordinates — Gazebo world ENU", fontsize=14)
-    OUTPUTS.mkdir(parents=True, exist_ok=True)
-    figure.savefig(CITY_FIGURE, facecolor="white")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    figure.savefig(output_path, facecolor="white")
     plt.close(figure)
-    shutil.copy2(CITY_FIGURE, HOME_CITY_FIGURE)
+    if home_copy is not None:
+        shutil.copy2(output_path, home_copy)
 
 
-def plot_mountain(trees: list[dict[str, object]], raw: np.ndarray, inflated: np.ndarray) -> None:
+def plot_mountain(
+    trees: list[dict[str, object]],
+    raw: np.ndarray,
+    inflated: np.ndarray,
+    output_path: Path = MOUNTAIN_FIGURE,
+    home_copy: Path | None = HOME_MOUNTAIN_FIGURE,
+) -> None:
     with Image.open(MOUNTAIN_HEIGHT) as image:
         heights = np.asarray(image, dtype=np.float64) / 255.0 * 40.0
     axis = np.linspace(-150.0, 150.0, heights.shape[0])
@@ -502,7 +558,7 @@ def plot_mountain(trees: list[dict[str, object]], raw: np.ndarray, inflated: np.
         axes[0].add_patch(Circle((x, y), float(tree["radius_m"]), facecolor=color,
                                  edgecolor="black", linewidth=0.18))
     axes[0].scatter(-80, -80, marker="*", s=130, c="#00c853", edgecolors="black", zorder=5)
-    decorate(axes[0], 150.0, "Mountain elevation + 288 exact trunk collisions (maze removed)")
+    decorate(axes[0], 150.0, "Mountain elevation + 288 trunk collisions (maze removed)")
     axes[0].legend(handles=[
         Line2D([0], [0], marker="o", color="w", markerfacecolor="#174d1b",
                markeredgecolor="black", markersize=7, label="Pine trunk (216)"),
@@ -515,10 +571,11 @@ def plot_mountain(trees: list[dict[str, object]], raw: np.ndarray, inflated: np.
     plot_occupancy(axes[1], raw, inflated, 150.0, (-80.0, -80.0),
                    "Mountain SLAM-style occupancy reference (0.25 m/cell)")
     figure.suptitle("PX4-ROS2 mountain path-planning coordinates — Gazebo world ENU", fontsize=14)
-    OUTPUTS.mkdir(parents=True, exist_ok=True)
-    figure.savefig(MOUNTAIN_FIGURE, facecolor="white")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    figure.savefig(output_path, facecolor="white")
     plt.close(figure)
-    shutil.copy2(MOUNTAIN_FIGURE, HOME_MOUNTAIN_FIGURE)
+    if home_copy is not None:
+        shutil.copy2(output_path, home_copy)
 
 
 def validate_spawn_free(raw: np.ndarray, half_size: float, spawn: tuple[float, float]) -> None:
@@ -527,24 +584,87 @@ def validate_spawn_free(raw: np.ndarray, half_size: float, spawn: tuple[float, f
     require(raw[row, col] == 0, "PX4 spawn lies inside a collision obstacle")
 
 
+def validate_trailer_route_free(
+    raw: np.ndarray,
+    half_size: float,
+    waypoints: list[list[float]],
+    description: str,
+) -> None:
+    """Check the complete 5x5 m platform sweep, not only waypoint centres."""
+
+    clearance_m = math.sqrt(2.0) * 2.5 + 0.25
+    radius_pixels = int(math.ceil(clearance_m / GRID_RESOLUTION_M))
+    size = 2 * radius_pixels + 1
+    yy, xx = np.ogrid[-radius_pixels : radius_pixels + 1, -radius_pixels : radius_pixels + 1]
+    kernel = ((xx * xx + yy * yy) <= radius_pixels * radius_pixels).astype(np.uint8)
+    blocked = cv2.dilate(raw.astype(np.uint8), kernel, iterations=1)
+    for first, second in zip(waypoints, waypoints[1:]):
+        length = math.hypot(second[0] - first[0], second[1] - first[1])
+        samples = max(2, int(math.ceil(length / (GRID_RESOLUTION_M / 2.0))) + 1)
+        for fraction in np.linspace(0.0, 1.0, samples):
+            x = (1.0 - fraction) * first[0] + fraction * second[0]
+            y = (1.0 - fraction) * first[1] + fraction * second[1]
+            col = int(round((x + half_size) / GRID_RESOLUTION_M))
+            row = int(round((half_size - y) / GRID_RESOLUTION_M))
+            require(
+                0 <= row < blocked.shape[0]
+                and 0 <= col < blocked.shape[1]
+                and blocked[row, col] == 0,
+                f"{description} trailer sweep intersects an obstacle near ({x:.3f}, {y:.3f})",
+            )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--check", action="store_true", help="regenerate and verify invariants")
-    parser.parse_args()
+    parser.add_argument("--check", action="store_true", help="verify without writing")
+    args = parser.parse_args()
     buildings = city_buildings()
     trees = mountain_trees()
-    write_yaml(CITY_YAML, city_document(buildings))
-    write_yaml(MOUNTAIN_YAML, mountain_document(trees))
+    city_contract = city_document(buildings)
+    mountain_contract = mountain_document(trees)
+    if args.check:
+        require(CITY_YAML.read_text(encoding="utf-8") == yaml_text(city_contract),
+                "city coordinate YAML is stale")
+        require(MOUNTAIN_YAML.read_text(encoding="utf-8") == yaml_text(mountain_contract),
+                "mountain coordinate YAML is stale")
+    else:
+        write_yaml(CITY_YAML, city_contract)
+        write_yaml(MOUNTAIN_YAML, mountain_contract)
     city_raw, city_inflated = city_occupancy(buildings)
     mountain_raw, mountain_inflated = mountain_occupancy(trees)
     validate_spawn_free(city_raw, 250.0, (-120.0, 115.0))
     validate_spawn_free(mountain_raw, 150.0, (-80.0, -80.0))
-    plot_city(buildings, city_raw, city_inflated)
-    plot_mountain(trees, mountain_raw, mountain_inflated)
+    validate_trailer_route_free(
+        city_raw, 250.0, city_contract["trailer"]["waypoints_enu_m"], "city flat route"
+    )
+    validate_trailer_route_free(
+        mountain_raw, 150.0, mountain_contract["trailer"]["waypoints_enu_m"],
+        "mountain flat route",
+    )
+    validate_trailer_route_free(
+        mountain_raw, 150.0,
+        mountain_contract["trailer"]["slope_validation_waypoints_enu_m"],
+        "mountain slope route",
+    )
+    if args.check:
+        with tempfile.TemporaryDirectory(prefix="px4_path_assets_check_") as directory:
+            temporary = Path(directory)
+            city_temporary = temporary / CITY_FIGURE.name
+            mountain_temporary = temporary / MOUNTAIN_FIGURE.name
+            plot_city(buildings, city_raw, city_inflated, city_temporary, None)
+            plot_mountain(trees, mountain_raw, mountain_inflated, mountain_temporary, None)
+            require(CITY_FIGURE.read_bytes() == city_temporary.read_bytes(),
+                    "city path-planning reference is stale")
+            require(MOUNTAIN_FIGURE.read_bytes() == mountain_temporary.read_bytes(),
+                    "mountain path-planning reference is stale")
+    else:
+        plot_city(buildings, city_raw, city_inflated)
+        plot_mountain(trees, mountain_raw, mountain_inflated)
     print(f"city_yaml={CITY_YAML} buildings={len(buildings)} sha256={sha256(CITY_YAML)}")
     print(f"mountain_yaml={MOUNTAIN_YAML} trees={len(trees)} maze_walls=0 sha256={sha256(MOUNTAIN_YAML)}")
     print(f"city_reference={CITY_FIGURE} home_copy={HOME_CITY_FIGURE} sha256={sha256(CITY_FIGURE)}")
     print(f"mountain_reference={MOUNTAIN_FIGURE} home_copy={HOME_MOUNTAIN_FIGURE} sha256={sha256(MOUNTAIN_FIGURE)}")
+    print("trailer_route_sweeps=city_flat:PASS mountain_flat:PASS mountain_slope:PASS clearance_m=3.785534")
 
 
 if __name__ == "__main__":

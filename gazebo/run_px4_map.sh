@@ -22,12 +22,16 @@ Usage: $(basename "$0") <city|mountain> [additional gz sim options]
 
 Starts Gazebo Harmonic, waits for the selected world, then starts PX4 SITL
 airframe 4014. PX4 itself creates the dynamic x500_mono_cam_down vehicle.
+The seo-branch flat_platform trailer is included in both maps.
 
 Environment:
   PX4_DIR=~/PX4-Autopilot  Existing PX4 source/build (firmware is not changed)
   HEADLESS=1              Gazebo server only
   START_XRCE=0            Do not start Micro XRCE-DDS Agent
   FOLLOW_DRONE=0          Keep the map overview instead of following x500
+  DRIVE_TRAILER=1         Drive the included trailer through YAML waypoints
+  TRAILER_ROUTE_LOOPS=1   Stop the driver after one complete route (0=repeat)
+  TRAILER_ROUTE=slope     Mountain-only terrain-follow safeguard test
   USE_NVIDIA=0            Disable NVIDIA PRIME render variables
   GZ_PARTITION=...        Gazebo transport partition (shared with PX4)
 EOF
@@ -141,12 +145,32 @@ RUNTIME_DIR="${PX4_MAP_RUNTIME_DIR:-/tmp/px4_ros2_map_${USER:-user}}"
 mkdir -p "$RUNTIME_DIR"
 GAZEBO_LOG="$RUNTIME_DIR/${MAP}_gazebo.log"
 XRCE_LOG="$RUNTIME_DIR/${MAP}_xrce.log"
+TRAILER_LOG="$RUNTIME_DIR/${MAP}_trailer.log"
 GAZEBO_PID=""
 XRCE_PID=""
+TRAILER_PID=""
 
 cleanup() {
   local status=$?
+  local trailer_status=0
+  local trailer_was_running=0
   trap - EXIT INT TERM
+  if [[ -n "$TRAILER_PID" ]] && kill -0 "$TRAILER_PID" 2>/dev/null; then
+    trailer_was_running=1
+    kill "$TRAILER_PID" 2>/dev/null || true
+  fi
+  if [[ -n "$TRAILER_PID" ]]; then
+    set +e
+    wait "$TRAILER_PID" 2>/dev/null
+    trailer_status=$?
+    set -e
+    if [[ "$trailer_was_running" == "0" && "$trailer_status" != "0" ]]; then
+      echo "ERROR: trailer waypoint driver exited with status $trailer_status (log: $TRAILER_LOG)" >&2
+      if [[ "$status" == "0" ]]; then
+        status=6
+      fi
+    fi
+  fi
   if [[ -n "$XRCE_PID" ]] && kill -0 "$XRCE_PID" 2>/dev/null; then
     kill "$XRCE_PID" 2>/dev/null || true
     wait "$XRCE_PID" 2>/dev/null || true
@@ -220,6 +244,34 @@ if [[ "${START_XRCE:-1}" == "1" ]]; then
   else
     echo "WARN: MicroXRCEAgent is not installed; PX4 flight works through MAVLink, but ROS 2 /fmu topics need the agent." >&2
   fi
+fi
+
+if [[ "${DRIVE_TRAILER:-0}" == "1" ]]; then
+  python3 -c 'import gz.transport13, gz.msgs10.pose_v_pb2, yaml' >/dev/null 2>&1 || {
+    echo "ERROR: DRIVE_TRAILER=1 needs Gazebo Harmonic Python transport bindings." >&2
+    exit 6
+  }
+  TRAILER_ARGS=("$MAP" --loops "${TRAILER_ROUTE_LOOPS:-0}" --route "${TRAILER_ROUTE:-flat}")
+  if [[ -n "${TRAILER_ROUTE_TIMEOUT:-}" ]]; then
+    TRAILER_ARGS+=(--timeout "$TRAILER_ROUTE_TIMEOUT")
+  fi
+  python3 -u "$SCRIPT_DIR/trailer_waypoint_driver.py" "${TRAILER_ARGS[@]}" \
+    > >(tee "$TRAILER_LOG") 2>&1 &
+  TRAILER_PID=$!
+  sleep 1
+  if ! kill -0 "$TRAILER_PID" 2>/dev/null; then
+    set +e
+    wait "$TRAILER_PID"
+    trailer_status=$?
+    set -e
+    TRAILER_PID=""
+    echo "ERROR: trailer waypoint driver failed. Log:" >&2
+    cat "$TRAILER_LOG" >&2 || true
+    exit 6
+  fi
+  echo "Trailer route    : active (log: $TRAILER_LOG)"
+else
+  echo "Trailer route    : spawned, stationary (set DRIVE_TRAILER=1 to drive)"
 fi
 
 echo "Gazebo is ready. Starting the PX4 console; Ctrl-C stops this complete launch."

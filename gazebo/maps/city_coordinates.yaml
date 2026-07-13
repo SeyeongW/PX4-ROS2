@@ -23,7 +23,7 @@ frames:
     origin_enu_m:
     - -120.0
     - 115.0
-    - -3.019558902
+    - 0.16
     conversion_from_gazebo_enu:
       x_north_m: y_enu - origin_y
       y_east_m: x_enu - origin_x
@@ -34,7 +34,7 @@ px4_vehicle:
   simulation_model: gz_x500_mono_cam_down
   runtime_entity_name: x500_mono_cam_down_0
 terrain:
-  type: heightmap
+  type: completely_flat_heightmap_and_triangle_mesh
   image: gazebo/worlds/applepark_city/mesh/height_map_city_500m.png
   collision_mesh: gazebo/worlds/applepark_city/mesh/city_terrain_collision.obj
   rows: 257
@@ -43,13 +43,16 @@ terrain:
   row_0_y_m: 250.0
   column_0_x_m: -250.0
   row_direction: decreasing_y
-  height_formula_m: -15.0 + pixel/255*26.6
+  height_formula_m: 0.0 (all visual pixels=255; every collision vertex z=0)
+  height_range_m:
+  - 0.0
+  - 0.0
 spawn:
   name: city_drone_spawn
   gazebo_spawn_pose_enu:
     x: -120.0
     y: 115.0
-    z: -3.019558902
+    z: 0.16
     roll: 0.0
     pitch: 0.0
     yaw: 0.0
@@ -58,10 +61,47 @@ spawn:
     center_enu_m:
     - -120.0
     - 115.0
-    - -3.269558902
+    - 0.08
     radius_m: 4.0
-    length_m: 0.5
-    top_z_m: -3.019558902
+    length_m: 0.16
+    top_z_m: 0.16
+trailer:
+  entity_name: flat_platform
+  model_uri: model://moving_platform_track
+  spawn_pose_enu:
+    x: -175.0
+    y: 140.0
+    z: 0.0
+    roll: 0.0
+    pitch: 0.0
+    yaw: 0.0
+  body_footprint_m:
+  - 5.0
+  - 5.0
+  command_topic: /model/flat_platform/cmd_vel
+  pose_topic: /world/applepark_city/dynamic_pose/info
+  waypoints_enu_m:
+  - - -175.0
+    - 140.0
+  - - -150.0
+    - 140.0
+  - - -175.0
+    - 140.0
+  - - -200.0
+    - 140.0
+  - - -175.0
+    - 140.0
+  - - -175.0
+    - 165.0
+  - - -175.0
+    - 140.0
+  - - -175.0
+    - 115.0
+  - - -175.0
+    - 140.0
+  cruise_speed_m_s: 1.5
+  waypoint_tolerance_m: 0.5
+  route_surface: exact_z0_flat_city_datum
 planner_defaults:
   obstacle_inflation_m: 2.0
 obstacles:
@@ -87,9 +127,9 @@ obstacles:
       max:
       - -127.5096
       - 151.3036
-    foundation_z_m: -3.05392156863
-    ground_reference_z_m: -2.900976
-    roof_z_m: 19.0011617257
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 21.9021377257
     height_above_ground_m: 21.9021377257
   - id: building_002
     source_component_id: 1052
@@ -112,9 +152,9 @@ obstacles:
       max:
       - -121.8055
       - 166.6896
-    foundation_z_m: -3.15823529412
-    ground_reference_z_m: -2.900976
-    roof_z_m: 35.0290646063
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 37.9300406063
     height_above_ground_m: 37.9300406063
   - id: building_003
     source_component_id: 1054
@@ -137,9 +177,9 @@ obstacles:
       max:
       - 229.7667
       - 150.1469
-    foundation_z_m: -5.03588235294
-    ground_reference_z_m: -4.526971
-    roof_z_m: 31.3894107941
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 35.9163817941
     height_above_ground_m: 35.9163817941
   - id: building_004
     source_component_id: 1055
@@ -162,9 +202,9 @@ obstacles:
       max:
       - -230.2028
       - 223.0195
-    foundation_z_m: -3.26254901961
-    ground_reference_z_m: -2.763786
-    roof_z_m: 27.9923214158
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 30.7561074158
     height_above_ground_m: 30.7561074158
   - id: building_005
     source_component_id: 1057
@@ -187,9 +227,9 @@ obstacles:
       max:
       - 236.4159
       - 220.9202
-    foundation_z_m: -4.93156862745
-    ground_reference_z_m: -4.504648
-    roof_z_m: 23.4499260734
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 27.9545740734
     height_above_ground_m: 27.9545740734
   - id: building_006
     source_component_id: 1061
@@ -212,9 +252,9 @@ obstacles:
       max:
       - 137.0562
       - 206.9473
-    foundation_z_m: -5.03588235294
-    ground_reference_z_m: -4.610991
-    roof_z_m: 43.7844273723
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 48.3954183723
     height_above_ground_m: 48.3954183723
   - id: building_007
     source_component_id: 1063
@@ -237,9 +277,9 @@ obstacles:
       max:
       - 196.2415
       - 241.0375
-    foundation_z_m: -5.24450980392
-    ground_reference_z_m: -5.037175
-    roof_z_m: 14.5737770133
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 19.6109520133
     height_above_ground_m: 19.6109520133
   - id: building_008
     source_component_id: 1084
@@ -262,9 +302,9 @@ obstacles:
       max:
       - 214.0727
       - 225.4169
-    foundation_z_m: -4.72294117647
-    ground_reference_z_m: -4.301703
-    roof_z_m: 52.5469078353
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 56.8486108353
     height_above_ground_m: 56.8486108353
   - id: building_009
     source_component_id: 1086
@@ -287,9 +327,9 @@ obstacles:
       max:
       - -96.8232
       - -221.0244
-    foundation_z_m: -1.07196078431
-    ground_reference_z_m: -0.6369225
-    roof_z_m: 23.6411627296
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 24.2780852296
     height_above_ground_m: 24.2780852296
   - id: building_010
     source_component_id: 1087
@@ -312,9 +352,9 @@ obstacles:
       max:
       - 172.2577
       - -24.7797
-    foundation_z_m: -3.05392156863
-    ground_reference_z_m: -2.705743
-    roof_z_m: 48.5501727031
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 51.2559157031
     height_above_ground_m: 51.2559157031
   - id: building_011
     source_component_id: 1089
@@ -341,9 +381,9 @@ obstacles:
       max:
       - 214.3151
       - 151.8021
-    foundation_z_m: -5.03588235294
-    ground_reference_z_m: -4.614644
-    roof_z_m: 49.8496001987
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 54.4642441987
     height_above_ground_m: 54.4642441987
   - id: building_012
     source_component_id: 1090
@@ -370,9 +410,9 @@ obstacles:
       max:
       - 188.1727
       - 89.3115
-    foundation_z_m: -4.20137254902
-    ground_reference_z_m: -3.956291
-    roof_z_m: 73.3118945901
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 77.2681855901
     height_above_ground_m: 77.2681855901
   - id: building_013
     source_component_id: 1091
@@ -399,9 +439,9 @@ obstacles:
       max:
       - -66.3966
       - -207.5309
-    foundation_z_m: -1.59352941176
-    ground_reference_z_m: -0.9876105
-    roof_z_m: 58.4305079178
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 59.4181184178
     height_above_ground_m: 59.4181184178
   - id: building_014
     source_component_id: 1093
@@ -428,9 +468,9 @@ obstacles:
       max:
       - 235.4747
       - 123.4008
-    foundation_z_m: -4.51431372549
-    ground_reference_z_m: -4.099975
-    roof_z_m: 50.7355588224
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 54.8355338224
     height_above_ground_m: 54.8355338224
   - id: building_015
     source_component_id: 1096
@@ -457,9 +497,9 @@ obstacles:
       max:
       - -25.7471
       - -205.8719
-    foundation_z_m: -1.38490196078
-    ground_reference_z_m: -1.098824
-    roof_z_m: 27.9981211729
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 29.0969451729
     height_above_ground_m: 29.0969451729
   - id: building_016
     source_component_id: 1097
@@ -486,9 +526,9 @@ obstacles:
       max:
       - 236.6642
       - 113.4595
-    foundation_z_m: -4.41
-    ground_reference_z_m: -4.028539
-    roof_z_m: 69.3147757157
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 73.3433147157
     height_above_ground_m: 73.3433147157
   - id: building_017
     source_component_id: 1101
@@ -515,9 +555,9 @@ obstacles:
       max:
       - -118.7176
       - 207.4025
-    foundation_z_m: -3.99274509804
-    ground_reference_z_m: -3.271554
-    roof_z_m: 48.8258154506
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 52.0973694506
     height_above_ground_m: 52.0973694506
   - id: building_018
     source_component_id: 1106
@@ -544,9 +584,9 @@ obstacles:
       max:
       - -223.7814
       - 152.0094
-    foundation_z_m: -3.05392156863
-    ground_reference_z_m: -2.327048
-    roof_z_m: 28.4067164354
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 30.7337644354
     height_above_ground_m: 30.7337644354
   - id: building_019
     source_component_id: 1107
@@ -573,9 +613,9 @@ obstacles:
       max:
       - 193.8719
       - 154.1673
-    foundation_z_m: -5.03588235294
-    ground_reference_z_m: -4.770912
-    roof_z_m: 84.5441761735
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 89.3150881735
     height_above_ground_m: 89.3150881735
   - id: building_020
     source_component_id: 1111
@@ -602,9 +642,9 @@ obstacles:
       max:
       - 188.8876
       - 78.8967
-    foundation_z_m: -4.09705882353
-    ground_reference_z_m: -3.709916
-    roof_z_m: 46.8143692113
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 50.5242852113
     height_above_ground_m: 50.5242852113
   - id: building_021
     source_component_id: 1112
@@ -631,9 +671,9 @@ obstacles:
       max:
       - 188.8834
       - 120.7914
-    foundation_z_m: -4.09705882353
-    ground_reference_z_m: -3.900683
-    roof_z_m: 46.9670851392
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 50.8677681392
     height_above_ground_m: 50.8677681392
   - id: building_022
     source_component_id: 1113
@@ -660,9 +700,9 @@ obstacles:
       max:
       - 235.0151
       - -30.9281
-    foundation_z_m: -3.26254901961
-    ground_reference_z_m: -2.900976
-    roof_z_m: 28.131923756
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 31.032899756
     height_above_ground_m: 31.032899756
   - id: building_023
     source_component_id: 1115
@@ -689,9 +729,9 @@ obstacles:
       max:
       - 189.1225
       - 110.1412
-    foundation_z_m: -4.30568627451
-    ground_reference_z_m: -3.951419
-    roof_z_m: 84.6645164812
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 88.6159354812
     height_above_ground_m: 88.6159354812
   - id: building_024
     source_component_id: 1116
@@ -718,9 +758,9 @@ obstacles:
       max:
       - 6.8079
       - -20.2956
-    foundation_z_m: -2.94960784314
-    ground_reference_z_m: -2.512134
-    roof_z_m: 52.9736966231
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 55.4858306231
     height_above_ground_m: 55.4858306231
   - id: building_025
     source_component_id: 1117
@@ -747,9 +787,9 @@ obstacles:
       max:
       - 8.952
       - -77.8142
-    foundation_z_m: -2.63666666667
-    ground_reference_z_m: -2.165909
-    roof_z_m: 19.3247239394
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 21.4906329394
     height_above_ground_m: 21.4906329394
   - id: building_026
     source_component_id: 1119
@@ -776,9 +816,9 @@ obstacles:
       max:
       - 192.2366
       - -142.8925
-    foundation_z_m: -3.05392156863
-    ground_reference_z_m: -2.481692
-    roof_z_m: 52.2119260394
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 54.6936180394
     height_above_ground_m: 54.6936180394
   - id: building_027
     source_component_id: 1121
@@ -805,9 +845,9 @@ obstacles:
       max:
       - -97.3029
       - -163.9795
-    foundation_z_m: -1.38490196078
-    ground_reference_z_m: -0.9165798
-    roof_z_m: 26.7700781023
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 27.6866579023
     height_above_ground_m: 27.6866579023
   - id: building_028
     source_component_id: 1122
@@ -834,9 +874,9 @@ obstacles:
       max:
       - -142.2306
       - -174.8702
-    foundation_z_m: -1.1762745098
-    ground_reference_z_m: -0.5658909
-    roof_z_m: 70.7332737521
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 71.2991646521
     height_above_ground_m: 71.2991646521
   - id: building_029
     source_component_id: 1123
@@ -863,9 +903,9 @@ obstacles:
       max:
       - -139.3898
       - 53.5454
-    foundation_z_m: -2.94960784314
-    ground_reference_z_m: -2.212993
-    roof_z_m: 28.1519309691
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 30.3649239691
     height_above_ground_m: 30.3649239691
   - id: building_030
     source_component_id: 1124
@@ -892,9 +932,9 @@ obstacles:
       max:
       - -65.6857
       - -167.2918
-    foundation_z_m: -1.69784313725
-    ground_reference_z_m: -1.119525
-    roof_z_m: 19.5895868852
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 20.7091118852
     height_above_ground_m: 20.7091118852
   - id: building_031
     source_component_id: 1125
@@ -921,9 +961,9 @@ obstacles:
       max:
       - 71.9528
       - -174.621
-    foundation_z_m: -2.01078431373
-    ground_reference_z_m: -1.724707
-    roof_z_m: 39.3735215859
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 41.0982285859
     height_above_ground_m: 41.0982285859
   - id: building_032
     source_component_id: 1129
@@ -950,9 +990,9 @@ obstacles:
       max:
       - 91.4282
       - 50.721
-    foundation_z_m: -3.88843137255
-    ground_reference_z_m: -3.375056
-    roof_z_m: 59.1741155126
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 62.5491715126
     height_above_ground_m: 62.5491715126
   - id: building_033
     source_component_id: 1130
@@ -979,9 +1019,9 @@ obstacles:
       max:
       - 94.0593
       - -143.3735
-    foundation_z_m: -2.63666666667
-    ground_reference_z_m: -2.229228
-    roof_z_m: 40.9924998338
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 43.2217278338
     height_above_ground_m: 43.2217278338
   - id: building_034
     source_component_id: 1135
@@ -1008,9 +1048,9 @@ obstacles:
       max:
       - 51.2623
       - -36.6258
-    foundation_z_m: -2.84529411765
-    ground_reference_z_m: -2.481692
-    roof_z_m: 17.1973338454
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 19.6790258454
     height_above_ground_m: 19.6790258454
   - id: building_035
     source_component_id: 1136
@@ -1037,9 +1077,9 @@ obstacles:
       max:
       - -23.6177
       - -38.2869
-    foundation_z_m: -2.53235294118
-    ground_reference_z_m: -2.100155
-    roof_z_m: 20.4373794919
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 22.5375344919
     height_above_ground_m: 22.5375344919
   - id: building_036
     source_component_id: 1137
@@ -1066,9 +1106,9 @@ obstacles:
       max:
       - -23.3771
       - -97.6998
-    foundation_z_m: -2.11509803922
-    ground_reference_z_m: -1.689801
-    roof_z_m: 51.2582457141
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 52.9480467141
     height_above_ground_m: 52.9480467141
   - id: building_037
     source_component_id: 1138
@@ -1095,9 +1135,9 @@ obstacles:
       max:
       - -22.8959
       - -185.0424
-    foundation_z_m: -1.48921568627
-    ground_reference_z_m: -1.176756
-    roof_z_m: 42.9493587823
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 44.1261147823
     height_above_ground_m: 44.1261147823
   - id: building_038
     source_component_id: 1141
@@ -1124,9 +1164,9 @@ obstacles:
       max:
       - -67.1165
       - -97.2281
-    foundation_z_m: -2.01078431373
-    ground_reference_z_m: -1.506338
-    roof_z_m: 45.3733900001
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 46.8797280001
     height_above_ground_m: 46.8797280001
   - id: building_039
     source_component_id: 1142
@@ -1153,9 +1193,9 @@ obstacles:
       max:
       - 238.0988
       - 34.8747
-    foundation_z_m: -3.57549019608
-    ground_reference_z_m: -3.301589
-    roof_z_m: 33.3359421501
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 36.6375311501
     height_above_ground_m: 36.6375311501
   - id: building_040
     source_component_id: 1143
@@ -1182,9 +1222,9 @@ obstacles:
       max:
       - -143.1892
       - -32.8504
-    foundation_z_m: -2.11509803922
-    ground_reference_z_m: -1.663418
-    roof_z_m: 31.841551952
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 33.504969952
     height_above_ground_m: 33.504969952
   - id: building_041
     source_component_id: 1145
@@ -1211,9 +1251,9 @@ obstacles:
       max:
       - -15.7857
       - 136.8712
-    foundation_z_m: -3.47117647059
-    ground_reference_z_m: -3.070232
-    roof_z_m: 32.0703366995
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 35.1405686995
     height_above_ground_m: 35.1405686995
   - id: building_042
     source_component_id: 1146
@@ -1240,9 +1280,9 @@ obstacles:
       max:
       - 133.7401
       - 70.3693
-    foundation_z_m: -3.88843137255
-    ground_reference_z_m: -3.518741
-    roof_z_m: 39.3923297038
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 42.9110707038
     height_above_ground_m: 42.9110707038
   - id: building_043
     source_component_id: 1151
@@ -1271,9 +1311,9 @@ obstacles:
       max:
       - -71.4095
       - 137.1046
-    foundation_z_m: -3.47117647059
-    ground_reference_z_m: -2.73172
-    roof_z_m: 33.764051891
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 36.495771891
     height_above_ground_m: 36.495771891
   - id: building_044
     source_component_id: 1160
@@ -1304,9 +1344,9 @@ obstacles:
       max:
       - -143.6547
       - -219.1338
-    foundation_z_m: -1.1762745098
-    ground_reference_z_m: -0.4684778
-    roof_z_m: 47.5090085966
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 47.9774863966
     height_above_ground_m: 47.9774863966
   - id: building_045
     source_component_id: 1162
@@ -1337,9 +1377,9 @@ obstacles:
       max:
       - 8.0019
       - -96.9865
-    foundation_z_m: -2.53235294118
-    ground_reference_z_m: -1.966212
-    roof_z_m: 27.7306488196
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 29.6968608196
     height_above_ground_m: 29.6968608196
   - id: building_046
     source_component_id: 1164
@@ -1370,9 +1410,9 @@ obstacles:
       max:
       - 8.0057
       - -143.1436
-    foundation_z_m: -2.42803921569
-    ground_reference_z_m: -1.829833
-    roof_z_m: 14.077280807
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 15.907113807
     height_above_ground_m: 15.907113807
   - id: building_047
     source_component_id: 1166
@@ -1403,9 +1443,9 @@ obstacles:
       max:
       - 237.1405
       - 103.2814
-    foundation_z_m: -4.41
-    ground_reference_z_m: -4.058168
-    roof_z_m: 105.563170013
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 109.621338013
     height_above_ground_m: 109.621338013
   - id: building_048
     source_component_id: 1169
@@ -1436,9 +1476,9 @@ obstacles:
       max:
       - 90.0076
       - -21.0
-    foundation_z_m: -2.94960784314
-    ground_reference_z_m: -2.605082
-    roof_z_m: 16.9829584625
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 19.5880404625
     height_above_ground_m: 19.5880404625
   - id: building_049
     source_component_id: 1170
@@ -1469,9 +1509,9 @@ obstacles:
       max:
       - 138.9682
       - 89.5435
-    foundation_z_m: -4.20137254902
-    ground_reference_z_m: -3.629549
-    roof_z_m: 43.9373762978
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 47.5669252978
     height_above_ground_m: 47.5669252978
   - id: building_050
     source_component_id: 1171
@@ -1502,9 +1542,9 @@ obstacles:
       max:
       - 209.088
       - 129.315
-    foundation_z_m: -4.51431372549
-    ground_reference_z_m: -3.904336
-    roof_z_m: 96.3318358677
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 100.236171868
     height_above_ground_m: 100.236171868
   - id: building_051
     source_component_id: 1172
@@ -1535,9 +1575,9 @@ obstacles:
       max:
       - 210.0417
       - 99.0169
-    foundation_z_m: -4.30568627451
-    ground_reference_z_m: -3.861312
-    roof_z_m: 55.0409477387
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 58.9022597387
     height_above_ground_m: 58.9022597387
   - id: building_052
     source_component_id: 1175
@@ -1568,9 +1608,9 @@ obstacles:
       max:
       - 91.8984
       - 115.3397
-    foundation_z_m: -4.20137254902
-    ground_reference_z_m: -3.613719
-    roof_z_m: 42.0078906095
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 45.6216096095
     height_above_ground_m: 45.6216096095
   - id: building_053
     source_component_id: 1177
@@ -1601,9 +1641,9 @@ obstacles:
       max:
       - 210.2778
       - 119.3732
-    foundation_z_m: -4.09705882353
-    ground_reference_z_m: -3.70261
-    roof_z_m: 46.1405196084
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 49.8431296084
     height_above_ground_m: 49.8431296084
   - id: building_054
     source_component_id: 1180
@@ -1634,9 +1674,9 @@ obstacles:
       max:
       - -41.2206
       - 141.8409
-    foundation_z_m: -3.3668627451
-    ground_reference_z_m: -2.488592
-    roof_z_m: 33.1907422895
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 35.6793342895
     height_above_ground_m: 35.6793342895
   - id: building_055
     source_component_id: 1182
@@ -1667,9 +1707,9 @@ obstacles:
       max:
       - -223.7764
       - 42.1801
-    foundation_z_m: -2.42803921569
-    ground_reference_z_m: -1.632164
-    roof_z_m: 58.2504116055
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 59.8825756055
     height_above_ground_m: 59.8825756055
   - id: building_056
     source_component_id: 1188
@@ -1700,9 +1740,9 @@ obstacles:
       max:
       - -51.9202
       - 179.7123
-    foundation_z_m: -4.09705882353
-    ground_reference_z_m: -3.488705
-    roof_z_m: 28.331706218
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 31.820411218
     height_above_ground_m: 31.820411218
   - id: building_057
     source_component_id: 1189
@@ -1733,9 +1773,9 @@ obstacles:
       max:
       - -19.0904
       - -210.6051
-    foundation_z_m: -1.59352941176
-    ground_reference_z_m: -1.070007
-    roof_z_m: 31.0777915533
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 32.1477985533
     height_above_ground_m: 32.1477985533
   - id: building_058
     source_component_id: 1192
@@ -1766,9 +1806,9 @@ obstacles:
       max:
       - -161.9729
       - 54.4915
-    foundation_z_m: -2.84529411765
-    ground_reference_z_m: -2.315683
-    roof_z_m: 34.6583532802
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 36.9740362802
     height_above_ground_m: 36.9740362802
   - id: building_059
     source_component_id: 1194
@@ -1799,9 +1839,9 @@ obstacles:
       max:
       - -98.7492
       - 200.7756
-    foundation_z_m: -3.99274509804
-    ground_reference_z_m: -3.481804
-    roof_z_m: 18.2041430803
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 21.6859470803
     height_above_ground_m: 21.6859470803
   - id: building_060
     source_component_id: 1196
@@ -1832,9 +1872,9 @@ obstacles:
       max:
       - -197.3944
       - 120.2924
-    foundation_z_m: -2.63666666667
-    ground_reference_z_m: -2.100155
-    roof_z_m: 23.1404132162
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 25.2405682162
     height_above_ground_m: 25.2405682162
   - id: building_061
     source_component_id: 1200
@@ -1865,9 +1905,9 @@ obstacles:
       max:
       - 189.1202
       - 131.4429
-    foundation_z_m: -4.41
-    ground_reference_z_m: -3.942084
-    roof_z_m: 85.4391556896
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 89.3812396896
     height_above_ground_m: 89.3812396896
   - id: building_062
     source_component_id: 1201
@@ -1898,9 +1938,9 @@ obstacles:
       max:
       - 234.0663
       - -52.2321
-    foundation_z_m: -3.05392156863
-    ground_reference_z_m: -2.709802
-    roof_z_m: 19.0645539103
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 21.7743559103
     height_above_ground_m: 21.7743559103
   - id: building_063
     source_component_id: 1202
@@ -1931,9 +1971,9 @@ obstacles:
       max:
       - -175.99
       - -92.2633
-    foundation_z_m: -1.48921568627
-    ground_reference_z_m: -1.263211
-    roof_z_m: 42.431117023
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 43.694328023
     height_above_ground_m: 43.694328023
   - id: building_064
     source_component_id: 1204
@@ -1964,9 +2004,9 @@ obstacles:
       max:
       - -218.7785
       - -109.7811
-    foundation_z_m: -1.38490196078
-    ground_reference_z_m: -0.9230753
-    roof_z_m: 62.0808086486
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 63.0038839486
     height_above_ground_m: 63.0038839486
   - id: building_065
     source_component_id: 1206
@@ -1997,9 +2037,9 @@ obstacles:
       max:
       - 192.2229
       - 6.4656
-    foundation_z_m: -3.88843137255
-    ground_reference_z_m: -3.446493
-    roof_z_m: 30.8346074276
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 34.2811004276
     height_above_ground_m: 34.2811004276
   - id: building_066
     source_component_id: 1208
@@ -2030,9 +2070,9 @@ obstacles:
       max:
       - 91.4276
       - 69.1832
-    foundation_z_m: -4.09705882353
-    ground_reference_z_m: -3.326349
-    roof_z_m: 17.8954838973
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 21.2218328973
     height_above_ground_m: 21.2218328973
   - id: building_067
     source_component_id: 1209
@@ -2063,9 +2103,9 @@ obstacles:
       max:
       - 193.1796
       - -66.4388
-    foundation_z_m: -3.47117647059
-    ground_reference_z_m: -2.865664
-    roof_z_m: 20.3681462726
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 23.2338102726
     height_above_ground_m: 23.2338102726
   - id: building_068
     source_component_id: 1212
@@ -2096,9 +2136,9 @@ obstacles:
       max:
       - -142.4689
       - -152.1471
-    foundation_z_m: -1.38490196078
-    ground_reference_z_m: -0.7659947
-    roof_z_m: 47.6965978379
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 48.4625925379
     height_above_ground_m: 48.4625925379
   - id: building_069
     source_component_id: 1213
@@ -2129,9 +2169,9 @@ obstacles:
       max:
       - -98.7344
       - -54.6243
-    foundation_z_m: -2.11509803922
-    ground_reference_z_m: -1.638252
-    roof_z_m: 26.2737572577
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 27.9120092577
     height_above_ground_m: 27.9120092577
   - id: building_070
     source_component_id: 1215
@@ -2162,9 +2202,9 @@ obstacles:
       max:
       - 8.7057
       - 39.8255
-    foundation_z_m: -3.3668627451
-    ground_reference_z_m: -2.572611
-    roof_z_m: 24.0674289608
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 26.6400399608
     height_above_ground_m: 26.6400399608
   - id: building_071
     source_component_id: 1216
@@ -2195,9 +2235,9 @@ obstacles:
       max:
       - 159.65
       - 71.3184
-    foundation_z_m: -4.41
-    ground_reference_z_m: -3.978614
-    roof_z_m: 45.4692533576
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 49.4478673576
     height_above_ground_m: 49.4478673576
   - id: building_072
     source_component_id: 1218
@@ -2228,9 +2268,9 @@ obstacles:
       max:
       - -96.363
       - 27.2743
-    foundation_z_m: -2.63666666667
-    ground_reference_z_m: -2.118015
-    roof_z_m: 53.1661830778
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 55.2841980778
     height_above_ground_m: 55.2841980778
   - id: building_073
     source_component_id: 1220
@@ -2261,9 +2301,9 @@ obstacles:
       max:
       - 161.0689
       - 145.1705
-    foundation_z_m: -5.24450980392
-    ground_reference_z_m: -4.664568
-    roof_z_m: 72.8763845472
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 77.5409525472
     height_above_ground_m: 77.5409525472
   - id: building_074
     source_component_id: 1221
@@ -2294,9 +2334,9 @@ obstacles:
       max:
       - -67.3585
       - -14.8566
-    foundation_z_m: -2.63666666667
-    ground_reference_z_m: -1.977982
-    roof_z_m: 37.2085069574
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 39.1864889574
     height_above_ground_m: 39.1864889574
   - id: building_075
     source_component_id: 1223
@@ -2327,9 +2367,9 @@ obstacles:
       max:
       - -67.1183
       - -55.0958
-    foundation_z_m: -2.3237254902
-    ground_reference_z_m: -1.751497
-    roof_z_m: 34.2507877818
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 36.0022847818
     height_above_ground_m: 36.0022847818
   - id: building_076
     source_component_id: 1224
@@ -2360,9 +2400,9 @@ obstacles:
       max:
       - 160.8353
       - 102.801
-    foundation_z_m: -4.61862745098
-    ground_reference_z_m: -4.184806
-    roof_z_m: 40.2738365578
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 44.4586425578
     height_above_ground_m: 44.4586425578
   - id: building_077
     source_component_id: 1225
@@ -2393,9 +2433,9 @@ obstacles:
       max:
       - 192.4628
       - -24.5412
-    foundation_z_m: -3.57549019608
-    ground_reference_z_m: -2.904629
-    roof_z_m: 29.7508972862
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 32.6555262862
     height_above_ground_m: 32.6555262862
   - id: building_078
     source_component_id: 1226
@@ -2426,9 +2466,9 @@ obstacles:
       max:
       - 72.6648
       - -143.376
-    foundation_z_m: -2.63666666667
-    ground_reference_z_m: -2.11842
-    roof_z_m: 38.8506836887
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 40.9691036887
     height_above_ground_m: 40.9691036887
   - id: building_079
     source_component_id: 1227
@@ -2459,9 +2499,9 @@ obstacles:
       max:
       - 239.0442
       - 82.6886
-    foundation_z_m: -4.41
-    ground_reference_z_m: -4.053704
-    roof_z_m: 72.269117717
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 76.322821717
     height_above_ground_m: 76.322821717
   - id: building_080
     source_component_id: 1229
@@ -2492,9 +2532,9 @@ obstacles:
       max:
       - 104.2859
       - -217.6967
-    foundation_z_m: -2.3237254902
-    ground_reference_z_m: -1.660171
-    roof_z_m: 52.2621681554
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 53.9223391554
     height_above_ground_m: 53.9223391554
   - id: building_081
     source_component_id: 1230
@@ -2525,9 +2565,9 @@ obstacles:
       max:
       - 73.1286
       - 6.2198
-    foundation_z_m: -3.78411764706
-    ground_reference_z_m: -3.082409
-    roof_z_m: 24.8316196437
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 27.9140286437
     height_above_ground_m: 27.9140286437
   - id: building_082
     source_component_id: 1231
@@ -2558,9 +2598,9 @@ obstacles:
       max:
       - 74.7799
       - 154.3941
-    foundation_z_m: -4.82725490196
-    ground_reference_z_m: -4.35731
-    roof_z_m: 47.3678002794
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 51.7251102794
     height_above_ground_m: 51.7251102794
   - id: building_083
     source_component_id: 1232
@@ -2591,9 +2631,9 @@ obstacles:
       max:
       - 44.143
       - -217.938
-    foundation_z_m: -2.11509803922
-    ground_reference_z_m: -1.456415
-    roof_z_m: 33.2433110965
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 34.6997260965
     height_above_ground_m: 34.6997260965
   - id: building_084
     source_component_id: 1240
@@ -2624,9 +2664,9 @@ obstacles:
       max:
       - -45.7146
       - -220.785
-    foundation_z_m: -1.59352941176
-    ground_reference_z_m: -1.186497
-    roof_z_m: 36.9699790966
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 38.1564760966
     height_above_ground_m: 38.1564760966
   - id: building_085
     source_component_id: 1242
@@ -2657,9 +2697,9 @@ obstacles:
       max:
       - -178.1456
       - 235.0931
-    foundation_z_m: -3.67980392157
-    ground_reference_z_m: -3.221223
-    roof_z_m: 44.9697150602
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 48.1909380602
     height_above_ground_m: 48.1909380602
   - id: building_086
     source_component_id: 1243
@@ -2690,9 +2730,9 @@ obstacles:
       max:
       - -193.1144
       - 99.7
-    foundation_z_m: -2.42803921569
-    ground_reference_z_m: -2.102996
-    roof_z_m: 47.7943556341
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 49.8973516341
     height_above_ground_m: 49.8973516341
   - id: building_087
     source_component_id: 1244
@@ -2723,9 +2763,9 @@ obstacles:
       max:
       - 137.7743
       - 153.2148
-    foundation_z_m: -5.24450980392
-    ground_reference_z_m: -4.525347
-    roof_z_m: 75.7130590403
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 80.2384060403
     height_above_ground_m: 80.2384060403
   - id: building_088
     source_component_id: 1249
@@ -2756,9 +2796,9 @@ obstacles:
       max:
       - -22.9236
       - 236.5224
-    foundation_z_m: -4.30568627451
-    ground_reference_z_m: -3.718439
-    roof_z_m: 29.487994415
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 33.206433415
     height_above_ground_m: 33.206433415
   - id: building_089
     source_component_id: 1250
@@ -2789,9 +2829,9 @@ obstacles:
       max:
       - 151.7932
       - 226.5947
-    foundation_z_m: -4.93156862745
-    ground_reference_z_m: -4.593538
-    roof_z_m: 30.343691757
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 34.937229757
     height_above_ground_m: 34.937229757
   - id: building_090
     source_component_id: 1252
@@ -2822,9 +2862,9 @@ obstacles:
       max:
       - 96.1743
       - 152.738
-    foundation_z_m: -5.03588235294
-    ground_reference_z_m: -4.63778
-    roof_z_m: 45.4915814032
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 50.1293614032
     height_above_ground_m: 50.1293614032
   - id: building_091
     source_component_id: 1253
@@ -2855,9 +2895,9 @@ obstacles:
       max:
       - -57.3811
       - 87.635
-    foundation_z_m: -3.26254901961
-    ground_reference_z_m: -2.634713
-    roof_z_m: 24.5072834358
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 27.1419964358
     height_above_ground_m: 27.1419964358
   - id: building_092
     source_component_id: 1254
@@ -2888,9 +2928,9 @@ obstacles:
       max:
       - -130.8348
       - 96.862
-    foundation_z_m: -3.05392156863
-    ground_reference_z_m: -2.47398
-    roof_z_m: 20.9643705198
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 23.4383505198
     height_above_ground_m: 23.4383505198
   - id: building_093
     source_component_id: 1255
@@ -2921,9 +2961,9 @@ obstacles:
       max:
       - -7.4627
       - 87.6386
-    foundation_z_m: -3.78411764706
-    ground_reference_z_m: -3.134769
-    roof_z_m: 19.3915515182
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 22.5263205182
     height_above_ground_m: 22.5263205182
   - id: building_094
     source_component_id: 1257
@@ -2954,9 +2994,9 @@ obstacles:
       max:
       - 202.2276
       - -217.2164
-    foundation_z_m: -2.74098039216
-    ground_reference_z_m: -2.119638
-    roof_z_m: 52.2898065178
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 54.4094445178
     height_above_ground_m: 54.4094445178
   - id: building_095
     source_component_id: 1264
@@ -2987,9 +3027,9 @@ obstacles:
       max:
       - 112.6012
       - -143.3727
-    foundation_z_m: -2.84529411765
-    ground_reference_z_m: -2.293766
-    roof_z_m: 38.4765353533
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 40.7703013533
     height_above_ground_m: 40.7703013533
   - id: building_096
     source_component_id: 1266
@@ -3020,9 +3060,9 @@ obstacles:
       max:
       - 84.318
       - -217.4624
-    foundation_z_m: -2.21941176471
-    ground_reference_z_m: -1.680465
-    roof_z_m: 16.7084763799
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 18.3889413799
     height_above_ground_m: 18.3889413799
   - id: building_097
     source_component_id: 1267
@@ -3053,9 +3093,9 @@ obstacles:
       max:
       - 113.7856
       - -98.3987
-    foundation_z_m: -2.42803921569
-    ground_reference_z_m: -2.100155
-    roof_z_m: 54.3200462958
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 56.4202012958
     height_above_ground_m: 56.4202012958
   - id: building_098
     source_component_id: 1268
@@ -3086,9 +3126,9 @@ obstacles:
       max:
       - 52.9343
       - -143.3766
-    foundation_z_m: -2.63666666667
-    ground_reference_z_m: -2.02953
-    roof_z_m: 46.4694054918
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 48.4989354918
     height_above_ground_m: 48.4989354918
   - id: building_099
     source_component_id: 1270
@@ -3119,9 +3159,9 @@ obstacles:
       max:
       - 51.9782
       - -74.2601
-    foundation_z_m: -2.53235294118
-    ground_reference_z_m: -2.105838
-    roof_z_m: 32.3383465709
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 34.4441845709
     height_above_ground_m: 34.4441845709
   - id: building_100
     source_component_id: 1272
@@ -3152,9 +3192,9 @@ obstacles:
       max:
       - -22.4343
       - 24.4383
-    foundation_z_m: -3.05392156863
-    ground_reference_z_m: -2.415532
-    roof_z_m: 32.8701307237
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 35.2856627237
     height_above_ground_m: 35.2856627237
   - id: building_101
     source_component_id: 1273
@@ -3185,9 +3225,9 @@ obstacles:
       max:
       - 188.6476
       - 100.1998
-    foundation_z_m: -4.30568627451
-    ground_reference_z_m: -4.09551
-    roof_z_m: 57.0188138538
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 61.1143238538
     height_above_ground_m: 61.1143238538
   - id: building_102
     source_component_id: 1277
@@ -3218,9 +3258,9 @@ obstacles:
       max:
       - -23.1352
       - -143.6187
-    foundation_z_m: -2.21941176471
-    ground_reference_z_m: -1.537185
-    roof_z_m: 34.6608586475
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 36.1980436475
     height_above_ground_m: 36.1980436475
   - id: building_103
     source_component_id: 1278
@@ -3251,9 +3291,9 @@ obstacles:
       max:
       - -22.6706
       - 3.3714
-    foundation_z_m: -2.84529411765
-    ground_reference_z_m: -2.410661
-    roof_z_m: 30.9221319209
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 33.3327929209
     height_above_ground_m: 33.3327929209
   - id: building_104
     source_component_id: 1280
@@ -3284,9 +3324,9 @@ obstacles:
       max:
       - -22.8961
       - -164.685
-    foundation_z_m: -1.69784313725
-    ground_reference_z_m: -1.297711
-    roof_z_m: 33.8493628736
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 35.1470738736
     height_above_ground_m: 35.1470738736
   - id: building_105
     source_component_id: 1282
@@ -3317,9 +3357,9 @@ obstacles:
       max:
       - -218.7799
       - -67.8858
-    foundation_z_m: -1.59352941176
-    ground_reference_z_m: -1.101666
-    roof_z_m: 42.7028565739
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 43.8045225739
     height_above_ground_m: 43.8045225739
   - id: building_106
     source_component_id: 1283
@@ -3350,9 +3390,9 @@ obstacles:
       max:
       - -98.501
       - 7.6276
-    foundation_z_m: -2.53235294118
-    ground_reference_z_m: -2.002742
-    roof_z_m: 23.3914368455
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 25.3941788455
     height_above_ground_m: 25.3941788455
   - id: building_107
     source_component_id: 1285
@@ -3383,9 +3423,9 @@ obstacles:
       max:
       - -142.7087
       - -112.3812
-    foundation_z_m: -1.69784313725
-    ground_reference_z_m: -1.117495
-    roof_z_m: 19.0981243638
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 20.2156193638
     height_above_ground_m: 20.2156193638
   - id: building_108
     source_component_id: 1286
@@ -3416,9 +3456,9 @@ obstacles:
       max:
       - -218.7813
       - -46.8187
-    foundation_z_m: -1.59352941176
-    ground_reference_z_m: -1.141444
-    roof_z_m: 26.9150329699
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 28.0564769699
     height_above_ground_m: 28.0564769699
   - id: building_109
     source_component_id: 1287
@@ -3449,9 +3489,9 @@ obstacles:
       max:
       - -66.88
       - -75.2149
-    foundation_z_m: -2.21941176471
-    ground_reference_z_m: -1.723083
-    roof_z_m: 49.2118933459
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 50.9349763459
     height_above_ground_m: 50.9349763459
   - id: building_110
     source_component_id: 1288
@@ -3482,9 +3522,9 @@ obstacles:
       max:
       - -67.1206
       - -34.7401
-    foundation_z_m: -2.53235294118
-    ground_reference_z_m: -1.934147
-    roof_z_m: 37.776612124
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 39.710759124
     height_above_ground_m: 39.710759124
   - id: building_111
     source_component_id: 1289
@@ -3515,9 +3555,9 @@ obstacles:
       max:
       - -18.8699
       - 46.4513
-    foundation_z_m: -3.15823529412
-    ground_reference_z_m: -2.499957
-    roof_z_m: 30.0251983255
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 32.5251553255
     height_above_ground_m: 32.5251553255
   - id: building_112
     source_component_id: 1290
@@ -3548,9 +3588,9 @@ obstacles:
       max:
       - 60.5225
       - 90.0097
-    foundation_z_m: -3.88843137255
-    ground_reference_z_m: -3.251666
-    roof_z_m: 20.9554243375
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 24.2070903375
     height_above_ground_m: 24.2070903375
   - id: building_113
     source_component_id: 1291
@@ -3581,9 +3621,9 @@ obstacles:
       max:
       - 134.2173
       - 50.4878
-    foundation_z_m: -3.88843137255
-    ground_reference_z_m: -3.455017
-    roof_z_m: 41.6160569752
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 45.0710739752
     height_above_ground_m: 45.0710739752
   - id: building_114
     source_component_id: 1292
@@ -3616,9 +3656,9 @@ obstacles:
       max:
       - 204.3312
       - 153.4581
-    foundation_z_m: -5.03588235294
-    ground_reference_z_m: -4.771317
-    roof_z_m: 62.3140102896
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 67.0853272896
     height_above_ground_m: 67.0853272896
   - id: building_115
     source_component_id: 1293
@@ -3649,9 +3689,9 @@ obstacles:
       max:
       - -181.4644
       - 54.4908
-    foundation_z_m: -2.74098039216
-    ground_reference_z_m: -2.210151
-    roof_z_m: 21.2485417287
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 23.4586927287
     height_above_ground_m: 23.4586927287
   - id: building_116
     source_component_id: 1296
@@ -3682,9 +3722,9 @@ obstacles:
       max:
       - 123.5411
       - -217.4599
-    foundation_z_m: -2.42803921569
-    ground_reference_z_m: -1.720242
-    roof_z_m: 38.7193393699
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 40.4395813699
     height_above_ground_m: 40.4395813699
   - id: building_117
     source_component_id: 1298
@@ -3715,9 +3755,9 @@ obstacles:
       max:
       - -89.2342
       - 74.8511
-    foundation_z_m: -2.94960784314
-    ground_reference_z_m: -2.404168
-    roof_z_m: 27.2578348506
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 29.6620028506
     height_above_ground_m: 29.6620028506
   - id: building_118
     source_component_id: 1299
@@ -3748,9 +3788,9 @@ obstacles:
       max:
       - 93.5803
       - -97.9269
-    foundation_z_m: -2.21941176471
-    ground_reference_z_m: -2.100155
-    roof_z_m: 27.8426234065
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 29.9427784065
     height_above_ground_m: 29.9427784065
   - id: building_119
     source_component_id: 1301
@@ -3781,9 +3821,9 @@ obstacles:
       max:
       - 64.1114
       - -217.9365
-    foundation_z_m: -2.21941176471
-    ground_reference_z_m: -1.588328
-    roof_z_m: 57.6007820634
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 59.1891100634
     height_above_ground_m: 59.1891100634
   - id: building_120
     source_component_id: 1310
@@ -3814,9 +3854,9 @@ obstacles:
       max:
       - 69.5526
       - 127.8825
-    foundation_z_m: -4.41
-    ground_reference_z_m: -3.775263
-    roof_z_m: 21.5838274778
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 25.3590904778
     height_above_ground_m: 25.3590904778
   - id: building_121
     source_component_id: 1311
@@ -3847,9 +3887,9 @@ obstacles:
       max:
       - 23.6746
       - 128.1159
-    foundation_z_m: -3.99274509804
-    ground_reference_z_m: -3.339744
-    roof_z_m: 31.326317473
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 34.666061473
     height_above_ground_m: 34.666061473
   - id: building_122
     source_component_id: 1313
@@ -3880,9 +3920,9 @@ obstacles:
       max:
       - -204.7481
       - -219.1362
-    foundation_z_m: -0.654705882353
-    ground_reference_z_m: -0.02930508
-    roof_z_m: 45.4250830478
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 45.4543881278
     height_above_ground_m: 45.4543881278
   - id: building_123
     source_component_id: 1316
@@ -3913,9 +3953,9 @@ obstacles:
       max:
       - -221.1606
       - 14.0132
-    foundation_z_m: -2.11509803922
-    ground_reference_z_m: -1.672348
-    roof_z_m: 27.8469926498
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 29.5193406498
     height_above_ground_m: 29.5193406498
   - id: building_124
     source_component_id: 1317
@@ -3946,9 +3986,9 @@ obstacles:
       max:
       - 53.4108
       - -174.3857
-    foundation_z_m: -2.01078431373
-    ground_reference_z_m: -1.70076
-    roof_z_m: 37.5078898748
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 39.2086498748
     height_above_ground_m: 39.2086498748
   - id: building_125
     source_component_id: 1318
@@ -3979,9 +4019,9 @@ obstacles:
       max:
       - 51.2608
       - -17.4531
-    foundation_z_m: -2.94960784314
-    ground_reference_z_m: -2.515381
-    roof_z_m: 21.2131431308
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 23.7285241308
     height_above_ground_m: 23.7285241308
   - id: building_126
     source_component_id: 1319
@@ -4012,9 +4052,9 @@ obstacles:
       max:
       - 113.7788
       - -25.0215
-    foundation_z_m: -3.05392156863
-    ground_reference_z_m: -2.527152
-    roof_z_m: 35.2579733385
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 37.7851253385
     height_above_ground_m: 37.7851253385
   - id: building_127
     source_component_id: 1322
@@ -4045,9 +4085,9 @@ obstacles:
       max:
       - -23.3785
       - -76.1601
-    foundation_z_m: -2.3237254902
-    ground_reference_z_m: -1.902081
-    roof_z_m: 28.2991887617
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 30.2012697617
     height_above_ground_m: 30.2012697617
   - id: building_128
     source_component_id: 1326
@@ -4078,9 +4118,9 @@ obstacles:
       max:
       - -174.5618
       - -132.5024
-    foundation_z_m: -1.28058823529
-    ground_reference_z_m: -0.8820797
-    roof_z_m: 49.3108773744
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 50.1929570744
     height_above_ground_m: 50.1929570744
   - id: building_129
     source_component_id: 1328
@@ -4111,9 +4151,9 @@ obstacles:
       max:
       - -97.3009
       - -182.4422
-    foundation_z_m: -1.28058823529
-    ground_reference_z_m: -0.8642203
-    roof_z_m: 54.6722124258
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 55.5364327258
     height_above_ground_m: 55.5364327258
   - id: building_130
     source_component_id: 1331
@@ -4146,9 +4186,9 @@ obstacles:
       max:
       - 230.9646
       - 54.9924
-    foundation_z_m: -4.20137254902
-    ground_reference_z_m: -3.51184
-    roof_z_m: 31.4624294111
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 34.9742694111
     height_above_ground_m: 34.9742694111
   - id: building_131
     source_component_id: 1332
@@ -4181,9 +4221,9 @@ obstacles:
       max:
       - -225.687
       - 247.8731
-    foundation_z_m: -3.67980392157
-    ground_reference_z_m: -3.047503
-    roof_z_m: 49.5263510748
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 52.5738540748
     height_above_ground_m: 52.5738540748
   - id: building_132
     source_component_id: 1336
@@ -4214,9 +4254,9 @@ obstacles:
       max:
       - 51.7378
       - -55.0885
-    foundation_z_m: -2.63666666667
-    ground_reference_z_m: -2.300259
-    roof_z_m: 39.0399350496
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 41.3401940496
     height_above_ground_m: 41.3401940496
   - id: building_133
     source_component_id: 1340
@@ -4251,9 +4291,9 @@ obstacles:
       max:
       - 234.2852
       - 133.815
-    foundation_z_m: -4.72294117647
-    ground_reference_z_m: -4.433617
-    roof_z_m: 64.6704055529
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 69.1040225529
     height_above_ground_m: 69.1040225529
   - id: building_134
     source_component_id: 1341
@@ -4288,9 +4328,9 @@ obstacles:
       max:
       - -219.4952
       - -26.9358
-    foundation_z_m: -1.80215686275
-    ground_reference_z_m: -1.204762
-    roof_z_m: 42.3073882532
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 43.5121502532
     height_above_ground_m: 43.5121502532
   - id: building_135
     source_component_id: 1344
@@ -4325,9 +4365,9 @@ obstacles:
       max:
       - 7.9992
       - -58.4043
-    foundation_z_m: -2.84529411765
-    ground_reference_z_m: -2.31203
-    roof_z_m: 29.3492264427
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 31.6612564427
     height_above_ground_m: 31.6612564427
   - id: building_136
     source_component_id: 1346
@@ -4362,9 +4402,9 @@ obstacles:
       max:
       - -173.3775
       - -52.0241
-    foundation_z_m: -1.59352941176
-    ground_reference_z_m: -1.409736
-    roof_z_m: 46.9552826718
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 48.3650186718
     height_above_ground_m: 48.3650186718
   - id: building_137
     source_component_id: 1347
@@ -4399,9 +4439,9 @@ obstacles:
       max:
       - 8.4826
       - -163.4999
-    foundation_z_m: -2.21941176471
-    ground_reference_z_m: -1.643529
-    roof_z_m: 23.9810362806
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 25.6245652806
     height_above_ground_m: 25.6245652806
   - id: building_138
     source_component_id: 1349
@@ -4436,9 +4476,9 @@ obstacles:
       max:
       - -59.2822
       - 66.0952
-    foundation_z_m: -3.05392156863
-    ground_reference_z_m: -2.52634
-    roof_z_m: 49.0409098672
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 51.5672498672
     height_above_ground_m: 51.5672498672
   - id: building_139
     source_component_id: 1350
@@ -4473,9 +4513,9 @@ obstacles:
       max:
       - -31.0015
       - 176.6359
-    foundation_z_m: -4.41
-    ground_reference_z_m: -3.797993
-    roof_z_m: 35.2082699174
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 39.0062629174
     height_above_ground_m: 39.0062629174
   - id: building_140
     source_component_id: 1351
@@ -4510,9 +4550,9 @@ obstacles:
       max:
       - 160.8309
       - 155.3486
-    foundation_z_m: -5.24450980392
-    ground_reference_z_m: -5.081418
-    roof_z_m: 44.1581730318
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 49.2395910318
     height_above_ground_m: 49.2395910318
   - id: building_141
     source_component_id: 1352
@@ -4547,9 +4587,9 @@ obstacles:
       max:
       - 161.3075
       - 134.519
-    foundation_z_m: -4.82725490196
-    ground_reference_z_m: -4.491253
-    roof_z_m: 97.941489872
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 102.432742872
     height_above_ground_m: 102.432742872
   - id: building_142
     source_component_id: 1353
@@ -4584,9 +4624,9 @@ obstacles:
       max:
       - 161.0724
       - 112.9779
-    foundation_z_m: -4.61862745098
-    ground_reference_z_m: -4.374358
-    roof_z_m: 47.8204274454
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 52.1947854454
     height_above_ground_m: 52.1947854454
   - id: building_143
     source_component_id: 1354
@@ -4621,9 +4661,9 @@ obstacles:
       max:
       - 161.0742
       - 91.676
-    foundation_z_m: -4.41
-    ground_reference_z_m: -4.174253
-    roof_z_m: 56.4794723651
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 60.6537253651
     height_above_ground_m: 60.6537253651
   - id: building_144
     source_component_id: 1359
@@ -4658,9 +4698,9 @@ obstacles:
       max:
       - -44.7926
       - 240.3078
-    foundation_z_m: -4.09705882353
-    ground_reference_z_m: -3.70058
-    roof_z_m: 42.118571288
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 45.819151288
     height_above_ground_m: 45.819151288
   - id: building_145
     source_component_id: 1360
@@ -4695,9 +4735,9 @@ obstacles:
       max:
       - 133.7446
       - 6.4614
-    foundation_z_m: -3.88843137255
-    ground_reference_z_m: -3.281702
-    roof_z_m: 30.8025007815
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 34.0842027815
     height_above_ground_m: 34.0842027815
   - id: building_146
     source_component_id: 1362
@@ -4732,9 +4772,9 @@ obstacles:
       max:
       - 237.6169
       - 93.34
-    foundation_z_m: -4.41
-    ground_reference_z_m: -4.171412
-    roof_z_m: 51.0714145986
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 55.2428265986
     height_above_ground_m: 55.2428265986
   - id: building_147
     source_component_id: 1363
@@ -4769,9 +4809,9 @@ obstacles:
       max:
       - 240.2341
       - 69.4327
-    foundation_z_m: -4.30568627451
-    ground_reference_z_m: -3.91976
-    roof_z_m: 39.3463255787
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 43.2660855787
     height_above_ground_m: 43.2660855787
   - id: building_148
     source_component_id: 1367
@@ -4806,9 +4846,9 @@ obstacles:
       max:
       - 210.2805
       - 88.8388
-    foundation_z_m: -4.20137254902
-    ground_reference_z_m: -3.746445
-    roof_z_m: 58.4214317762
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 62.1678767762
     height_above_ground_m: 62.1678767762
   - id: building_149
     source_component_id: 1368
@@ -4843,9 +4883,9 @@ obstacles:
       max:
       - 151.1115
       - -142.8961
-    foundation_z_m: -2.94960784314
-    ground_reference_z_m: -2.323395
-    roof_z_m: 38.5045353321
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 40.8279303321
     height_above_ground_m: 40.8279303321
   - id: building_150
     source_component_id: 1370
@@ -4880,9 +4920,9 @@ obstacles:
       max:
       - 210.7541
       - 108.9583
-    foundation_z_m: -4.30568627451
-    ground_reference_z_m: -3.718845
-    roof_z_m: 39.8829780374
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 43.6018230374
     height_above_ground_m: 43.6018230374
   - id: building_151
     source_component_id: 1373
@@ -4917,9 +4957,9 @@ obstacles:
       max:
       - -12.4595
       - 170.7196
-    foundation_z_m: -4.30568627451
-    ground_reference_z_m: -3.609661
-    roof_z_m: 45.7495876265
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 49.3592486265
     height_above_ground_m: 49.3592486265
   - id: building_152
     source_component_id: 1376
@@ -4954,9 +4994,9 @@ obstacles:
       max:
       - 182.972
       - -217.2172
-    foundation_z_m: -2.74098039216
-    ground_reference_z_m: -2.042519
-    roof_z_m: 23.4459360525
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 25.4884550525
     height_above_ground_m: 25.4884550525
   - id: building_153
     source_component_id: 1378
@@ -4991,9 +5031,9 @@ obstacles:
       max:
       - 64.7998
       - 107.5265
-    foundation_z_m: -4.20137254902
-    ground_reference_z_m: -3.302807
-    roof_z_m: 38.3768879655
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 41.6796949655
     height_above_ground_m: 41.6796949655
   - id: building_154
     source_component_id: 1379
@@ -5028,9 +5068,9 @@ obstacles:
       max:
       - -224.9542
       - -219.3741
-    foundation_z_m: -0.550392156863
-    ground_reference_z_m: -0.04756985
-    roof_z_m: 30.8293050267
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 30.8768748767
     height_above_ground_m: 30.8768748767
   - id: building_155
     source_component_id: 1381
@@ -5065,9 +5105,9 @@ obstacles:
       max:
       - 201.9645
       - 53.0964
-    foundation_z_m: -3.88843137255
-    ground_reference_z_m: -3.503317
-    roof_z_m: 26.7223054112
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 30.2256224112
     height_above_ground_m: 30.2256224112
   - id: building_156
     source_component_id: 1385
@@ -5102,9 +5142,9 @@ obstacles:
       max:
       - 171.5414
       - 6.4647
-    foundation_z_m: -3.88843137255
-    ground_reference_z_m: -3.331219
-    roof_z_m: 37.4498225342
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 40.7810415342
     height_above_ground_m: 40.7810415342
   - id: building_157
     source_component_id: 1387
@@ -5139,9 +5179,9 @@ obstacles:
       max:
       - -187.6526
       - 207.8724
-    foundation_z_m: -3.3668627451
-    ground_reference_z_m: -2.735373
-    roof_z_m: 39.6140205192
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 42.3493935192
     height_above_ground_m: 42.3493935192
   - id: building_158
     source_component_id: 1388
@@ -5176,9 +5216,9 @@ obstacles:
       max:
       - 83.0953
       - 213.0957
-    foundation_z_m: -4.72294117647
-    ground_reference_z_m: -4.457159
-    roof_z_m: 39.1098784324
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 43.5670374324
     height_above_ground_m: 43.5670374324
   - id: building_159
     source_component_id: 1390
@@ -5213,9 +5253,9 @@ obstacles:
       max:
       - 90.9631
       - -62.6593
-    foundation_z_m: -3.05392156863
-    ground_reference_z_m: -2.424867
-    roof_z_m: 22.642759593
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 25.067626593
     height_above_ground_m: 25.067626593
   - id: building_160
     source_component_id: 1392
@@ -5250,9 +5290,9 @@ obstacles:
       max:
       - -64.517
       - 152.0175
-    foundation_z_m: -3.57549019608
-    ground_reference_z_m: -2.892046
-    roof_z_m: 35.6942414256
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 38.5862874256
     height_above_ground_m: 38.5862874256
   - id: building_161
     source_component_id: 1393
@@ -5287,9 +5327,9 @@ obstacles:
       max:
       - 161.5535
       - 52.3838
-    foundation_z_m: -4.09705882353
-    ground_reference_z_m: -3.65715
-    roof_z_m: 33.8137408111
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 37.4708908111
     height_above_ground_m: 37.4708908111
   - id: building_162
     source_component_id: 1396
@@ -5324,9 +5364,9 @@ obstacles:
       max:
       - 239.0709
       - -181.7073
-    foundation_z_m: -2.63666666667
-    ground_reference_z_m: -2.440291
-    roof_z_m: 23.608195335
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 26.048486335
     height_above_ground_m: 26.048486335
   - id: building_163
     source_component_id: 1397
@@ -5361,9 +5401,9 @@ obstacles:
       max:
       - 234.0682
       - -72.3509
-    foundation_z_m: -2.94960784314
-    ground_reference_z_m: -2.610765
-    roof_z_m: 15.5842395949
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 18.1950045949
     height_above_ground_m: 18.1950045949
   - id: building_164
     source_component_id: 1398
@@ -5398,9 +5438,9 @@ obstacles:
       max:
       - -65.9244
       - -143.3851
-    foundation_z_m: -2.01078431373
-    ground_reference_z_m: -1.369148
-    roof_z_m: 29.9519484735
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 31.3210964735
     height_above_ground_m: 31.3210964735
   - id: building_165
     source_component_id: 1399
@@ -5435,9 +5475,9 @@ obstacles:
       max:
       - 240.0179
       - -142.4142
-    foundation_z_m: -3.15823529412
-    ground_reference_z_m: -2.627
-    roof_z_m: 19.2840688875
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 21.9110688875
     height_above_ground_m: 21.9110688875
   - id: building_166
     source_component_id: 1400
@@ -5472,9 +5512,9 @@ obstacles:
       max:
       - 114.7342
       - -67.3908
-    foundation_z_m: -3.05392156863
-    ground_reference_z_m: -2.65176
-    roof_z_m: 22.7472978334
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 25.3990578334
     height_above_ground_m: 25.3990578334
   - id: building_167
     source_component_id: 1401
@@ -5509,9 +5549,9 @@ obstacles:
       max:
       - -218.5395
       - -148.8367
-    foundation_z_m: -1.28058823529
-    ground_reference_z_m: -0.4903952
-    roof_z_m: 39.5947721178
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 40.0851673178
     height_above_ground_m: 40.0851673178
   - id: building_168
     source_component_id: 1402
@@ -5546,9 +5586,9 @@ obstacles:
       max:
       - -78.7773
       - 116.9845
-    foundation_z_m: -3.47117647059
-    ground_reference_z_m: -2.759726
-    roof_z_m: 23.0079692455
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 25.7676952455
     height_above_ground_m: 25.7676952455
   - id: building_169
     source_component_id: 1403
@@ -5583,9 +5623,9 @@ obstacles:
       max:
       - 193.6581
       - -96.9715
-    foundation_z_m: -3.26254901961
-    ground_reference_z_m: -2.500363
-    roof_z_m: 24.372748687
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 26.873111687
     height_above_ground_m: 26.873111687
   - id: building_170
     source_component_id: 1404
@@ -5620,9 +5660,9 @@ obstacles:
       max:
       - -94.9342
       - -15.8058
-    foundation_z_m: -2.21941176471
-    ground_reference_z_m: -1.774632
-    roof_z_m: 23.08591834
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 24.86055034
     height_above_ground_m: 24.86055034
   - id: building_171
     source_component_id: 1405
@@ -5657,9 +5697,9 @@ obstacles:
       max:
       - -94.9327
       - -34.9775
-    foundation_z_m: -2.11509803922
-    ground_reference_z_m: -1.70076
-    roof_z_m: 26.2763346491
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 27.9770946491
     height_above_ground_m: 27.9770946491
   - id: building_172
     source_component_id: 1406
@@ -5694,9 +5734,9 @@ obstacles:
       max:
       - 162.5277
       - -217.2199
-    foundation_z_m: -2.53235294118
-    ground_reference_z_m: -1.792897
-    roof_z_m: 17.1139046016
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 18.9068016016
     height_above_ground_m: 18.9068016016
   - id: building_173
     source_component_id: 1409
@@ -5731,9 +5771,9 @@ obstacles:
       max:
       - -143.425
       - -51.3128
-    foundation_z_m: -2.11509803922
-    ground_reference_z_m: -1.548146
-    roof_z_m: 21.6301151614
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 23.1782611614
     height_above_ground_m: 23.1782611614
   - id: building_174
     source_component_id: 1410
@@ -5768,9 +5808,9 @@ obstacles:
       max:
       - 8.2456
       - -182.9093
-    foundation_z_m: -2.11509803922
-    ground_reference_z_m: -1.504715
-    roof_z_m: 49.3531900194
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 50.8579050194
     height_above_ground_m: 50.8579050194
   - id: building_175
     source_component_id: 1411
@@ -5805,9 +5845,9 @@ obstacles:
       max:
       - 116.1423
       - 152.031
-    foundation_z_m: -5.03588235294
-    ground_reference_z_m: -4.708404
-    roof_z_m: 43.980482937
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 48.688886937
     height_above_ground_m: 48.688886937
   - id: building_176
     source_component_id: 1412
@@ -5842,9 +5882,9 @@ obstacles:
       max:
       - 160.8335
       - 123.8673
-    foundation_z_m: -4.82725490196
-    ground_reference_z_m: -4.378822
-    roof_z_m: 57.2350940049
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 61.6139160049
     height_above_ground_m: 61.6139160049
   - id: building_177
     source_component_id: 1413
@@ -5879,9 +5919,9 @@ obstacles:
       max:
       - -218.5413
       - -87.7679
-    foundation_z_m: -1.59352941176
-    ground_reference_z_m: -0.9823338
-    roof_z_m: 33.5467750615
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 34.5291088615
     height_above_ground_m: 34.5291088615
   - id: building_178
     source_component_id: 1415
@@ -5916,9 +5956,9 @@ obstacles:
       max:
       - -65.9229
       - -185.7546
-    foundation_z_m: -1.59352941176
-    ground_reference_z_m: -1.081777
-    roof_z_m: 57.1185478936
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 58.2003248936
     height_above_ground_m: 58.2003248936
   - id: building_179
     source_component_id: 1416
@@ -5953,9 +5993,9 @@ obstacles:
       max:
       - 160.8373
       - 81.4966
-    foundation_z_m: -4.41
-    ground_reference_z_m: -4.169789
-    roof_z_m: 35.6465118566
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 39.8163008566
     height_above_ground_m: 39.8163008566
   - id: building_180
     source_component_id: 1418
@@ -5990,9 +6030,9 @@ obstacles:
       max:
       - -196.9223
       - 189.1727
-    foundation_z_m: -3.26254901961
-    ground_reference_z_m: -2.588847
-    roof_z_m: 48.536274082
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 51.125121082
     height_above_ground_m: 51.125121082
   - id: building_181
     source_component_id: 1419
@@ -6027,9 +6067,9 @@ obstacles:
       max:
       - 132.5692
       - -143.1336
-    foundation_z_m: -2.84529411765
-    ground_reference_z_m: -2.294171
-    roof_z_m: 45.0209613197
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 47.3151323197
     height_above_ground_m: 47.3151323197
   - id: building_182
     source_component_id: 1420
@@ -6064,9 +6104,9 @@ obstacles:
       max:
       - 134.2297
       - -92.4796
-    foundation_z_m: -2.53235294118
-    ground_reference_z_m: -2.146833
-    roof_z_m: 42.9690606954
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 45.1158936954
     height_above_ground_m: 45.1158936954
   - id: building_183
     source_component_id: 1421
@@ -6101,9 +6141,9 @@ obstacles:
       max:
       - -66.4111
       - 24.9091
-    foundation_z_m: -2.74098039216
-    ground_reference_z_m: -2.216646
-    roof_z_m: 17.6972405219
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 19.9138865219
     height_above_ground_m: 19.9138865219
   - id: building_184
     source_component_id: 1422
@@ -6138,9 +6178,9 @@ obstacles:
       max:
       - 31.2794
       - 160.7809
-    foundation_z_m: -4.51431372549
-    ground_reference_z_m: -4.068316
-    roof_z_m: 26.5662342671
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 30.6345502671
     height_above_ground_m: 30.6345502671
   - id: building_185
     source_component_id: 1424
@@ -6175,9 +6215,9 @@ obstacles:
       max:
       - -63.322
       - 47.1586
-    foundation_z_m: -2.84529411765
-    ground_reference_z_m: -2.435421
-    roof_z_m: 45.8221704537
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 48.2575914537
     height_above_ground_m: 48.2575914537
   - id: building_186
     source_component_id: 1425
@@ -6212,9 +6252,9 @@ obstacles:
       max:
       - 14.3974
       - 222.7955
-    foundation_z_m: -4.41
-    ground_reference_z_m: -3.948984
-    roof_z_m: 46.2348290072
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 50.1838130072
     height_above_ground_m: 50.1838130072
   - id: building_187
     source_component_id: 1427
@@ -6249,9 +6289,9 @@ obstacles:
       max:
       - 133.9894
       - -66.6791
-    foundation_z_m: -3.15823529412
-    ground_reference_z_m: -2.66556
-    roof_z_m: 26.0002079517
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 28.6657679517
     height_above_ground_m: 28.6657679517
   - id: building_188
     source_component_id: 1428
@@ -6286,9 +6326,9 @@ obstacles:
       max:
       - 181.5219
       - 49.3084
-    foundation_z_m: -3.99274509804
-    ground_reference_z_m: -3.459075
-    roof_z_m: 24.6667385388
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 28.1258135388
     height_above_ground_m: 28.1258135388
   - id: building_189
     source_component_id: 1433
@@ -6323,9 +6363,9 @@ obstacles:
       max:
       - 2.0428
       - 131.9017
-    foundation_z_m: -3.78411764706
-    ground_reference_z_m: -3.300373
-    roof_z_m: 30.858491492
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 34.158864492
     height_above_ground_m: 34.158864492
   - id: building_190
     source_component_id: 1435
@@ -6360,9 +6400,9 @@ obstacles:
       max:
       - 152.5398
       - -170.5892
-    foundation_z_m: -2.21941176471
-    ground_reference_z_m: -1.900863
-    roof_z_m: 55.5879419828
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 57.4888049828
     height_above_ground_m: 57.4888049828
   - id: building_191
     source_component_id: 1436
@@ -6397,9 +6437,9 @@ obstacles:
       max:
       - 210.7562
       - 78.6606
-    foundation_z_m: -3.88843137255
-    ground_reference_z_m: -3.70058
-    roof_z_m: 40.6243077021
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 44.3248877021
     height_above_ground_m: 44.3248877021
   - id: building_192
     source_component_id: 1438
@@ -6434,9 +6474,9 @@ obstacles:
       max:
       - 91.1884
       - 89.7761
-    foundation_z_m: -3.99274509804
-    ground_reference_z_m: -3.532947
-    roof_z_m: 36.0003100516
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 39.5332570516
     height_above_ground_m: 39.5332570516
   - id: building_193
     source_component_id: 1447
@@ -6471,9 +6511,9 @@ obstacles:
       max:
       - 172.0302
       - -142.6568
-    foundation_z_m: -3.05392156863
-    ground_reference_z_m: -2.493462
-    roof_z_m: 28.1543160114
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 30.6477780114
     height_above_ground_m: 30.6477780114
   - id: building_194
     source_component_id: 1449
@@ -6508,9 +6548,9 @@ obstacles:
       max:
       - 172.2711
       - -174.1381
-    foundation_z_m: -2.21941176471
-    ground_reference_z_m: -2.092444
-    roof_z_m: 19.6539641552
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 21.7464081552
     height_above_ground_m: 21.7464081552
   - id: building_195
     source_component_id: 1451
@@ -6545,9 +6585,9 @@ obstacles:
       max:
       - 112.1279
       - -170.5934
-    foundation_z_m: -2.01078431373
-    ground_reference_z_m: -1.856621
-    roof_z_m: 19.8545253929
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 21.7111463929
     height_above_ground_m: 21.7111463929
   - id: building_196
     source_component_id: 1452
@@ -6582,9 +6622,9 @@ obstacles:
       max:
       - 143.0355
       - -217.6934
-    foundation_z_m: -2.53235294118
-    ground_reference_z_m: -1.733636
-    roof_z_m: 55.6276975074
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 57.3613335074
     height_above_ground_m: 57.3613335074
   - id: building_197
     source_component_id: 1457
@@ -6619,9 +6659,9 @@ obstacles:
       max:
       - 172.7397
       - -94.6066
-    foundation_z_m: -2.63666666667
-    ground_reference_z_m: -2.308783
-    roof_z_m: 24.0264579588
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 26.3352409588
     height_above_ground_m: 26.3352409588
   - id: building_198
     source_component_id: 1458
@@ -6656,9 +6696,9 @@ obstacles:
       max:
       - -175.5198
       - 8.0978
-    foundation_z_m: -2.01078431373
-    ground_reference_z_m: -1.821309
-    roof_z_m: 44.0638752108
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 45.8851842108
     height_above_ground_m: 45.8851842108
   - id: building_199
     source_component_id: 1459
@@ -6693,9 +6733,9 @@ obstacles:
       max:
       - -143.903
       - -11.5475
-    foundation_z_m: -2.3237254902
-    ground_reference_z_m: -1.719836
-    roof_z_m: 31.2145989258
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 32.9344349258
     height_above_ground_m: 32.9344349258
   - id: building_200
     source_component_id: 1460
@@ -6730,9 +6770,9 @@ obstacles:
       max:
       - 86.4228
       - 233.2165
-    foundation_z_m: -4.93156862745
-    ground_reference_z_m: -4.500589
-    roof_z_m: 39.319432117
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 43.820021117
     height_above_ground_m: 43.820021117
   - id: building_201
     source_component_id: 1462
@@ -6767,9 +6807,9 @@ obstacles:
       max:
       - -138.6851
       - 219.9462
-    foundation_z_m: -3.88843137255
-    ground_reference_z_m: -3.235024
-    roof_z_m: 29.12994919
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 32.36497319
     height_above_ground_m: 32.36497319
   - id: building_202
     source_component_id: 1464
@@ -6804,9 +6844,9 @@ obstacles:
       max:
       - 35.7888
       - 248.8354
-    foundation_z_m: -4.93156862745
-    ground_reference_z_m: -4.486383
-    roof_z_m: 16.3129408839
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 20.7993238839
     height_above_ground_m: 20.7993238839
   - id: building_203
     source_component_id: 1465
@@ -6841,9 +6881,9 @@ obstacles:
       max:
       - -170.5268
       - -12.2584
-    foundation_z_m: -2.01078431373
-    ground_reference_z_m: -1.70076
-    roof_z_m: 28.8382746474
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 30.5390346474
     height_above_ground_m: 30.5390346474
   - id: building_204
     source_component_id: 1466
@@ -6878,9 +6918,9 @@ obstacles:
       max:
       - -143.4208
       - -133.9213
-    foundation_z_m: -1.48921568627
-    ground_reference_z_m: -0.9060265
-    roof_z_m: 42.4930056107
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 43.3990321107
     height_above_ground_m: 43.3990321107
   - id: building_205
     source_component_id: 1467
@@ -6915,9 +6955,9 @@ obstacles:
       max:
       - 235.0129
       - -8.915
-    foundation_z_m: -3.47117647059
-    ground_reference_z_m: -3.079162
-    roof_z_m: 41.7122892929
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 44.7914512929
     height_above_ground_m: 44.7914512929
   - id: building_206
     source_component_id: 1472
@@ -6952,9 +6992,9 @@ obstacles:
       max:
       - -218.5396
       - -128.9538
-    foundation_z_m: -1.38490196078
-    ground_reference_z_m: -0.779389
-    roof_z_m: 55.7173561716
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 56.4967451716
     height_above_ground_m: 56.4967451716
   - id: building_207
     source_component_id: 1475
@@ -6991,9 +7031,9 @@ obstacles:
       max:
       - -51.6772
       - 106.5714
-    foundation_z_m: -3.15823529412
-    ground_reference_z_m: -2.574234
-    roof_z_m: 49.7087880334
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 52.2830220334
     height_above_ground_m: 52.2830220334
   - id: building_208
     source_component_id: 1476
@@ -7028,9 +7068,9 @@ obstacles:
       max:
       - -97.7825
       - -74.9801
-    foundation_z_m: -1.90647058824
-    ground_reference_z_m: -1.575746
-    roof_z_m: 25.1005497927
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 26.6762957927
     height_above_ground_m: 26.6762957927
   - id: building_209
     source_component_id: 1478
@@ -7065,9 +7105,9 @@ obstacles:
       max:
       - 57.4336
       - 70.8367
-    foundation_z_m: -3.67980392157
-    ground_reference_z_m: -3.099051
-    roof_z_m: 45.5727640593
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 48.6718150593
     height_above_ground_m: 48.6718150593
   - id: building_210
     source_component_id: 1482
@@ -7102,9 +7142,9 @@ obstacles:
       max:
       - 152.048
       - 6.2263
-    foundation_z_m: -3.88843137255
-    ground_reference_z_m: -3.391697
-    roof_z_m: 21.5126476456
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 24.9043446456
     height_above_ground_m: 24.9043446456
   - id: building_211
     source_component_id: 1483
@@ -7141,9 +7181,9 @@ obstacles:
       max:
       - 119.2342
       - 121.2601
-    foundation_z_m: -4.61862745098
-    ground_reference_z_m: -3.820317
-    roof_z_m: 62.1402233086
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 65.9605403086
     height_above_ground_m: 65.9605403086
   - id: building_212
     source_component_id: 1486
@@ -7178,9 +7218,9 @@ obstacles:
       max:
       - -23.8567
       - -17.4578
-    foundation_z_m: -2.74098039216
-    ground_reference_z_m: -2.189857
-    roof_z_m: 37.2809431046
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 39.4708001046
     height_above_ground_m: 39.4708001046
   - id: building_213
     source_component_id: 1487
@@ -7211,9 +7251,9 @@ obstacles:
       max:
       - -141.766
       - 28.2183
-    foundation_z_m: -2.42803921569
-    ground_reference_z_m: -1.965399
-    roof_z_m: 16.8440043706
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 18.8094033706
     height_above_ground_m: 18.8094033706
   - id: building_214
     source_component_id: 1491
@@ -7250,9 +7290,9 @@ obstacles:
       max:
       - 113.7772
       - 6.2222
-    foundation_z_m: -3.88843137255
-    ground_reference_z_m: -3.391697
-    roof_z_m: 56.2074170204
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 59.5991140204
     height_above_ground_m: 59.5991140204
   - id: building_215
     source_component_id: 1493
@@ -7291,9 +7331,9 @@ obstacles:
       max:
       - -173.1384
       - -73.3275
-    foundation_z_m: -1.69784313725
-    ground_reference_z_m: -1.300146
-    roof_z_m: 48.0859084741
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 49.3860544741
     height_above_ground_m: 49.3860544741
   - id: building_216
     source_component_id: 1494
@@ -7332,9 +7372,9 @@ obstacles:
       max:
       - 236.6845
       - -95.0748
-    foundation_z_m: -2.94960784314
-    ground_reference_z_m: -2.526745
-    roof_z_m: 16.4332851615
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 18.9600301615
     height_above_ground_m: 18.9600301615
   - id: building_217
     source_component_id: 1496
@@ -7373,9 +7413,9 @@ obstacles:
       max:
       - -219.9712
       - -5.3964
-    foundation_z_m: -2.01078431373
-    ground_reference_z_m: -1.531909
-    roof_z_m: 65.9395709239
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 67.4714799239
     height_above_ground_m: 67.4714799239
   - id: building_218
     source_component_id: 1503
@@ -7414,9 +7454,9 @@ obstacles:
       max:
       - 137.5388
       - 120.0775
-    foundation_z_m: -4.61862745098
-    ground_reference_z_m: -3.784599
-    roof_z_m: 24.992635952
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 28.777234952
     height_above_ground_m: 28.777234952
   - id: building_219
     source_component_id: 1507
@@ -7455,9 +7495,9 @@ obstacles:
       max:
       - 153.0024
       - -22.4155
-    foundation_z_m: -3.15823529412
-    ground_reference_z_m: -2.708178
-    roof_z_m: 20.6209376292
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 23.3291156292
     height_above_ground_m: 23.3291156292
   - id: building_220
     source_component_id: 1508
@@ -7496,9 +7536,9 @@ obstacles:
       max:
       - -151.7533
       - 97.8078
-    foundation_z_m: -2.53235294118
-    ground_reference_z_m: -1.895993
-    roof_z_m: 59.2913657664
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 61.1873587664
     height_above_ground_m: 61.1873587664
   - id: building_221
     source_component_id: 1513
@@ -7537,9 +7577,9 @@ obstacles:
       max:
       - 193.3909
       - 230.3856
-    foundation_z_m: -5.14019607843
-    ground_reference_z_m: -4.67228
-    roof_z_m: 44.0827845651
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 48.7550645651
     height_above_ground_m: 48.7550645651
   - id: building_222
     source_component_id: 1516
@@ -7578,9 +7618,9 @@ obstacles:
       max:
       - 23.9372
       - -220.0703
-    foundation_z_m: -2.01078431373
-    ground_reference_z_m: -1.432466
-    roof_z_m: 46.3602553116
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 47.7927213116
     height_above_ground_m: 47.7927213116
   - id: building_223
     source_component_id: 1518
@@ -7619,9 +7659,9 @@ obstacles:
       max:
       - -158.1778
       - 224.6797
-    foundation_z_m: -3.78411764706
-    ground_reference_z_m: -3.319449
-    roof_z_m: 39.2549684016
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 42.5744174016
     height_above_ground_m: 42.5744174016
   - id: building_224
     source_component_id: 1519
@@ -7660,9 +7700,9 @@ obstacles:
       max:
       - 178.1776
       - 229.6742
-    foundation_z_m: -5.14019607843
-    ground_reference_z_m: -4.865484
-    roof_z_m: 43.6574182678
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 48.5229022678
     height_above_ground_m: 48.5229022678
   - id: building_225
     source_component_id: 1521
@@ -7701,9 +7741,9 @@ obstacles:
       max:
       - 8.2209
       - 163.8573
-    foundation_z_m: -4.41
-    ground_reference_z_m: -3.711539
-    roof_z_m: 24.6161080888
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 28.3276470888
     height_above_ground_m: 28.3276470888
   - id: building_226
     source_component_id: 1525
@@ -7742,9 +7782,9 @@ obstacles:
       max:
       - 7.5179
       - 18.0492
-    foundation_z_m: -3.05392156863
-    ground_reference_z_m: -2.687072
-    roof_z_m: 33.6314858764
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 36.3185578764
     height_above_ground_m: 36.3185578764
   - id: building_227
     source_component_id: 1530
@@ -7783,9 +7823,9 @@ obstacles:
       max:
       - 183.888
       - 155.8236
-    foundation_z_m: -5.03588235294
-    ground_reference_z_m: -4.795265
-    roof_z_m: 31.6502730203
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 36.4455380203
     height_above_ground_m: 36.4455380203
   - id: building_228
     source_component_id: 1531
@@ -7824,9 +7864,9 @@ obstacles:
       max:
       - 237.388
       - 11.9146
-    foundation_z_m: -3.67980392157
-    ground_reference_z_m: -3.230965
-    roof_z_m: 39.3679585982
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 42.5989235982
     height_above_ground_m: 42.5989235982
   - id: building_229
     source_component_id: 1533
@@ -7865,9 +7905,9 @@ obstacles:
       max:
       - -173.1409
       - -31.9046
-    foundation_z_m: -1.90647058824
-    ground_reference_z_m: -1.469403
-    roof_z_m: 49.4478561046
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 50.9172591046
     height_above_ground_m: 50.9172591046
   - id: building_230
     source_component_id: 1534
@@ -7906,9 +7946,9 @@ obstacles:
       max:
       - 93.0929
       - 41.9632
-    foundation_z_m: -3.88843137255
-    ground_reference_z_m: -3.291849
-    roof_z_m: 17.665378016
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 20.957227016
     height_above_ground_m: 20.957227016
   - id: building_231
     source_component_id: 1535
@@ -7947,9 +7987,9 @@ obstacles:
       max:
       - 7.2827
       - -0.4127
-    foundation_z_m: -3.05392156863
-    ground_reference_z_m: -2.684231
-    roof_z_m: 30.7378656565
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 33.4220966565
     height_above_ground_m: 33.4220966565
   - id: building_232
     source_component_id: 1536
@@ -7988,9 +8028,9 @@ obstacles:
       max:
       - -172.8987
       - -113.5663
-    foundation_z_m: -1.38490196078
-    ground_reference_z_m: -0.9031855
-    roof_z_m: 34.429897774
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 35.333083274
     height_above_ground_m: 35.333083274
   - id: building_233
     source_component_id: 1537
@@ -8029,9 +8069,9 @@ obstacles:
       max:
       - 192.2389
       - -174.1362
-    foundation_z_m: -2.84529411765
-    ground_reference_z_m: -2.105432
-    roof_z_m: 17.9705738324
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 20.0760058324
     height_above_ground_m: 20.0760058324
   - id: building_234
     source_component_id: 1538
@@ -8070,9 +8110,9 @@ obstacles:
       max:
       - 7.523
       - -38.9949
-    foundation_z_m: -2.84529411765
-    ground_reference_z_m: -2.456933
-    roof_z_m: 35.1815607753
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 37.6384937753
     height_above_ground_m: 37.6384937753
   - id: building_235
     source_component_id: 1539
@@ -8111,9 +8151,9 @@ obstacles:
       max:
       - -218.0625
       - -174.8738
-    foundation_z_m: -1.1762745098
-    ground_reference_z_m: -0.295569
-    roof_z_m: 57.7523781425
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 58.0479471425
     height_above_ground_m: 58.0479471425
   - id: building_236
     source_component_id: 1540
@@ -8152,9 +8192,9 @@ obstacles:
       max:
       - 133.0476
       - -171.0644
-    foundation_z_m: -2.11509803922
-    ground_reference_z_m: -1.890311
-    roof_z_m: 37.1169227728
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 39.0072337728
     height_above_ground_m: 39.0072337728
   - id: building_237
     source_component_id: 1541
@@ -8193,9 +8233,9 @@ obstacles:
       max:
       - -211.8952
       - 139.7017
-    foundation_z_m: -2.53235294118
-    ground_reference_z_m: -2.228822
-    roof_z_m: 21.3135967836
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 23.5424187836
     height_above_ground_m: 23.5424187836
   - id: building_238
     source_component_id: 1543
@@ -8234,9 +8274,9 @@ obstacles:
       max:
       - -170.5318
       - 99.938
-    foundation_z_m: -2.53235294118
-    ground_reference_z_m: -2.290924
-    roof_z_m: 48.7283513477
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 51.0192753477
     height_above_ground_m: 51.0192753477
   - id: building_239
     source_component_id: 1544
@@ -8275,9 +8315,9 @@ obstacles:
       max:
       - 73.6121
       - -95.7991
-    foundation_z_m: -2.3237254902
-    ground_reference_z_m: -2.069308
-    roof_z_m: 22.6860363402
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 24.7553443402
     height_above_ground_m: 24.7553443402
   - id: building_240
     source_component_id: 1547
@@ -8316,9 +8356,9 @@ obstacles:
       max:
       - 153.247
       - -95.0824
-    foundation_z_m: -2.53235294118
-    ground_reference_z_m: -2.300259
-    roof_z_m: 27.3381424363
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 29.6384014363
     height_above_ground_m: 29.6384014363
   - id: building_241
     source_component_id: 1551
@@ -8357,9 +8397,9 @@ obstacles:
       max:
       - -84.7188
       - 96.3912
-    foundation_z_m: -3.26254901961
-    ground_reference_z_m: -2.510916
-    roof_z_m: 51.5167161495
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 54.0276321495
     height_above_ground_m: 54.0276321495
   - id: building_242
     source_component_id: 1554
@@ -8398,9 +8438,9 @@ obstacles:
       max:
       - -4.8572
       - 228.4752
-    foundation_z_m: -4.20137254902
-    ground_reference_z_m: -3.900683
-    roof_z_m: 44.5555405578
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 48.4562235578
     height_above_ground_m: 48.4562235578
   - id: building_243
     source_component_id: 1555
@@ -8439,9 +8479,9 @@ obstacles:
       max:
       - -172.4222
       - -152.8587
-    foundation_z_m: -1.07196078431
-    ground_reference_z_m: -0.6600577
-    roof_z_m: 43.3305579738
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 43.9906156738
     height_above_ground_m: 43.9906156738
   - id: building_244
     source_component_id: 1558
@@ -8482,9 +8522,9 @@ obstacles:
       max:
       - -92.549
       - -143.6232
-    foundation_z_m: -2.01078431373
-    ground_reference_z_m: -1.229116
-    roof_z_m: 44.2582663363
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 45.4873823363
     height_above_ground_m: 45.4873823363
   - id: building_245
     source_component_id: 1559
@@ -8523,9 +8563,9 @@ obstacles:
       max:
       - -14.3548
       - 67.5179
-    foundation_z_m: -3.3668627451
-    ground_reference_z_m: -2.577888
-    roof_z_m: 21.5066453771
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 24.0845333771
     height_above_ground_m: 24.0845333771
   - id: building_246
     source_component_id: 1561
@@ -8564,9 +8604,9 @@ obstacles:
       max:
       - 94.2839
       - 5.9847
-    foundation_z_m: -3.88843137255
-    ground_reference_z_m: -3.391697
-    roof_z_m: 32.2953301515
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 35.6870271515
     height_above_ground_m: 35.6870271515
   - id: building_247
     source_component_id: 1562
@@ -8605,9 +8645,9 @@ obstacles:
       max:
       - 53.1608
       - 5.7449
-    foundation_z_m: -3.57549019608
-    ground_reference_z_m: -2.995549
-    roof_z_m: 16.1557516741
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 19.1513006741
     height_above_ground_m: 19.1513006741
   - id: building_248
     source_component_id: 1566
@@ -8648,9 +8688,9 @@ obstacles:
       max:
       - 56.0088
       - 51.4271
-    foundation_z_m: -3.47117647059
-    ground_reference_z_m: -2.941565
-    roof_z_m: 58.4264982305
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 61.3680632305
     height_above_ground_m: 61.3680632305
   - id: building_249
     source_component_id: 1567
@@ -8691,9 +8731,9 @@ obstacles:
       max:
       - -164.8114
       - -219.1349
-    foundation_z_m: -0.863333333333
-    ground_reference_z_m: -0.3958231
-    roof_z_m: 33.2676651276
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 33.6634882276
     height_above_ground_m: 33.6634882276
   - id: building_250
     source_component_id: 1568
@@ -8734,9 +8774,9 @@ obstacles:
       max:
       - -177.4221
       - 29.1641
-    foundation_z_m: -2.01078431373
-    ground_reference_z_m: -1.900863
-    roof_z_m: 21.5147658328
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 23.4156288328
     height_above_ground_m: 23.4156288328
   - id: building_251
     source_component_id: 1570
@@ -8779,9 +8819,9 @@ obstacles:
       max:
       - 239.7812
       - -162.5341
-    foundation_z_m: -2.63666666667
-    ground_reference_z_m: -2.500363
-    roof_z_m: 21.3227220941
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 23.8230850941
     height_above_ground_m: 23.8230850941
   - id: building_252
     source_component_id: 1575
@@ -8824,9 +8864,9 @@ obstacles:
       max:
       - -143.1852
       - -92.0253
-    foundation_z_m: -1.90647058824
-    ground_reference_z_m: -1.365495
-    roof_z_m: 21.8363050866
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 23.2018000866
     height_above_ground_m: 23.2018000866
   - id: building_253
     source_component_id: 1579
@@ -8869,9 +8909,9 @@ obstacles:
       max:
       - -202.6264
       - 174.2598
-    foundation_z_m: -3.26254901961
-    ground_reference_z_m: -2.593312
-    roof_z_m: 23.724116673
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 26.317428673
     height_above_ground_m: 26.317428673
   - id: building_254
     source_component_id: 1582
@@ -8914,9 +8954,9 @@ obstacles:
       max:
       - 152.5315
       - -66.9151
-    foundation_z_m: -3.26254901961
-    ground_reference_z_m: -2.670431
-    roof_z_m: 33.4481996971
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 36.1186306971
     height_above_ground_m: 36.1186306971
   - id: building_255
     source_component_id: 1589
@@ -8959,9 +8999,9 @@ obstacles:
       max:
       - 179.368
       - 210.5015
-    foundation_z_m: -4.93156862745
-    ground_reference_z_m: -4.606121
-    roof_z_m: 46.9480297085
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 51.5541507085
     height_above_ground_m: 51.5541507085
   - id: building_256
     source_component_id: 1591
@@ -9004,9 +9044,9 @@ obstacles:
       max:
       - -66.8853
       - 4.3158
-    foundation_z_m: -2.63666666667
-    ground_reference_z_m: -2.135873
-    roof_z_m: 18.9460111542
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 21.0818841542
     height_above_ground_m: 21.0818841542
   - id: building_257
     source_component_id: 1592
@@ -9049,9 +9089,9 @@ obstacles:
       max:
       - -142.9536
       - 8.0989
-    foundation_z_m: -2.42803921569
-    ground_reference_z_m: -1.965806
-    roof_z_m: 20.4097532683
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 22.3755592683
     height_above_ground_m: 22.3755592683
   - id: building_258
     source_component_id: 1594
@@ -9094,9 +9134,9 @@ obstacles:
       max:
       - -172.1826
       - -175.1093
-    foundation_z_m: -0.967647058824
-    ground_reference_z_m: -0.4039417
-    roof_z_m: 32.7940504747
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 33.1979921747
     height_above_ground_m: 33.1979921747
   - id: building_259
     source_component_id: 1595
@@ -9139,9 +9179,9 @@ obstacles:
       max:
       - -93.9723
       - -201.8516
-    foundation_z_m: -1.07196078431
-    ground_reference_z_m: -0.719318
-    roof_z_m: 36.0613444727
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 36.7806624727
     height_above_ground_m: 36.7806624727
   - id: building_260
     source_component_id: 1596
@@ -9184,9 +9224,9 @@ obstacles:
       max:
       - -184.542
       - -218.4256
-    foundation_z_m: -0.759019607843
-    ground_reference_z_m: -0.2488914
-    roof_z_m: 40.6466522933
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 40.8955436933
     height_above_ground_m: 40.8955436933
   - id: building_261
     source_component_id: 1599
@@ -9229,9 +9269,9 @@ obstacles:
       max:
       - 172.2601
       - -66.4398
-    foundation_z_m: -3.26254901961
-    ground_reference_z_m: -2.75242
-    roof_z_m: 36.2975236771
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 39.0499436771
     height_above_ground_m: 39.0499436771
   - id: building_262
     source_component_id: 1601
@@ -9274,9 +9314,9 @@ obstacles:
       max:
       - 52.6919
       - -94.6164
-    foundation_z_m: -2.42803921569
-    ground_reference_z_m: -1.936582
-    roof_z_m: 52.5853133396
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 54.5218953396
     height_above_ground_m: 54.5218953396
   - id: building_263
     source_component_id: 1602
@@ -9319,9 +9359,9 @@ obstacles:
       max:
       - -143.1862
       - -72.1421
-    foundation_z_m: -1.90647058824
-    ground_reference_z_m: -1.365495
-    roof_z_m: 47.2361841819
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 48.6016791819
     height_above_ground_m: 48.6016791819
   - id: building_264
     source_component_id: 1609
@@ -9368,9 +9408,9 @@ obstacles:
       max:
       - 14.4075
       - 85.2724
-    foundation_z_m: -3.88843137255
-    ground_reference_z_m: -3.263842
-    roof_z_m: 29.383559051
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 32.647401051
     height_above_ground_m: 32.647401051
   - id: building_265
     source_component_id: 1611
@@ -9417,9 +9457,9 @@ obstacles:
       max:
       - 80.9767
       - -46.8018
-    foundation_z_m: -2.84529411765
-    ground_reference_z_m: -2.500363
-    roof_z_m: 33.1529246924
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 35.6532876924
     height_above_ground_m: 35.6532876924
   - id: building_266
     source_component_id: 1613
@@ -9466,9 +9506,9 @@ obstacles:
       max:
       - 93.5858
       - -171.3049
-    foundation_z_m: -2.01078431373
-    ground_reference_z_m: -1.704007
-    roof_z_m: 19.3070878231
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 21.0110948231
     height_above_ground_m: 21.0110948231
   - id: building_267
     source_component_id: 1614
@@ -9515,9 +9555,9 @@ obstacles:
       max:
       - 192.9173
       - 209.7927
-    foundation_z_m: -5.03588235294
-    ground_reference_z_m: -4.619514
-    roof_z_m: 51.0687644833
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 55.6882784833
     height_above_ground_m: 55.6882784833
   - id: building_268
     source_component_id: 1616
@@ -9564,9 +9604,9 @@ obstacles:
       max:
       - -22.9035
       - -56.9863
-    foundation_z_m: -2.3237254902
-    ground_reference_z_m: -2.062813
-    roof_z_m: 57.671582305
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 59.734395305
     height_above_ground_m: 59.734395305
   - id: building_269
     source_component_id: 1617
@@ -9613,9 +9653,9 @@ obstacles:
       max:
       - -96.5932
       - -94.3895
-    foundation_z_m: -1.90647058824
-    ground_reference_z_m: -1.380918
-    roof_z_m: 23.5682018388
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 24.9491198388
     height_above_ground_m: 24.9491198388
   - id: building_270
     source_component_id: 1618
@@ -9662,9 +9702,9 @@ obstacles:
       max:
       - -91.8477
       - 52.601
-    foundation_z_m: -2.84529411765
-    ground_reference_z_m: -2.263323
-    roof_z_m: 15.1112288684
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 17.3745518684
     height_above_ground_m: 17.3745518684
   - id: building_271
     source_component_id: 1623
@@ -9711,9 +9751,9 @@ obstacles:
       max:
       - 11.7938
       - 59.9453
-    foundation_z_m: -3.57549019608
-    ground_reference_z_m: -2.700467
-    roof_z_m: 24.9222838971
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 27.6227508971
     height_above_ground_m: 27.6227508971
   - id: building_272
     source_component_id: 1630
@@ -9764,9 +9804,9 @@ obstacles:
       max:
       - 37.6924
       - 223.7447
-    foundation_z_m: -4.93156862745
-    ground_reference_z_m: -4.168571
-    roof_z_m: 60.6755988952
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 64.8441698952
     height_above_ground_m: 64.8441698952
   - id: building_273
     source_component_id: 1633
@@ -9819,9 +9859,9 @@ obstacles:
       max:
       - 133.2727
       - -20.9964
-    foundation_z_m: -3.15823529412
-    ground_reference_z_m: -2.708178
-    roof_z_m: 39.9615530512
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 42.6697310512
     height_above_ground_m: 42.6697310512
   - id: building_274
     source_component_id: 1641
@@ -9890,13 +9930,13 @@ obstacles:
       max:
       - 6.3451
       - -202.5558
-    foundation_z_m: -1.80215686275
-    ground_reference_z_m: -1.284317
-    roof_z_m: 28.5535099627
+    foundation_z_m: -0.05
+    ground_reference_z_m: 0.0
+    roof_z_m: 29.8378269627
     height_above_ground_m: 29.8378269627
 source_sha256:
-  building_collision_dae: e5fab82529fcc0f9d5819797346af76d763d6b973eed96ad8a7de324a7a253ce
-  terrain_heightmap: 5a84adc1f45dcffe507fa77d2642cd672c622c225e60ae41f98280bdcf9b24cf
-  terrain_collision_mesh: 99d8fae1ed193321dc3f2801b68a549b019a12068cf0cdff17210c78e0fe2024
-  building_height_audit: bc7b14dac3c2cc5244804f37b3eeed8f629dad7e5f4ac955c504222bd15b4543
-  building_foundation_audit: db0247ad555cd41fd3d902fa827bdc98125d06635c18598e4eb613bcb631e12f
+  building_collision_dae: 199c0a3dbe471d319b01582670c327d03e1668cdf007791b10929a435f6c7449
+  terrain_heightmap: 0f3bc9604b38368ec071fbc9666bfcf4594c74ebcdae700b9fea0f2bed8ffa06
+  terrain_collision_mesh: 21745ec52bde2da3fca56c7a4a90fe5e5b872577beb9e8aaa058253e355e783f
+  building_height_audit: c640743e72bddbc9254a1feffa8522b0ee8b58a9a15e739b2fce798e54534526
+  building_foundation_audit: f21a33763f4da4916286cecfe6aa351d06b0afa79d8b4dbbf831507fd255f4a7
