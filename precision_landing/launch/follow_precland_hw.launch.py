@@ -201,8 +201,12 @@ def generate_launch_description():
         DeclareLaunchArgument('follow_height_param', default_value='FLW_TGT_HT'),
         DeclareLaunchArgument('follow_auto_mode', default_value='true'),
         DeclareLaunchArgument('disable_gcs_failsafe', default_value='false'),
-        # SIYI 짐벌 시리얼(UART/USB-TTL). 하방 각도(A8 mini 는 -90~+25°).
-        DeclareLaunchArgument('gimbal_port', default_value='/dev/ttyUSB0'),
+        # SIYI 짐벌 시리얼. Jetson 40핀 헤더 UART = /dev/ttyTHS1 (USB-TTL 이면
+        # /dev/ttyUSB0). 하방 각도(A8 mini 는 -90~+25°).
+        # ※ ttyTHS1 은 기본적으로 시리얼 콘솔(nvgetty)이 점유 → 아래 명령으로 해제:
+        #     sudo systemctl disable --now nvgetty
+        #   (또는 serial-getty@ttyTHS1.service). 권한: ls -l /dev/ttyTHS1 확인.
+        DeclareLaunchArgument('gimbal_port', default_value='/dev/ttyTHS1'),
         DeclareLaunchArgument('pitch_down_deg', default_value='-90.0'),
         mavros,
         usb_cam,
