@@ -17,6 +17,8 @@ ROS 2 topics produced:
     /camera_info               sensor_msgs/msg/CameraInfo   (forward depth intrinsics)
     /front_camera/image        sensor_msgs/msg/Image        (forward RGB image)
     /front_camera/camera_info  sensor_msgs/msg/CameraInfo   (forward RGB intrinsics)
+    /down_camera/image         sensor_msgs/msg/Image        (downward camera image)
+    /down_camera/camera_info   sensor_msgs/msg/CameraInfo   (downward camera intrinsics)
     /down_lidar                sensor_msgs/msg/LaserScan    (downward lidar)
     /down_lidar/points         sensor_msgs/msg/PointCloud2  (downward lidar cloud)
 """
@@ -58,6 +60,9 @@ def _launch_setup(context, *args, **kwargs):
             # forward RGB camera (world-qualified gz topics, remapped below)
             f"{rgb_image}@sensor_msgs/msg/Image[gz.msgs.Image",
             f"{rgb_info}@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo",
+            # downward monocular camera (short gz topics set in the model)
+            "/down_camera/image@sensor_msgs/msg/Image[gz.msgs.Image",
+            "/down_camera/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo",
             # downward lidar (default gz path, shared with PX4 distance_sensor)
             f"{lidar_base}@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan",
             f"{lidar_points}@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked",
