@@ -13,6 +13,8 @@ __pycache__/
 
 # --- 시뮬레이션/비행 산출물 (커밋 금지) ---
 logs/
+gazebo/backups/
+gazebo/validation/repository_runtime/
 *.BIN
 eeprom.bin
 *.tlog

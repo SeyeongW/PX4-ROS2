@@ -1,0 +1,33 @@
+PX4-ROS2 300 m mountain static validation
+status=PASS
+world_sdf=1.9
+terrain_bounds_m=x[-150,150] y[-150,150] z[0,40]
+summits_m=main:40.000000 second:20.078431
+terrain_nonzero_area_ratio=0.704795
+terrain_unique_elevations=244
+terrain_triangle_slope_p99=0.669281 terrain_triangle_slope_max=0.780509
+launch_pad_terrain_z_m=0.000000
+launch_pad_footprint_max_contact_error_m=0.000000000
+terrain_vertices=66049
+terrain_triangles=131072
+heightmap_sha256=dea9d2ca2f6a4f357037e0f626a90ab2bfb815d6b1185659cc8d53b1ed63548c
+visual_obj_sha256=baabbd642a9c625ad16e5c5bd1410b0e3344a045342e25b5ea94815899ca527e
+collision_obj_sha256=baabbd642a9c625ad16e5c5bd1410b0e3344a045342e25b5ea94815899ca527e
+natural_texture_sha256=84b2634630b6fbed3564e0845748f9968329ec278065d7e79b447e8510672e01
+natural_texture_blue_dominant_pixels=0
+scene_background=neutral_gray sky=disabled
+obstacle_links=1 compound_static=true
+obstacle_collisions=288 obstacle_visuals=576
+forest_sdf_sha256=8113df8ca79de4236456f188bf260924577688a1ab5e3305a56f29efe176bf10
+trees_total=288 pine=216 oak=72 tree_mesh_visuals=576
+tree_mesh_scale=2 2 2
+tree_max_terrain_z_error_m=0.003000480
+tree_disk_max_contact_error_m=0.000000000
+tree_disk_max_relief_m=1.088958098
+tree_min_spacing_m=7.274243
+tree_trunk_min_clearance_m=5.714312
+tree_launch_pad_min_clearance_m=5.247417
+added_tree_launch_pad_clearance_m=26.440027
+maze_runtime_collisions=0 maze_runtime_visuals=0
+operational_sim_assets_references=0
+runtime_gui_validation=PASS

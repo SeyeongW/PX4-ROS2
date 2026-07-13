@@ -1,5 +1,10 @@
 # ArduPilot ROS 2 오프보드 제어 + YOLO 추적
 
+> **`jo` 브랜치의 도시/산악맵 실행은 PX4 SITL을 사용합니다.** 기존
+> ArduPilot/MAVROS 노드는 레거시로 남아 있지만, 아래
+> `gazebo/run_px4_map.sh`는 PX4 airframe 4014의 실제 동적
+> `x500_mono_cam_down`을 생성합니다. 정적 드론 모형은 사용하지 않습니다.
+
 ArduPilot 기반 드론을 ROS 2로 Offboard 제어하며, 하방 카메라 + YOLO로 지상 표적을 추적하는 시스템입니다.
 
 ## 프로젝트 구성
@@ -24,8 +29,17 @@ PX4-ROS2/
 ├── gazebo/                 # Gazebo Harmonic 시뮬레이션 자산
 │   ├── models/iris_with_down_camera/     # 하방 카메라 장착 Iris 모델
 │   ├── worlds/iris_down_camera_runway.sdf
+│   ├── worlds/ugv_drone.world            # 300 m 산악 드론 월드
+│   ├── worlds/ugv_drone_map.world        # 300 m 산악맵(PX4 런타임 스폰 대상)
+│   ├── worlds/applepark_city/             # 500 m 도시맵 + 건물/도로/충돌 자산
 │   ├── launch/camera_bridge.launch.py    # Gazebo → ROS 2 카메라 브리지
 │   ├── install_apt_deps.sh
+│   ├── run_world.sh                      # city/mountain 맵 전용 실행기
+│   ├── run_px4_map.sh                    # 맵 + 실제 PX4 x500 통합 실행기
+│   ├── maps/                             # 정확한 ENU 장애물·PX4 NED 변환 YAML
+│   ├── run_ugv_drone.sh                  # RTX GPU 산악 월드 실행기
+│   ├── MAPS.md                            # 두 맵 실행·좌표·검증 안내
+│   ├── MOUNTAIN_WORLD.md                 # 산악맵 좌표·실행·출처
 │   └── run_sim.sh
 └── config/                 # CycloneDDS 네트워크 설정 (PC ↔ Jetson)
     ├── cyclonedds_pc.xml
@@ -104,7 +118,7 @@ pip3 install pyrealsense2
 ```bash
 mkdir -p ~/ros2_ws/src
 cd ~/ros2_ws/src
-git clone -b wang https://github.com/SeyeongW/PX4-ROS2.git
+git clone -b jo https://github.com/SeyeongW/PX4-ROS2.git
 cd ~/ros2_ws
 
 # 의존성 자동 설치
@@ -132,7 +146,10 @@ echo "source ~/ros2_ws/install/setup.bash" >> ~/.bashrc
 sudo bash ~/ros2_ws/src/PX4-ROS2/gazebo/install_apt_deps.sh
 ```
 
-이 스크립트는 다음을 설치합니다: `gz-harmonic`, `libgz-sim8-dev`, `cmake`, `build-essential`, `rapidjson-dev`
+이 스크립트는 요청된 ROS 2 Humble 데스크톱·Navigation2·SLAM·비전·PCL·
+MAVROS 패키지와 Python 과학 계산 도구, 빌드 도구, Git/LFS, Docker 및
+Gazebo Classic 11/Harmonic 병행 환경을 한 번에 설치합니다. 전체 목록은
+스크립트 안에 고정되어 있습니다.
 
 ### 5-2. ArduPilot 소스 클론 및 SITL 빌드
 
@@ -180,6 +197,75 @@ echo "source ~/ros_gz_ws/install/setup.bash" >> ~/.bashrc
 ---
 
 ## 시뮬레이션 실행 (ArduPilot SITL + Gazebo)
+
+### PX4로 동작하는 맵 + 드론 실행
+
+```bash
+cd ~/ros2_ws/src/PX4-ROS2
+# 새 PC에서만 1회. PX4 공식 Ubuntu 일반 의존성도 설치하므로 sudo를 한 번 요청할 수 있음.
+# 기존 ~/PX4-Autopilot이 있으면 브랜치/버전/펌웨어 파일은 변경하지 않음.
+./gazebo/setup_px4_sitl.sh
+
+# 도시맵 + PX4 x500
+./gazebo/run_px4_map.sh city
+
+# 또는
+# 산악맵 + PX4 x500
+./gazebo/run_px4_map.sh mountain
+
+# PX4 드론 + seo 기반 트레일러 웨이포인트 주행을 함께 실행
+DRIVE_TRAILER=1 TRAILER_ROUTE_LOOPS=1 ./gazebo/run_px4_map.sh city
+# 또는 산악맵 중앙 평탄 통행로
+DRIVE_TRAILER=1 TRAILER_ROUTE_LOOPS=1 ./gazebo/run_px4_map.sh mountain
+```
+
+두 맵에는 `seo` 브랜치의 5×5 m `flat_platform` 트레일러가 기본으로
+소환됩니다. 기본 상태는 정지이며 `DRIVE_TRAILER=1`일 때 좌표 YAML의
+웨이포인트를 주행합니다. 두 명령은 Gazebo를 먼저 실행한 뒤 동일한 world에 PX4 SITL이 실제
+`x500_mono_cam_down_0` 엔티티를 동적으로 스폰합니다. 로컬
+`MicroXRCEAgent`가 있으면 UDP 8888 에이전트도 함께 실행하므로 ROS 2
+`/fmu/*` 토픽을 사용할 수 있습니다. 좌표와 장애물은
+`gazebo/maps/city_coordinates.yaml` 및 `mountain_coordinates.yaml`에
+Gazebo ENU와 PX4 NED 변환을 분리해 기록했습니다. 상세 내용은
+[`gazebo/MAPS.md`](gazebo/MAPS.md)를 참고하세요.
+
+드론 없이 맵 형상만 빠르게 확인할 때만 다음을 사용합니다.
+
+```bash
+./gazebo/run_world.sh city
+./gazebo/run_world.sh mountain
+```
+
+다른 사람에게 스크립트 없이 전달할 RTX/NVIDIA 직접 실행 명령은 다음과
+같습니다. 저장소 최상위 디렉터리에서 실행합니다.
+
+```bash
+# 산악맵
+GZ_SIM_RESOURCE_PATH="$PWD/gazebo/models:$PWD/gazebo/worlds" __NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia __VK_LAYER_NV_optimus=NVIDIA_only QT_QPA_PLATFORM=xcb gz sim -v4 -r --physics-engine gz-physics-bullet-featherstone-plugin "$PWD/gazebo/worlds/ugv_drone_map.world"
+
+# 도시맵
+GZ_SIM_RESOURCE_PATH="$PWD/gazebo/models:$PWD/gazebo/worlds" __NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia __VK_LAYER_NV_optimus=NVIDIA_only QT_QPA_PLATFORM=xcb gz sim -v4 -r --physics-engine gz-physics-bullet-featherstone-plugin "$PWD/gazebo/worlds/applepark_city/applepark.world"
+```
+
+### 산악 드론 월드
+
+300 x 300 m 지형, 기존 40 m / 20 m 봉우리와 추가 능선, 숲 장애물(미로 제거)을 사용하는 산악맵은 다음처럼 실행합니다.
+RTX 5060 선택, 모델 경로와 ArduPilot 플러그인 경로는 스크립트가 설정합니다.
+
+```bash
+cd ~/PX4-ROS2
+./gazebo/run_ugv_drone.sh
+```
+
+다른 터미널에서 SITL을 실행합니다.
+
+```bash
+cd ~/ardupilot
+sim_vehicle.py -v ArduCopter -f JSON -I0 --console --map
+```
+
+맵 좌표, 직접 실행 명령, GPU·실시간 배율 확인법과 참고한 오픈소스는
+[`gazebo/MOUNTAIN_WORLD.md`](gazebo/MOUNTAIN_WORLD.md)에 정리되어 있습니다.
 
 4개의 터미널이 필요합니다.
 

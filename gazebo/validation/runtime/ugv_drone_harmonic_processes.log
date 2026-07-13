@@ -1,0 +1,3 @@
+1216776    1254 1216776 1216776 Ss    0.0  0.3 96648       04:39 gz sim -v4 --physics-engine gz-physics-bullet-featherstone-plugin -r /home/xogus/PX4-ROS2/gazebo/worlds/ugv_drone.world
+1217401 1216776 1217401 1216776 Rl   23.0  3.6 1165076     04:36 gz sim server
+1217403 1216776 1217403 1216776 Sl    113  3.7 1201740     04:36 gz sim gui

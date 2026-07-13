@@ -1,0 +1,8 @@
+newmtl ugv_mou_natural_ground
+Ka 0.34 0.38 0.22
+Kd 0.72 0.76 0.48
+Ks 0.02 0.02 0.02
+Ns 4.0
+d 1.0
+illum 2
+map_Kd ../materials/textures/natural_ground.png

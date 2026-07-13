@@ -1,0 +1,59 @@
+PX4-ROS2 dynamic PX4 map runtime validation
+RUNTIME VALIDATION: PASS
+date=2026-07-12 America/New_York
+result=PASS
+runtime_process_tree_stopped=PASS
+world_sha256=84e71cbaf286b2e72ddc963dc234160d3debf171e6e96a06820d7bb7e602cb24
+forest_sdf_sha256=8113df8ca79de4236456f188bf260924577688a1ab5e3305a56f29efe176bf10
+heightmap_sha256=dea9d2ca2f6a4f357037e0f626a90ab2bfb815d6b1185659cc8d53b1ed63548c
+terrain_visual_obj_sha256=baabbd642a9c625ad16e5c5bd1410b0e3344a045342e25b5ea94815899ca527e
+terrain_collision_obj_sha256=baabbd642a9c625ad16e5c5bd1410b0e3344a045342e25b5ea94815899ca527e
+
+host_os=Ubuntu 22.04
+gazebo=Harmonic 8.14.0
+physics=gz-physics-bullet-featherstone-plugin
+px4_version=v1.17.0
+px4_commit=d6f12ad1c4f70ad3230afd7d86e971421e02fef4
+px4_airframe_autostart=4014
+px4_sim_model=gz_x500_mono_cam_down
+runtime_entity=x500_mono_cam_down_0
+static_preview_entities=0
+
+city_command=HEADLESS=1 START_XRCE=0 DRIVE_TRAILER=1 TRAILER_ROUTE_LOOPS=1 ./gazebo/run_px4_map.sh city
+city_world=applepark_city
+city_world_sha256=84fb1717e6f8fb55837ccbdbe1f83e2f6ed6be3f2290a4f1882ffe9974732251
+city_spawn_requested_enu=-120.0,115.0,0.16,0,0,0
+city_settled_model_pose_enu=-119.999961828,115.000000017,0.146999279
+city_entity_list=applepark,applepark_buildings,drone_spawn_pad,flat_platform,x500_mono_cam_down_0
+city_px4_gz_bridge=PASS
+city_trailer_waypoints=9/9 PASS
+city_trailer_max_abs_z_error_m=0.070001
+city_trailer_max_abs_roll_deg=0.000092
+city_trailer_max_abs_pitch_deg=0.000084
+city_impulse_launch_detected=NO
+city_rtf_sample=1.000534285
+
+mountain_command=HEADLESS=1 START_XRCE=0 DRIVE_TRAILER=1 TRAILER_ROUTE_LOOPS=1 ./gazebo/run_px4_map.sh mountain
+mountain_world=ugv_drone_mountain_map
+mountain_spawn_requested_enu=-80.0,-80.0,0.16,0,0,0.785398
+mountain_settled_model_pose_enu=-79.9999999996,-80.0000000106,0.146998951
+mountain_entity_list=mountain_terrain,mountain_forest,drone_launch_pad,flat_platform,x500_mono_cam_down_0
+mountain_px4_gz_bridge=PASS
+mountain_trailer_waypoints=9/9 PASS
+mountain_trailer_max_abs_z_error_m=0.070003
+mountain_trailer_max_abs_roll_deg=0.000002
+mountain_trailer_max_abs_pitch_deg=0.000002
+mountain_impulse_launch_detected=NO
+mountain_rtf_sample_range=0.999300490..1.000021500
+mountain_maze_collisions=0
+mountain_maze_visuals=0
+
+mountain_slope_safeguard_route=PASS
+mountain_slope_waypoints=9/9
+mountain_slope_peak_model_root_z_m=5.753
+mountain_slope_max_abs_tracking_error_m=0.241003
+mountain_slope_max_abs_roll_deg=0.000006
+mountain_slope_max_abs_pitch_deg=0.000002
+mountain_slope_impulse_launch_detected=NO
+
+notes=The map launcher dynamically spawns the real PX4 SITL vehicle. The seo-derived flat_platform is a kinematic Gazebo platform, not a wheel-and-suspension traction model. Upstream PX4 gz_frame_id parser warnings are non-fatal; no model, bridge, physics, resource, or process crash was observed.
