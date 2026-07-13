@@ -54,6 +54,8 @@ def generate_launch_description():
     follow_height_param = LaunchConfiguration('follow_height_param')
     follow_auto_mode = LaunchConfiguration('follow_auto_mode')
     disable_gcs_failsafe = LaunchConfiguration('disable_gcs_failsafe')
+    gimbal_port = LaunchConfiguration('gimbal_port')
+    pitch_down_deg = LaunchConfiguration('pitch_down_deg')
 
     # PX4 mavros — 실기체는 USB 시리얼. 이 런치가 mavros 연결까지 올린다.
     mavros_launch = os.path.join(
@@ -124,6 +126,18 @@ def generate_launch_description():
         parameters=[{'image_topic': image_topic}],
     )
 
+    # SIYI 짐벌: 시동과 동시에 하방(-90°) 고정. 짐벌 없으면 포트 열기 실패만 로그.
+    gimbal_down = Node(
+        package='precision_landing',
+        executable='gimbal_down_node',
+        name='gimbal_down_node',
+        output='screen',
+        parameters=[{
+            'gimbal_port': ParameterValue(gimbal_port, value_type=str),
+            'pitch_down_deg': ParameterValue(pitch_down_deg, value_type=float),
+        }],
+    )
+
     follow_precland = Node(
         package='precision_landing',
         executable='follow_precland_node',
@@ -179,10 +193,14 @@ def generate_launch_description():
         DeclareLaunchArgument('follow_height_param', default_value='FLW_TGT_HT'),
         DeclareLaunchArgument('follow_auto_mode', default_value='true'),
         DeclareLaunchArgument('disable_gcs_failsafe', default_value='false'),
+        # SIYI 짐벌 시리얼(UART/USB-TTL). 하방 각도(A8 mini 는 -90~+25°).
+        DeclareLaunchArgument('gimbal_port', default_value='/dev/ttyUSB0'),
+        DeclareLaunchArgument('pitch_down_deg', default_value='-90.0'),
         mavros,
         usb_cam,
         v4l2,
         gscam,
         aruco_detector,
+        gimbal_down,
         follow_precland,
     ])
