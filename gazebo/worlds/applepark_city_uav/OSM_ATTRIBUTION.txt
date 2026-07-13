@@ -1,0 +1,6 @@
+Road and land-use vector data © OpenStreetMap contributors, downloaded through
+the Overpass API on 2026-07-11. OpenStreetMap data is available under the Open
+Database License (ODbL): https://www.openstreetmap.org/copyright
+
+The generated road_surface_osm.png is a non-photographic simulation texture.
+The original satellite image is not referenced by the modified Gazebo world.

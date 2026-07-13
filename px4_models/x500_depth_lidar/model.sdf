@@ -1,126 +1,174 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<sdf version='1.9'>
-  <model name='x500_depth_lidar'>
+<sdf version="1.9">
+  <model name="x500_depth_lidar">
     <self_collide>false</self_collide>
 
-    <!-- Default PX4 quadrotor airframe -->
-    <include merge='true'>
+    <!-- Keep the PX4 airframe unchanged.  The perception payload below uses
+         unique links, sensor names, Gazebo topics and frame IDs so a bridge
+         can never confuse the front and down cameras. -->
+    <include merge="true">
       <uri>x500</uri>
     </include>
 
-    <!-- Forward-facing depth camera (OAK-D Lite), mounted on the nose -->
-    <include merge='true'>
-      <uri>model://OakD-Lite</uri>
-      <pose>.12 .03 .242 0 0 0</pose>
-    </include>
-    <joint name="CameraJoint" type="fixed">
-      <parent>base_link</parent>
-      <child>camera_link</child>
-      <pose relative_to="base_link">.12 .03 .242 0 0 0</pose>
+    <!-- Forward RGB camera: long-range marker search / visual verification.
+         Gazebo cameras look along local +X. -->
+    <link name="front_rgb_link">
+      <pose relative_to="base_link">0.12 0.03 0.242 0 0 0</pose>
+      <inertial>
+        <mass>0.03</mass>
+        <inertia>
+          <ixx>0.00003</ixx><iyy>0.00003</iyy><izz>0.00003</izz>
+          <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz>
+        </inertia>
+      </inertial>
+      <visual name="front_rgb_visual">
+        <geometry><box><size>0.035 0.09 0.03</size></box></geometry>
+        <material><ambient>0.08 0.08 0.08 1</ambient><diffuse>0.12 0.12 0.12 1</diffuse></material>
+      </visual>
+      <sensor name="front_rgb_camera" type="camera">
+        <gz_frame_id>front_rgb_link</gz_frame_id>
+        <topic>front_camera/image</topic>
+        <camera>
+          <camera_info_topic>front_camera/camera_info</camera_info_topic>
+          <optical_frame_id>front_camera_optical_frame</optical_frame_id>
+          <horizontal_fov>1.204</horizontal_fov>
+          <image><width>640</width><height>360</height><format>R8G8B8</format></image>
+          <clip><near>0.10</near><far>120.0</far></clip>
+        </camera>
+        <always_on>true</always_on>
+        <update_rate>15</update_rate>
+        <visualize>false</visualize>
+      </sensor>
+    </link>
+    <joint name="front_rgb_joint" type="fixed">
+      <parent>base_link</parent><child>front_rgb_link</child>
     </joint>
 
-    <!-- Downward-facing lidar rangefinder (Lightware LW20) -->
-    <include merge='true'>
-      <uri>model://LW20</uri>
-      <pose relative_to="base_link">0 0 -0.079 0 1.57 0</pose>
-    </include>
-    <joint name="lidar_model_joint" type="fixed">
-      <parent>base_link</parent>
-      <child>lw20_link</child>
-      <pose relative_to="base_link">-0 0 0 0 0 0</pose>
+    <!-- Forward depth camera: unregistered obstacle detection.  Naming the
+         native image /front_depth/image also makes gz-sensors publish its
+         CameraInfo at /front_depth/camera_info (instead of global /camera_info). -->
+    <link name="front_depth_link">
+      <pose relative_to="base_link">0.12 0.00 0.242 0 0 0</pose>
+      <inertial>
+        <mass>0.02</mass>
+        <inertia>
+          <ixx>0.00002</ixx><iyy>0.00002</iyy><izz>0.00002</izz>
+          <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz>
+        </inertia>
+      </inertial>
+      <sensor name="front_depth_camera" type="depth_camera">
+        <gz_frame_id>front_depth_link</gz_frame_id>
+        <topic>front_depth/image</topic>
+        <camera>
+          <camera_info_topic>front_depth/camera_info</camera_info_topic>
+          <optical_frame_id>front_depth_optical_frame</optical_frame_id>
+          <horizontal_fov>1.274</horizontal_fov>
+          <image><width>320</width><height>240</height><format>R_FLOAT32</format></image>
+          <clip><near>0.20</near><far>30.0</far></clip>
+        </camera>
+        <always_on>true</always_on>
+        <update_rate>12</update_rate>
+        <visualize>false</visualize>
+      </sensor>
+    </link>
+    <joint name="front_depth_joint" type="fixed">
+      <parent>base_link</parent><child>front_depth_link</child>
     </joint>
-    <joint name="lidar_sensor_joint" type="fixed">
-      <parent>base_link</parent>
-      <child>lidar_sensor_link</child>
-    </joint>
+
+    <!-- Fast single-ray AGL / touchdown aid.  Do not set a short <topic>:
+         PX4's Gazebo bridge discovers the default world-qualified lidar path. -->
     <link name="lidar_sensor_link">
-      <pose relative_to="base_link">0 0 -0.05 0 1.57 0</pose>
+      <pose relative_to="base_link">0 0 -0.05 0 1.57079632679 0</pose>
       <inertial>
         <mass>0.001</mass>
         <inertia>
-          <ixx>0.00001</ixx>
-          <iyy>0.00001</iyy>
-          <izz>0.00001</izz>
-          <ixy>0.0</ixy>
-          <ixz>0.0</ixz>
-          <iyz>0.0</iyz>
+          <ixx>0.00001</ixx><iyy>0.00001</iyy><izz>0.00001</izz>
+          <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz>
         </inertia>
       </inertial>
-      <sensor name='lidar' type='gpu_lidar'>
+      <sensor name="lidar" type="gpu_lidar">
         <gz_frame_id>lidar_sensor_link</gz_frame_id>
-        <pose>0 0 0 3.14 0 0</pose>
         <update_rate>50</update_rate>
         <ray>
           <scan>
-            <horizontal>
-              <samples>1</samples>
-              <resolution>1</resolution>
-              <min_angle>0</min_angle>
-              <max_angle>0</max_angle>
-            </horizontal>
-            <vertical>
-              <samples>1</samples>
-              <resolution>1</resolution>
-              <min_angle>0</min_angle>
-              <max_angle>0</max_angle>
-            </vertical>
+            <horizontal><samples>1</samples><resolution>1</resolution><min_angle>0</min_angle><max_angle>0</max_angle></horizontal>
+            <vertical><samples>1</samples><resolution>1</resolution><min_angle>0</min_angle><max_angle>0</max_angle></vertical>
           </scan>
-          <range>
-            <min>0.1</min>
-            <max>100.0</max>
-            <resolution>0.01</resolution>
-          </range>
+          <range><min>0.10</min><max>100.0</max><resolution>0.01</resolution></range>
         </ray>
-        <always_on>1</always_on>
-        <visualize>true</visualize>
+        <always_on>true</always_on>
+        <visualize>false</visualize>
       </sensor>
     </link>
-
-    <!-- Downward-facing monocular camera (e.g. precision landing / optical) -->
-    <joint name="down_camera_joint" type="fixed">
-      <parent>base_link</parent>
-      <child>down_camera_link</child>
-      <pose relative_to="base_link">0 0 -0.05 0 1.5707 0</pose>
+    <joint name="down_lidar_joint" type="fixed">
+      <parent>base_link</parent><child>lidar_sensor_link</child>
     </joint>
-    <link name="down_camera_link">
-      <pose relative_to="base_link">0 0 -0.05 0 1.5707 0</pose>
+
+    <!-- Down RGB camera: calibrated ArUco terminal tracking.  +90 deg pitch
+         rotates the camera's local +X viewing ray onto body -Z. -->
+    <link name="down_rgb_link">
+      <pose relative_to="base_link">0 0 -0.05 0 1.57079632679 0</pose>
       <inertial>
-        <mass>0.05</mass>
+        <mass>0.04</mass>
         <inertia>
-          <ixx>0.00004</ixx>
-          <iyy>0.00004</iyy>
-          <izz>0.00004</izz>
-          <ixy>0.0</ixy>
-          <ixz>0.0</ixz>
-          <iyz>0.0</iyz>
+          <ixx>0.00004</ixx><iyy>0.00004</iyy><izz>0.00004</izz>
+          <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz>
         </inertia>
       </inertial>
-      <visual name="down_camera/visual">
-        <geometry>
-          <box>
-            <size>0.02 0.04 0.04</size>
-          </box>
-        </geometry>
+      <visual name="down_rgb_visual">
+        <geometry><box><size>0.02 0.04 0.04</size></box></geometry>
+        <material><ambient>0.08 0.08 0.08 1</ambient><diffuse>0.12 0.12 0.12 1</diffuse></material>
       </visual>
-      <sensor name="down_camera" type="camera">
-        <gz_frame_id>down_camera_link</gz_frame_id>
+      <sensor name="down_rgb_camera" type="camera">
+        <gz_frame_id>down_rgb_link</gz_frame_id>
         <topic>down_camera/image</topic>
-        <pose>0 0 0 0 0 0</pose>
         <camera>
-          <horizontal_fov>1.74</horizontal_fov>
-          <image>
-            <width>1280</width>
-            <height>960</height>
-          </image>
-          <clip>
-            <near>0.1</near>
-            <far>3000</far>
-          </clip>
+          <camera_info_topic>down_camera/camera_info</camera_info_topic>
+          <optical_frame_id>down_camera_optical_frame</optical_frame_id>
+          <horizontal_fov>1.396</horizontal_fov>
+          <image><width>640</width><height>480</height><format>R8G8B8</format></image>
+          <clip><near>0.10</near><far>80.0</far></clip>
         </camera>
-        <always_on>1</always_on>
-        <update_rate>30</update_rate>
-        <visualize>true</visualize>
+        <always_on>true</always_on>
+        <update_rate>20</update_rate>
+        <visualize>false</visualize>
       </sensor>
     </link>
+    <joint name="down_rgb_joint" type="fixed">
+      <parent>base_link</parent><child>down_rgb_link</child>
+    </joint>
+
+    <!-- A real downward depth camera, not a monocular-range approximation. -->
+    <link name="down_depth_link">
+      <pose relative_to="base_link">0 -0.03 -0.05 0 1.57079632679 0</pose>
+      <inertial>
+        <mass>0.02</mass>
+        <inertia>
+          <ixx>0.00002</ixx><iyy>0.00002</iyy><izz>0.00002</izz>
+          <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz>
+        </inertia>
+      </inertial>
+      <visual name="down_depth_visual">
+        <geometry><box><size>0.02 0.04 0.04</size></box></geometry>
+        <material><ambient>0.05 0.05 0.15 1</ambient><diffuse>0.08 0.08 0.25 1</diffuse></material>
+      </visual>
+      <sensor name="down_depth_camera" type="depth_camera">
+        <gz_frame_id>down_depth_link</gz_frame_id>
+        <topic>down_depth/image</topic>
+        <camera>
+          <camera_info_topic>down_depth/camera_info</camera_info_topic>
+          <optical_frame_id>down_depth_optical_frame</optical_frame_id>
+          <horizontal_fov>1.274</horizontal_fov>
+          <image><width>320</width><height>240</height><format>R_FLOAT32</format></image>
+          <clip><near>0.15</near><far>80.0</far></clip>
+        </camera>
+        <always_on>true</always_on>
+        <update_rate>15</update_rate>
+        <visualize>false</visualize>
+      </sensor>
+    </link>
+    <joint name="down_depth_joint" type="fixed">
+      <parent>base_link</parent><child>down_depth_link</child>
+    </joint>
   </model>
 </sdf>

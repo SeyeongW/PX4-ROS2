@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import math
 import subprocess
 from pathlib import Path
 import xml.etree.ElementTree as ET
@@ -152,9 +153,9 @@ def validate_city() -> dict[str, object]:
             "city all-white heightmap top must stay at z=0",
         )
     require(
-        terrain.findtext(".//collision//mesh/uri")
-        == "mesh/city_terrain_collision.obj",
-        "Bullet city terrain collision mesh URI",
+        terrain.findtext(".//collision/pose") == "0 0 -0.05 0 0 0"
+        and terrain.findtext(".//collision//box/size") == "500 500 0.1",
+        "engine-neutral flat city collision box",
     )
     texture = terrain.find(".//visual//heightmap/texture")
     require(texture is not None, "city heightmap texture")
@@ -187,17 +188,16 @@ def validate_city() -> dict[str, object]:
             elif line.startswith("f "):
                 face_count += 1
     require(vertex_count == 16641 and face_count == 32768, "city collision OBJ topology")
-    pad = next(
-        (model for model in world.findall("model") if model.attrib.get("name") == "drone_spawn_pad"),
+    require(
+        all(model.attrib.get("name") != "drone_spawn_pad" for model in world.findall("model")),
+        "city still contains the removed green spawn pad",
+    )
+    spawn_frame = next(
+        (frame for frame in world.findall("frame") if frame.attrib.get("name") == "drone_spawn"),
         None,
     )
-    require(pad is not None, "city drone spawn pad")
-    require(pad.findtext("pose") == "-120 115 0.08 0 0 0", "city spawn pad pose")
-    require(
-        pad.findtext(".//collision//cylinder/length") == "0.16"
-        and pad.findtext(".//visual//cylinder/length") == "0.16",
-        "city spawn pad foundation depth",
-    )
+    require(spawn_frame is not None, "city drone spawn frame")
+    require(spawn_frame.findtext("pose") == "-120 115 0 0 0 0", "city spawn frame pose")
     require(
         all(include.findtext("uri") != "model://map_preview_drone" for include in world.findall("include")),
         "city contains the removed static preview drone",
@@ -210,13 +210,6 @@ def validate_city() -> dict[str, object]:
     )
     require(city_includes[0].findtext("name") == "flat_platform", "city trailer entity")
     require(city_includes[0].findtext("pose") == "-175 140 0 0 0 0", "city trailer spawn")
-    pad_pose_z = float(pad.findtext("pose", "").split()[2])
-    pad_height = float(pad.findtext(".//collision//cylinder/length", "nan"))
-    require(
-        abs(0.16 - (pad_pose_z + pad_height / 2.0)) < 1e-9,
-        "city PX4 spawn contact plane differs from the pad top",
-    )
-
     expected_images = {
         "mesh/road_surface_city_500m.png": (2048, 2048, "RGB"),
         "mesh/height_map_city_500m.png": (257, 257, "L"),
@@ -402,6 +395,33 @@ def validate_no_external_runtime_paths() -> None:
 def validate_px4_contracts() -> dict[str, object]:
     launch = GAZEBO / "run_px4_map.sh"
     require(launch.is_file() and launch.stat().st_mode & 0o111, "PX4 map launcher is not executable")
+    linker = GAZEBO / "link_px4_model.sh"
+    require(linker.is_file() and linker.stat().st_mode & 0o111, "PX4 model linker is not executable")
+    linker_text = linker.read_text(encoding="utf-8")
+    require('MODEL_NAME="x500_city_rgbd_lidar"' in linker_text, "unique PX4 model link name")
+    require('elif [[ -e "$TARGET" ]]' in linker_text, "PX4 linker non-symlink refusal is missing")
+    require("refusing to replace the existing non-symlink" in linker_text,
+            "PX4 linker destructive-path guard is missing")
+
+    vehicle_sdf = REPO / "px4_models/x500_city_rgbd_lidar/model.sdf"
+    require(vehicle_sdf.is_file(), "repository PX4 vehicle model is missing")
+    vehicle = ET.parse(vehicle_sdf).getroot().find("model")
+    require(vehicle is not None and vehicle.attrib.get("name") == "x500_city_rgbd_lidar",
+            "repository PX4 vehicle SDF name")
+    front_pose_text = vehicle.findtext("./link[@name='front_rgb_link']/pose")
+    front_depth_pose_text = vehicle.findtext("./link[@name='front_depth_link']/pose")
+    require(front_pose_text is not None and front_depth_pose_text is not None,
+            "front RGB/depth sensor poses are missing")
+    front_pitch = float(front_pose_text.split()[4])
+    front_depth_pitch = float(front_depth_pose_text.split()[4])
+    require(abs(front_pitch - math.radians(55.0)) < 1.0e-8,
+            "front RGB camera is not pitched 55 degrees down")
+    require(abs(front_depth_pitch) < 1.0e-12,
+            "front depth obstacle camera must remain horizontal")
+    # Gazebo camera optical +X transformed by body +pitch has vertical
+    # component -sin(pitch); negative ENU Z is downward.
+    require(-math.sin(front_pitch) < -0.8, "front RGB optical axis is not downward")
+
     launch_text = launch.read_text(encoding="utf-8")
     for marker in (
         "PX4_GZ_STANDALONE=1",
@@ -412,18 +432,23 @@ def validate_px4_contracts() -> dict[str, object]:
     ):
         require(marker in launch_text, f"PX4 launcher contract missing: {marker}")
     expected = {
-        "city": ("applepark_city", (-120.0, 115.0, 0.16), 274),
-        "mountain": ("ugv_drone_mountain_map", (-80.0, -80.0, 0.16), 288),
+        "city": ("applepark_city", (-120.0, 115.0, 0.0), (-120.0, 115.0, 0.24), 274),
+        "mountain": ("ugv_drone_mountain_map", (-80.0, -80.0, 0.16), (-80.0, -80.0, 0.40), 288),
     }
     counts = {}
-    for name, (world_name, spawn_xyz, obstacle_count) in expected.items():
+    for name, (world_name, spawn_xyz, local_origin_xyz, obstacle_count) in expected.items():
         path = GAZEBO / "maps" / f"{name}_coordinates.yaml"
         document = yaml.safe_load(path.read_text(encoding="utf-8"))
         require(document["map"]["gazebo_world_name"] == world_name, f"{name} YAML world")
-        require(document["px4_vehicle"]["airframe_autostart_id"] == 4014, f"{name} PX4 airframe")
-        require(document["px4_vehicle"]["simulation_model"] == "gz_x500_mono_cam_down", f"{name} PX4 model")
+        require(document["px4_vehicle"]["airframe_autostart_id"] == 4001, f"{name} PX4 airframe")
+        require(document["px4_vehicle"]["simulation_model"] == "gz_x500_city_rgbd_lidar", f"{name} PX4 model")
+        require(document["px4_vehicle"]["runtime_entity_name"] == "x500_city_rgbd_lidar_0", f"{name} PX4 entity")
         pose = document["spawn"]["gazebo_spawn_pose_enu"]
         require(tuple(pose[axis] for axis in ("x", "y", "z")) == spawn_xyz, f"{name} spawn")
+        require(
+            tuple(document["frames"]["px4_local"]["origin_enu_m"]) == local_origin_xyz,
+            f"{name} PX4 local base_link origin",
+        )
         if name == "city":
             actual = len(document["obstacles"]["buildings"])
         else:
@@ -486,7 +511,10 @@ def main() -> None:
             "static_preview_drones=0",
             "seo_trailer_model=flat_platform maps=city,mountain",
             "trailer_waypoint_driver=gazebo_transport_no_mavros",
-            "px4_dynamic_model=gz_x500_mono_cam_down autostart=4014",
+            "px4_dynamic_model=gz_x500_city_rgbd_lidar autostart=4001",
+            "px4_model_repository_symlink=PASS",
+            "px4_local_origin=base_link_model_root_plus_0.24m",
+            "front_rgb_optical_axis=pitch_down_55deg front_depth=pitch_0deg",
             f"coordinate_yaml_obstacles=city:{coordinates['city']} mountain_trees:{coordinates['mountain']} maze:0",
             "path_planning_reference_images=PASS",
             "active_sim_assets_or_absolute_home_references=0",

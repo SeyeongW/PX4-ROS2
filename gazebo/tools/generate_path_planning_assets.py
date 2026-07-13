@@ -60,6 +60,7 @@ EXPECTED_CITY_BOUNDARY_VERTICES = 2585
 EXPECTED_TREES = 288
 GRID_RESOLUTION_M = 0.25
 SAFETY_INFLATION_M = 2.0
+PX4_BASE_LINK_Z_OFFSET_M = 0.24
 
 
 def require(condition: bool, message: str) -> None:
@@ -259,6 +260,11 @@ def mountain_trees() -> list[dict[str, object]]:
 
 
 def frame_contract(spawn: list[float]) -> dict[str, object]:
+    # PX4_GZ_MODEL_POSE addresses the outer model frame at the terrain contact
+    # datum. The stock x500_base model places base_link 0.24 m above that frame,
+    # and PX4 local NED initializes at base_link / IMU height, not at the tires.
+    local_origin = list(spawn[:3])
+    local_origin[2] += PX4_BASE_LINK_Z_OFFSET_M
     return {
         "gazebo_world": {
             "convention": "ENU",
@@ -270,7 +276,8 @@ def frame_contract(spawn: list[float]) -> dict[str, object]:
         },
         "px4_local": {
             "convention": "NED",
-            "origin_enu_m": spawn[:3],
+            "origin_enu_m": local_origin,
+            "origin_reference": "PX4 x500 base_link at rest (model root + 0.24 m)",
             "conversion_from_gazebo_enu": {
                 "x_north_m": "y_enu - origin_y",
                 "y_east_m": "x_enu - origin_x",
@@ -291,7 +298,7 @@ def write_yaml(path: Path, document: dict[str, object]) -> None:
 
 
 def city_document(buildings: list[dict[str, object]]) -> dict[str, object]:
-    spawn = [-120.0, 115.0, 0.16, 0.0, 0.0, 0.0]
+    spawn = [-120.0, 115.0, 0.0, 0.0, 0.0, 0.0]
     return {
         "schema_version": 1,
         "map": {
@@ -302,14 +309,15 @@ def city_document(buildings: list[dict[str, object]]) -> dict[str, object]:
         },
         "frames": frame_contract(spawn),
         "px4_vehicle": {
-            "airframe_autostart_id": 4014,
-            "simulation_model": "gz_x500_mono_cam_down",
-            "runtime_entity_name": "x500_mono_cam_down_0",
+            "airframe_autostart_id": 4001,
+            "simulation_model": "gz_x500_city_rgbd_lidar",
+            "runtime_entity_name": "x500_city_rgbd_lidar_0",
         },
         "terrain": {
-            "type": "completely_flat_heightmap_and_triangle_mesh",
+            "type": "completely_flat_heightmap_and_box_collision",
             "image": "gazebo/worlds/applepark_city/mesh/height_map_city_500m.png",
-            "collision_mesh": "gazebo/worlds/applepark_city/mesh/city_terrain_collision.obj",
+            "collision_geometry": {"shape": "box", "size_m": [500.0, 500.0, 0.1],
+                                   "center_z_m": -0.05, "top_z_m": 0.0},
             "rows": 257,
             "columns": 257,
             "sample_spacing_m": 1.953125,
@@ -322,8 +330,7 @@ def city_document(buildings: list[dict[str, object]]) -> dict[str, object]:
         "spawn": {
             "name": "city_drone_spawn",
             "gazebo_spawn_pose_enu": dict(zip(("x", "y", "z", "roll", "pitch", "yaw"), spawn)),
-            "pad": {"shape": "cylinder", "center_enu_m": [-120.0, 115.0, 0.08],
-                    "radius_m": 4.0, "length_m": 0.16, "top_z_m": 0.16},
+            "surface": "flat_road_datum_z0",
         },
         "trailer": {
             "entity_name": "flat_platform",
@@ -366,9 +373,9 @@ def mountain_document(trees: list[dict[str, object]]) -> dict[str, object]:
         },
         "frames": frame_contract(spawn),
         "px4_vehicle": {
-            "airframe_autostart_id": 4014,
-            "simulation_model": "gz_x500_mono_cam_down",
-            "runtime_entity_name": "x500_mono_cam_down_0",
+            "airframe_autostart_id": 4001,
+            "simulation_model": "gz_x500_city_rgbd_lidar",
+            "runtime_entity_name": "x500_city_rgbd_lidar_0",
         },
         "terrain": {
             "type": "heightmap_and_triangle_mesh",

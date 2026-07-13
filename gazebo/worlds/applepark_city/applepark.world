@@ -306,19 +306,20 @@
         <!-- Trailer-safe city datum. The all-255 visual heightmap's top is
              exactly z=0. OGRE2 represents a heightmap as a volume down to
              <pos>; keep that visual skirt only 1 mm deep so no 500 x 500 m
-             3-D slab appears below the city. Bullet receives a separate
-             matching 129x129 triangle mesh whose every vertex is z=0. -->
+             3-D slab appears below the city. Physics receives a simple flat
+             box instead of the old 129x129 coplanar mesh. This avoids
+             unstable contacts in Bullet and a DART mesh-normal crash. -->
         <model name="applepark">
             <static>true</static>
             <pose>0 0 0 0 0 0</pose>
 
             <link name="ground">
                 <collision name="collision">
+                    <pose>0 0 -0.05 0 0 0</pose>
                     <geometry>
-                        <mesh>
-                            <uri>mesh/city_terrain_collision.obj</uri>
-                            <scale>1 1 1</scale>
-                        </mesh>
+                        <box>
+                            <size>500 500 0.1</size>
+                        </box>
                     </geometry>
                 </collision>
                 <visual name="ground_visual">
@@ -386,38 +387,11 @@
                 </collision>
             </link>
         </model>
-        <!-- Pad top and PX4 contact plane are 0.16 m above the flat datum. -->
-        <model name="drone_spawn_pad">
-            <static>true</static>
-            <pose>-120 115 0.08 0 0 0</pose>
-            <link name="pad_link">
-                <collision name="collision">
-                    <geometry>
-                        <cylinder>
-                            <radius>4</radius>
-                            <length>0.16</length>
-                        </cylinder>
-                    </geometry>
-                </collision>
-                <visual name="visual">
-                    <cast_shadows>false</cast_shadows>
-                    <geometry>
-                        <cylinder>
-                            <radius>4</radius>
-                            <length>0.16</length>
-                        </cylinder>
-                    </geometry>
-                    <material>
-                        <ambient>0.08 0.32 0.08 1</ambient>
-                        <diffuse>0.15 0.75 0.18 1</diffuse>
-                        <specular>0.05 0.05 0.05 1</specular>
-                    </material>
-                </visual>
-            </link>
-        </model>
-
+        <!-- PX4's x500 model origin is its landing-gear contact datum.  Spawn
+             directly on the flat z=0 road; no raised green pad or second
+             contact surface is present below the vehicle. -->
         <frame name="drone_spawn">
-            <pose>-120 115 0.16 0 0 0</pose>
+            <pose>-120 115 0 0 0 0</pose>
         </frame>
 
         <!-- The seo-branch moving trailer, placed on a checked 5 m-wide flat

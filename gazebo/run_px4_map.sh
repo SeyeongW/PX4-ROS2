@@ -11,6 +11,11 @@ fi
 
 case "$MAP" in
   city)
+    # The normal city profile is the self-contained 2.5x UAV derivative.  The
+    # original 500 m asset remains available explicitly for regression work.
+    COORDINATES="$SCRIPT_DIR/maps/city_coordinates_uav.yaml"
+    ;;
+  city-legacy)
     COORDINATES="$SCRIPT_DIR/maps/city_coordinates.yaml"
     ;;
   mountain)
@@ -18,10 +23,10 @@ case "$MAP" in
     ;;
   -h|--help|help|"")
     cat <<EOF
-Usage: $(basename "$0") <city|mountain> [additional gz sim options]
+Usage: $(basename "$0") <city|city-legacy|mountain> [additional gz sim options]
 
 Starts Gazebo Harmonic, waits for the selected world, then starts PX4 SITL.
-PX4 itself creates the dynamic x500_depth_lidar vehicle (default x500 quad
+PX4 itself creates the dynamic x500_city_rgbd_lidar vehicle (default x500 quad
 with a forward depth camera and a downward lidar rangefinder).
 The seo-branch flat_platform trailer is included in both maps.
 
@@ -39,11 +44,13 @@ Environment:
   TRAILER_ROUTE=slope     Mountain-only terrain-follow safeguard test
   USE_NVIDIA=0            Disable NVIDIA PRIME render variables
   GZ_PARTITION=...        Gazebo transport partition (shared with PX4)
+  PHYSICS_ENGINE=...      Override physics engine (default: DART)
+  PX4_DAEMON=1            Disable the interactive PX4 shell (for log/CI runs)
 EOF
     exit 0
     ;;
   *)
-    echo "ERROR: expected 'city' or 'mountain', got '$MAP'." >&2
+    echo "ERROR: expected 'city', 'city-legacy' or 'mountain', got '$MAP'." >&2
     exit 2
     ;;
 esac
@@ -102,20 +109,32 @@ if [[ ! -x "$PX4_BIN" || ! -f "$PX4_ENV" ]]; then
 ERROR: compatible PX4 SITL build was not found under:
        $PX4_DIR
 
-This launcher never changes an existing firmware checkout. For a fresh PC,
-run ./gazebo/setup_px4_sitl.sh once, then retry this command.
+This launcher never changes tracked firmware sources. It only manages the
+repository model's unique symlink. For a fresh PC, run
+./gazebo/setup_px4_sitl.sh once, then retry this command.
 EOF
   exit 3
 fi
+"$SCRIPT_DIR/link_px4_model.sh" "$PX4_DIR"
 CUSTOM_MODEL="${SIM_MODEL#gz_}"
+EXPECTED_CUSTOM_MODEL="x500_city_rgbd_lidar"
+if [[ "$CUSTOM_MODEL" != "$EXPECTED_CUSTOM_MODEL" ]]; then
+  echo "ERROR: coordinate contract selects '$CUSTOM_MODEL'; expected repository model '$EXPECTED_CUSTOM_MODEL'." >&2
+  exit 3
+fi
+CUSTOM_MODEL_SOURCE="$(realpath -m "$REPO_DIR/px4_models/$CUSTOM_MODEL")"
+CUSTOM_MODEL_TARGET="$PX4_DIR/Tools/simulation/gz/models/$CUSTOM_MODEL"
+if [[ ! -L "$CUSTOM_MODEL_TARGET" || "$(realpath -m "$CUSTOM_MODEL_TARGET")" != "$CUSTOM_MODEL_SOURCE" ]]; then
+  echo "ERROR: PX4 custom model must link to this checkout: $CUSTOM_MODEL_TARGET -> $CUSTOM_MODEL_SOURCE" >&2
+  exit 3
+fi
 for model in "$CUSTOM_MODEL" x500 x500_base OakD-Lite LW20; do
   [[ -f "$PX4_DIR/Tools/simulation/gz/models/$model/model.sdf" ]] || {
     echo "ERROR: PX4 Gazebo model asset is missing: $model" >&2
     if [[ "$model" == "$CUSTOM_MODEL" ]]; then
       cat >&2 <<EOF
        Install the checked-in custom model into your PX4 tree first:
-         ln -s "$REPO_DIR/px4_models/$CUSTOM_MODEL" \\
-               "$PX4_DIR/Tools/simulation/gz/models/$CUSTOM_MODEL"
+         "$SCRIPT_DIR/link_px4_model.sh" "$PX4_DIR"
        See px4_models/README.md for details.
 EOF
     fi
@@ -216,7 +235,8 @@ if gz topic -l 2>/dev/null | grep -q '^/world/.*/clock$'; then
   exit 4
 fi
 
-GZ_ARGS=(-v4 -r --physics-engine "${PHYSICS_ENGINE:-gz-physics-bullet-featherstone-plugin}")
+PHYSICS_ENGINE="${PHYSICS_ENGINE:-gz-physics-dartsim-plugin}"
+GZ_ARGS=(-v4 -r --physics-engine "$PHYSICS_ENGINE")
 if [[ "${HEADLESS:-0}" == "1" ]]; then
   GZ_ARGS+=(-s)
 fi
@@ -228,6 +248,7 @@ echo "PX4 vehicle      : $SIM_MODEL / autostart $AUTOSTART_ID"
 echo "Gazebo spawn ENU : $SPAWN_POSE"
 echo "Expected entity  : $ENTITY_NAME"
 echo "GZ_PARTITION     : $GZ_PARTITION"
+echo "Physics          : $PHYSICS_ENGINE"
 echo "Gazebo log       : $GAZEBO_LOG"
 
 gz sim "${GZ_ARGS[@]}" >"$GAZEBO_LOG" 2>&1 &
@@ -277,7 +298,12 @@ if [[ "${DRIVE_TRAILER:-0}" == "1" ]]; then
     echo "ERROR: DRIVE_TRAILER=1 needs Gazebo Harmonic Python transport bindings." >&2
     exit 6
   }
-  TRAILER_ARGS=("$MAP" --loops "${TRAILER_ROUTE_LOOPS:-0}" --route "${TRAILER_ROUTE:-flat}")
+  TRAILER_MAP="$MAP"
+  if [[ "$TRAILER_MAP" == "city-legacy" ]]; then
+    TRAILER_MAP="city"
+  fi
+  TRAILER_ARGS=("$TRAILER_MAP" --coordinates "$COORDINATES" \
+    --loops "${TRAILER_ROUTE_LOOPS:-0}" --route "${TRAILER_ROUTE:-flat}")
   if [[ -n "${TRAILER_ROUTE_TIMEOUT:-}" ]]; then
     TRAILER_ARGS+=(--timeout "$TRAILER_ROUTE_TIMEOUT")
   fi
@@ -350,9 +376,16 @@ fi
 
 echo "Gazebo is ready. Starting the PX4 console; Ctrl-C stops this complete launch."
 cd "$PX4_ROOTFS"
+PX4_ARGS=()
+if [[ "${PX4_DAEMON:-0}" == "1" ]]; then
+  # `px4 -d` keeps the SITL server in the foreground but omits the pxh shell.
+  # Without this, redirecting a non-interactive shell to a file can emit ANSI
+  # prompt refreshes indefinitely and consume gigabytes in a few minutes.
+  PX4_ARGS+=(-d)
+fi
 PX4_GZ_STANDALONE=1 \
 PX4_GZ_WORLD="$WORLD_NAME" \
 PX4_GZ_MODEL_POSE="$SPAWN_POSE" \
 PX4_SYS_AUTOSTART="$AUTOSTART_ID" \
 PX4_SIM_MODEL="$SIM_MODEL" \
-"$PX4_BIN"
+"$PX4_BIN" "${PX4_ARGS[@]}"

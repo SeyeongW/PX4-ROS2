@@ -2,8 +2,8 @@
 
 > **`jo` 브랜치의 도시/산악맵 실행은 PX4 SITL을 사용합니다.** 기존
 > ArduPilot/MAVROS 노드는 레거시로 남아 있지만, 아래
-> `gazebo/run_px4_map.sh`는 PX4 airframe 4014의 실제 동적
-> `x500_mono_cam_down`을 생성합니다. 정적 드론 모형은 사용하지 않습니다.
+> `gazebo/run_px4_map.sh`는 PX4 airframe 4001의 실제 동적
+> `x500_city_rgbd_lidar`를 생성합니다. 정적 드론 모형은 사용하지 않습니다.
 
 ArduPilot 기반 드론을 ROS 2로 Offboard 제어하며, 하방 카메라 + YOLO로 지상 표적을 추적하는 시스템입니다.
 
@@ -222,12 +222,38 @@ DRIVE_TRAILER=1 TRAILER_ROUTE_LOOPS=1 ./gazebo/run_px4_map.sh mountain
 두 맵에는 `seo` 브랜치의 5×5 m `flat_platform` 트레일러가 기본으로
 소환됩니다. 기본 상태는 정지이며 `DRIVE_TRAILER=1`일 때 좌표 YAML의
 웨이포인트를 주행합니다. 두 명령은 Gazebo를 먼저 실행한 뒤 동일한 world에 PX4 SITL이 실제
-`x500_mono_cam_down_0` 엔티티를 동적으로 스폰합니다. 로컬
+`x500_city_rgbd_lidar_0` 엔티티를 동적으로 스폰합니다. 로컬
 `MicroXRCEAgent`가 있으면 UDP 8888 에이전트도 함께 실행하므로 ROS 2
 `/fmu/*` 토픽을 사용할 수 있습니다. 좌표와 장애물은
 `gazebo/maps/city_coordinates.yaml` 및 `mountain_coordinates.yaml`에
 Gazebo ENU와 PX4 NED 변환을 분리해 기록했습니다. 상세 내용은
 [`gazebo/MAPS.md`](gazebo/MAPS.md)를 참고하세요.
+
+도시맵에서 `(-120,115)` 스폰 후 10 m 수직 이륙하고, A* + SFC 정적
+안전회랑 + cubic B-spline + 지역 MPC를 이용하여 ENU `(200,-125)`까지
+주행하는 통합 임무는 다음과 같이 실행합니다. 전방 depth는 미등록 장애물의
+임시 우회에, 하방 lidar는 바로 아래 표면과 10 m 간격 유지에 사용됩니다.
+
+```bash
+# 새 PC에서 한 번
+./gazebo/setup_autonomy_deps.sh
+
+# 비행 없이 경로와 그림만 생성
+./gazebo/run_autonomous_city_mission.sh --plan-only
+
+# PX4 실제 동적 기체로 통합 비행
+./gazebo/run_autonomous_city_mission.sh
+```
+
+알고리즘, 좌표 변환, 안전조건과 A* 핵심 의사코드는
+[`docs/autonomous_city_mission.md`](docs/autonomous_city_mission.md)에
+정리했습니다.
+
+PX4 멀티콥터 내부 `AUTO.MISSION`의 L1-style waypoint crossing과 비교할 때도
+B-spline을 삭제하지 않습니다. 두 방식은 동시에 제어권을 잡을 수 없으며, 동일
+A*/SFC 계약과 paired metric으로 순차 A/B 실행합니다. 설치형 명령과 강제 authority
+확인은 [`docs/px4_l1_bspline_cross_validation.md`](docs/px4_l1_bspline_cross_validation.md)에
+정리했습니다.
 
 드론 없이 맵 형상만 빠르게 확인할 때만 다음을 사용합니다.
 

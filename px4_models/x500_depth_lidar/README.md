@@ -10,18 +10,26 @@ PX4 재빌드가 필요 없습니다(`PX4_SIM_MODEL=gz_x500_depth_lidar`로 모�
 
 | 위치 | 센서 | 종류 | ROS 2 토픽 | 해상도/사양 |
 |------|------|------|-----------|------------|
-| 전방 | OAK-D Lite 뎁스 | depth camera | `/depth_camera`, `/depth_camera/points`, `/camera_info` | 640×480, 32FC1 |
-| 전방 | OAK-D Lite RGB | camera (IMX214) | `/front_camera/image`, `/front_camera/camera_info` | 1920×1080 |
-| 하방 | 모노 카메라 | camera | `/down_camera/image`, `/down_camera/camera_info` | 1280×960, rgb8 |
+| 전방 | RGB 카메라 | camera | `/front_camera/image`, `/front_camera/camera_info` | 640×360 @ 15 Hz |
+| 전방 | Depth 카메라 | depth camera | `/front_depth/image`, `/front_depth/points`, `/front_depth/camera_info` | 320×240, 32FC1 @ 12 Hz |
+| 하방 | RGB 카메라 | camera | `/down_camera/image`, `/down_camera/camera_info` | 640×480 @ 20 Hz |
+| 하방 | Depth 카메라 | depth camera | `/down_depth/image`, `/down_depth/points`, `/down_depth/camera_info` | 320×240, 32FC1 @ 15 Hz |
 | 하방 | LW20 라이다 | gpu_lidar (단일 빔) | `/down_lidar`, `/down_lidar/points` | 0.1–100 m |
 
-- ROS 2 토픽은 `gazebo/launch/sensor_bridge.launch.py`(ros_gz_bridge)로 브릿지되며
-  `run_px4_map.sh`가 자동 실행합니다.
+- ROS 2 토픽은 `gazebo/launch/sensor_bridge.launch.py`의 gz-sim8 네이티브 브리지로
+  전달되며 `run_px4_map.sh`가 자동 실행합니다. 센서별 Gazebo 구독은 ROS 구독자가
+  있을 때만 활성화되어 비사용 RGB/point cloud의 CPU 복사를 피합니다.
 - **하방 라이다는 PX4 `distance_sensor`로도 연동**됩니다(하방 인식, orientation=25).
   PX4 gz 브릿지가 라이다의 기본 gz 경로를 구독하므로, 라이다 센서에는 `<topic>`
   오버라이드를 넣지 마세요.
-- 하방 카메라는 `<topic>down_camera/image</topic>`를 써서 `camera_info`가
-  `/down_camera/camera_info`로 분리됩니다(전방 뎁스캠의 `/camera_info`와 충돌 방지).
+- 전방/하방 RGB와 Depth는 각각 별도 link, sensor, Gazebo topic, optical frame을
+  사용합니다. 하방 거리 추정은 단안 영상의 크기 환산이 아니라 실제
+  `depth_camera` 영상/point cloud와 단일빔 LiDAR를 함께 사용합니다.
+- 전방 Depth의 Gazebo native cloud `/front_depth/image/points`는 PX4 임무의 경량
+  native adapter가 직접 구독하고, ROS bridge에서는 `/front_depth/points`로 remap합니다.
+- 320×240와 제한된 update rate는 software/headless renderer에서도 sensor freshness를
+  유지하기 위한 값입니다. adapter는 2×2 spatial stride 뒤에도 중앙 ROI의 3-percentile
+  장애물 검출을 유지합니다.
 
 ## 물리 제원 (시뮬레이션 모델)
 

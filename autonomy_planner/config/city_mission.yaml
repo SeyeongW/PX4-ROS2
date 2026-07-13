@@ -1,0 +1,32 @@
+/**:
+  ros__parameters:
+    goal_enu_x_m: 200.0
+    goal_enu_y_m: -125.0
+    takeoff_height_m: 10.0
+    ground_clearance_m: 10.0
+    grid_resolution_m: 1.0
+    obstacle_inflation_m: 5.0
+    clearance_cost_weight: 4.0
+    corridor_max_radius_m: 10.0
+    bspline_sample_spacing_m: 0.5
+    cruise_speed_m_s: 4.0
+    max_horizontal_speed_m_s: 5.0
+    max_vertical_speed_m_s: 2.0
+    max_acceleration_m_s2: 3.0
+    path_lookahead_m: 6.0
+    waypoint_capture_radius_m: 2.0
+    goal_tolerance_m: 1.5
+    takeoff_tolerance_m: 0.4
+    takeoff_hold_s: 1.5
+    offboard_prestream_s: 2.0
+    control_rate_hz: 10.0
+    mpc_horizon_steps: 8
+    mpc_dt_s: 0.2
+    depth_trigger_distance_m: 10.0
+    depth_emergency_distance_m: 4.0
+    local_bypass_offset_m: 7.0
+    local_obstacle_ttl_s: 2.0
+    down_lidar_timeout_s: 0.5
+    depth_timeout_s: 0.5
+    max_world_altitude_m: 120.0
+    require_sensors_before_arm: true

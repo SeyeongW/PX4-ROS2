@@ -1,0 +1,123 @@
+/**:
+  ros__parameters:
+    map_yaml: "gazebo/maps/city_coordinates_uav.yaml"
+    goal_enu_x_m: 200.0
+    goal_enu_y_m: -125.0
+    waypoints_enu_xy_m: [200.0, -125.0, -128.0, -128.0]
+    repeat_waypoints: true
+
+    # This ROS 2 node owns PX4 OFFBOARD/TrajectorySetpoint authority.  Keep the
+    # constrained B-spline for the normal mission.  "px4_waypoint_preview" is
+    # only an offboard reference preview and must not be labelled PX4 L1.
+    # True onboard L1-style comparison runs through the separate
+    # `px4_l1_mission` AUTO.MISSION executable with this node stopped.
+    guidance_mode: "bspline"
+    waypoint_hold_s: 2.0
+
+    body_length_x_m: 1.0
+    body_width_y_m: 1.0
+    body_height_z_m: 0.4
+    body_yaw_invariant_radius_m: 0.7071067811865476
+    map_margin_m: 0.10
+    localization_margin_m: 0.15
+    tracking_margin_m: 0.20
+    control_margin_m: 0.15
+    extra_margin_m: 0.1428932188134524
+    hard_inflation_radius_m: 1.45
+    preferred_clearance_m: 2.15
+
+    city_spacing_scale_xy: 2.5
+    building_footprint_scale_xy: 0.9
+    grid_resolution_coarse_m: 6.0
+    grid_resolution_fine_m: 2.0
+    astar_max_expanded_coarse: 200000
+    astar_max_expanded_fine: 350000
+    astar_timeout_coarse_s: 8.0
+    astar_timeout_fine_s: 18.0
+    sfc_max_iterations: 30
+    sfc_max_repair_passes: 3
+    bspline_max_iterations: 200
+    bspline_time_scaling_retries: 5
+
+    takeoff_height_m: 10.0
+    takeoff_rate_m_s: 1.5
+    ground_clearance_m: 10.0
+    ground_clearance_tolerance_m: 0.5
+    takeoff_tolerance_m: 0.4
+    takeoff_hold_s: 1.5
+    offboard_prestream_s: 2.0
+
+    # Compatibility settings for the legacy 2-D visualizer.  Flight planning
+    # uses the decomposed hard/preferred radii above.
+    grid_resolution_m: 1.0
+    obstacle_inflation_m: 1.45
+    clearance_cost_weight: 4.0
+    corridor_max_radius_m: 10.0
+    bspline_sample_spacing_m: 0.5
+
+    cruise_speed_m_s: 4.0
+    max_horizontal_speed_m_s: 5.0
+    max_vertical_speed_m_s: 2.0
+    max_acceleration_m_s2: 3.0
+    max_jerk_m_s3: 5.0
+    path_lookahead_m: 6.0
+    waypoint_capture_radius_m: 2.0
+    goal_tolerance_m: 1.5
+    control_rate_hz: 20.0
+
+    local_mpc_horizon_steps: 20
+    local_mpc_dt_s: 0.10
+    local_mpc_max_outer_iterations: 20
+    local_mpc_max_qp_iterations: 100
+    local_mpc_deadline_ms: 40.0
+    # Kept declared for compatibility with the first implementation.
+    mpc_horizon_steps: 20
+    mpc_dt_s: 0.10
+    mpc_deadline_s: 0.04
+
+    landing_mpc_horizon_steps: 20
+    landing_mpc_dt_s: 0.10
+    landing_mpc_max_iterations: 12
+    landing_mpc_deadline_ms: 40.0
+
+    depth_trigger_distance_m: 10.0
+    depth_emergency_distance_m: 4.0
+    planner_reaction_time_s: 0.10
+    braking_acceleration_m_s2: 3.0
+    dynamic_obstacle_uncertainty_m: 0.50
+    local_bypass_offset_m: 7.0
+    local_obstacle_ttl_s: 2.0
+    down_lidar_timeout_s: 1.0
+    depth_timeout_s: 1.0
+    local_position_timeout_s: 0.5
+    vehicle_status_timeout_s: 1.0
+    sensor_hold_land_timeout_s: 8.0
+
+    trailer_timeout_s: 1.0
+    trailer_replan_period_s: 1.0
+    trailer_replan_distance_m: 2.0
+    global_replan_rate_hz: 1.0
+    global_replan_target_shift_m: 2.0
+    trailer_endpoint_x_m: -128.0
+    trailer_endpoint_y_m: -128.0
+    trailer_deck_height_m: 1.25
+    trailer_approach_radius_m: 10.0
+
+    marker_timeout_s: 0.6
+    marker_acquire_dwell_s: 0.5
+    camera_handoff_overlap_s: 0.35
+    marker_search_height_m: 8.0
+    velocity_match_height_m: 5.0
+    precision_align_height_m: 3.0
+    final_approach_height_m: 0.8
+    precision_descent_speed_m_s: 0.35
+    final_descent_speed_m_s: 0.12
+    precision_lateral_gate_m: 0.35
+    relative_speed_gate_m_s: 0.35
+    touchdown_max_range_m: 0.22
+    touchdown_max_vertical_speed_m_s: 0.18
+    touchdown_confirm_s: 1.0
+    landing_max_abort_count: 3
+
+    max_world_altitude_m: 120.0
+    require_sensors_before_arm: true

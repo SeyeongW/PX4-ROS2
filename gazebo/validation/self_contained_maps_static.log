@@ -29,7 +29,10 @@ mountain_deterministic_validator=PASS
 static_preview_drones=0
 seo_trailer_model=flat_platform maps=city,mountain
 trailer_waypoint_driver=gazebo_transport_no_mavros
-px4_dynamic_model=gz_x500_mono_cam_down autostart=4014
+px4_dynamic_model=gz_x500_city_rgbd_lidar autostart=4001
+px4_model_repository_symlink=PASS
+px4_local_origin=base_link_model_root_plus_0.24m
+front_rgb_optical_axis=pitch_down_55deg front_depth=pitch_0deg
 coordinate_yaml_obstacles=city:274 mountain_trees:288 maze:0
 path_planning_reference_images=PASS
 active_sim_assets_or_absolute_home_references=0

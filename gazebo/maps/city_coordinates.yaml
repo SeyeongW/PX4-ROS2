@@ -23,7 +23,8 @@ frames:
     origin_enu_m:
     - -120.0
     - 115.0
-    - 0.16
+    - 0.24
+    origin_reference: PX4 x500 base_link at rest (model root + 0.24 m)
     conversion_from_gazebo_enu:
       x_north_m: y_enu - origin_y
       y_east_m: x_enu - origin_x
@@ -31,12 +32,19 @@ frames:
       yaw_ned_rad: normalize(pi/2 - yaw_enu)
 px4_vehicle:
   airframe_autostart_id: 4001
-  simulation_model: gz_x500_depth_lidar
-  runtime_entity_name: x500_depth_lidar_0
+  simulation_model: gz_x500_city_rgbd_lidar
+  runtime_entity_name: x500_city_rgbd_lidar_0
 terrain:
-  type: completely_flat_heightmap_and_triangle_mesh
+  type: completely_flat_heightmap_and_box_collision
   image: gazebo/worlds/applepark_city/mesh/height_map_city_500m.png
-  collision_mesh: gazebo/worlds/applepark_city/mesh/city_terrain_collision.obj
+  collision_geometry:
+    shape: box
+    size_m:
+    - 500.0
+    - 500.0
+    - 0.1
+    center_z_m: -0.05
+    top_z_m: 0.0
   rows: 257
   columns: 257
   sample_spacing_m: 1.953125
@@ -52,19 +60,11 @@ spawn:
   gazebo_spawn_pose_enu:
     x: -120.0
     y: 115.0
-    z: 0.16
+    z: 0.0
     roll: 0.0
     pitch: 0.0
     yaw: 0.0
-  pad:
-    shape: cylinder
-    center_enu_m:
-    - -120.0
-    - 115.0
-    - 0.08
-    radius_m: 4.0
-    length_m: 0.16
-    top_z_m: 0.16
+  surface: flat_road_datum_z0
 trailer:
   entity_name: flat_platform
   model_uri: model://moving_platform_track

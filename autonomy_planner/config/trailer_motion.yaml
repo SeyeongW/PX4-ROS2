@@ -1,0 +1,33 @@
+trailer_motion:
+  ros__parameters:
+    use_sim_time: true
+    world: applepark_city_uav
+    entity: trailer
+    command_topic: /model/trailer/cmd_vel
+    rate_hz: 50.0
+    start_enu_m: [200.0, -125.0, 0.0]
+    goal_enu_m: [-128.0, -128.0, 0.0]
+    # ROS 2 numeric parameters are one-dimensional.  Group each three values
+    # as one ENU waypoint: start -> north aisle -> west aisle -> landing goal.
+    route_waypoints_enu_m: [
+      200.0, -125.0, 0.0,
+      200.0, -100.0, 0.0,
+      -128.0, -100.0, 0.0,
+      -128.0, -128.0, 0.0
+    ]
+    cruise_speed_m_s: 3.0
+    max_acceleration_m_s2: 1.0
+    max_jerk_m_s3: 0.5
+    start_tolerance_m: 0.75
+    pose_stale_timeout_s: 0.50
+    velocity_filter_alpha: 0.35
+    odom_frame: trailer/odom
+    base_frame: trailer/base_link
+    deck_frame: trailer/landing_deck
+    marker_frame: trailer/aruco_marker
+    deck_height_m: 1.25
+    marker_offset_deck_m: [0.0, 0.0, 0.001]
+    marker_yaw_rad: 0.0
+    odometry_topic: /trailer/odometry
+    pose_topic: /trailer/pose
+    velocity_topic: /trailer/velocity

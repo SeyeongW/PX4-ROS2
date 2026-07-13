@@ -23,7 +23,8 @@ frames:
     origin_enu_m:
     - -80.0
     - -80.0
-    - 0.16
+    - 0.4
+    origin_reference: PX4 x500 base_link at rest (model root + 0.24 m)
     conversion_from_gazebo_enu:
       x_north_m: y_enu - origin_y
       y_east_m: x_enu - origin_x
@@ -31,8 +32,8 @@ frames:
       yaw_ned_rad: normalize(pi/2 - yaw_enu)
 px4_vehicle:
   airframe_autostart_id: 4001
-  simulation_model: gz_x500_depth_lidar
-  runtime_entity_name: x500_depth_lidar_0
+  simulation_model: gz_x500_city_rgbd_lidar
+  runtime_entity_name: x500_city_rgbd_lidar_0
 terrain:
   type: heightmap_and_triangle_mesh
   image: gazebo/models/ugv_mou_terrain/materials/textures/mountain_height_300.png

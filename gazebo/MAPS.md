@@ -2,7 +2,7 @@
 
 The `jo` branch keeps every map world, collision mesh and texture inside this
 repository. The main launcher starts Gazebo Harmonic and then PX4 SITL; PX4
-dynamically creates the real, motor-driven `x500_mono_cam_down` entity. There
+dynamically creates the real, motor-driven `x500_city_rgbd_lidar` entity. There
 is no static preview-drone substitute in either world.
 
 ```bash
@@ -19,10 +19,14 @@ DRIVE_TRAILER=1 TRAILER_ROUTE_LOOPS=1 ./gazebo/run_px4_map.sh city
 
 The setup helper pins a new checkout to the tested PX4 `v1.17.0`, runs PX4's
 official Ubuntu general-prerequisite installer (one sudo prompt may appear),
-but never changes or checks out an existing `~/PX4-Autopilot`. Set
+but never changes the branch/tag or tracked source of an existing
+`~/PX4-Autopilot`. It only manages the unique
+`Tools/simulation/gz/models/x500_city_rgbd_lidar` symlink; a real path at that
+location is preserved and reported as an error. Set
 `PX4_INSTALL_PREREQS=0` only when those prerequisites are already installed.
-The launch uses airframe
-`4014`, standalone Gazebo mode, and the spawn pose from the checked-in YAML.
+The launch uses the stock x500 airframe `4001`, the repository's
+`x500_city_rgbd_lidar` model, standalone Gazebo mode, and the spawn pose from the
+checked-in YAML.
 It also starts the local Micro XRCE-DDS Agent when available, enabling PX4
 ROS 2 `/fmu/*` topics; MAVLink / PX4 flight remains available without it.
 
@@ -30,6 +34,25 @@ Map-only inspection is still available with `./gazebo/run_world.sh city` or
 `mountain`; the trailer is part of each world, but those commands intentionally
 contain no PX4 drone. Use
 `run_px4_map.sh` whenever a flyable PX4 vehicle is required.
+
+The map-aware city mission uses the same world and dynamically spawned PX4
+vehicle, but adds 10 m vertical takeoff, A*, a static safe-flight corridor,
+validated cubic B-spline smoothing, local MPC, forward-depth avoidance and
+downward-lidar terrain clearance:
+
+```bash
+./gazebo/setup_autonomy_deps.sh                  # one time per PC
+./gazebo/run_autonomous_city_mission.sh --plan-only
+./gazebo/run_autonomous_city_mission.sh
+```
+
+See `docs/autonomous_city_mission.md` for the coordinate transform, algorithm
+contract and safety validation.
+
+The launcher above is exclusively the ROS 2 OFFBOARD B-spline/MPC branch. The
+native PX4 multicopter L1-style comparison is a separate `AUTO.MISSION` run;
+the B-spline implementation stays installed for paired A/B testing. Never run
+both authorities together. See `docs/px4_l1_bspline_cross_validation.md`.
 
 The equivalent direct commands below force rendering onto the NVIDIA GPU on a
 hybrid laptop without using the launcher script:
@@ -52,7 +75,8 @@ GZ_SIM_RESOURCE_PATH="$PWD/gazebo/models:$PWD/gazebo/worlds" __NV_PRIME_RENDER_O
   foundations now span `z=-0.05..0` and roofs are
   `15.907114..109.621338 m` above the common datum
 - visual heightmap and Bullet collision OBJ are both completely flat at `z=0`
-- PX4 spawn: `(-120, 115, 0.16)`; trailer spawn: `(-175, 140, 0)`
+- PX4 model-root spawn: `(-120, 115, 0)`; settled `base_link` / PX4 local
+  origin: `(-120, 115, 0.24)`; trailer spawn: `(-175, 140, 0)`
 - non-photographic OSM road / land-use texture
 - Bullet-compatible 129 x 129 terrain collision OBJ
 
@@ -91,7 +115,8 @@ the same `z=0` value at every vertex.
 - 288 uniformly 2x-scaled trees seated with a 3 mm burial allowance; the old
   short tree-contact shelves which caused slope spikes are gone
 - artificial maze removed (zero maze collisions and zero maze visuals)
-- PX4 spawn: `(-80, -80, 0.16)`; trailer spawn: `(0, 0, 0)`
+- PX4 model-root spawn: `(-80, -80, 0.16)`; settled `base_link` / PX4 local
+  origin: `(-80, -80, 0.40)`; trailer spawn: `(0, 0, 0)`
 - exact-flat trailer corridor: ellipse `(x/42)^2 + (y/30)^2 <= 1`
 
 For the actual PX4-controlled x500 with downward monocular camera, run:
