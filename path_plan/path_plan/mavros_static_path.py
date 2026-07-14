@@ -190,21 +190,30 @@ class MavrosStaticPathNode(Node):
         fut.add_done_callback(self._on_speed_read)
 
     def _on_speed_read(self, fut):
-        self._speed_done = True
         try:
             values = fut.result().values
         except Exception as exc:                       # noqa: BLE001
             self.get_logger().warn(f"speed read failed ({exc}); keeping config")
+            self._speed_done = True
             return
         if not values:
             self.get_logger().warn(f"{self.speed_param} not found; keeping config")
+            self._speed_done = True
             return
         pv = values[0]
+        if pv.type == ParameterType.PARAMETER_NOT_SET:
+            # MAVROS hasn't synced this parameter from PX4 yet; try again next tick
+            self._speed_req = False
+            return
+        
         val = (pv.double_value if pv.type == ParameterType.PARAMETER_DOUBLE
                else float(pv.integer_value))
         if val <= 0.0:
             self.get_logger().warn(f"{self.speed_param}={val}; keeping config")
+            self._speed_done = True
             return
+        
+        self._speed_done = True
         speed = val * self.speed_scale
         self.get_logger().info(
             f"{self.speed_param}={val:.1f} m/s -> MPC cruise {speed:.1f} m/s "
