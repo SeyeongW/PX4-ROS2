@@ -11,10 +11,12 @@ fi
 
 case "$MAP" in
   city)
-    # The normal city profile is the self-contained 1260 m UAV derivative with
-    # rolled-back jo 2.5x centroids / 0.9x footprints and 10--20 m heights.
+    # The normal city profile is the self-contained 1300 m UAV derivative with
+    # uniformly 2.5x-scaled centroids / footprints and 20--50 m heights
+    # with an exact 35 m mean.
     # The source 500 m asset remains available explicitly for regression work.
     COORDINATES="$SCRIPT_DIR/maps/city_coordinates_uav.yaml"
+    DEFAULT_PHYSICS_ENGINE="gz-physics-dartsim-plugin"
     ;;
   city-legacy)
     COORDINATES="$SCRIPT_DIR/maps/city_coordinates.yaml"
@@ -50,7 +52,7 @@ Environment:
   PX4_GZ_PLATFORM_HEADING_DEG=...  City SEO trailer heading (default: 0 deg/east)
   USE_NVIDIA=0            Disable NVIDIA PRIME render variables
   GZ_PARTITION=...        Gazebo transport partition (shared with PX4)
-  PHYSICS_ENGINE=...      Override physics engine (default: DART)
+  PHYSICS_ENGINE=...      Override physics engine (city default: DART)
   PX4_DAEMON=1            Disable the interactive PX4 shell (for log/CI runs)
 EOF
     exit 0
@@ -137,7 +139,7 @@ if [[ ! -L "$CUSTOM_MODEL_TARGET" || "$(realpath -m "$CUSTOM_MODEL_TARGET")" != 
   echo "ERROR: PX4 custom model must link to this checkout: $CUSTOM_MODEL_TARGET -> $CUSTOM_MODEL_SOURCE" >&2
   exit 3
 fi
-for model in "$CUSTOM_MODEL" x500 x500_base OakD-Lite LW20; do
+for model in "$CUSTOM_MODEL" x500 x500_base; do
   [[ -f "$PX4_DIR/Tools/simulation/gz/models/$model/model.sdf" ]] || {
     echo "ERROR: PX4 Gazebo model asset is missing: $model" >&2
     if [[ "$model" == "$CUSTOM_MODEL" ]]; then
@@ -378,59 +380,6 @@ watch_gazebo_while_px4_runs() {
   return 0
 }
 
-# PX4's POSIX SITL rcS starts uxrce_dds_client unconditionally.  In the
-# MAVROS-only profile, use PX4's supported `-s` option with a runtime copy of
-# rcS from which that single start command is removed.  This prevents the
-# startup race (and its misleading "got no ping" errors) without modifying the
-# user's PX4 source/build tree.  Fail closed if a future PX4 release changes
-# the expected rcS line instead of silently filtering the wrong command.
-MAVROS_RCS=""
-if [[ "${START_XRCE:-0}" != "1" ]]; then
-  PX4_STOCK_RCS="$PX4_BUILD/etc/init.d-posix/rcS"
-  MAVROS_RCS="$RUNTIME_DIR/rcS.mavros_only"
-  MAVROS_RCS_TMP="$MAVROS_RCS.tmp.$$"
-  [[ -f "$PX4_STOCK_RCS" ]] || {
-    echo "ERROR: PX4 startup script is missing: $PX4_STOCK_RCS" >&2
-    exit 3
-  }
-  DDS_START_COUNT="$(grep -Ec '^[[:space:]]*uxrce_dds_client[[:space:]]+start([[:space:]]|$)' "$PX4_STOCK_RCS" || true)"
-  [[ "$DDS_START_COUNT" == "1" ]] || {
-    echo "ERROR: expected exactly one uxrce_dds_client start line in $PX4_STOCK_RCS; found $DDS_START_COUNT." >&2
-    exit 3
-  }
-  awk '!/^[[:space:]]*uxrce_dds_client[[:space:]]+start([[:space:]]|$)/' \
-    "$PX4_STOCK_RCS" >"$MAVROS_RCS_TMP"
-  if ! /bin/sh -n "$MAVROS_RCS_TMP"; then
-    rm -f "$MAVROS_RCS_TMP"
-    echo "ERROR: generated MAVROS-only PX4 startup script is invalid." >&2
-    exit 3
-  fi
-  if grep -Eq '^[[:space:]]*uxrce_dds_client[[:space:]]+start([[:space:]]|$)' "$MAVROS_RCS_TMP"; then
-    rm -f "$MAVROS_RCS_TMP"
-    echo "ERROR: generated MAVROS-only PX4 startup script still starts DDS." >&2
-    exit 3
-  fi
-  mv -f "$MAVROS_RCS_TMP" "$MAVROS_RCS"
-fi
-
-stop_process() {
-  local pid="${1:-}"
-  [[ -n "$pid" ]] || return 0
-  if kill -0 "$pid" 2>/dev/null; then
-    kill "$pid" 2>/dev/null || true
-    for _ in {1..30}; do
-      kill -0 "$pid" 2>/dev/null || break
-      sleep 0.1
-    done
-    # Some gz-sim launcher wrappers do not terminate on SIGTERM.  Never let
-    # Ctrl-C leave a world running or make this cleanup wait indefinitely.
-    if kill -0 "$pid" 2>/dev/null; then
-      kill -KILL "$pid" 2>/dev/null || true
-    fi
-  fi
-  wait "$pid" 2>/dev/null || true
-}
-
 cleanup() {
   local status=$?
   local trailer_status=0
@@ -452,6 +401,7 @@ cleanup() {
       fi
     fi
   fi
+  stop_process "$WATCHDOG_PID"
   stop_process "$BRIDGE_PID"
   stop_process "$MAVROS_PID"
   stop_process "$XRCE_PID"
@@ -467,7 +417,7 @@ if gz topic -l 2>/dev/null | grep -q '^/world/.*/clock$'; then
   exit 4
 fi
 
-PHYSICS_ENGINE="${PHYSICS_ENGINE:-gz-physics-dartsim-plugin}"
+PHYSICS_ENGINE="${PHYSICS_ENGINE:-$DEFAULT_PHYSICS_ENGINE}"
 GZ_ARGS=(-v4 -r --physics-engine "$PHYSICS_ENGINE")
 if [[ "${HEADLESS:-0}" == "1" ]]; then
   GZ_ARGS+=(-s)
@@ -481,6 +431,11 @@ echo "Gazebo spawn ENU : $SPAWN_POSE"
 echo "Expected entity  : $ENTITY_NAME"
 echo "GZ_PARTITION     : $GZ_PARTITION"
 echo "Physics          : $PHYSICS_ENGINE"
+if [[ "$MAP" == "city" ]]; then
+  echo "SEO trailer      : moving_platform_aruco as trailer"
+  echo "Trailer control  : ${PX4_GZ_PLATFORM_VEL} m/s @ ${PX4_GZ_PLATFORM_HEADING_DEG} deg"
+  echo "Trailer noise    : stock SEO perturbations start after PX4 spawn"
+fi
 if [[ "${HEADLESS:-0}" == "1" ]]; then
   echo "Gazebo camera    : headless"
 elif [[ -n "${PX4_GZ_FOLLOW:-}" ]]; then
@@ -628,7 +583,7 @@ if [[ "${DRIVE_TRAILER:-0}" == "1" ]]; then
   echo "Trailer route    : active (log: $TRAILER_LOG)"
 else
   if [[ "$MAP" == "city" ]]; then
-    echo "Trailer          : spawned at ENU ($TRAILER_SPAWN_POSE), stationary"
+    echo "Trailer          : SEO model at ENU ($TRAILER_SPAWN_POSE), zero mean speed by default"
   else
     echo "Trailer route    : spawned, stationary (set DRIVE_TRAILER=1 to drive)"
   fi
@@ -715,9 +670,26 @@ if [[ "${START_XRCE:-0}" != "1" ]]; then
 else
   echo "PX4 transport     : MAVLink + Micro XRCE-DDS"
 fi
+LAUNCHER_PID=$$
+watch_gazebo_while_px4_runs "$LAUNCHER_PID" "$GAZEBO_PID" &
+WATCHDOG_PID=$!
+set +e
 PX4_GZ_STANDALONE=1 \
 PX4_GZ_WORLD="$WORLD_NAME" \
 PX4_GZ_MODEL_POSE="$SPAWN_POSE" \
 PX4_SYS_AUTOSTART="$AUTOSTART_ID" \
 PX4_SIM_MODEL="$SIM_MODEL" \
 "$PX4_BIN" "${PX4_ARGS[@]}"
+PX4_STATUS=$?
+wait "$WATCHDOG_PID"
+WATCHDOG_STATUS=$?
+WATCHDOG_PID=""
+set -e
+if [[ "$WATCHDOG_STATUS" == "7" ]]; then
+  exit 5
+fi
+if [[ "$PX4_STATUS" != "0" ]]; then
+  echo "ERROR: PX4 SITL exited with status $PX4_STATUS; Gazebo and ROS bridges will now stop." >&2
+  echo "       Check that no other PX4 instance owns $PX4_LOCK_PATH." >&2
+  exit "$PX4_STATUS"
+fi

@@ -5,9 +5,9 @@ The Gazebo-native names are launch arguments.  ROS consumers always receive
 the stable contract below, independent of the selected world or PX4 entity:
 
 * ``/front_camera/image`` and ``/front_camera/camera_info``
-* ``/front_depth/image``, ``/front_depth/points`` and camera info
+* ``/front_depth/image`` (mono8 display), ``/front_depth/image_raw`` (32FC1 metric), points and info
 * ``/down_camera/image`` and ``/down_camera/camera_info``
-* ``/down_depth/image``, ``/down_depth/points`` and camera info
+* ``/down_depth/image`` (mono8 display), ``/down_depth/image_raw`` (32FC1 metric), points and info
 * ``/down_lidar`` and ``/down_lidar/points``
 
 Camera link frames use Gazebo's +X-forward convention.  Their optical children
@@ -80,12 +80,12 @@ def _launch_setup(context, *args, **kwargs):
     bridge_remappings = [
             (front_rgb_image, "/front_camera/image"),
             (front_rgb_info, "/front_camera/camera_info"),
-            (front_depth, "/front_depth/image"),
+            (front_depth, "/front_depth/image_raw"),
             (front_depth_points, "/front_depth/points"),
             (front_depth_info, "/front_depth/camera_info"),
             (down_rgb_image, "/down_camera/image"),
             (down_rgb_info, "/down_camera/camera_info"),
-            (down_depth, "/down_depth/image"),
+            (down_depth, "/down_depth/image_raw"),
             (down_depth_points, "/down_depth/points"),
             (down_depth_info, "/down_depth/camera_info"),
             (lidar_base, "/down_lidar"),
@@ -144,11 +144,11 @@ def _launch_setup(context, *args, **kwargs):
     optical_rpy = (-1.57079632679, 0.0, -1.57079632679)
     transforms = [
         _static_tf("tf_front_rgb_link", base_frame, "front_rgb_link",
-                   (0.12, 0.03, 0.242), (0.0, 0.0, 0.0)),
+                   (0.12, 0.03, 0.002), (0.0, 0.0, 0.0)),
         _static_tf("tf_front_rgb_optical", "front_rgb_link",
                    "front_camera_optical_frame", (0.0, 0.0, 0.0), optical_rpy),
         _static_tf("tf_front_depth_link", base_frame, "front_depth_link",
-                   (0.12, 0.0, 0.242), (0.0, 0.0, 0.0)),
+                   (0.12, 0.0, 0.002), (0.0, 0.0, 0.0)),
         _static_tf("tf_front_depth_optical", "front_depth_link",
                    "front_depth_optical_frame", (0.0, 0.0, 0.0), optical_rpy),
         _static_tf("tf_down_rgb_link", base_frame, "down_rgb_link",

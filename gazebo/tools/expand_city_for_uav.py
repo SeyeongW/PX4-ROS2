@@ -1,21 +1,27 @@
 #!/usr/bin/env python3
-"""Generate the rolled-back, 2.5x-spaced Apple Park UAV city.
+"""Generate the uniformly 2.5x-scaled Apple Park UAV city.
 
 ``city_coordinates.yaml`` is the only building-geometry source of truth. Each
 building centroid is moved away from a configurable anchor and each local XY
-footprint is restored to the preceding ``jo`` 0.9 scale. Flight passages are
-created by removing buildings, never by shrinking or moving retained buildings.
-All Z coordinates are preserved;
-they are copied bit-for-bit as Python floats and never scaled or recomputed.
+footprint is scaled by the same 2.5 factor.  This restores the building / road
+proportions of the initial ``origin/main`` 500 m city in the expanded map.
+Flight passages are created by removing buildings, never by moving retained
+buildings.
+Building foundations and the flat-ground datum are preserved.  The source
+city's stable SHA-256 height ordering is re-ranked inside the retained set and
+mapped to a 20--50 m active skyline.  The spatial assignment therefore looks
+random while the exact 205-building mean remains 35 m and the result stays
+fully reproducible.
 The active profile deterministically removes 69 buildings, retaining 205
 (exactly the nearest integer to three quarters) of the 274-building source
 city.  A deterministic spatially-stratified random selector distributes those
 removals across every part of the map.  It creates many possible passages
 without moving or shrinking any retained building.
 
-The generated COLLADA file is deliberately shared by Gazebo visual and
-collision elements. This prevents visual/collision/YAML drift that a
-world-level mesh scale would introduce.
+The generated COLLADA file is the visual mesh. Every Gazebo collision prism is
+generated from the same ordered YAML ring coordinates as an SDF polyline.
+This preserves exact visual/collision/YAML alignment while remaining supported
+by the DART backend required for stable PX4 multicopter dynamics.
 """
 
 from __future__ import annotations
@@ -53,6 +59,7 @@ OUTPUT_NORMAL = OUTPUT_MESH_DIR / "normal_map_city_uav.png"
 OUTPUT_WORLD = OUTPUT_WORLD_DIR / "applepark_uav.world"
 OUTPUT_MODEL_CONFIG = OUTPUT_WORLD_DIR / "model.config"
 OUTPUT_ATTRIBUTION = OUTPUT_WORLD_DIR / "OSM_ATTRIBUTION.txt"
+OUTPUT_VERTICES_CSV = REPO_ROOT / "gazebo/maps/city_uav_building_vertices.csv"
 REPORT_DIR = REPO_ROOT / "reports/city_uav_expansion"
 
 Point = tuple[float, float]
@@ -62,7 +69,7 @@ Ring = list[Point]
 # the north-east and the larger trailer on the wider south-west asphalt strip.
 # Passages and spawn safety come from empty road space, not moved buildings.
 SPAWN_XY: Point = (587.0, 580.0)
-MISSION_GOAL_XY: Point = (200.0, -125.0)
+MISSION_GOAL_XY: Point = (200.0, -128.0)
 TRAILER_SPAWN_XY: Point = (-587.0, -512.0)
 TRAILER_DESTINATION_XY: Point = (-128.0, -128.0)
 
@@ -79,9 +86,16 @@ TRAILER_ROUTE_MARGIN_M = 1.00
 PX4_BASE_LINK_Z_OFFSET_M = 0.24
 
 DEFAULT_SPACING_SCALE = 2.5
-DEFAULT_FOOTPRINT_SCALE = 0.9
-ACTIVE_HEIGHT_PROFILE = "deterministic_hash_rank_10_to_20m_v1"
-FOOTPRINT_SCALE_CANDIDATES = (0.9,)
+DEFAULT_FOOTPRINT_SCALE = 2.5
+SOURCE_HEIGHT_PROFILE = "deterministic_hash_rank_10_to_20m_v1"
+SOURCE_HEIGHT_MIN_M = 10.0
+SOURCE_HEIGHT_MAX_M = 20.0
+ACTIVE_HEIGHT_PROFILE = "deterministic_active_hash_rank_20_to_50m_mean35_v1"
+ACTIVE_HEIGHT_MIN_M = 20.0
+ACTIVE_HEIGHT_MAX_M = 50.0
+ACTIVE_HEIGHT_MEAN_M = 35.0
+VERTEX_CSV_SCHEMA_VERSION = 1
+FOOTPRINT_SCALE_CANDIDATES = (2.5,)
 SOURCE_BUILDING_COUNT = 274
 ACTIVE_BUILDING_COUNT = 205
 REMOVED_BUILDING_COUNT = SOURCE_BUILDING_COUNT - ACTIVE_BUILDING_COUNT
@@ -93,7 +107,7 @@ REDUCTION_RANDOM_SEED = 7577
 REDUCTION_GRID_SIZE = 5
 REDUCTION_SOURCE_MIN_M = -250.0
 REDUCTION_SOURCE_MAX_M = 250.0
-REDUCTION_IDS_SHA256 = "041e0979aaad59280413eba5e758664b7b2653fe1981695633b18d51130dde6d"
+REDUCTION_IDS_SHA256 = "de4469c06f387f4acc97ef29c9b9818fa08a4e831541f2f199cf62b35459c753"
 REDUCTION_REMOVED_IDS = (
     "building_003", "building_006", "building_008", "building_013", "building_016",
     "building_017", "building_021", "building_023", "building_024", "building_025",
@@ -107,26 +121,37 @@ REDUCTION_REMOVED_IDS = (
     "building_168", "building_173", "building_177", "building_185", "building_192",
     "building_196", "building_199", "building_201", "building_203", "building_205",
     "building_222", "building_225", "building_230", "building_231", "building_232",
-    "building_237", "building_239", "building_240", "building_246", "building_248",
-    "building_261", "building_262", "building_264", "building_270",
+    "building_237", "building_239", "building_246", "building_248",
+    "building_261", "building_262", "building_264", "building_265", "building_270",
 )
 REDUCTION_PROTECTED_IDS = (
     # Map-envelope extrema, the sole courtyard, historical jo sentinels and
-    # the exact active 10 / 20 m height extrema are deliberately retained.
+    # the exact active 20 / 50 m height extrema are deliberately retained.
     "building_001", "building_009", "building_046", "building_047", "building_131",
     "building_141", "building_147", "building_171", "building_190", "building_202",
     "building_213",
 )
+# The requested A* destination (200, -128) lies inside building_265 in the
+# source-derived layout.  Force exactly that obstacle out while keeping the
+# same per-cell quota and 205-building total; the next hash-ranked building in
+# the same grid cell is retained instead.  This changes only one member of the
+# otherwise spatial-random selection.
+MISSION_CLEARANCE_REMOVAL_IDS = ("building_265",)
 REDUCTION_METHOD = (
     "25% deterministic spatial-random filter: 5x5 Hamilton quotas and "
-    "SHA-256(seed, building ID) ranking; retained XYZ unchanged"
+    "SHA-256(seed, building ID) ranking, with building_265 forced out to "
+    "keep the fixed A* goal free; retained IDs and XY unchanged"
 )
 DEFAULT_NEIGHBOR_RADIUS_M = 35.0
 DEFAULT_MAP_MARGIN_M = 20.0
-# Gazebo Harmonic 8.14 / DART accepts the closed COLLADA prism through its
-# AttachMesh fallback.  Using the same single DAE for visual and collision is
-# exact, preserves the courtyard hole, and avoids hundreds of SDF entities.
-COLLISION_GEOMETRY_TYPE = "shared_exact_dae_mesh"
+MINIMUM_MAP_HALF_SIZE_M = 650.0
+ROAD_TEXTURE_PIXELS = 2048
+FLAT_HEIGHTMAP_PIXELS = 256
+NEUTRAL_GROUND_RGB = (166, 164, 151)
+# Gazebo Harmonic 8.14 / DART cannot construct an SDF <mesh> collision, but it
+# does construct closed, extruded <polyline> geometry. Emit one exact prism per
+# building from the same YAML rings used by the DAE visual.
+COLLISION_GEOMETRY_TYPE = "exact_per_building_polyline_prisms_dart"
 EPS = 1.0e-9
 
 
@@ -401,12 +426,24 @@ def deterministic_removal_ids(source_buildings: Sequence[dict]) -> tuple[str, ..
         quotas[cell] += 1
 
     protected = set(REDUCTION_PROTECTED_IDS)
+    forced = set(MISSION_CLEARANCE_REMOVAL_IDS)
+    require(not (protected & forced), "a forced mission removal is protected")
+    require(forced <= set(cells), "a forced mission removal is absent from the source city")
     selected: set[str] = set()
     for cell in sorted(counts):
+        forced_in_cell = {
+            identifier for identifier in forced if cells[identifier] == cell
+        }
+        require(
+            len(forced_in_cell) <= quotas[cell],
+            f"removal cell {cell} has more forced IDs than its quota",
+        )
         eligible = [
             identifier
             for identifier, identifier_cell in cells.items()
-            if identifier_cell == cell and identifier not in protected
+            if identifier_cell == cell
+            and identifier not in protected
+            and identifier not in forced_in_cell
         ]
         ranked = sorted(
             eligible,
@@ -414,8 +451,10 @@ def deterministic_removal_ids(source_buildings: Sequence[dict]) -> tuple[str, ..
                 f"{REDUCTION_RANDOM_SEED}:{identifier}".encode("utf-8")
             ).digest(),
         )
-        require(len(ranked) >= quotas[cell], f"removal cell {cell} cannot meet its protected quota")
-        selected.update(ranked[:quotas[cell]])
+        random_quota = quotas[cell] - len(forced_in_cell)
+        require(len(ranked) >= random_quota, f"removal cell {cell} cannot meet its protected quota")
+        selected.update(forced_in_cell)
+        selected.update(ranked[:random_quota])
 
     # Serialize in canonical source order, not set or hash order.
     result = tuple(str(record["id"]) for record in source_buildings if str(record["id"]) in selected)
@@ -485,6 +524,8 @@ def select_active_buildings(source_buildings: Sequence[dict]) -> tuple[list[dict
     require(len(retained) == ACTIVE_BUILDING_COUNT, "active building count differs from 205")
     require(len(removed) == REMOVED_BUILDING_COUNT, "removed building count differs from 69")
     require(not (set(REDUCTION_PROTECTED_IDS) & removed_set), "protected building was removed")
+    require(set(MISSION_CLEARANCE_REMOVAL_IDS) <= removed_set,
+            "fixed-goal blocking building remains active")
     audit = removal_grid_audit(source_buildings, removed)
     require(audit["cells_with_removals"] == REDUCTION_GRID_SIZE**2,
             "spatial-random removal does not cover every map region")
@@ -503,10 +544,53 @@ def transform_ring(ring: Sequence[Point], centroid: Point, new_centroid: Point, 
     ]
 
 
+def active_height_by_identifier(source_buildings: Sequence[dict]) -> dict[str, float]:
+    """Return the exact-mean active skyline using the source hash-rank order.
+
+    The source heights are a one-to-one encoding of the stable SHA-256 order.
+    Re-ranking only the retained 205 records keeps that pseudo-random spatial
+    assignment while filling every rank 0..204.  The evenly spaced symmetric
+    values have exact extrema 20 / 50 m and an exact arithmetic mean of 35 m.
+    """
+
+    require(len(source_buildings) >= 2, "height profile requires at least two buildings")
+    for record in source_buildings:
+        source_height_m = float(record["height_above_ground_m"])
+        require(
+            SOURCE_HEIGHT_MIN_M - EPS <= source_height_m <= SOURCE_HEIGHT_MAX_M + EPS,
+            f"source building height {source_height_m:g}m is outside 10--20m",
+        )
+    ordered = sorted(
+        source_buildings,
+        key=lambda record: (float(record["height_above_ground_m"]), str(record["id"])),
+    )
+    require(
+        len({float(record["height_above_ground_m"]) for record in ordered})
+        == len(source_buildings),
+        "active source height ranks are not unique",
+    )
+    denominator = len(source_buildings) - 1
+    result = {
+        str(record["id"]): ACTIVE_HEIGHT_MIN_M
+        + (ACTIVE_HEIGHT_MAX_M - ACTIVE_HEIGHT_MIN_M) * rank / denominator
+        for rank, record in enumerate(ordered)
+    }
+    heights = list(result.values())
+    require(abs(min(heights) - ACTIVE_HEIGHT_MIN_M) <= EPS, "active height minimum changed")
+    require(abs(max(heights) - ACTIVE_HEIGHT_MAX_M) <= EPS, "active height maximum changed")
+    require(
+        abs(statistics.fmean(heights) - ACTIVE_HEIGHT_MEAN_M) <= EPS,
+        "active height mean is not exactly 35m",
+    )
+    require(len(set(heights)) == len(source_buildings), "active heights are not unique")
+    return result
+
+
 def transform_buildings(
     source_buildings: Sequence[dict], spacing_scale: float, footprint_scale: float, anchor: Point
 ) -> list[BuildingGeometry]:
     transformed: list[BuildingGeometry] = []
+    active_heights = active_height_by_identifier(source_buildings)
     for record in source_buildings:
         original_outer = normalize_ring(record["footprint"]["outer"], ccw=True)
         original_holes = [normalize_ring(hole, ccw=False) for hole in record["footprint"].get("holes", [])]
@@ -521,6 +605,8 @@ def transform_buildings(
         for hole_index, hole in enumerate(new_holes):
             validate_ring(hole, f"{record['id']} hole {hole_index}")
             require(point_in_ring(hole[0], new_outer, include_boundary=False), f"{record['id']}: hole outside outer")
+        ground_z = float(record["ground_reference_z_m"])
+        active_height = active_heights[str(record["id"])]
         transformed.append(
             BuildingGeometry(
                 identifier=str(record["id"]),
@@ -531,9 +617,9 @@ def transform_buildings(
                 transformed_centroid=moved_centroid,
                 footprint_scale=footprint_scale,
                 foundation_z=float(record["foundation_z_m"]),
-                ground_z=float(record["ground_reference_z_m"]),
-                roof_z=float(record["roof_z_m"]),
-                height=float(record["height_above_ground_m"]),
+                ground_z=ground_z,
+                roof_z=ground_z + active_height,
+                height=active_height,
             )
         )
     return transformed
@@ -619,15 +705,15 @@ def evaluate_candidate(
     trailer_route, route_clearance = choose_trailer_route(buildings)
 
     reasons: list[str] = []
-    required_neighbor_gap = 2.0 * R_HARD_M
     required_point_clearance = R_PREFERRED_M + TAKEOFF_POSITION_ERROR_M
     if overlap_count:
         reasons.append(f"{overlap_count} transformed neighbor pairs overlap")
-    if min(neighbor_gaps) < required_neighbor_gap:
-        reasons.append(
-            f"minimum neighbor gap {min(neighbor_gaps):.3f}m < hard width {required_neighbor_gap:.3f}m"
-        )
-    for name, clearance in point_clearances.items():
+    # The active branch is a map-geometry profile, not a corridor planner.
+    # The user explicitly keeps building centers / count and accepts narrow
+    # inter-building gaps.  Only the two actual runtime spawn sites are gating;
+    # the historical goal and stationary-trailer endpoint stay informational.
+    for name in ("spawn", "trailer_spawn"):
+        clearance = point_clearances[name]
         if clearance < required_point_clearance:
             reasons.append(f"{name} clearance {clearance:.3f}m < {required_point_clearance:.3f}m")
 
@@ -662,8 +748,10 @@ def choose_scale(
     require(feasible, "none of the allowed footprint scales produces a safe layout")
     selected = DEFAULT_FOOTPRINT_SCALE
     reason = (
-        "restore origin/jo building XY: 2.5x centroids and 0.9x footprints; "
-        "create passages only through deterministic building removal"
+        "match origin/main initial-city proportions by scaling both building "
+        "centroids and local XY footprints by 2.5; retain the deterministic "
+        "205-building selection and remap only roof heights to 20--50m "
+        "with exact 35m mean"
     )
     return layouts[selected], neighbor_pairs, evaluations, reason
 
@@ -835,11 +923,81 @@ def write_dae(buildings: Sequence[BuildingGeometry], path: Path) -> tuple[int, i
     return len(positions), len(triangles)
 
 
+def write_vertex_csv(buildings: Sequence[BuildingGeometry], path: Path) -> int:
+    """Write ordered obstacle rings for A* without DAE triangle duplication.
+
+    Each row is one logical XY corner and carries the complete vertical prism
+    interval.  The last vertex closes to vertex zero through next_vertex_order;
+    the first point is deliberately not duplicated at the end of a ring.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    row_count = 0
+    with path.open("w", newline="", encoding="utf-8") as stream:
+        writer = csv.writer(stream, lineterminator="\n")
+        writer.writerow(
+            [
+                "schema_version",
+                "map_name",
+                "frame_id",
+                "building_id",
+                "source_component_id",
+                "ring_role",
+                "ring_index",
+                "vertex_order",
+                "next_vertex_order",
+                "ring_vertex_count",
+                "winding",
+                "x_enu_m",
+                "y_enu_m",
+                "foundation_z_m",
+                "ground_reference_z_m",
+                "roof_z_m",
+                "height_above_ground_m",
+            ]
+        )
+        for building in buildings:
+            rings = [("outer", 0, building.transformed.outer)] + [
+                ("hole", index, ring)
+                for index, ring in enumerate(building.transformed.holes)
+            ]
+            for role, ring_index, ring in rings:
+                winding = "CCW" if signed_area(ring) > 0.0 else "CW"
+                require(
+                    (role == "outer" and winding == "CCW")
+                    or (role == "hole" and winding == "CW"),
+                    f"{building.identifier} {role} ring winding changed",
+                )
+                for vertex_order, (x, y) in enumerate(ring):
+                    writer.writerow(
+                        [
+                            VERTEX_CSV_SCHEMA_VERSION,
+                            "city_uav",
+                            "gazebo_world_enu",
+                            building.identifier,
+                            building.source_component_id,
+                            role,
+                            ring_index,
+                            vertex_order,
+                            (vertex_order + 1) % len(ring),
+                            len(ring),
+                            winding,
+                            fmt(x),
+                            fmt(y),
+                            fmt(building.foundation_z),
+                            fmt(building.ground_z),
+                            fmt(building.roof_z),
+                            fmt(building.height),
+                        ]
+                    )
+                    row_count += 1
+    return row_count
+
+
 def determine_bounds(buildings: Sequence[BuildingGeometry], margin: float) -> tuple[float, float, float, float]:
     all_points = [point for building in buildings for point in building.transformed.outer]
     all_points.extend([SPAWN_XY, MISSION_GOAL_XY, TRAILER_SPAWN_XY, TRAILER_DESTINATION_XY])
     extent = max(max(abs(point[0]), abs(point[1])) for point in all_points) + margin
-    half_size = math.ceil(extent / 10.0) * 10.0
+    half_size = max(MINIMUM_MAP_HALF_SIZE_M, math.ceil(extent / 10.0) * 10.0)
     return -half_size, -half_size, half_size, half_size
 
 
@@ -847,7 +1005,7 @@ def write_textures(bounds: tuple[float, float, float, float], spacing_scale: flo
     xmin, ymin, xmax, ymax = bounds
     require(abs((xmax - xmin) - (ymax - ymin)) <= EPS, "Gazebo heightmap must be square")
     source = Image.open(SOURCE_TEXTURE).convert("RGB")
-    output_size = 2048
+    output_size = ROAD_TEXTURE_PIXELS
     source_width, source_height = source.size
 
     # PIL affine maps each output pixel to an input pixel.  World Y decreases
@@ -874,13 +1032,110 @@ def write_textures(bounds: tuple[float, float, float, float], spacing_scale: flo
         resample=Image.BILINEAR,
         fillcolor=(95, 98, 96),
     )
+
+    # The scaled source covers exactly 1250 m. A larger safety ground must
+    # not expose PIL's dark fill colour as a rectangular map seam. Extend the
+    # nearest real edge pixels instead. This preserves every existing
+    # world-to-texture coordinate inside the source extent while continuing
+    # roads and terrain colours naturally to the finite visual boundary.
+    x_scale, _, x_offset, _, y_scale, y_offset = affine
+    left = max(0, math.ceil((0.0 - x_offset) / x_scale))
+    right = min(output_size - 1, math.floor(((source_width - 1) - x_offset) / x_scale))
+    top = max(0, math.ceil((0.0 - y_offset) / y_scale))
+    bottom = min(output_size - 1, math.floor(((source_height - 1) - y_offset) / y_scale))
+    require(left <= right and top <= bottom, "scaled source texture is outside the UAV ground")
+    nearest = getattr(Image, "Resampling", Image).NEAREST
+    if left > 0:
+        strip = road.crop((left, top, left + 1, bottom + 1)).resize(
+            (left, bottom - top + 1), nearest
+        )
+        road.paste(strip, (0, top))
+    if right < output_size - 1:
+        width = output_size - right - 1
+        strip = road.crop((right, top, right + 1, bottom + 1)).resize(
+            (width, bottom - top + 1), nearest
+        )
+        road.paste(strip, (right + 1, top))
+    if top > 0:
+        strip = road.crop((0, top, output_size, top + 1)).resize(
+            (output_size, top), nearest
+        )
+        road.paste(strip, (0, 0))
+    if bottom < output_size - 1:
+        height = output_size - bottom - 1
+        strip = road.crop((0, bottom, output_size, bottom + 1)).resize(
+            (output_size, height), nearest
+        )
+        road.paste(strip, (0, bottom + 1))
+
+    # Fade only the extrapolated 125 m safety margin toward the city's neutral
+    # ground colour. Edge-clamp removes the hard seam; this smooth fade avoids
+    # turning boundary road pixels into visually distracting infinite stripes.
+    import numpy as np
+
+    source_half_extent = 250.0 * spacing_scale
+    x_coordinates = np.linspace(xmin, xmax, output_size)
+    y_coordinates = np.linspace(ymax, ymin, output_size)
+    x_outside = np.maximum(
+        np.maximum(anchor[0] - source_half_extent - x_coordinates, 0.0),
+        x_coordinates - (anchor[0] + source_half_extent),
+    )
+    y_outside = np.maximum(
+        np.maximum(anchor[1] - source_half_extent - y_coordinates, 0.0),
+        y_coordinates - (anchor[1] + source_half_extent),
+    )
+    outside_distance = np.maximum(y_outside[:, None], x_outside[None, :])
+    feather_distance = max(
+        xmax - (anchor[0] + source_half_extent),
+        (anchor[0] - source_half_extent) - xmin,
+        ymax - (anchor[1] + source_half_extent),
+        (anchor[1] - source_half_extent) - ymin,
+        EPS,
+    )
+    blend = np.clip(outside_distance / feather_distance, 0.0, 1.0)
+    blend = blend * blend * (3.0 - 2.0 * blend)
+    pixels = np.asarray(road, dtype=np.float32)
+    neutral = np.asarray(NEUTRAL_GROUND_RGB, dtype=np.float32)
+    pixels = pixels * (1.0 - blend[:, :, None]) + neutral * blend[:, :, None]
+    road = Image.fromarray(np.rint(pixels).astype(np.uint8), mode="RGB")
     road.save(OUTPUT_ROAD, optimize=True)
-    Image.new("L", (257, 257), color=255).save(OUTPUT_HEIGHT, optimize=True)
-    Image.new("RGB", (257, 257), color=(128, 128, 255)).save(OUTPUT_NORMAL, optimize=True)
+    Image.new("L", (FLAT_HEIGHTMAP_PIXELS, FLAT_HEIGHTMAP_PIXELS), color=255).save(
+        OUTPUT_HEIGHT, optimize=True
+    )
+    Image.new(
+        "RGB", (FLAT_HEIGHTMAP_PIXELS, FLAT_HEIGHTMAP_PIXELS), color=(128, 128, 255)
+    ).save(OUTPUT_NORMAL, optimize=True)
 
 
-def write_world(bounds: tuple[float, float, float, float]) -> None:
+def collision_prisms_sdf(buildings: Sequence[BuildingGeometry]) -> str:
+    """Return exact DART-compatible SDF polyline prisms for every building."""
+    collisions: list[str] = []
+    for building in buildings:
+        prism_height = building.roof_z - building.foundation_z
+        polylines: list[str] = []
+        for ring in [building.transformed.outer, *building.transformed.holes]:
+            points = "".join(
+                f"<point>{fmt(x)} {fmt(y)}</point>" for x, y in ring
+            )
+            polylines.append(
+                f"<polyline><height>{fmt(prism_height)}</height>{points}</polyline>"
+            )
+        collisions.append(
+            "      "
+            f"<collision name=\"{building.identifier}_exact_polyline\">"
+            f"<pose>0 0 {fmt(building.foundation_z)} 0 0 0</pose>"
+            f"<geometry>{''.join(polylines)}</geometry>"
+            "</collision>"
+        )
+    return "\n".join(collisions)
+
+
+def write_world(
+    bounds: tuple[float, float, float, float],
+    buildings: Sequence[BuildingGeometry],
+) -> None:
     map_size = bounds[2] - bounds[0]
+    collision_sdf = collision_prisms_sdf(buildings)
     world = f'''<?xml version="1.0"?>
 <sdf version="1.9">
   <world name="applepark_city_uav">
@@ -961,13 +1216,14 @@ def write_world(bounds: tuple[float, float, float, float]) -> None:
       <visual name="ground_visual"><cast_shadows>false</cast_shadows><geometry><heightmap><use_terrain_paging>false</use_terrain_paging><texture><diffuse>mesh/road_surface_city_uav.png</diffuse><normal>mesh/normal_map_city_uav.png</normal><size>{fmt(map_size)}</size></texture><uri>mesh/height_map_city_uav.png</uri><size>{fmt(map_size)} {fmt(map_size)} 0.001</size><pos>0 0 -0.001</pos><sampling>1</sampling></heightmap></geometry></visual>
     </link></model>
 
-    <!-- The same closed, triangulated DAE is used once for rendering and once
-         for DART collision.  This keeps all 205 YAML prisms bit-aligned,
-         preserves the courtyard opening and replaces hundreds of per-building
-         collision entities with one static geometry. -->
+    <!-- The closed triangulated DAE is visual-only. Harmonic 8.14 DART rejects
+         SDF mesh collision, so each building receives an exact extruded
+         polyline prism from the same YAML outer/hole rings. This preserves the
+         courtyard and makes the physical obstacles real without changing the
+         PX4-stable DART backend. -->
     <model name="applepark_uav_buildings"><static>true</static><link name="buildings">
       <visual name="buildings_visual"><geometry><mesh><uri>mesh/buildings_uav.dae</uri><scale>1 1 1</scale></mesh></geometry></visual>
-      <collision name="buildings_exact_shared_dae"><geometry><mesh><uri>mesh/buildings_uav.dae</uri><scale>1 1 1</scale></mesh></geometry></collision>
+{collision_sdf}
     </link></model>
 
     <!-- No visual spawn pad: PX4 model contact is referenced to the z=0 datum. -->
@@ -975,7 +1231,10 @@ def write_world(bounds: tuple[float, float, float, float]) -> None:
     <frame name="mission_goal"><pose>{fmt(MISSION_GOAL_XY[0])} {fmt(MISSION_GOAL_XY[1])} 0 0 0 0</pose></frame>
     <frame name="trailer_spawn"><pose>{fmt(TRAILER_SPAWN_XY[0])} {fmt(TRAILER_SPAWN_XY[1])} 0 0 0 0</pose></frame>
     <frame name="trailer_destination"><pose>{fmt(TRAILER_DESTINATION_XY[0])} {fmt(TRAILER_DESTINATION_XY[1])} 0 0 0 0</pose></frame>
-    <include><uri>model://trailer_aruco</uri><name>trailer</name><pose>{fmt(TRAILER_SPAWN_XY[0])} {fmt(TRAILER_SPAWN_XY[1])} 0 0 0 0</pose></include>
+    <!-- SEO branch's default PX4 moving-platform trailer. The city launcher
+         pins its mean controller velocity to zero. The stock SEO controller
+         still applies its built-in perturbations after the PX4 entity spawns. -->
+    <include><uri>model://moving_platform_aruco</uri><name>trailer</name><pose>{fmt(TRAILER_SPAWN_XY[0])} {fmt(TRAILER_SPAWN_XY[1])} 0 0 0 0</pose></include>
     <!-- PX4 SITL spawns the real sensor-equipped vehicle dynamically. -->
   </world>
 </sdf>
@@ -983,7 +1242,7 @@ def write_world(bounds: tuple[float, float, float, float]) -> None:
     OUTPUT_WORLD.write_text(world, encoding="utf-8")
     OUTPUT_MODEL_CONFIG.write_text(
         """<?xml version="1.0"?>
-<model><name>Apple Park UAV city</name><version>1.0</version><sdf version="1.9">applepark_uav.world</sdf><author><name>PX4-ROS2 contributors</name></author><description>205-building UAV city with rolled-back jo 2.5x / 0.9x XY, 10-20 m skyline and one exact shared DART collision mesh.</description></model>
+<model><name>Apple Park UAV city</name><version>1.0</version><sdf version="1.9">applepark_uav.world</sdf><author><name>PX4-ROS2 contributors</name></author><description>205-building UAV city with uniform 2.5x XY geometry, deterministic-random 20-50 m skyline, exact 35 m mean and exact DART polyline-prism collisions.</description></model>
 """,
         encoding="utf-8",
     )
@@ -1004,6 +1263,7 @@ def write_yaml(
     scale_reason: str,
     mesh_vertices: int,
     mesh_triangles: int,
+    logical_vertex_rows: int,
 ) -> None:
     output = copy.deepcopy(source)
     output["schema_version"] = 2
@@ -1035,7 +1295,16 @@ def write_yaml(
                 source["obstacles"]["buildings"], removed_building_ids
             ),
         },
-        "z_scale": 1.0,
+        "height_transform": {
+            "source_profile": SOURCE_HEIGHT_PROFILE,
+            "source_range_m": [SOURCE_HEIGHT_MIN_M, SOURCE_HEIGHT_MAX_M],
+            "active_profile": ACTIVE_HEIGHT_PROFILE,
+            "active_range_m": [ACTIVE_HEIGHT_MIN_M, ACTIVE_HEIGHT_MAX_M],
+            "formula": "20 + 30 * active_hash_rank / 204",
+            "distribution": "source SHA-256 order re-ranked across retained 205 buildings",
+            "target_mean_m": ACTIVE_HEIGHT_MEAN_M,
+            "foundation_and_ground_unchanged": True,
+        },
         "fixed_mission_coordinates_enu_m": {
             "drone_spawn": list(SPAWN_XY),
             "global_goal": list(MISSION_GOAL_XY),
@@ -1043,10 +1312,22 @@ def write_yaml(
             "trailer_destination": list(TRAILER_DESTINATION_XY),
         },
         "mesh": {"vertices": mesh_vertices, "triangles": mesh_triangles},
+        "astar_geometry": {
+            "vertices_csv": "gazebo/maps/city_uav_building_vertices.csv",
+            "schema_version": VERTEX_CSV_SCHEMA_VERSION,
+            "frame_id": "gazebo_world_enu",
+            "logical_xy_vertex_count": logical_vertex_rows,
+            "logical_xyz_vertex_count": 2 * logical_vertex_rows,
+            "ring_closure": "last next_vertex_order wraps to zero",
+            "sha256": sha256_file(OUTPUT_VERTICES_CSV),
+        },
         "collision_geometry": {
             "type": COLLISION_GEOMETRY_TYPE,
-            "count": 1,
-            "source": "same closed triangulated buildings_uav.dae used by the visual",
+            "count": len(buildings),
+            "source": "one exact SDF polyline prism per YAML building; DAE is visual-only",
+            "required_physics_engine": "gz-physics-dartsim-plugin",
+            "dart_sdf_mesh_supported": False,
+            "dart_sdf_polyline_supported": True,
             "maximum_outward_error_m": 0.0,
             "maximum_undercoverage_m": 0.0,
             "courtyard_holes_preserved": True,
@@ -1064,14 +1345,15 @@ def write_yaml(
             "center_z_m": -0.05,
             "top_z_m": 0.0,
         },
-        "rows": 257,
-        "columns": 257,
-        "sample_spacing_m": map_size / 256.0,
+        "rows": FLAT_HEIGHTMAP_PIXELS,
+        "columns": FLAT_HEIGHTMAP_PIXELS,
+        "sample_spacing_m": map_size / (FLAT_HEIGHTMAP_PIXELS - 1),
         "row_0_y_m": bounds[3],
         "column_0_x_m": bounds[0],
         "row_direction": "decreasing_y",
         "height_formula_m": "0.0 (all visual pixels=255; box top z=0)",
         "height_range_m": [0.0, 0.0],
+        "texture_boundary_extension": "edge_clamp_feather_to_neutral",
     }
     output["spawn"]["gazebo_spawn_pose_enu"].update({"x": SPAWN_XY[0], "y": SPAWN_XY[1], "z": 0.0})
     output["spawn"]["surface"] = "flat_ground_z0_no_visual_pad"
@@ -1082,10 +1364,76 @@ def write_yaml(
     output["frames"]["px4_local"]["origin_reference"] = (
         "PX4 x500 base_link at rest (model root + 0.24 m)"
     )
+    output["px4_vehicle"]["forward_sensors"] = {
+        "rgb_camera": {
+            "parent_link": "base_link",
+            "link": "front_rgb_link",
+            "pose_xyz_rpy": [0.12, 0.03, 0.002, 0.0, 0.0, 0.0],
+            "image_topic": "/front_camera/image",
+            "camera_info_topic": "/front_camera/camera_info",
+            "optical_frame_id": "front_camera_optical_frame",
+            "resolution": [640, 360],
+            "encoding": "rgb8",
+            "nominal_update_rate_hz": 15.0,
+        },
+        "depth_camera": {
+            "parent_link": "base_link",
+            "link": "front_depth_link",
+            "pose_xyz_rpy": [0.12, 0.0, 0.002, 0.0, 0.0, 0.0],
+            "image_topic": "/front_depth/image",
+            "metric_image_topic": "/front_depth/image_raw",
+            "points_topic": "/front_depth/points",
+            "camera_info_topic": "/front_depth/camera_info",
+            "optical_frame_id": "front_depth_optical_frame",
+            "resolution": [320, 240],
+            "encoding": "mono8",
+            "metric_encoding": "32FC1",
+            "nominal_update_rate_hz": 12.0,
+        },
+    }
+    output["px4_vehicle"]["downward_sensors"] = {
+        "rgb_camera": {
+            "parent_link": "base_link",
+            "link": "down_rgb_link",
+            "pose_xyz_rpy": [0.0, 0.0, -0.05, 0.0, 1.57079632679, 0.0],
+            "image_topic": "/down_camera/image",
+            "camera_info_topic": "/down_camera/camera_info",
+            "optical_frame_id": "down_camera_optical_frame",
+            "resolution": [640, 480],
+            "encoding": "rgb8",
+            "nominal_update_rate_hz": 20.0,
+        },
+        "depth_camera": {
+            "parent_link": "base_link",
+            "link": "down_depth_link",
+            "pose_xyz_rpy": [0.0, -0.03, -0.05, 0.0, 1.57079632679, 0.0],
+            "image_topic": "/down_depth/image",
+            "metric_image_topic": "/down_depth/image_raw",
+            "points_topic": "/down_depth/points",
+            "camera_info_topic": "/down_depth/camera_info",
+            "optical_frame_id": "down_depth_optical_frame",
+            "resolution": [320, 240],
+            "encoding": "mono8",
+            "metric_encoding": "32FC1",
+            "nominal_update_rate_hz": 15.0,
+        },
+        "lidar": {
+            "parent_link": "base_link",
+            "link": "lidar_sensor_link",
+            "pose_xyz_rpy": [0.0, 0.0, -0.05, 0.0, 1.57079632679, 0.0],
+            "scan_topic": "/down_lidar",
+            "points_topic": "/down_lidar/points",
+            "frame_id": "lidar_sensor_link",
+            "samples": 1,
+            "range_m": [0.1, 100.0],
+            "nominal_update_rate_hz": 50.0,
+        },
+    }
     output["trailer"].update(
         {
             "entity_name": "trailer",
-            "model_uri": "model://trailer_aruco",
+            "model_uri": "model://moving_platform_aruco",
+            "source_branch_model": "seo:gazebo/models/moving_platform_aruco",
             "spawn_pose_enu": {
                 "x": TRAILER_SPAWN_XY[0],
                 "y": TRAILER_SPAWN_XY[1],
@@ -1096,9 +1444,14 @@ def write_yaml(
             },
             "motion": "stationary_spawn_only",
             "waypoints_enu_m": [list(TRAILER_SPAWN_XY)],
-            "body_footprint_m": [5.5, 3.0],
-            "deck_height_m": 1.25,
-            "command_topic": "/model/trailer/cmd_vel",
+            "body_footprint_m": [5.0, 5.0],
+            "deck_height_m": 2.05,
+            "marker_size_m": 1.0,
+            "controller_plugin": "libMovingPlatformController.so",
+            "controller_link_name": "platform_link",
+            "controller_velocity_m_s": 0.0,
+            "controller_heading_deg": 0.0,
+            "controller_noise_active_after_px4_spawn": True,
             "pose_topic": "/world/applepark_city_uav/dynamic_pose/info",
         }
     )
@@ -1138,7 +1491,8 @@ def write_yaml(
             "transformed_centroid_xy_m": rounded_point(building.transformed_centroid),
             "footprint_scale_xy": building.footprint_scale,
         }
-        # Explicit assignments document that these values are not derived.
+        # Foundations / ground remain source-aligned; roof and height use the
+        # deterministic 20--50 m active profile with exact 35 m mean.
         record["foundation_z_m"] = building.foundation_z
         record["ground_reference_z_m"] = building.ground_z
         record["roof_z_m"] = building.roof_z
@@ -1147,15 +1501,28 @@ def write_yaml(
     output["obstacles"]["buildings"] = output_buildings
     shortest = min(output_buildings, key=lambda item: float(item["height_above_ground_m"]))
     tallest = max(output_buildings, key=lambda item: float(item["height_above_ground_m"]))
-    minimum_gap = min(
+    active_heights = [float(item["height_above_ground_m"]) for item in output_buildings]
+    pair_gaps = [
         polygon_distance(first.transformed, second.transformed)
         for first, second in itertools.combinations(buildings, 2)
-    )
+    ]
+    minimum_gap = min(pair_gaps)
+    overlap_count = sum(gap <= EPS for gap in pair_gaps)
     output["obstacles"]["summary"] = {
         "source_building_count": SOURCE_BUILDING_COUNT,
         "building_count": len(output_buildings),
         "removed_building_count": len(removed_building_ids),
         "active_height_profile": ACTIVE_HEIGHT_PROFILE,
+        "height_distribution": {
+            "type": "deterministic_active_hash_rank_uniform_exact_mean",
+            "count": len(active_heights),
+            "unique_count": len(set(active_heights)),
+            "mean_m": statistics.fmean(active_heights),
+            "target_mean_m": ACTIVE_HEIGHT_MEAN_M,
+            "median_m": statistics.median(active_heights),
+            "q1_m": percentile(active_heights, 0.25),
+            "q3_m": percentile(active_heights, 0.75),
+        },
         "foundation_z_range_m": [
             min(building.foundation_z for building in buildings),
             max(building.foundation_z for building in buildings),
@@ -1173,8 +1540,9 @@ def write_yaml(
             "height_above_ground_m": tallest["height_above_ground_m"],
         },
         "minimum_building_gap_m": minimum_gap,
-        "minimum_required_drone_passage_m": 2.0,
-        "all_building_gaps_meet_requirement": minimum_gap >= 2.0,
+        "building_overlap_count": overlap_count,
+        "all_building_footprints_disjoint": overlap_count == 0 and minimum_gap > EPS,
+        "gap_constraint_enforced": False,
     }
     output["source_sha256"] = {
         "source_city_coordinates_yaml": sha256_file(SOURCE_YAML),
@@ -1182,6 +1550,7 @@ def write_yaml(
         "terrain_heightmap": sha256_file(OUTPUT_HEIGHT),
         "road_texture": sha256_file(OUTPUT_ROAD),
         "normal_map": sha256_file(OUTPUT_NORMAL),
+        "astar_building_vertices_csv": sha256_file(OUTPUT_VERTICES_CSV),
     }
     OUTPUT_YAML.write_text(yaml.safe_dump(output, sort_keys=False, allow_unicode=True, width=110), encoding="utf-8")
 
@@ -1210,8 +1579,10 @@ def write_reports(
     scale_reason: str,
     mesh_vertices: int,
     mesh_triangles: int,
+    logical_vertex_rows: int,
 ) -> dict:
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    source_by_id = {str(record["id"]): record for record in source_buildings}
     with (REPORT_DIR / "building_transform.csv").open("w", newline="", encoding="utf-8") as stream:
         writer = csv.writer(stream, lineterminator="\n")
         writer.writerow(
@@ -1227,7 +1598,7 @@ def write_reports(
                 "foundation_z_m",
                 "roof_z_m",
                 "height_above_ground_m",
-                "z_difference_from_source_m",
+                "roof_z_difference_from_source_m",
             ]
         )
         for building in buildings:
@@ -1244,7 +1615,10 @@ def write_reports(
                     fmt(building.foundation_z),
                     fmt(building.roof_z),
                     fmt(building.height),
-                    "0",
+                    fmt(
+                        building.roof_z
+                        - float(source_by_id[building.identifier]["roof_z_m"])
+                    ),
                 ]
             )
 
@@ -1316,8 +1690,7 @@ def write_reports(
                 ]
             )
 
-    # The collision and visual are the same DAE.  Keep a compact per-building
-    # audit instead of emitting hundreds of synthetic proxy records.
+    # Visual DAE and DART polyline prisms are generated from the same rings.
     stale_proxy_report = REPORT_DIR / "collision_proxy_alignment.csv"
     stale_proxy_report.unlink(missing_ok=True)
     with (REPORT_DIR / "collision_mesh_alignment.csv").open("w", newline="", encoding="utf-8") as stream:
@@ -1327,7 +1700,7 @@ def write_reports(
                 "building_id",
                 "foundation_z_m",
                 "roof_z_m",
-                "visual_collision_shared_dae",
+                "dart_polyline_prism",
                 "boundary_alignment_error_m",
                 "undercoverage_m",
                 "outward_error_m",
@@ -1356,6 +1729,7 @@ def write_reports(
             ("endpoint", TRAILER_DESTINATION_XY),
         )
     }
+    active_heights = [building.height for building in buildings]
     summary = {
         "source_building_count": SOURCE_BUILDING_COUNT,
         "generated_building_count": len(buildings),
@@ -1364,6 +1738,16 @@ def write_reports(
         "anchor_enu_m": list(anchor),
         "city_spacing_scale_xy": spacing_scale,
         "selected_footprint_scale_xy": buildings[0].footprint_scale,
+        "active_height_profile": ACTIVE_HEIGHT_PROFILE,
+        "active_height_range_m": [min(active_heights), max(active_heights)],
+        "active_height_distribution": {
+            "count": len(active_heights),
+            "unique_count": len(set(active_heights)),
+            "mean_m": statistics.fmean(active_heights),
+            "median_m": statistics.median(active_heights),
+            "q1_m": percentile(active_heights, 0.25),
+            "q3_m": percentile(active_heights, 0.75),
+        },
         "scale_selection_reason": scale_reason,
         "bounds_enu_m": {"x": [bounds[0], bounds[2]], "y": [bounds[1], bounds[3]]},
         "ground_size_m": [bounds[2] - bounds[0], bounds[3] - bounds[1]],
@@ -1375,6 +1759,8 @@ def write_reports(
             "minimum": min(ratio_values),
         },
         "minimum_neighbor_gap_m": selected.minimum_neighbor_gap_m,
+        "building_overlap_count": selected.overlap_count,
+        "building_gap_constraint_enforced": False,
         "hard_corridor_width_m": 2.0 * R_HARD_M,
         "preferred_corridor_width_m": 2.0 * R_PREFERRED_M,
         "mission_clearance_m": {
@@ -1390,12 +1776,23 @@ def write_reports(
             "trailer_spawn": list(TRAILER_SPAWN_XY),
             "trailer_destination": list(TRAILER_DESTINATION_XY),
         },
-        "z_preservation": {"maximum_absolute_error_m": 0.0, "tolerance_m": 1.0e-9},
+        "height_transform": {
+            "source_profile": SOURCE_HEIGHT_PROFILE,
+            "source_range_m": [SOURCE_HEIGHT_MIN_M, SOURCE_HEIGHT_MAX_M],
+            "active_profile": ACTIVE_HEIGHT_PROFILE,
+            "active_range_m": [ACTIVE_HEIGHT_MIN_M, ACTIVE_HEIGHT_MAX_M],
+            "formula": "20 + 30 * active_hash_rank / 204",
+            "target_mean_m": ACTIVE_HEIGHT_MEAN_M,
+            "foundation_and_ground_maximum_absolute_error_m": 0.0,
+        },
         "visual_collision_yaml_alignment": {"maximum_absolute_xy_error_m": 0.0, "tolerance_m": 0.01},
         "collision_geometry": {
             "representation": COLLISION_GEOMETRY_TYPE,
-            "count": 1,
-            "source": "same closed triangulated DAE as visual",
+            "count": len(buildings),
+            "source": "one exact SDF polyline prism per YAML building",
+            "required_physics_engine": "gz-physics-dartsim-plugin",
+            "dart_sdf_mesh_supported": False,
+            "dart_sdf_polyline_supported": True,
             "source_vertex_alignment_error_m": 0.0,
             "maximum_undercoverage_m": 0.0,
             "maximum_outward_error_m": 0.0,
@@ -1412,6 +1809,13 @@ def write_reports(
             "vertices": mesh_vertices,
             "triangles": mesh_triangles,
         },
+        "astar_geometry": {
+            "path": "gazebo/maps/city_uav_building_vertices.csv",
+            "schema_version": VERTEX_CSV_SCHEMA_VERSION,
+            "logical_xy_vertex_count": logical_vertex_rows,
+            "logical_xyz_vertex_count": 2 * logical_vertex_rows,
+            "sha256": sha256_file(OUTPUT_VERTICES_CSV),
+        },
         "tight_or_invalid_corridor_count": tight_count,
         "selected_layout_feasible": selected.feasible,
     }
@@ -1424,19 +1828,23 @@ def write_reports(
 - Active reduction: {len(buildings)} retained / {len(removed_building_ids)} removed.
 - Derived coordinate geometry: `gazebo/maps/city_coordinates_uav.yaml`.
 - Gazebo visual URI: `mesh/buildings_uav.dae` at scale `1 1 1`.
-- Gazebo collision: one static shared `mesh/buildings_uav.dae` triangle mesh.
+- Gazebo collision: {len(buildings)} exact DART SDF polyline prisms.
 - Mesh SHA256: `{sha256_file(OUTPUT_DAE)}`.
 - Vertex/triangle count: {mesh_vertices} / {mesh_triangles}.
 - Maximum YAML-to-visual-mesh XY boundary error: `0.0 m` (limit `0.01 m`).
 - Collision source-vertex alignment error: `0.0 m` (limit `0.01 m`).
 - Collision maximum undercoverage/outward error: `0.0 m`.
-- Maximum foundation/roof Z error from source: `0.0 m` (limit `1e-9 m`).
+- Building foundations and ground datum are unchanged from source (`0.0 m` error).
+- Roofs use `{ACTIVE_HEIGHT_PROFILE}` with exact range
+  `{fmt(ACTIVE_HEIGHT_MIN_M)}..{fmt(ACTIVE_HEIGHT_MAX_M)} m` above ground and
+  exact arithmetic mean `{fmt(ACTIVE_HEIGHT_MEAN_M)} m`.
 - Selected footprint scale: `{fmt(buildings[0].footprint_scale)}` — {scale_reason}.
 
-The closed mesh is regenerated directly from every transformed outer/hole
-ring. No world-level building scale or pose is used. Gazebo visual and DART
-collision both reference that same single file at scale `1 1 1`, so the
-courtyard remains open and no per-building collision entities are needed.
+The closed visual mesh and every collision prism are regenerated directly from
+the same transformed outer/hole rings. No world-level building scale or pose
+is used. Harmonic 8.14 DART cannot construct SDF mesh collisions, so the DAE is
+visual-only and exact extruded polylines provide physical collision. The
+courtyard remains open and PX4 keeps its stable DART dynamics.
 """
     (REPORT_DIR / "visual_collision_alignment.md").write_text(alignment, encoding="utf-8")
     return summary
@@ -1471,9 +1879,11 @@ def main() -> int:
     require(selected.feasible, "selected layout is not feasible")
     bounds = determine_bounds(buildings, args.map_margin)
     mesh_vertices, mesh_triangles = write_dae(buildings, OUTPUT_DAE)
-    require(selected.minimum_neighbor_gap_m >= 2.0, "shared DAE collision closes a required 2m corridor")
+    logical_vertex_rows = write_vertex_csv(buildings, OUTPUT_VERTICES_CSV)
+    require(selected.overlap_count == 0, "expanded building footprints overlap")
+    require(selected.minimum_neighbor_gap_m > EPS, "expanded building footprints touch")
     write_textures(bounds, args.spacing_scale, anchor)
-    write_world(bounds)
+    write_world(bounds, buildings)
     write_yaml(
         source,
         buildings,
@@ -1484,6 +1894,7 @@ def main() -> int:
         scale_reason,
         mesh_vertices,
         mesh_triangles,
+        logical_vertex_rows,
     )
     summary = write_reports(
         source_buildings,
@@ -1497,11 +1908,13 @@ def main() -> int:
         scale_reason,
         mesh_vertices,
         mesh_triangles,
+        logical_vertex_rows,
     )
     print(
         "city_uav generated: "
         f"buildings={len(buildings)} scale={buildings[0].footprint_scale:g} "
         f"ground={summary['ground_size_m'][0]:g}m "
+        f"height={summary['active_height_range_m'][0]:g}..{summary['active_height_range_m'][1]:g}m "
         f"neighbor_pairs={len(neighbor_pairs)} "
         f"gap_ratio_median={summary['pairwise_gap_ratio']['median']:.3f} "
         f"gap_ratio_p10={summary['pairwise_gap_ratio']['p10']:.3f}"
