@@ -28,8 +28,6 @@ setup(
     entry_points={
         'console_scripts': [
             'precision_landing_node = precision_landing.precision_landing_node:main',
-            'follow_precland_node = precision_landing.follow_precland_node:main',
-            'gimbal_down_node = precision_landing.gimbal_down_node:main',
             'precland_hw_node = precision_landing.precland_hw_node:main',
             'moving_marker_node = precision_landing.moving_marker_node:main',
             'track_follower_node = precision_landing.track_follower_node:main',
