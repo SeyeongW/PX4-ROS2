@@ -49,6 +49,21 @@ from scipy.optimize import minimize
 def _poly_fit(x: np.ndarray, y: np.ndarray, order: int = 3) -> np.ndarray:
     """Least-squares polynomial coefficients [c0, c1, ..., c_order]."""
     order = min(order, max(1, len(x) - 1))
+    
+    # 궤적이 직선(Linear)에 가까운 경우, 강제로 1차식(Linear fit)으로 낮춤 (RankWarning 방지)
+    if len(x) >= 3:
+        dx = x[-1] - x[0]
+        dy = y[-1] - y[0]
+        dist_sq = dx**2 + dy**2
+        if dist_sq > 1e-8:
+            # 시작점과 끝점을 잇는 직선과 중간 점들 사이의 최대 직교 거리 오차 계산
+            cross = np.abs(dx * (y - y[0]) - dy * (x - x[0]))
+            max_dev = np.max(cross) / np.sqrt(dist_sq)
+            if max_dev < 1e-4:
+                order = min(order, 1)
+        else:
+            order = min(order, 1)
+
     return np.polyfit(x, y, order)[::-1]  # numpy returns highest-power first
 
 
@@ -86,8 +101,9 @@ class UnicycleMPC:
                  v_ref: float = 4.0, v_max: float = 5.0,
                  omega_max: float = 1.2, a_max: float = 3.0,
                  z_kp: float = 0.8, vz_max: float = 2.0,
-                 weights: Weights | None = None):
+                 weights: Weights | None = None, max_iter: int = 40):
         self.dt = float(dt_s)
+        self.max_iter = int(max_iter)
         self.N = int(horizon)
         self.v_ref = float(v_ref)
         self.v_max = float(v_max)
@@ -117,12 +133,33 @@ class UnicycleMPC:
                       + self.w.da * (acc[t + 1] - acc[t]) ** 2)
             f = _poly_val(coeffs, x)
             psides = np.arctan(_poly_der(coeffs, x))
-            x_next = x + v * np.cos(psi) * dt
-            y_next = y + v * np.sin(psi) * dt
-            psi_next = psi + omega[t] * dt
-            v_next = v + acc[t] * dt
+            
+            # Runge-Kutta 4 (RK4) integration
+            v_mid = v + 0.5 * acc[t] * dt
+            psi_mid = psi + 0.5 * omega[t] * dt
+            epsi_mid = epsi + 0.5 * omega[t] * dt
+            
+            v_end = v + acc[t] * dt
+            psi_end = psi + omega[t] * dt
+            epsi_end = epsi + omega[t] * dt
+            
+            k1_x = v * np.cos(psi)
+            k2_x = v_mid * np.cos(psi_mid)
+            k4_x = v_end * np.cos(psi_end)
+            
+            k1_y = v * np.sin(psi)
+            k2_y = v_mid * np.sin(psi_mid)
+            k4_y = v_end * np.sin(psi_end)
+            
+            x_next = x + (dt / 6.0) * (k1_x + 4 * k2_x + k4_x)
+            y_next = y + (dt / 6.0) * (k1_y + 4 * k2_y + k4_y)
+            psi_next = psi_end
+            v_next = v_end
+            
+            # 최적화기(SLSQP)의 Gradient 폭발을 막기 위해 오차(Error) 상태는 Euler 투영 유지
             cte_next = (f - y) + v * np.sin(epsi) * dt
             epsi_next = (psi - psides) + omega[t] * dt
+            
             x, y, psi, v, cte, epsi = (x_next, y_next, psi_next, v_next,
                                        cte_next, epsi_next)
             xs[t], ys[t] = x, y
@@ -147,7 +184,7 @@ class UnicycleMPC:
         bounds = [(-self.omega_max, self.omega_max)] * self.N \
             + [(-self.a_max, self.a_max)] * self.N
         res = minimize(cost, self._warm, method="SLSQP", bounds=bounds,
-                       options={"maxiter": 40, "ftol": 1e-3})
+                       options={"maxiter": self.max_iter, "ftol": 1e-3})
         U = res.x if res.success else np.clip(self._warm, -self.a_max, self.a_max)
         # warm-start shift for the next tick
         self._warm = np.concatenate([U[1:self.N], U[self.N - 1:self.N],
