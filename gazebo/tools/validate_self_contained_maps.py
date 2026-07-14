@@ -39,9 +39,10 @@ CITY_SOURCE_HEIGHT_MIN_M = 10.0
 CITY_SOURCE_HEIGHT_MAX_M = 20.0
 CITY_SOURCE_SHORTEST_ID = "building_190"
 CITY_SOURCE_TALLEST_ID = "building_171"
-CITY_UAV_HEIGHT_PROFILE = "deterministic_hash_rank_30_to_70m_v1"
-CITY_UAV_HEIGHT_MIN_M = 30.0
-CITY_UAV_HEIGHT_MAX_M = 70.0
+CITY_UAV_HEIGHT_PROFILE = "deterministic_active_hash_rank_20_to_50m_mean35_v1"
+CITY_UAV_HEIGHT_MIN_M = 20.0
+CITY_UAV_HEIGHT_MAX_M = 50.0
+CITY_UAV_HEIGHT_MEAN_M = 35.0
 CITY_UAV_SHORTEST_ID = "building_190"
 CITY_UAV_TALLEST_ID = "building_171"
 
@@ -704,10 +705,13 @@ def validate_active_uav_city_contract() -> dict[str, object]:
             "depth_camera": {
                 "parent_link": "base_link", "link": "front_depth_link",
                 "pose_xyz_rpy": [0.12, 0.0, 0.002, 0.0, 0.0, 0.0],
-                "image_topic": "/front_depth/image", "points_topic": "/front_depth/points",
+                "image_topic": "/front_depth/image",
+                "metric_image_topic": "/front_depth/image_raw",
+                "points_topic": "/front_depth/points",
                 "camera_info_topic": "/front_depth/camera_info",
                 "optical_frame_id": "front_depth_optical_frame",
-                "resolution": [320, 240], "encoding": "32FC1",
+                "resolution": [320, 240], "encoding": "mono8",
+                "metric_encoding": "32FC1",
                 "nominal_update_rate_hz": 12.0,
             },
         },
@@ -719,6 +723,10 @@ def validate_active_uav_city_contract() -> dict[str, object]:
         and downward["rgb_camera"]["optical_frame_id"] == "down_camera_optical_frame"
         and downward["rgb_camera"]["resolution"] == [640, 480]
         and downward["rgb_camera"]["nominal_update_rate_hz"] == 20.0
+        and downward["depth_camera"]["image_topic"] == "/down_depth/image"
+        and downward["depth_camera"]["metric_image_topic"] == "/down_depth/image_raw"
+        and downward["depth_camera"]["encoding"] == "mono8"
+        and downward["depth_camera"]["metric_encoding"] == "32FC1"
         and downward["depth_camera"]["camera_info_topic"] == "/down_depth/camera_info"
         and downward["depth_camera"]["optical_frame_id"] == "down_depth_optical_frame"
         and downward["depth_camera"]["resolution"] == [320, 240]
@@ -801,6 +809,8 @@ def validate_active_uav_city_contract() -> dict[str, object]:
     require(height_transform["active_range_m"] ==
             [CITY_UAV_HEIGHT_MIN_M, CITY_UAV_HEIGHT_MAX_M],
             "active UAV city transformed height range")
+    require(abs(float(height_transform["target_mean_m"]) - CITY_UAV_HEIGHT_MEAN_M) < 1e-12,
+            "active UAV city transformed height target mean")
     require(height_transform["foundation_and_ground_unchanged"] is True,
             "active UAV city foundation/ground contract")
     require(summary["active_height_profile"] == CITY_UAV_HEIGHT_PROFILE,
@@ -815,7 +825,7 @@ def validate_active_uav_city_contract() -> dict[str, object]:
                 (CITY_UAV_HEIGHT_MIN_M, CITY_UAV_HEIGHT_MAX_M),
             )
         ),
-        "active UAV city roof range is not exactly 30..70 m",
+        "active UAV city roof range is not exactly 20..50 m",
     )
     require(
         summary["shortest_building"]["id"] == CITY_UAV_SHORTEST_ID
@@ -840,6 +850,12 @@ def validate_active_uav_city_contract() -> dict[str, object]:
             "active UAV city height distribution count")
     require(summary["height_distribution"]["unique_count"] == 205,
             "active UAV city heights are not uniquely distributed")
+    require(
+        abs(float(summary["height_distribution"]["mean_m"]) - CITY_UAV_HEIGHT_MEAN_M) < 1e-12
+        and abs(float(summary["height_distribution"]["median_m"]) - CITY_UAV_HEIGHT_MEAN_M) < 1e-12
+        and abs(float(summary["height_distribution"]["target_mean_m"]) - CITY_UAV_HEIGHT_MEAN_M) < 1e-12,
+        "active UAV city height mean/median is not exactly 35 m",
+    )
     random_audit = reduction["spatial_random_audit"]
     require(random_audit["seed"] == 7577, "active UAV city removal seed")
     require(random_audit["grid_shape"] == [5, 5], "active UAV city removal grid")

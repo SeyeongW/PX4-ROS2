@@ -50,6 +50,10 @@ DISTORTION_MODELS = {
     1: "rational_polynomial",
     2: "equidistant",
 }
+FRONT_DEPTH_DISPLAY_TOPIC = "/front_depth/image"
+FRONT_DEPTH_METRIC_TOPIC = "/front_depth/image_raw"
+DOWN_DEPTH_DISPLAY_TOPIC = "/down_depth/image"
+DOWN_DEPTH_METRIC_TOPIC = "/down_depth/image_raw"
 
 
 def _ros_time(gz_time) -> RosTime:
@@ -246,10 +250,10 @@ class NativeGazeboSensorBridge(Node):
                 CameraInfo, "/front_camera/camera_info", qos_profile_sensor_data
             ),
             "front_depth": self.create_publisher(
-                Image, "/front_depth/image", qos_profile_sensor_data
+                Image, FRONT_DEPTH_METRIC_TOPIC, qos_profile_sensor_data
             ),
             "front_depth_preview": self.create_publisher(
-                Image, "/front_depth/preview", qos_profile_sensor_data
+                Image, FRONT_DEPTH_DISPLAY_TOPIC, qos_profile_sensor_data
             ),
             "front_depth_points": self.create_publisher(
                 PointCloud2, "/front_depth/points", qos_profile_sensor_data
@@ -264,10 +268,10 @@ class NativeGazeboSensorBridge(Node):
                 CameraInfo, "/down_camera/camera_info", qos_profile_sensor_data
             ),
             "down_depth": self.create_publisher(
-                Image, "/down_depth/image", qos_profile_sensor_data
+                Image, DOWN_DEPTH_METRIC_TOPIC, qos_profile_sensor_data
             ),
             "down_depth_preview": self.create_publisher(
-                Image, "/down_depth/preview", qos_profile_sensor_data
+                Image, DOWN_DEPTH_DISPLAY_TOPIC, qos_profile_sensor_data
             ),
             "down_depth_points": self.create_publisher(
                 PointCloud2, "/down_depth/points", qos_profile_sensor_data

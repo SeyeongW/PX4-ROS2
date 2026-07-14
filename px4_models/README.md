@@ -12,9 +12,9 @@ RGB/depth 및 단일빔 라이다 payload를 장착한 모델입니다. 외부 O
 모델 include에 의존하지 않습니다.
 
 - 전방 RGB: `/front_camera/image`, `/front_camera/camera_info`
-- 전방 depth: `/front_depth/image`(32FC1), `/front_depth/preview`(mono8 표시용), `/front_depth/points`, `/front_depth/camera_info`
+- 전방 depth: `/front_depth/image`(mono8 표시용), `/front_depth/image_raw`(32FC1 거리), `/front_depth/points`, `/front_depth/camera_info`
 - 하방 RGB: `/down_camera/image`, `/down_camera/camera_info`
-- 하방 depth: `/down_depth/image`(32FC1), `/down_depth/preview`(mono8 표시용), `/down_depth/points`, `/down_depth/camera_info`
+- 하방 depth: `/down_depth/image`(mono8 표시용), `/down_depth/image_raw`(32FC1 거리), `/down_depth/points`, `/down_depth/camera_info`
 - 하방 라이다: `/down_lidar`, `/down_lidar/points`; Gazebo 원본
   `.../lidar_sensor_link/sensor/lidar/scan`은 PX4 gz 브릿지가 구독해
   `distance_sensor`(하방, `ROTATION_DOWNWARD_FACING`)로

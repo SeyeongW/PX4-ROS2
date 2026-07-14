@@ -11,9 +11,9 @@ PX4 재빌드가 필요 없습니다(`PX4_SIM_MODEL=gz_x500_depth_lidar`로 모�
 | 위치 | 센서 | 종류 | ROS 2 토픽 | 해상도/사양 |
 |------|------|------|-----------|------------|
 | 전방 | RGB 카메라 | camera | `/front_camera/image`, `/front_camera/camera_info` | 640×360 @ 15 Hz |
-| 전방 | Depth 카메라 | depth camera | `/front_depth/image`, `/front_depth/points`, `/front_depth/camera_info` | 320×240, 32FC1 @ 12 Hz |
+| 전방 | Depth 카메라 | depth camera | `/front_depth/image`(mono8), `/front_depth/image_raw`(32FC1), `/front_depth/points`, `/front_depth/camera_info` | 320×240 @ 12 Hz |
 | 하방 | RGB 카메라 | camera | `/down_camera/image`, `/down_camera/camera_info` | 640×480 @ 20 Hz |
-| 하방 | Depth 카메라 | depth camera | `/down_depth/image`, `/down_depth/points`, `/down_depth/camera_info` | 320×240, 32FC1 @ 15 Hz |
+| 하방 | Depth 카메라 | depth camera | `/down_depth/image`(mono8), `/down_depth/image_raw`(32FC1), `/down_depth/points`, `/down_depth/camera_info` | 320×240 @ 15 Hz |
 | 하방 | LW20 라이다 | gpu_lidar (단일 빔) | `/down_lidar`, `/down_lidar/points` | 0.1–100 m |
 
 - ROS 2 토픽은 `gazebo/launch/sensor_bridge.launch.py`의 gz-sim8 네이티브 브리지로

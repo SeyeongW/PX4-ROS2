@@ -12,7 +12,8 @@ fi
 case "$MAP" in
   city)
     # The normal city profile is the self-contained 1300 m UAV derivative with
-    # uniformly 2.5x-scaled centroids / footprints and 30--70 m heights.
+    # uniformly 2.5x-scaled centroids / footprints and 20--50 m heights
+    # with an exact 35 m mean.
     # The source 500 m asset remains available explicitly for regression work.
     COORDINATES="$SCRIPT_DIR/maps/city_coordinates_uav.yaml"
     DEFAULT_PHYSICS_ENGINE="gz-physics-dartsim-plugin"

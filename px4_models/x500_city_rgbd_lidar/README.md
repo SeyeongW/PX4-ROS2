@@ -11,9 +11,9 @@ PX4 재빌드가 필요 없습니다(`PX4_SIM_MODEL=gz_x500_city_rgbd_lidar`로 
 | 위치 | 센서 | 종류 | ROS 2 토픽 | 해상도/사양 |
 |------|------|------|-----------|------------|
 | 전방 | RGB 카메라(수평) | camera | `/front_camera/image`, `/front_camera/camera_info` | 640×360 @ 15 Hz |
-| 전방 | Depth 카메라 | depth camera | `/front_depth/image`, `/front_depth/preview`, `/front_depth/points`, `/front_depth/camera_info` | 320×240, 32FC1 + mono8 preview @ 12 Hz |
+| 전방 | Depth 카메라 | depth camera | `/front_depth/image`(mono8), `/front_depth/image_raw`(32FC1), `/front_depth/points`, `/front_depth/camera_info` | 320×240 @ 12 Hz |
 | 하방 | RGB 카메라 | camera | `/down_camera/image`, `/down_camera/camera_info` | 640×480 @ 20 Hz |
-| 하방 | Depth 카메라 | depth camera | `/down_depth/image`, `/down_depth/preview`, `/down_depth/points`, `/down_depth/camera_info` | 320×240, 32FC1 + mono8 preview @ 15 Hz |
+| 하방 | Depth 카메라 | depth camera | `/down_depth/image`(mono8), `/down_depth/image_raw`(32FC1), `/down_depth/points`, `/down_depth/camera_info` | 320×240 @ 15 Hz |
 | 하방 | LW20 라이다 | gpu_lidar (단일 빔) | `/down_lidar`, `/down_lidar/points` | 0.1–100 m |
 
 - ROS 2 토픽은 `gazebo/launch/sensor_bridge.launch.py`의 gz-sim8 네이티브 브리지로
@@ -60,25 +60,25 @@ ros2 run rqt_image_view rqt_image_view /down_camera/image
   `_raw` 접미사가 없습니다.
 - 브리지는 구독자 요구 기반이므로 토픽을 선택한 뒤 첫 영상까지 1~3초 걸릴 수
   있습니다. 인자 없이 rqt를 실행하면 이전에 저장된 토픽이 다시 선택될 수 있습니다.
-- `/front_depth/image`와 `/down_depth/image`는 계산용 `32FC1` 거리 영상입니다.
-  Humble rqt는 범위 밖 `+Inf` 픽셀 때문에 Dynamic range 계산이 무너질 수 있으므로,
-  화면 확인에는 유효 거리를 32–255 밝기로 변환한 아래 `mono8` preview를 사용하세요.
+- `/front_depth/image`와 `/down_depth/image`는 바로 확인할 수 있는 `mono8`
+  표시 영상입니다. 유효 거리는 32–255 밝기(가까울수록 밝음)이며 범위 밖 픽셀은 0입니다.
 
 ```bash
-ros2 run rqt_image_view rqt_image_view /front_depth/preview
-ros2 run rqt_image_view rqt_image_view /down_depth/preview
+ros2 run rqt_image_view rqt_image_view --clear-config /front_depth/image
+ros2 run rqt_image_view rqt_image_view /down_depth/image
 ```
 
-경로계획과 거리 계산은 preview가 아니라 원본 `32FC1` 토픽을 계속 사용합니다.
+경로계획과 거리 계산은 `/front_depth/image_raw`, `/down_depth/image_raw`의
+원본 `32FC1` 토픽을 사용합니다.
 
 전체 payload가 실제 메시지를 발행하는지 빠르게 확인하려면 다음을 사용합니다.
 
 ```bash
 for topic in \
   /front_camera/image /front_camera/camera_info \
-  /front_depth/image /front_depth/preview /front_depth/points /front_depth/camera_info \
+  /front_depth/image /front_depth/image_raw /front_depth/points /front_depth/camera_info \
   /down_camera/image /down_camera/camera_info \
-  /down_depth/image /down_depth/preview /down_depth/points /down_depth/camera_info \
+  /down_depth/image /down_depth/image_raw /down_depth/points /down_depth/camera_info \
   /down_lidar /down_lidar/points
 do
   echo "===== $topic"

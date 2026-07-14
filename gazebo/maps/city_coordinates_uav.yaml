@@ -65,13 +65,15 @@ px4_vehicle:
       - 1.57079632679
       - 0.0
       image_topic: /down_depth/image
+      metric_image_topic: /down_depth/image_raw
       points_topic: /down_depth/points
       camera_info_topic: /down_depth/camera_info
       optical_frame_id: down_depth_optical_frame
       resolution:
       - 320
       - 240
-      encoding: 32FC1
+      encoding: mono8
+      metric_encoding: 32FC1
       nominal_update_rate_hz: 15.0
     lidar:
       parent_link: base_link
@@ -121,13 +123,15 @@ px4_vehicle:
       - 0.0
       - 0.0
       image_topic: /front_depth/image
+      metric_image_topic: /front_depth/image_raw
       points_topic: /front_depth/points
       camera_info_topic: /front_depth/camera_info
       optical_frame_id: front_depth_optical_frame
       resolution:
       - 320
       - 240
-      encoding: 32FC1
+      encoding: mono8
+      metric_encoding: 32FC1
       nominal_update_rate_hz: 12.0
 terrain:
   type: completely_flat_heightmap_and_box_collision
@@ -196,27 +200,28 @@ obstacles:
     source_building_count: 274
     building_count: 205
     removed_building_count: 69
-    active_height_profile: deterministic_hash_rank_30_to_70m_v1
+    active_height_profile: deterministic_active_hash_rank_20_to_50m_mean35_v1
     height_distribution:
-      type: deterministic_hash_rank_affine_uniform
+      type: deterministic_active_hash_rank_uniform_exact_mean
       count: 205
       unique_count: 205
-      mean_m: 49.68230143840975
-      median_m: 49.7802197804
-      q1_m: 39.9633699632
-      q3_m: 59.1575091576
+      mean_m: 35.0
+      target_mean_m: 35.0
+      median_m: 35.0
+      q1_m: 27.5
+      q3_m: 42.5
     foundation_z_range_m:
     - -0.05
     - -0.05
     roof_z_range_m:
-    - 30.0
-    - 70.0
+    - 20.0
+    - 50.0
     shortest_building:
       id: building_190
-      height_above_ground_m: 30.0
+      height_above_ground_m: 20.0
     tallest_building:
       id: building_171
-      height_above_ground_m: 70.0
+      height_above_ground_m: 50.0
     minimum_building_gap_m: 0.9719424079449763
     building_overlap_count: 0
     all_building_footprints_disjoint: true
@@ -251,19 +256,19 @@ obstacles:
       max:
       - -318.774
       - 378.259
-      - 67.3626373628
+      - 48.23529411764706
       center_enu_m:
       - -341.059
       - 360.21125
-      - 33.6563186814
+      - 24.09264705882353
       size_xyz_m:
       - 44.57
       - 36.0955
-      - 67.4126373628
+      - 48.285294117647055
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 67.3626373628
-    height_above_ground_m: 67.3626373628
+    roof_z_m: 48.23529411764706
+    height_above_ground_m: 48.23529411764706
     transform:
       original_centroid_xy_m:
       - -136.4497533936
@@ -301,19 +306,19 @@ obstacles:
       max:
       - -304.51375
       - 416.724
-      - 43.6263736264
+      - 30.147058823529413
       center_enu_m:
       - -322.63875
       - 401.634875
-      - 21.788186813200003
+      - 15.048529411764706
       size_xyz_m:
       - 36.25
       - 30.17825
-      - 43.6763736264
+      - 30.197058823529414
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 43.6263736264
-    height_above_ground_m: 43.6263736264
+    roof_z_m: 30.147058823529413
+    height_above_ground_m: 30.147058823529413
     transform:
       original_centroid_xy_m:
       - -129.0555
@@ -351,19 +356,19 @@ obstacles:
       max:
       - -575.507
       - 557.54875
-      - 33.36996337
+      - 23.08823529411765
       center_enu_m:
       - -589.76925
       - 543.051
-      - 16.659981685
+      - 11.519117647058824
       size_xyz_m:
       - 28.5245
       - 28.9955
-      - 33.41996337
+      - 23.13823529411765
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 33.36996337
-    height_above_ground_m: 33.36996337
+    roof_z_m: 23.08823529411765
+    height_above_ground_m: 23.08823529411765
     transform:
       original_centroid_xy_m:
       - -235.9077
@@ -401,19 +406,19 @@ obstacles:
       max:
       - 591.03975
       - 552.3005
-      - 47.8754578756
+      - 33.529411764705884
       center_enu_m:
       - 571.130875
       - 543.720125
-      - 23.9127289378
+      - 16.739705882352943
       size_xyz_m:
       - 39.81775
       - 17.16075
-      - 47.925457875599996
+      - 33.57941176470588
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 47.8754578756
-    height_above_ground_m: 47.8754578756
+    roof_z_m: 33.529411764705884
+    height_above_ground_m: 33.529411764705884
     transform:
       original_centroid_xy_m:
       - 228.4057815436
@@ -451,19 +456,19 @@ obstacles:
       max:
       - 490.60375
       - 602.59375
-      - 53.7362637364
+      - 38.38235294117647
       center_enu_m:
       - 454.352875
       - 595.193625
-      - 26.8431318682
+      - 19.166176470588237
       size_xyz_m:
       - 72.50175
       - 14.80025
-      - 53.786263736399995
+      - 38.43235294117647
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 53.7362637364
-    height_above_ground_m: 53.7362637364
+    roof_z_m: 38.38235294117647
+    height_above_ground_m: 38.38235294117647
     transform:
       original_centroid_xy_m:
       - 181.7411250038
@@ -501,19 +506,19 @@ obstacles:
       max:
       - -242.058
       - -552.561
-      - 48.9010989012
+      - 34.411764705882355
       center_enu_m:
       - -263.454
       - -576.23225
-      - 24.425549450600002
+      - 17.18088235294118
       size_xyz_m:
       - 42.792
       - 47.3425
-      - 48.9510989012
+      - 34.46176470588235
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 48.9010989012
-    height_above_ground_m: 48.9010989012
+    roof_z_m: 34.411764705882355
+    height_above_ground_m: 34.411764705882355
     transform:
       original_centroid_xy_m:
       - -105.3052088066
@@ -551,19 +556,19 @@ obstacles:
       max:
       - 430.64425
       - -61.94925
-      - 65.457875458
+      - 46.91176470588235
       center_enu_m:
       - 409.248375
       - -81.774875
-      - 32.703937729
+      - 23.430882352941175
       size_xyz_m:
       - 42.79175
       - 39.65125
-      - 65.507875458
+      - 46.961764705882345
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 65.457875458
-    height_above_ground_m: 65.457875458
+    roof_z_m: 46.91176470588235
+    height_above_ground_m: 46.91176470588235
     transform:
       original_centroid_xy_m:
       - 163.6778774064
@@ -605,19 +610,19 @@ obstacles:
       max:
       - 535.78775
       - 379.50525
-      - 42.3076923076
+      - 29.264705882352942
       center_enu_m:
       - 522.418125
       - 361.16125
-      - 21.1288461538
+      - 14.60735294117647
       size_xyz_m:
       - 26.73925
       - 36.688
-      - 42.3576923076
+      - 29.314705882352943
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 42.3076923076
-    height_above_ground_m: 42.3076923076
+    roof_z_m: 29.264705882352942
+    height_above_ground_m: 29.264705882352942
     transform:
       original_centroid_xy_m:
       - 208.9843117636
@@ -659,19 +664,19 @@ obstacles:
       max:
       - 470.43175
       - 223.27875
-      - 37.7655677656
+      - 25.735294117647058
       center_enu_m:
       - 452.009625
       - 212.329625
-      - 18.8577838828
+      - 12.842647058823529
       size_xyz_m:
       - 36.84425
       - 21.89825
-      - 37.815567765599994
+      - 25.78529411764706
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 37.7655677656
-    height_above_ground_m: 37.7655677656
+    roof_z_m: 25.735294117647058
+    height_above_ground_m: 25.735294117647058
     transform:
       original_centroid_xy_m:
       - 180.8851208176
@@ -713,19 +718,19 @@ obstacles:
       max:
       - 588.68675
       - 308.502
-      - 58.571428571599995
+      - 41.91176470588235
       center_enu_m:
       - 569.966125
       - 296.073625
-      - 29.2607142858
+      - 20.930882352941175
       size_xyz_m:
       - 37.44125
       - 24.85675
-      - 58.62142857159999
+      - 41.961764705882345
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 58.571428571599995
-    height_above_ground_m: 58.571428571599995
+    roof_z_m: 41.91176470588235
+    height_above_ground_m: 41.91176470588235
     transform:
       original_centroid_xy_m:
       - 228.0371739806
@@ -767,19 +772,19 @@ obstacles:
       max:
       - -64.36775
       - -514.67975
-      - 48.4615384616
+      - 34.11764705882353
       center_enu_m:
       - -78.630375
       - -525.03475
-      - 24.2057692308
+      - 17.033823529411766
       size_xyz_m:
       - 28.52525
       - 20.71
-      - 48.5115384616
+      - 34.167647058823526
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 48.4615384616
-    height_above_ground_m: 48.4615384616
+    roof_z_m: 34.11764705882353
+    height_above_ground_m: 34.11764705882353
     transform:
       original_centroid_xy_m:
       - -31.9771091031
@@ -821,19 +826,19 @@ obstacles:
       max:
       - -559.4535
       - 380.0235
-      - 30.586080586
+      - 20.58823529411765
       center_enu_m:
       - -582.630375
       - 350.731625
-      - 15.268040293
+      - 10.269117647058824
       size_xyz_m:
       - 46.35375
       - 58.58375
-      - 30.636080586000002
+      - 20.63823529411765
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 30.586080586
-    height_above_ground_m: 30.586080586
+    roof_z_m: 20.58823529411765
+    height_above_ground_m: 20.58823529411765
     transform:
       original_centroid_xy_m:
       - -233.7166012125
@@ -875,19 +880,19 @@ obstacles:
       max:
       - 484.67975
       - 385.41825
-      - 42.7472527472
+      - 29.558823529411764
       center_enu_m:
       - 471.9045
       - 367.07425
-      - 21.348626373600002
+      - 14.754411764705882
       size_xyz_m:
       - 25.5505
       - 36.688
-      - 42.7972527472
+      - 29.608823529411765
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 42.7472527472
-    height_above_ground_m: 42.7472527472
+    roof_z_m: 29.558823529411764
+    height_above_ground_m: 29.558823529411764
     transform:
       original_centroid_xy_m:
       - 188.7269218205
@@ -929,19 +934,19 @@ obstacles:
       max:
       - 472.219
       - 197.24175
-      - 40.2564102564
+      - 27.794117647058822
       center_enu_m:
       - 452.606875
       - 186.292625
-      - 20.103205128200003
+      - 13.87205882352941
       size_xyz_m:
       - 39.22425
       - 21.89825
-      - 40.3064102564
+      - 27.844117647058823
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 40.2564102564
-    height_above_ground_m: 40.2564102564
+    roof_z_m: 27.794117647058822
+    height_above_ground_m: 27.794117647058822
     transform:
       original_centroid_xy_m:
       - 180.9225223537
@@ -983,19 +988,19 @@ obstacles:
       max:
       - 587.53775
       - -77.32025
-      - 62.5274725276
+      - 44.85294117647059
       center_enu_m:
       - 567.331125
       - -100.104625
-      - 31.2387362638
+      - 22.401470588235295
       size_xyz_m:
       - 40.41325
       - 45.56875
-      - 62.577472527599994
+      - 44.902941176470584
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 62.5274725276
-    height_above_ground_m: 62.5274725276
+    roof_z_m: 44.85294117647059
+    height_above_ground_m: 44.85294117647059
     transform:
       original_centroid_xy_m:
       - 228.4474200776
@@ -1037,19 +1042,19 @@ obstacles:
       max:
       - 480.5915
       - -357.23125
-      - 64.2857142856
+      - 46.32352941176471
       center_enu_m:
       - 459.195125
       - -377.6475
-      - 32.1178571428
+      - 23.136764705882356
       size_xyz_m:
       - 42.79275
       - 40.8325
-      - 64.33571428559999
+      - 46.37352941176471
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 64.2857142856
-    height_above_ground_m: 64.2857142856
+    roof_z_m: 46.32352941176471
+    height_above_ground_m: 46.32352941176471
     transform:
       original_centroid_xy_m:
       - 182.7330920022
@@ -1091,19 +1096,19 @@ obstacles:
       max:
       - -243.25725
       - -409.94875
-      - 59.7435897436
+      - 42.94117647058823
       center_enu_m:
       - -263.462625
       - -430.957125
-      - 29.8467948718
+      - 21.445588235294117
       size_xyz_m:
       - 40.41075
       - 42.01675
-      - 59.793589743599995
+      - 42.99117647058823
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 59.7435897436
-    height_above_ground_m: 59.7435897436
+    roof_z_m: 42.94117647058823
+    height_above_ground_m: 42.94117647058823
     transform:
       original_centroid_xy_m:
       - -104.112073958
@@ -1145,19 +1150,19 @@ obstacles:
       max:
       - -355.5765
       - -437.1755
-      - 53.4432234432
+      - 38.08823529411765
       center_enu_m:
       - -376.37725
       - -458.7755
-      - 26.6966117216
+      - 19.019117647058827
       size_xyz_m:
       - 41.6015
       - 43.2
-      - 53.493223443199994
+      - 38.13823529411765
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 53.4432234432
-    height_above_ground_m: 53.4432234432
+    roof_z_m: 38.08823529411765
+    height_above_ground_m: 38.08823529411765
     transform:
       original_centroid_xy_m:
       - -152.0165367602
@@ -1199,19 +1204,19 @@ obstacles:
       max:
       - 179.882
       - -436.5525
-      - 58.717948718
+      - 42.05882352941177
       center_enu_m:
       - 158.7845
       - -456.376125
-      - 29.333974359000003
+      - 21.004411764705885
       size_xyz_m:
       - 42.195
       - 39.64725
-      - 58.767948718
+      - 42.108823529411765
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 58.717948718
-    height_above_ground_m: 58.717948718
+    roof_z_m: 42.05882352941177
+    height_above_ground_m: 42.05882352941177
     transform:
       original_centroid_xy_m:
       - 62.5489293017
@@ -1253,19 +1258,19 @@ obstacles:
       max:
       - 228.5705
       - 126.8025
-      - 65.6043956044
+      - 47.05882352941177
       center_enu_m:
       - 208.6615
       - 116.149375
-      - 32.7771978022
+      - 23.504411764705885
       size_xyz_m:
       - 39.818
       - 21.30625
-      - 65.6543956044
+      - 47.108823529411765
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 65.6043956044
-    height_above_ground_m: 65.6043956044
+    roof_z_m: 47.05882352941177
+    height_above_ground_m: 47.05882352941177
     transform:
       original_centroid_xy_m:
       - 83.022963875
@@ -1307,19 +1312,19 @@ obstacles:
       max:
       - 235.14825
       - -358.43375
-      - 62.9670329672
+      - 45.294117647058826
       center_enu_m:
       - 212.565125
       - -378.849125
-      - 31.4585164836
+      - 22.622058823529414
       size_xyz_m:
       - 45.16625
       - 40.83075
-      - 63.017032967199995
+      - 45.34411764705882
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 62.9670329672
-    height_above_ground_m: 62.9670329672
+    roof_z_m: 45.294117647058826
+    height_above_ground_m: 45.294117647058826
     transform:
       original_centroid_xy_m:
       - 86.1426299789
@@ -1361,19 +1366,19 @@ obstacles:
       max:
       - 128.15575
       - -91.5645
-      - 61.208791208799994
+      - 43.82352941176471
       center_enu_m:
       - 108.543625
       - -113.162125
-      - 30.5793956044
+      - 21.886764705882356
       size_xyz_m:
       - 39.22425
       - 43.19525
-      - 61.25879120879999
+      - 43.87352941176471
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 61.208791208799994
-    height_above_ground_m: 61.208791208799994
+    roof_z_m: 43.82352941176471
+    height_above_ground_m: 43.82352941176471
     transform:
       original_centroid_xy_m:
       - 43.4530146751
@@ -1415,19 +1420,19 @@ obstacles:
       max:
       - -58.44275
       - -244.2495
-      - 38.0586080588
+      - 25.88235294117647
       center_enu_m:
       - -78.94575
       - -266.439625
-      - 19.0043040294
+      - 12.916176470588235
       size_xyz_m:
       - 41.006
       - 44.38025
-      - 38.108608058799994
+      - 25.93235294117647
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 38.0586080588
-    height_above_ground_m: 38.0586080588
+    roof_z_m: 25.88235294117647
+    height_above_ground_m: 25.88235294117647
     transform:
       original_centroid_xy_m:
       - -30.1428891356
@@ -1469,19 +1474,19 @@ obstacles:
       max:
       - -167.79125
       - -243.07025
-      - 37.0329670328
+      - 25.294117647058822
       center_enu_m:
       - -188.294625
       - -265.558125
-      - 18.491483516400002
+      - 12.62205882352941
       size_xyz_m:
       - 41.00675
       - 44.97575
-      - 37.0829670328
+      - 25.344117647058823
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 37.0329670328
-    height_above_ground_m: 37.0329670328
+    roof_z_m: 25.294117647058822
+    height_above_ground_m: 25.294117647058822
     transform:
       original_centroid_xy_m:
       - -77.3398895129
@@ -1523,19 +1528,19 @@ obstacles:
       max:
       - -357.973
       - -82.126
-      - 51.978021978
+      - 36.76470588235294
       center_enu_m:
       - -377.287125
       - -104.315875
-      - 25.964010989000002
+      - 18.357352941176472
       size_xyz_m:
       - 38.62825
       - 44.37975
-      - 52.028021978
+      - 36.81470588235294
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 51.978021978
-    height_above_ground_m: 51.978021978
+    roof_z_m: 36.76470588235294
+    height_above_ground_m: 36.76470588235294
     transform:
       original_centroid_xy_m:
       - -150.817019136
@@ -1577,19 +1582,19 @@ obstacles:
       max:
       - 334.35025
       - 175.92325
-      - 69.5604395604
+      - 49.55882352941177
       center_enu_m:
       - 314.737375
       - 154.620875
-      - 34.7552197802
+      - 24.754411764705885
       size_xyz_m:
       - 39.22575
       - 42.60475
-      - 69.6104395604
+      - 49.608823529411765
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 69.5604395604
-    height_above_ground_m: 69.5604395604
+    roof_z_m: 49.55882352941177
+    height_above_ground_m: 49.55882352941177
     transform:
       original_centroid_xy_m:
       - 127.3962366982
@@ -1633,19 +1638,19 @@ obstacles:
       max:
       - -178.52375
       - 342.7615
-      - 51.0989010988
+      - 36.029411764705884
       center_enu_m:
       - -199.620375
       - 316.13325
-      - 25.5244505494
+      - 17.989705882352943
       size_xyz_m:
       - 42.19325
       - 53.2565
-      - 51.148901098799996
+      - 36.07941176470588
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 51.0989010988
-    height_above_ground_m: 51.0989010988
+    roof_z_m: 36.029411764705884
+    height_above_ground_m: 36.029411764705884
     transform:
       original_centroid_xy_m:
       - -79.9997199249
@@ -1691,19 +1696,19 @@ obstacles:
       max:
       - 20.00475
       - -242.46625
-      - 60.76923076920001
+      - 43.38235294117647
       center_enu_m:
       - -0.498875
       - -265.546
-      - 30.359615384600005
+      - 21.666176470588237
       size_xyz_m:
       - 41.00725
       - 46.1595
-      - 60.819230769200004
+      - 43.43235294117647
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 60.76923076920001
-    height_above_ground_m: 60.76923076920001
+    roof_z_m: 43.38235294117647
+    height_above_ground_m: 43.38235294117647
     transform:
       original_centroid_xy_m:
       - -1.260056568
@@ -1749,19 +1754,19 @@ obstacles:
       max:
       - 20.01425
       - -357.859
-      - 39.3772893772
+      - 26.911764705882355
       center_enu_m:
       - 1.2925
       - -380.64225
-      - 19.6636446886
+      - 13.430882352941177
       size_xyz_m:
       - 37.4435
       - 45.5665
-      - 39.4272893772
+      - 26.961764705882356
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 39.3772893772
-    height_above_ground_m: 39.3772893772
+    roof_z_m: 26.911764705882355
+    height_above_ground_m: 26.911764705882355
     transform:
       original_centroid_xy_m:
       - -0.8503307896
@@ -1807,19 +1812,19 @@ obstacles:
       max:
       - 592.85125
       - 258.2035
-      - 54.908424908399994
+      - 39.26470588235294
       center_enu_m:
       - 573.833625
       - 245.775125
-      - 27.429212454199998
+      - 19.607352941176472
       size_xyz_m:
       - 38.03525
       - 24.85675
-      - 54.95842490839999
+      - 39.31470588235294
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 54.908424908399994
-    height_above_ground_m: 54.908424908399994
+    roof_z_m: 39.26470588235294
+    height_above_ground_m: 39.26470588235294
     transform:
       original_centroid_xy_m:
       - 229.5954187747
@@ -1865,19 +1870,19 @@ obstacles:
       max:
       - 225.019
       - -52.5
-      - 69.413919414
+      - 49.41176470588235
       center_enu_m:
       - 201.5455
       - -82.087625
-      - 34.681959707000004
+      - 24.680882352941175
       size_xyz_m:
       - 46.947
       - 59.17525
-      - 69.463919414
+      - 49.461764705882345
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 69.413919414
-    height_above_ground_m: 69.413919414
+    roof_z_m: 49.41176470588235
+    height_above_ground_m: 49.41176470588235
     transform:
       original_centroid_xy_m:
       - 81.1862465468
@@ -1923,19 +1928,19 @@ obstacles:
       max:
       - 347.4205
       - 223.85875
-      - 31.611721611599997
+      - 21.61764705882353
       center_enu_m:
       - 321.272375
       - 201.370375
-      - 15.780860805799998
+      - 10.783823529411764
       size_xyz_m:
       - 52.29625
       - 44.97675
-      - 31.661721611599997
+      - 21.66764705882353
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 31.611721611599997
-    height_above_ground_m: 31.611721611599997
+    roof_z_m: 21.61764705882353
+    height_above_ground_m: 21.61764705882353
     transform:
       original_centroid_xy_m:
       - 128.7172382215
@@ -1981,19 +1986,19 @@ obstacles:
       max:
       - 522.72
       - 323.2875
-      - 52.4175824176
+      - 37.05882352941177
       center_enu_m:
       - 503.999875
       - 311.749375
-      - 26.183791208800002
+      - 18.504411764705885
       size_xyz_m:
       - 37.44025
       - 23.07625
-      - 52.4675824176
+      - 37.108823529411765
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 52.4175824176
-    height_above_ground_m: 52.4175824176
+    roof_z_m: 37.05882352941177
+    height_above_ground_m: 37.05882352941177
     transform:
       original_centroid_xy_m:
       - 201.4994143707
@@ -2039,19 +2044,19 @@ obstacles:
       max:
       - 525.10425
       - 247.54225
-      - 61.0622710624
+      - 43.67647058823529
       center_enu_m:
       - 506.08725
       - 236.300625
-      - 30.5061355312
+      - 21.813235294117646
       size_xyz_m:
       - 38.034
       - 22.48325
-      - 61.1122710624
+      - 43.72647058823529
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 61.0622710624
-    height_above_ground_m: 61.0622710624
+    roof_z_m: 43.67647058823529
+    height_above_ground_m: 43.67647058823529
     transform:
       original_centroid_xy_m:
       - 202.4277237456
@@ -2097,19 +2102,19 @@ obstacles:
       max:
       - 525.6945
       - 298.433
-      - 53.8827838828
+      - 38.529411764705884
       center_enu_m:
       - 507.271
       - 287.191375
-      - 26.9163919414
+      - 19.239705882352943
       size_xyz_m:
       - 36.847
       - 22.48325
-      - 53.932783882799995
+      - 38.57941176470588
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 53.8827838828
-    height_above_ground_m: 53.8827838828
+    roof_z_m: 38.529411764705884
+    height_above_ground_m: 38.529411764705884
     transform:
       original_centroid_xy_m:
       - 202.7472238225
@@ -2155,19 +2160,19 @@ obstacles:
       max:
       - -103.0515
       - 354.60225
-      - 31.465201465200003
+      - 21.470588235294116
       center_enu_m:
       - -128.6045
       - 323.8305
-      - 15.707600732600001
+      - 10.710294117647058
       size_xyz_m:
       - 51.106
       - 61.5435
-      - 31.515201465200004
+      - 21.520588235294117
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 31.465201465200003
-    height_above_ground_m: 31.465201465200003
+    roof_z_m: 21.470588235294116
+    height_above_ground_m: 21.470588235294116
     transform:
       original_centroid_xy_m:
       - -50.7373135568
@@ -2213,19 +2218,19 @@ obstacles:
       max:
       - -559.441
       - 105.45025
-      - 51.6849816848
+      - 36.61764705882353
       center_enu_m:
       - -583.8075
       - 75.567
-      - 25.8174908424
+      - 18.283823529411766
       size_xyz_m:
       - 48.733
       - 59.7665
-      - 51.7349816848
+      - 36.667647058823526
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 51.6849816848
-    height_above_ground_m: 51.6849816848
+    roof_z_m: 36.61764705882353
+    height_above_ground_m: 36.61764705882353
     transform:
       original_centroid_xy_m:
       - -233.8069453896
@@ -2271,19 +2276,19 @@ obstacles:
       max:
       - -129.8005
       - 449.28075
-      - 53.5897435896
+      - 38.23529411764706
       center_enu_m:
       - -157.433375
       - 427.682
-      - 26.7698717948
+      - 19.09264705882353
       size_xyz_m:
       - 55.26575
       - 43.1975
-      - 53.639743589599995
+      - 38.285294117647055
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 53.5897435896
-    height_above_ground_m: 53.5897435896
+    roof_z_m: 38.23529411764706
+    height_above_ground_m: 38.23529411764706
     transform:
       original_centroid_xy_m:
       - -62.2930587673
@@ -2329,19 +2334,19 @@ obstacles:
       max:
       - -47.726
       - -526.51275
-      - 61.648351648399995
+      - 44.26470588235294
       center_enu_m:
       - -78.035
       - -549.591875
-      - 30.7991758242
+      - 22.107352941176472
       size_xyz_m:
       - 60.618
       - 46.15825
-      - 61.69835164839999
+      - 44.31470588235294
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 61.648351648399995
-    height_above_ground_m: 61.648351648399995
+    roof_z_m: 44.26470588235294
+    height_above_ground_m: 44.26470588235294
     transform:
       original_centroid_xy_m:
       - -31.3300518567
@@ -2387,19 +2392,19 @@ obstacles:
       max:
       - -404.93225
       - 136.22875
-      - 57.69230769239999
+      - 41.17647058823529
       center_enu_m:
       - -427.217375
       - 116.109625
-      - 28.821153846199998
+      - 20.563235294117646
       size_xyz_m:
       - 44.57025
       - 40.23825
-      - 57.74230769239999
+      - 41.22647058823529
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 57.69230769239999
-    height_above_ground_m: 57.69230769239999
+    roof_z_m: 41.17647058823529
+    height_above_ground_m: 41.17647058823529
     transform:
       original_centroid_xy_m:
       - -170.192117495
@@ -2445,19 +2450,19 @@ obstacles:
       max:
       - -246.873
       - 501.939
-      - 56.373626373600004
+      - 40.294117647058826
       center_enu_m:
       - -271.535125
       - 474.42325
-      - 28.161813186800003
+      - 20.122058823529414
       size_xyz_m:
       - 49.32425
       - 55.0315
-      - 56.4236263736
+      - 40.34411764705882
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 56.373626373600004
-    height_above_ground_m: 56.373626373600004
+    roof_z_m: 40.294117647058826
+    height_above_ground_m: 40.294117647058826
     transform:
       original_centroid_xy_m:
       - -108.9033595786
@@ -2503,19 +2508,19 @@ obstacles:
       max:
       - -493.486
       - 300.731
-      - 52.8571428572
+      - 37.5
       center_enu_m:
       - -527.35975
       - 277.061
-      - 26.403571428600003
+      - 18.725
       size_xyz_m:
       - 67.7475
       - 47.34
-      - 52.9071428572
+      - 37.55
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 52.8571428572
-    height_above_ground_m: 52.8571428572
+    roof_z_m: 37.5
+    height_above_ground_m: 37.5
     transform:
       original_centroid_xy_m:
       - -210.9411376126
@@ -2561,19 +2566,19 @@ obstacles:
       max:
       - 585.16575
       - -130.58025
-      - 45.3846153848
+      - 31.323529411764707
       center_enu_m:
       - 566.146375
       - -153.954625
-      - 22.6673076924
+      - 15.636764705882353
       size_xyz_m:
       - 38.03875
       - 46.74875
-      - 45.4346153848
+      - 31.373529411764707
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 45.3846153848
-    height_above_ground_m: 45.3846153848
+    roof_z_m: 31.323529411764707
+    height_above_ground_m: 31.323529411764707
     transform:
       original_centroid_xy_m:
       - 227.5768773992
@@ -2619,19 +2624,19 @@ obstacles:
       max:
       - -439.975
       - -230.65825
-      - 59.0109890108
+      - 42.35294117647059
       center_enu_m:
       - -459.587
       - -252.849875
-      - 29.480494505400003
+      - 21.151470588235295
       size_xyz_m:
       - 39.224
       - 44.38325
-      - 59.0609890108
+      - 42.402941176470584
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 59.0109890108
-    height_above_ground_m: 59.0109890108
+    roof_z_m: 42.35294117647059
+    height_above_ground_m: 42.35294117647059
     transform:
       original_centroid_xy_m:
       - -182.7601779459
@@ -2677,19 +2682,19 @@ obstacles:
       max:
       - -546.94625
       - -274.45275
-      - 55.0549450548
+      - 39.41176470588235
       center_enu_m:
       - -569.826875
       - -297.236125
-      - 27.502472527400002
+      - 19.680882352941175
       size_xyz_m:
       - 45.76125
       - 45.56675
-      - 55.1049450548
+      - 39.461764705882345
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 55.0549450548
-    height_above_ground_m: 55.0549450548
+    roof_z_m: 39.41176470588235
+    height_above_ground_m: 39.41176470588235
     transform:
       original_centroid_xy_m:
       - -229.1764914411
@@ -2735,19 +2740,19 @@ obstacles:
       max:
       - 480.55725
       - 16.164
-      - 67.9487179488
+      - 48.529411764705884
       center_enu_m:
       - 457.972625
       - -4.25225
-      - 33.9493589744
+      - 24.239705882352943
       size_xyz_m:
       - 45.16925
       - 40.8325
-      - 67.99871794879999
+      - 48.57941176470588
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 67.9487179488
-    height_above_ground_m: 67.9487179488
+    roof_z_m: 48.529411764705884
+    height_above_ground_m: 48.529411764705884
     transform:
       original_centroid_xy_m:
       - 181.9246392598
@@ -2793,19 +2798,19 @@ obstacles:
       max:
       - 482.949
       - -166.097
-      - 60.036630036800005
+      - 43.08823529411765
       center_enu_m:
       - 459.475625
       - -187.10225
-      - 29.993315018400004
+      - 21.519117647058827
       size_xyz_m:
       - 46.94675
       - 42.0105
-      - 60.0866300368
+      - 43.13823529411765
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 60.036630036800005
-    height_above_ground_m: 60.036630036800005
+    roof_z_m: 43.08823529411765
+    height_above_ground_m: 43.08823529411765
     transform:
       original_centroid_xy_m:
       - 182.5680972961
@@ -2851,19 +2856,19 @@ obstacles:
       max:
       - -246.836
       - -136.56075
-      - 38.7912087912
+      - 26.323529411764707
       center_enu_m:
       - -266.151125
       - -160.526875
-      - 19.3706043956
+      - 13.136764705882353
       size_xyz_m:
       - 38.63025
       - 47.93225
-      - 38.841208791199996
+      - 26.373529411764707
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 38.7912087912
-    height_above_ground_m: 38.7912087912
+    roof_z_m: 26.323529411764707
+    height_above_ground_m: 26.323529411764707
     transform:
       original_centroid_xy_m:
       - -105.1468971173
@@ -2909,19 +2914,19 @@ obstacles:
       max:
       - 21.76425
       - 99.56375
-      - 51.391941392
+      - 36.32352941176471
       center_enu_m:
       - 1.262125
       - 76.48675
-      - 25.670970696
+      - 18.136764705882356
       size_xyz_m:
       - 41.00425
       - 46.154
-      - 51.441941392
+      - 36.37352941176471
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 51.391941392
-    height_above_ground_m: 51.391941392
+    roof_z_m: 36.32352941176471
+    height_above_ground_m: 36.32352941176471
     transform:
       original_centroid_xy_m:
       - -0.8987403597
@@ -2967,19 +2972,19 @@ obstacles:
       max:
       - -240.9075
       - 68.18575
-      - 35.4212454212
+      - 24.264705882352942
       center_enu_m:
       - -262.5975
       - 44.812
-      - 17.6856227106
+      - 12.10735294117647
       size_xyz_m:
       - 43.38
       - 46.7475
-      - 35.471245421199995
+      - 24.314705882352943
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 35.4212454212
-    height_above_ground_m: 35.4212454212
+    roof_z_m: 24.264705882352942
+    height_above_ground_m: 24.264705882352942
     transform:
       original_centroid_xy_m:
       - -103.5704056226
@@ -3025,19 +3030,19 @@ obstacles:
       max:
       - 402.67225
       - 362.92625
-      - 63.553113553200006
+      - 45.73529411764706
       center_enu_m:
       - 382.467375
       - 351.387
-      - 31.751556776600005
+      - 22.84264705882353
       size_xyz_m:
       - 40.40975
       - 23.0785
-      - 63.603113553200004
+      - 45.785294117647055
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 63.553113553200006
-    height_above_ground_m: 63.553113553200006
+    roof_z_m: 45.73529411764706
+    height_above_ground_m: 45.73529411764706
     transform:
       original_centroid_xy_m:
       - 153.1169256136
@@ -3083,19 +3088,19 @@ obstacles:
       max:
       - -168.39625
       - -37.1415
-      - 63.99267399279999
+      - 46.029411764705884
       center_enu_m:
       - -188.008875
       - -59.036375
-      - 31.971336996399998
+      - 22.989705882352943
       size_xyz_m:
       - 39.22525
       - 43.78975
-      - 64.04267399279999
+      - 46.07941176470588
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 63.99267399279999
-    height_above_ground_m: 63.99267399279999
+    roof_z_m: 46.029411764705884
+    height_above_ground_m: 46.029411764705884
     transform:
       original_centroid_xy_m:
       - -76.3656975819
@@ -3141,19 +3146,19 @@ obstacles:
       max:
       - 402.08825
       - 257.0025
-      - 62.2344322344
+      - 44.705882352941174
       center_enu_m:
       - 382.77425
       - 245.167375
-      - 31.092216117200003
+      - 22.32794117647059
       size_xyz_m:
       - 38.628
       - 23.67025
-      - 62.2844322344
+      - 44.75588235294117
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 62.2344322344
-    height_above_ground_m: 62.2344322344
+    roof_z_m: 44.705882352941174
+    height_above_ground_m: 44.705882352941174
     transform:
       original_centroid_xy_m:
       - 153.1624772405
@@ -3199,19 +3204,19 @@ obstacles:
       max:
       - 181.662
       - -358.44
-      - 54.6153846152
+      - 38.970588235294116
       center_enu_m:
       - 158.781625
       - -378.856125
-      - 27.2826923076
+      - 19.46029411764706
       size_xyz_m:
       - 45.76075
       - 40.83225
-      - 54.6653846152
+      - 39.02058823529411
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 54.6153846152
-    height_above_ground_m: 54.6153846152
+    roof_z_m: 38.970588235294116
+    height_above_ground_m: 38.970588235294116
     transform:
       original_centroid_xy_m:
       - 62.2382301134
@@ -3257,19 +3262,19 @@ obstacles:
       max:
       - 186.94975
       - 385.98525
-      - 46.9963369964
+      - 32.94117647058823
       center_enu_m:
       - 163.18025
       - 362.315625
-      - 23.4731684982
+      - 16.445588235294117
       size_xyz_m:
       - 47.539
       - 47.33925
-      - 47.046336996399994
+      - 32.99117647058823
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 46.9963369964
-    height_above_ground_m: 46.9963369964
+    roof_z_m: 32.94117647058823
+    height_above_ground_m: 32.94117647058823
     transform:
       original_centroid_xy_m:
       - 66.220770239
@@ -3315,19 +3320,19 @@ obstacles:
       max:
       - 110.3575
       - -544.845
-      - 32.0512820512
+      - 21.91176470588235
       center_enu_m:
       - 87.181375
       - -565.558
-      - 16.0006410256
+      - 10.930882352941175
       size_xyz_m:
       - 46.35225
       - 41.426
-      - 32.101282051199995
+      - 21.961764705882352
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 32.0512820512
-    height_above_ground_m: 32.0512820512
+    roof_z_m: 21.91176470588235
+    height_above_ground_m: 21.91176470588235
     transform:
       original_centroid_xy_m:
       - 36.1848086063
@@ -3373,19 +3378,19 @@ obstacles:
       max:
       - -114.2865
       - -551.9625
-      - 48.021978022
+      - 33.67647058823529
       center_enu_m:
       - -136.86875
       - -572.081625
-      - 23.985989011
+      - 16.813235294117646
       size_xyz_m:
       - 45.1645
       - 40.23825
-      - 48.071978021999996
+      - 33.72647058823529
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 48.021978022
-    height_above_ground_m: 48.021978022
+    roof_z_m: 33.67647058823529
+    height_above_ground_m: 33.67647058823529
     transform:
       original_centroid_xy_m:
       - -53.5860074207
@@ -3431,19 +3436,19 @@ obstacles:
       max:
       - -482.786
       - 249.25
-      - 59.597069597200004
+      - 42.794117647058826
       center_enu_m:
       - -509.529
       - 223.8045
-      - 29.773534798600004
+      - 21.372058823529414
       size_xyz_m:
       - 53.486
       - 50.891
-      - 59.6470695972
+      - 42.84411764705882
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 59.597069597200004
-    height_above_ground_m: 59.597069597200004
+    roof_z_m: 42.794117647058826
+    height_above_ground_m: 42.794117647058826
     transform:
       original_centroid_xy_m:
       - -202.7984972546
@@ -3489,19 +3494,19 @@ obstacles:
       max:
       - 344.43575
       - 383.037
-      - 53.2967032968
+      - 37.94117647058823
       center_enu_m:
       - 322.44575
       - 358.183375
-      - 26.6233516484
+      - 18.945588235294117
       size_xyz_m:
       - 43.98
       - 49.70725
-      - 53.346703296799994
+      - 37.99117647058823
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 53.2967032968
-    height_above_ground_m: 53.2967032968
+    roof_z_m: 37.94117647058823
+    height_above_ground_m: 37.94117647058823
     transform:
       original_centroid_xy_m:
       - 127.2597958322
@@ -3547,19 +3552,19 @@ obstacles:
       max:
       - -57.309
       - 591.306
-      - 68.6813186812
+      - 48.970588235294116
       center_enu_m:
       - -85.833125
       - 562.310125
-      - 34.3156593406
+      - 24.46029411764706
       size_xyz_m:
       - 57.04825
       - 57.99175
-      - 68.7313186812
+      - 49.02058823529411
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 68.6813186812
-    height_above_ground_m: 68.6813186812
+    roof_z_m: 48.970588235294116
+    height_above_ground_m: 48.970588235294116
     transform:
       original_centroid_xy_m:
       - -33.5470250678
@@ -3605,19 +3610,19 @@ obstacles:
       max:
       - 379.483
       - 566.48675
-      - 67.216117216
+      - 48.08823529411765
       center_enu_m:
       - 361.949625
       - 526.542125
-      - 33.583058608
+      - 24.019117647058827
       size_xyz_m:
       - 35.06675
       - 79.88925
-      - 67.266117216
+      - 48.13823529411765
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 67.216117216
-    height_above_ground_m: 67.216117216
+    roof_z_m: 48.08823529411765
+    height_above_ground_m: 48.08823529411765
     transform:
       original_centroid_xy_m:
       - 144.6368405282
@@ -3663,19 +3668,19 @@ obstacles:
       max:
       - 240.43575
       - 381.845
-      - 43.0402930404
+      - 29.705882352941174
       center_enu_m:
       - 216.66575
       - 361.72725
-      - 21.495146520200002
+      - 14.827941176470587
       size_xyz_m:
       - 47.54
       - 40.2355
-      - 43.0902930404
+      - 29.755882352941175
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 43.0402930404
-    height_above_ground_m: 43.0402930404
+    roof_z_m: 29.705882352941174
+    height_above_ground_m: 29.705882352941174
     transform:
       original_centroid_xy_m:
       - 85.5181336897
@@ -3721,19 +3726,19 @@ obstacles:
       max:
       - -143.45275
       - 219.0875
-      - 57.252747252800006
+      - 40.88235294117647
       center_enu_m:
       - -165.1435
       - 193.05125
-      - 28.601373626400004
+      - 20.416176470588237
       size_xyz_m:
       - 43.3815
       - 52.0725
-      - 57.3027472528
+      - 40.93235294117647
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 57.252747252800006
-    height_above_ground_m: 57.252747252800006
+    roof_z_m: 40.88235294117647
+    height_above_ground_m: 40.88235294117647
     transform:
       original_centroid_xy_m:
       - -66.7891064425
@@ -3779,19 +3784,19 @@ obstacles:
       max:
       - -327.087
       - 242.155
-      - 65.8974358976
+      - 47.35294117647059
       center_enu_m:
       - -351.748625
       - 220.556375
-      - 32.923717948800004
+      - 23.651470588235295
       size_xyz_m:
       - 49.32325
       - 43.19725
-      - 65.9474358976
+      - 47.402941176470584
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 65.8974358976
-    height_above_ground_m: 65.8974358976
+    roof_z_m: 47.35294117647059
+    height_above_ground_m: 47.35294117647059
     transform:
       original_centroid_xy_m:
       - -141.6494432865
@@ -3837,19 +3842,19 @@ obstacles:
       max:
       - -18.65675
       - 219.0965
-      - 32.3443223444
+      - 22.205882352941178
       center_enu_m:
       - -45.101
       - 197.202
-      - 16.1471611722
+      - 11.077941176470588
       size_xyz_m:
       - 52.8885
       - 43.789
-      - 32.394322344399995
+      - 22.25588235294118
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 32.3443223444
-    height_above_ground_m: 32.3443223444
+    roof_z_m: 22.205882352941178
+    height_above_ground_m: 22.205882352941178
     transform:
       original_centroid_xy_m:
       - -17.1345012377
@@ -3895,19 +3900,19 @@ obstacles:
       max:
       - 281.503
       - -358.43175
-      - 41.5750915752
+      - 28.676470588235293
       center_enu_m:
       - 259.514125
       - -377.958625
-      - 20.7625457876
+      - 14.313235294117646
       size_xyz_m:
       - 43.97775
       - 39.05375
-      - 41.625091575199995
+      - 28.726470588235294
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 41.5750915752
-    height_above_ground_m: 41.5750915752
+    roof_z_m: 28.676470588235293
+    height_above_ground_m: 28.676470588235293
     transform:
       original_centroid_xy_m:
       - 102.7064304058
@@ -3953,19 +3958,19 @@ obstacles:
       max:
       - 284.464
       - -245.99675
-      - 30.4395604396
+      - 20.441176470588236
       center_enu_m:
       - 261.583
       - -265.526375
-      - 15.1947802198
+      - 10.195588235294117
       size_xyz_m:
       - 45.762
       - 39.05925
-      - 30.4895604396
+      - 20.491176470588236
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 30.4395604396
-    height_above_ground_m: 30.4395604396
+    roof_z_m: 20.441176470588236
+    height_above_ground_m: 20.441176470588236
     transform:
       original_centroid_xy_m:
       - 103.4821531356
@@ -4011,19 +4016,19 @@ obstacles:
       max:
       - 129.9455
       - -185.65025
-      - 45.0915750916
+      - 31.029411764705884
       center_enu_m:
       - 109.442
       - -206.954
-      - 22.5207875458
+      - 15.489705882352942
       size_xyz_m:
       - 41.007
       - 42.6075
-      - 45.1415750916
+      - 31.079411764705885
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 45.0915750916
-    height_above_ground_m: 45.0915750916
+    roof_z_m: 31.029411764705884
+    height_above_ground_m: 31.029411764705884
     transform:
       original_centroid_xy_m:
       - 45.3184449537
@@ -4069,19 +4074,19 @@ obstacles:
       max:
       - -56.08575
       - 61.09575
-      - 68.0952380952
+      - 48.67647058823529
       center_enu_m:
       - -78.369875
       - 37.7215
-      - 34.0226190476
+      - 24.313235294117646
       size_xyz_m:
       - 44.56825
       - 46.7485
-      - 68.1452380952
+      - 48.72647058823529
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 68.0952380952
-    height_above_ground_m: 68.0952380952
+    roof_z_m: 48.67647058823529
+    height_above_ground_m: 48.67647058823529
     transform:
       original_centroid_xy_m:
       - -30.0553431246
@@ -4127,19 +4132,19 @@ obstacles:
       max:
       - -57.838
       - -359.04675
-      - 63.406593406400006
+      - 45.58823529411765
       center_enu_m:
       - -78.63975
       - -381.8305
-      - 31.678296703200004
+      - 22.769117647058827
       size_xyz_m:
       - 41.6035
       - 45.5675
-      - 63.4565934064
+      - 45.63823529411765
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 63.406593406400006
-    height_above_ground_m: 63.406593406400006
+    roof_z_m: 45.58823529411765
+    height_above_ground_m: 45.58823529411765
     transform:
       original_centroid_xy_m:
       - -30.97233268
@@ -4185,19 +4190,19 @@ obstacles:
       max:
       - -56.6765
       - 8.4285
-      - 47.435897436
+      - 33.23529411764706
       center_enu_m:
       - -77.773
       - -14.944375
-      - 23.692948718
+      - 16.59264705882353
       size_xyz_m:
       - 42.193
       - 46.74575
-      - 47.485897435999995
+      - 33.285294117647055
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 47.435897436
-    height_above_ground_m: 47.435897436
+    roof_z_m: 33.23529411764706
+    height_above_ground_m: 33.23529411764706
     transform:
       original_centroid_xy_m:
       - -29.8296823816
@@ -4243,19 +4248,19 @@ obstacles:
       max:
       - -57.24025
       - -411.7125
-      - 49.7802197804
+      - 35.0
       center_enu_m:
       - -77.744875
       - -434.49575
-      - 24.865109890200003
+      - 17.475
       size_xyz_m:
       - 41.00925
       - 45.5665
-      - 49.8302197804
+      - 35.05
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 49.7802197804
-    height_above_ground_m: 49.7802197804
+    roof_z_m: 35.0
+    height_above_ground_m: 35.0
     transform:
       original_centroid_xy_m:
       - -29.5591297911
@@ -4301,19 +4306,19 @@ obstacles:
       max:
       - -546.94975
       - -169.7145
-      - 49.194139194
+      - 34.55882352941177
       center_enu_m:
       - -568.9385
       - -192.496
-      - 24.572069597000002
+      - 17.254411764705885
       size_xyz_m:
       - 43.9775
       - 45.563
-      - 49.244139194
+      - 34.608823529411765
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 49.194139194
-    height_above_ground_m: 49.194139194
+    roof_z_m: 34.55882352941177
+    height_above_ground_m: 34.55882352941177
     transform:
       original_centroid_xy_m:
       - -228.0800238783
@@ -4359,19 +4364,19 @@ obstacles:
       max:
       - -246.2525
       - 19.069
-      - 48.1684981684
+      - 33.82352941176471
       center_enu_m:
       - -266.457
       - -6.967
-      - 24.0592490842
+      - 16.886764705882356
       size_xyz_m:
       - 40.409
       - 52.072
-      - 48.2184981684
+      - 33.87352941176471
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 48.1684981684
-    height_above_ground_m: 48.1684981684
+    roof_z_m: 33.82352941176471
+    height_above_ground_m: 33.82352941176471
     transform:
       original_centroid_xy_m:
       - -106.9078278785
@@ -4417,19 +4422,19 @@ obstacles:
       max:
       - -546.95325
       - -117.04675
-      - 41.868131868
+      - 28.970588235294116
       center_enu_m:
       - -567.752625
       - -140.1255
-      - 20.909065934
+      - 14.460294117647058
       size_xyz_m:
       - 41.59875
       - 46.1575
-      - 41.918131867999996
+      - 29.020588235294117
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 41.868131868
-    height_above_ground_m: 41.868131868
+    roof_z_m: 28.970588235294116
+    height_above_ground_m: 28.970588235294116
     transform:
       original_centroid_xy_m:
       - -228.7533102344
@@ -4475,19 +4480,19 @@ obstacles:
       max:
       - -167.2
       - -188.03725
-      - 31.318681318800003
+      - 21.323529411764707
       center_enu_m:
       - -187.7035
       - -210.821
-      - 15.634340659400001
+      - 10.636764705882353
       size_xyz_m:
       - 41.007
       - 45.5675
-      - 31.368681318800004
+      - 21.373529411764707
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 31.318681318800003
-    height_above_ground_m: 31.318681318800003
+    roof_z_m: 21.323529411764707
+    height_above_ground_m: 21.323529411764707
     transform:
       original_centroid_xy_m:
       - -76.6631020048
@@ -4533,19 +4538,19 @@ obstacles:
       max:
       - -167.8015
       - -86.85025
-      - 35.7142857144
+      - 24.558823529411764
       center_enu_m:
       - -188.005875
       - -110.8155
-      - 17.8321428572
+      - 12.254411764705882
       size_xyz_m:
       - 40.40875
       - 47.9305
-      - 35.764285714399996
+      - 24.608823529411765
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 35.7142857144
-    height_above_ground_m: 35.7142857144
+    roof_z_m: 24.558823529411764
+    height_above_ground_m: 24.558823529411764
     transform:
       original_centroid_xy_m:
       - -76.5290321169
@@ -4591,19 +4596,19 @@ obstacles:
       max:
       - -47.17475
       - 116.12825
-      - 54.029304029200006
+      - 38.67647058823529
       center_enu_m:
       - -68.865625
       - 90.388125
-      - 26.989652014600004
+      - 19.313235294117646
       size_xyz_m:
       - 43.38175
       - 51.48025
-      - 54.0793040292
+      - 38.72647058823529
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 54.029304029200006
-    height_above_ground_m: 54.029304029200006
+    roof_z_m: 38.67647058823529
+    height_above_ground_m: 38.67647058823529
     transform:
       original_centroid_xy_m:
       - -26.5668029288
@@ -4649,19 +4654,19 @@ obstacles:
       max:
       - 335.54325
       - 126.2195
-      - 35.8608058608
+      - 24.705882352941178
       center_enu_m:
       - 315.335875
       - 104.32375
-      - 17.9054029304
+      - 12.327941176470588
       size_xyz_m:
       - 40.41475
       - 43.7915
-      - 35.9108058608
+      - 24.75588235294118
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 35.8608058608
-    height_above_ground_m: 35.8608058608
+    roof_z_m: 24.705882352941178
+    height_above_ground_m: 24.705882352941178
     transform:
       original_centroid_xy_m:
       - 127.8619978146
@@ -4709,19 +4714,19 @@ obstacles:
       max:
       - 510.828
       - 383.64525
-      - 50.3663003664
+      - 35.44117647058823
       center_enu_m:
       - 498.052625
       - 364.70975
-      - 25.1581501832
+      - 17.695588235294117
       size_xyz_m:
       - 25.55075
       - 37.871
-      - 50.416300366399994
+      - 35.49117647058823
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 50.3663003664
-    height_above_ground_m: 50.3663003664
+    roof_z_m: 35.44117647058823
+    height_above_ground_m: 35.44117647058823
     transform:
       original_centroid_xy_m:
       - 199.1769801522
@@ -4767,19 +4772,19 @@ obstacles:
       max:
       - 308.85275
       - -543.64975
-      - 39.8168498168
+      - 27.352941176470587
       center_enu_m:
       - 285.675125
       - -567.3195
-      - 19.883424908400002
+      - 13.651470588235293
       size_xyz_m:
       - 46.35525
       - 47.3395
-      - 39.8668498168
+      - 27.402941176470588
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 39.8168498168
-    height_above_ground_m: 39.8168498168
+    roof_z_m: 27.352941176470587
+    height_above_ground_m: 27.352941176470587
     transform:
       original_centroid_xy_m:
       - 113.9722260212
@@ -4825,19 +4830,19 @@ obstacles:
       max:
       - -223.0855
       - 187.12775
-      - 32.197802198
+      - 22.058823529411764
       center_enu_m:
       - -245.370625
       - 161.3875
-      - 16.073901099
+      - 11.004411764705882
       size_xyz_m:
       - 44.57025
       - 51.4805
-      - 32.247802197999995
+      - 22.108823529411765
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 32.197802198
-    height_above_ground_m: 32.197802198
+    roof_z_m: 22.058823529411764
+    height_above_ground_m: 22.058823529411764
     transform:
       original_centroid_xy_m:
       - -97.3656897629
@@ -4883,19 +4888,19 @@ obstacles:
       max:
       - 233.95075
       - -244.81725
-      - 56.6666666668
+      - 40.44117647058823
       center_enu_m:
       - 211.366125
       - -265.2335
-      - 28.3083333334
+      - 20.195588235294117
       size_xyz_m:
       - 45.16925
       - 40.8325
-      - 56.716666666799995
+      - 40.49117647058823
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 56.6666666668
-    height_above_ground_m: 56.6666666668
+    roof_z_m: 40.44117647058823
+    height_above_ground_m: 40.44117647058823
     transform:
       original_centroid_xy_m:
       - 85.8637013312
@@ -4941,19 +4946,19 @@ obstacles:
       max:
       - 160.2785
       - -544.84125
-      - 50.5128205128
+      - 35.588235294117645
       center_enu_m:
       - 137.695125
       - -565.8485
-      - 25.2314102564
+      - 17.769117647058824
       size_xyz_m:
       - 45.16675
       - 42.0145
-      - 50.562820512799995
+      - 35.63823529411764
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 50.5128205128
-    height_above_ground_m: 50.5128205128
+    roof_z_m: 35.588235294117645
+    height_above_ground_m: 35.588235294117645
     transform:
       original_centroid_xy_m:
       - 55.0498657726
@@ -4999,19 +5004,19 @@ obstacles:
       max:
       - 173.8815
       - 319.70625
-      - 39.0842490844
+      - 26.61764705882353
       center_enu_m:
       - 148.329
       - 293.96625
-      - 19.5171245422
+      - 13.283823529411764
       size_xyz_m:
       - 51.105
       - 51.48
-      - 39.1342490844
+      - 26.66764705882353
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 39.0842490844
-    height_above_ground_m: 39.0842490844
+    roof_z_m: 26.61764705882353
+    height_above_ground_m: 26.61764705882353
     transform:
       original_centroid_xy_m:
       - 59.8291957756
@@ -5057,19 +5062,19 @@ obstacles:
       max:
       - 59.1865
       - 320.28975
-      - 52.7106227108
+      - 37.35294117647059
       center_enu_m:
       - 34.228125
       - 298.691
-      - 26.330311355400003
+      - 18.651470588235295
       size_xyz_m:
       - 49.91675
       - 43.1975
-      - 52.7606227108
+      - 37.402941176470584
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 52.7106227108
-    height_above_ground_m: 52.7106227108
+    roof_z_m: 37.35294117647059
+    height_above_ground_m: 37.35294117647059
     transform:
       original_centroid_xy_m:
       - 12.8610440113
@@ -5115,19 +5120,19 @@ obstacles:
       max:
       - 133.527
       - -435.96425
-      - 32.4908424908
+      - 22.352941176470587
       center_enu_m:
       - 110.647375
       - -456.674
-      - 16.2204212454
+      - 11.151470588235293
       size_xyz_m:
       - 45.75925
       - 41.4195
-      - 32.540842490799996
+      - 22.402941176470588
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 32.4908424908
-    height_above_ground_m: 32.4908424908
+    roof_z_m: 22.352941176470587
+    height_above_ground_m: 22.352941176470587
     transform:
       original_centroid_xy_m:
       - 45.6024060522
@@ -5173,19 +5178,19 @@ obstacles:
       max:
       - 128.152
       - -43.63275
-      - 43.47985348
+      - 30.0
       center_enu_m:
       - 107.9455
       - -64.935875
-      - 21.714926740000003
+      - 14.975
       size_xyz_m:
       - 40.413
       - 42.60625
-      - 43.52985348
+      - 30.05
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 43.47985348
-    height_above_ground_m: 43.47985348
+    roof_z_m: 30.0
+    height_above_ground_m: 30.0
     transform:
       original_centroid_xy_m:
       - 43.5264186685
@@ -5231,19 +5236,19 @@ obstacles:
       max:
       - 284.447
       - -62.55375
-      - 52.564102564
+      - 37.205882352941174
       center_enu_m:
       - 262.161375
       - -81.48975
-      - 26.257051282000003
+      - 18.57794117647059
       size_xyz_m:
       - 44.57125
       - 37.872
-      - 52.614102564
+      - 37.25588235294117
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 52.564102564
-    height_above_ground_m: 52.564102564
+    roof_z_m: 37.205882352941174
+    height_above_ground_m: 37.205882352941174
     transform:
       original_centroid_xy_m:
       - 105.9798953894
@@ -5289,19 +5294,19 @@ obstacles:
       max:
       - -58.44625
       - -190.40025
-      - 57.1062271064
+      - 40.73529411764706
       center_enu_m:
       - -79.543
       - -212.8855
-      - 28.5281135532
+      - 20.34264705882353
       size_xyz_m:
       - 42.1935
       - 44.9705
-      - 57.156227106399996
+      - 40.785294117647055
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 57.1062271064
-    height_above_ground_m: 57.1062271064
+    roof_z_m: 40.73529411764706
+    height_above_ground_m: 40.73529411764706
     transform:
       original_centroid_xy_m:
       - -30.1975324888
@@ -5347,19 +5352,19 @@ obstacles:
       max:
       - -436.4045
       - -331.256
-      - 38.6446886448
+      - 26.176470588235293
       center_enu_m:
       - -458.097125
       - -354.039375
-      - 19.2973443224
+      - 13.063235294117646
       size_xyz_m:
       - 43.38525
       - 45.56675
-      - 38.694688644799996
+      - 26.226470588235294
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 38.6446886448
-    height_above_ground_m: 38.6446886448
+    roof_z_m: 26.176470588235293
+    height_above_ground_m: 26.176470588235293
     transform:
       original_centroid_xy_m:
       - -182.7267918948
@@ -5405,19 +5410,19 @@ obstacles:
       max:
       - -243.25225
       - -456.1055
-      - 37.6190476192
+      - 25.588235294117645
       center_enu_m:
       - -263.4595
       - -477.7055
-      - 18.784523809600003
+      - 12.769117647058822
       size_xyz_m:
       - 40.4145
       - 43.2
-      - 37.6690476192
+      - 25.638235294117646
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 37.6190476192
-    height_above_ground_m: 37.6190476192
+    roof_z_m: 25.588235294117645
+    height_above_ground_m: 25.588235294117645
     transform:
       original_centroid_xy_m:
       - -105.0330685119
@@ -5465,19 +5470,19 @@ obstacles:
       max:
       - 577.4115
       - 137.481
-      - 34.1025641024
+      - 23.38235294117647
       center_enu_m:
       - 547.1035
       - 111.443625
-      - 17.026282051200003
+      - 11.666176470588235
       size_xyz_m:
       - 60.616
       - 52.07475
-      - 34.1525641024
+      - 23.43235294117647
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 34.1025641024
-    height_above_ground_m: 34.1025641024
+    roof_z_m: 23.38235294117647
+    height_above_ground_m: 23.38235294117647
     transform:
       original_centroid_xy_m:
       - 217.9177669164
@@ -5525,19 +5530,19 @@ obstacles:
       max:
       - -564.2175
       - 619.68275
-      - 65.3113553112
+      - 46.76470588235294
       center_enu_m:
       - -587.690875
       - 590.687375
-      - 32.6306776556
+      - 23.357352941176472
       size_xyz_m:
       - 46.94675
       - 57.99075
-      - 65.3613553112
+      - 46.81470588235294
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 65.3113553112
-    height_above_ground_m: 65.3113553112
+    roof_z_m: 46.76470588235294
+    height_above_ground_m: 46.76470588235294
     transform:
       original_centroid_xy_m:
       - -234.9891028027
@@ -5583,19 +5588,19 @@ obstacles:
       max:
       - 129.3445
       - -137.72125
-      - 36.8864468864
+      - 25.147058823529413
       center_enu_m:
       - 109.13875
       - -159.024375
-      - 18.418223443200002
+      - 12.548529411764706
       size_xyz_m:
       - 40.4115
       - 42.60625
-      - 36.9364468864
+      - 25.197058823529414
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 36.8864468864
-    height_above_ground_m: 36.8864468864
+    roof_z_m: 25.147058823529413
+    height_above_ground_m: 25.147058823529413
     transform:
       original_centroid_xy_m:
       - 43.8827919995
@@ -5645,19 +5650,19 @@ obstacles:
       max:
       - 585.713
       - 334.5375
-      - 40.8424908424
+      - 28.088235294117645
       center_enu_m:
       - 566.69525
       - 321.222125
-      - 20.3962454212
+      - 14.019117647058822
       size_xyz_m:
       - 38.0355
       - 26.63075
-      - 40.892490842399994
+      - 28.138235294117646
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 40.8424908424
-    height_above_ground_m: 40.8424908424
+    roof_z_m: 28.088235294117645
+    height_above_ground_m: 28.088235294117645
     transform:
       original_centroid_xy_m:
       - 226.8135235877
@@ -5707,19 +5712,19 @@ obstacles:
       max:
       - -548.738
       - -67.3395
-      - 39.6703296704
+      - 27.205882352941178
       center_enu_m:
       - -570.726875
       - -90.41875
-      - 19.810164835200002
+      - 13.577941176470588
       size_xyz_m:
       - 43.97775
       - 46.1585
-      - 39.7203296704
+      - 27.25588235294118
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 39.6703296704
-    height_above_ground_m: 39.6703296704
+    roof_z_m: 27.205882352941178
+    height_above_ground_m: 27.205882352941178
     transform:
       original_centroid_xy_m:
       - -229.4870044424
@@ -5769,19 +5774,19 @@ obstacles:
       max:
       - 19.998
       - -146.01075
-      - 58.2783882784
+      - 41.61764705882353
       center_enu_m:
       - 0.090125
       - -167.60975
-      - 29.114194139200002
+      - 20.783823529411766
       size_xyz_m:
       - 39.81575
       - 43.198
-      - 58.3283882784
+      - 41.667647058823526
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 58.2783882784
-    height_above_ground_m: 58.2783882784
+    roof_z_m: 41.61764705882353
+    height_above_ground_m: 41.61764705882353
     transform:
       original_centroid_xy_m:
       - 0.1684011398
@@ -5831,19 +5836,19 @@ obstacles:
       max:
       - -433.44375
       - -130.06025
-      - 31.904761904799997
+      - 21.764705882352942
       center_enu_m:
       - -453.94675
       - -151.660125
-      - 15.927380952399998
+      - 10.85735294117647
       size_xyz_m:
       - 41.006
       - 43.19975
-      - 31.954761904799998
+      - 21.814705882352943
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 31.904761904799997
-    height_above_ground_m: 31.904761904799997
+    roof_z_m: 21.764705882352942
+    height_above_ground_m: 21.764705882352942
     transform:
       original_centroid_xy_m:
       - -180.890618242
@@ -5893,19 +5898,19 @@ obstacles:
       max:
       - 21.2065
       - -408.74975
-      - 65.1648351648
+      - 46.61764705882353
       center_enu_m:
       - 1.59325
       - -430.940875
-      - 32.5574175824
+      - 23.283823529411766
       size_xyz_m:
       - 39.2265
       - 44.38225
-      - 65.2148351648
+      - 46.667647058823526
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 65.1648351648
-    height_above_ground_m: 65.1648351648
+    roof_z_m: 46.61764705882353
+    height_above_ground_m: 46.61764705882353
     transform:
       original_centroid_xy_m:
       - -0.4576208178
@@ -5955,19 +5960,19 @@ obstacles:
       max:
       - -77.50375
       - 441.58975
-      - 49.9267399268
+      - 35.14705882352941
       center_enu_m:
       - -104.542375
       - 417.32875
-      - 24.938369963400003
+      - 17.548529411764708
       size_xyz_m:
       - 54.07725
       - 48.522
-      - 49.9767399268
+      - 35.19705882352941
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 49.9267399268
-    height_above_ground_m: 49.9267399268
+    roof_z_m: 35.14705882352941
+    height_above_ground_m: 35.14705882352941
     transform:
       original_centroid_xy_m:
       - -42.0782149519
@@ -6017,19 +6022,19 @@ obstacles:
       max:
       - 403.26875
       - 336.2975
-      - 39.523809524
+      - 27.058823529411764
       center_enu_m:
       - 383.064
       - 323.870375
-      - 19.736904762
+      - 13.504411764705882
       size_xyz_m:
       - 40.4095
       - 24.85425
-      - 39.573809524
+      - 27.108823529411765
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 39.523809524
-    height_above_ground_m: 39.523809524
+    roof_z_m: 27.058823529411764
+    height_above_ground_m: 27.058823529411764
     transform:
       original_centroid_xy_m:
       - 153.4667908514
@@ -6079,19 +6084,19 @@ obstacles:
       max:
       - 402.681
       - 282.44475
-      - 37.326007326
+      - 25.441176470588236
       center_enu_m:
       - 383.07
       - 270.61125
-      - 18.638003663000003
+      - 12.695588235294117
       size_xyz_m:
       - 39.222
       - 23.667
-      - 37.376007326
+      - 25.491176470588236
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 37.326007326
-    height_above_ground_m: 37.326007326
+    roof_z_m: 25.441176470588236
+    height_above_ground_m: 25.441176470588236
     transform:
       original_centroid_xy_m:
       - 153.3256124173
@@ -6141,19 +6146,19 @@ obstacles:
       max:
       - 402.6855
       - 229.19
-      - 30.879120879200002
+      - 20.88235294117647
       center_enu_m:
       - 383.074125
       - 218.242625
-      - 15.4145604396
+      - 10.416176470588235
       size_xyz_m:
       - 39.22275
       - 21.89475
-      - 30.929120879200003
+      - 20.93235294117647
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 30.879120879200002
-    height_above_ground_m: 30.879120879200002
+    roof_z_m: 20.88235294117647
+    height_above_ground_m: 20.88235294117647
     transform:
       original_centroid_xy_m:
       - 153.2480086571
@@ -6203,19 +6208,19 @@ obstacles:
       max:
       - -111.9815
       - 600.7695
-      - 62.8205128204
+      - 45.14705882352941
       center_enu_m:
       - -139.317125
       - 580.354
-      - 31.3852564102
+      - 22.548529411764708
       size_xyz_m:
       - 54.67125
       - 40.831
-      - 62.870512820399995
+      - 45.19705882352941
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 62.8205128204
-    height_above_ground_m: 62.8205128204
+    roof_z_m: 45.14705882352941
+    height_above_ground_m: 45.14705882352941
     transform:
       original_centroid_xy_m:
       - -56.03901405
@@ -6265,19 +6270,19 @@ obstacles:
       max:
       - 334.3615
       - 16.1535
-      - 38.9377289376
+      - 26.470588235294116
       center_enu_m:
       - 312.076
       - -4.85375
-      - 19.4438644688
+      - 13.210294117647058
       size_xyz_m:
       - 44.571
       - 42.0145
-      - 38.9877289376
+      - 26.520588235294117
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 38.9377289376
-    height_above_ground_m: 38.9377289376
+    roof_z_m: 26.470588235294116
+    height_above_ground_m: 26.470588235294116
     transform:
       original_centroid_xy_m:
       - 125.9540601952
@@ -6327,19 +6332,19 @@ obstacles:
       max:
       - 594.04225
       - 233.35
-      - 69.7069597068
+      - 49.705882352941174
       center_enu_m:
       - 575.9165
       - 220.921625
-      - 34.828479853400005
+      - 24.82794117647059
       size_xyz_m:
       - 36.2515
       - 24.85675
-      - 69.7569597068
+      - 49.75588235294117
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 69.7069597068
-    height_above_ground_m: 69.7069597068
+    roof_z_m: 49.705882352941174
+    height_above_ground_m: 49.705882352941174
     transform:
       original_centroid_xy_m:
       - 230.2163108938
@@ -6389,19 +6394,19 @@ obstacles:
       max:
       - 600.58525
       - 173.58175
-      - 31.172161172000003
+      - 21.176470588235293
       center_enu_m:
       - 579.487375
       - 162.633375
-      - 15.561080586000001
+      - 10.563235294117646
       size_xyz_m:
       - 42.19575
       - 21.89675
-      - 31.222161172000003
+      - 21.226470588235294
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 31.172161172000003
-    height_above_ground_m: 31.172161172000003
+    roof_z_m: 21.176470588235293
+    height_above_ground_m: 21.176470588235293
     transform:
       original_centroid_xy_m:
       - 231.5144843443
@@ -6451,19 +6456,19 @@ obstacles:
       max:
       - 525.70125
       - 222.097
-      - 40.10989011
+      - 27.647058823529413
       center_enu_m:
       - 505.79275
       - 210.5595
-      - 20.029945055000002
+      - 13.798529411764706
       size_xyz_m:
       - 39.817
       - 23.075
-      - 40.15989011
+      - 27.697058823529414
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 40.10989011
-    height_above_ground_m: 40.10989011
+    roof_z_m: 27.647058823529413
+    height_above_ground_m: 27.647058823529413
     transform:
       original_centroid_xy_m:
       - 202.4660246355
@@ -6513,19 +6518,19 @@ obstacles:
       max:
       - 526.88525
       - 272.39575
-      - 46.2637362636
+      - 32.205882352941174
       center_enu_m:
       - 507.273875
       - 261.15425
-      - 23.106868131800002
+      - 16.07794117647059
       size_xyz_m:
       - 39.22275
       - 22.483
-      - 46.3137362636
+      - 32.25588235294117
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 46.2637362636
-    height_above_ground_m: 46.2637362636
+    roof_z_m: 32.205882352941174
+    height_above_ground_m: 32.205882352941174
     transform:
       original_centroid_xy_m:
       - 202.9147275802
@@ -6575,19 +6580,19 @@ obstacles:
       max:
       - 161.9995
       - 268.81625
-      - 54.761904762
+      - 39.11764705882353
       center_enu_m:
       - 137.6355
       - 246.625625
-      - 27.355952381
+      - 19.533823529411766
       size_xyz_m:
       - 48.728
       - 44.38125
-      - 54.811904762
+      - 39.167647058823526
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 54.761904762
-    height_above_ground_m: 54.761904762
+    roof_z_m: 39.11764705882353
+    height_above_ground_m: 39.11764705882353
     transform:
       original_centroid_xy_m:
       - 56.0994063481
@@ -6637,19 +6642,19 @@ obstacles:
       max:
       - -562.3855
       - -548.43525
-      - 45.6776556776
+      - 31.61764705882353
       center_enu_m:
       - -585.2665
       - -569.443
-      - 22.8138278388
+      - 15.783823529411764
       size_xyz_m:
       - 45.762
       - 42.0155
-      - 45.7276556776
+      - 31.66764705882353
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 45.6776556776
-    height_above_ground_m: 45.6776556776
+    roof_z_m: 31.61764705882353
+    height_above_ground_m: 31.61764705882353
     transform:
       original_centroid_xy_m:
       - -233.1348112436
@@ -6699,19 +6704,19 @@ obstacles:
       max:
       - 504.91125
       - 132.741
-      - 41.1355311356
+      - 28.38235294117647
       center_enu_m:
       - 481.138625
       - 108.1825
-      - 20.5427655678
+      - 14.166176470588235
       size_xyz_m:
       - 47.54525
       - 49.117
-      - 41.185531135599994
+      - 28.43235294117647
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 41.1355311356
-    height_above_ground_m: 41.1355311356
+    roof_z_m: 28.38235294117647
+    height_above_ground_m: 28.38235294117647
     transform:
       original_centroid_xy_m:
       - 190.7593289683
@@ -6761,19 +6766,19 @@ obstacles:
       max:
       - 428.8535
       - 16.16175
-      - 60.1831501832
+      - 43.23529411764706
       center_enu_m:
       - 407.162625
       - -3.368
-      - 30.0665750916
+      - 21.59264705882353
       size_xyz_m:
       - 43.38175
       - 39.0595
-      - 60.233150183199996
+      - 43.285294117647055
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 60.1831501832
-    height_above_ground_m: 60.1831501832
+    roof_z_m: 43.23529411764706
+    height_above_ground_m: 43.23529411764706
     transform:
       original_centroid_xy_m:
       - 163.8951590827
@@ -6823,19 +6828,19 @@ obstacles:
       max:
       - -469.1315
       - 519.681
-      - 49.4871794872
+      - 34.85294117647059
       center_enu_m:
       - -497.0615
       - 492.460625
-      - 24.718589743600003
+      - 17.401470588235295
       size_xyz_m:
       - 55.86
       - 54.44075
-      - 49.5371794872
+      - 34.902941176470584
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 49.4871794872
-    height_above_ground_m: 49.4871794872
+    roof_z_m: 34.85294117647059
+    height_above_ground_m: 34.85294117647059
     transform:
       original_centroid_xy_m:
       - -197.3468004776
@@ -6885,19 +6890,19 @@ obstacles:
       max:
       - 207.73825
       - 532.73925
-      - 34.2490842492
+      - 23.529411764705884
       center_enu_m:
       - 183.967875
       - 510.845875
-      - 17.099542124600003
+      - 11.739705882352942
       size_xyz_m:
       - 47.54075
       - 43.78675
-      - 34.2990842492
+      - 23.579411764705885
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 34.2490842492
-    height_above_ground_m: 34.2490842492
+    roof_z_m: 23.529411764705884
+    height_above_ground_m: 23.529411764705884
     transform:
       original_centroid_xy_m:
       - 74.0754872612
@@ -6947,19 +6952,19 @@ obstacles:
       max:
       - 227.40775
       - -156.64825
-      - 46.1172161172
+      - 32.05882352941177
       center_enu_m:
       - 194.423625
       - -191.857625
-      - 23.033608058600002
+      - 16.004411764705885
       size_xyz_m:
       - 65.96825
       - 70.41875
-      - 46.1672161172
+      - 32.108823529411765
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 46.1172161172
-    height_above_ground_m: 46.1172161172
+    roof_z_m: 32.05882352941177
+    height_above_ground_m: 32.05882352941177
     transform:
       original_centroid_xy_m:
       - 79.1266288439
@@ -7009,19 +7014,19 @@ obstacles:
       max:
       - 403.88375
       - 130.9595
-      - 32.9304029304
+      - 22.647058823529413
       center_enu_m:
       - 380.111625
       - 107.58325
-      - 16.4402014652
+      - 11.298529411764706
       size_xyz_m:
       - 47.54425
       - 46.7525
-      - 32.9804029304
+      - 22.697058823529414
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 32.9304029304
-    height_above_ground_m: 32.9304029304
+    roof_z_m: 22.647058823529413
+    height_above_ground_m: 22.647058823529413
     transform:
       original_centroid_xy_m:
       - 151.4918387874
@@ -7071,19 +7076,19 @@ obstacles:
       max:
       - 597.67725
       - -454.26825
-      - 45.5311355312
+      - 31.470588235294116
       center_enu_m:
       - 572.418375
       - -477.641
-      - 22.7405677656
+      - 15.710294117647058
       size_xyz_m:
       - 50.51775
       - 46.7455
-      - 45.5811355312
+      - 31.520588235294117
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 45.5311355312
-    height_above_ground_m: 45.5311355312
+    roof_z_m: 31.470588235294116
+    height_above_ground_m: 31.470588235294116
     transform:
       original_centroid_xy_m:
       - 230.5448056334
@@ -7133,19 +7138,19 @@ obstacles:
       max:
       - 600.04475
       - -356.0355
-      - 66.9230769232
+      - 47.794117647058826
       center_enu_m:
       - 573.894875
       - -378.524
-      - 33.4365384616
+      - 23.872058823529414
       size_xyz_m:
       - 52.29975
       - 44.977
-      - 66.9730769232
+      - 47.84411764705882
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 66.9230769232
-    height_above_ground_m: 66.9230769232
+    roof_z_m: 47.794117647058826
+    height_above_ground_m: 47.794117647058826
     transform:
       original_centroid_xy_m:
       - 229.9438794686
@@ -7195,19 +7200,19 @@ obstacles:
       max:
       - 286.8355
       - -168.477
-      - 51.2454212456
+      - 36.17647058823529
       center_enu_m:
       - 265.73775
       - -188.59825
-      - 25.5977106228
+      - 18.063235294117646
       size_xyz_m:
       - 42.1955
       - 40.2425
-      - 51.2954212456
+      - 36.22647058823529
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 51.2454212456
-    height_above_ground_m: 51.2454212456
+    roof_z_m: 36.17647058823529
+    height_above_ground_m: 36.17647058823529
     transform:
       original_centroid_xy_m:
       - 107.3550560293
@@ -7257,19 +7262,19 @@ obstacles:
       max:
       - -546.34875
       - -372.09175
-      - 58.424908424799995
+      - 41.76470588235294
       center_enu_m:
       - -568.9315
       - -395.1705
-      - 29.1874542124
+      - 20.857352941176472
       size_xyz_m:
       - 45.1655
       - 46.1575
-      - 58.47490842479999
+      - 41.81470588235294
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 58.424908424799995
-    height_above_ground_m: 58.424908424799995
+    roof_z_m: 41.76470588235294
+    height_above_ground_m: 41.76470588235294
     transform:
       original_centroid_xy_m:
       - -227.1221577969
@@ -7319,19 +7324,19 @@ obstacles:
       max:
       - 484.14525
       - -242.42875
-      - 46.84981685
+      - 32.794117647058826
       center_enu_m:
       - 460.075375
       - -263.14225
-      - 23.399908425000003
+      - 16.372058823529414
       size_xyz_m:
       - 48.13975
       - 41.427
-      - 46.89981685
+      - 32.84411764705882
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 46.84981685
-    height_above_ground_m: 46.84981685
+    roof_z_m: 32.794117647058826
+    height_above_ground_m: 32.794117647058826
     transform:
       original_centroid_xy_m:
       - 182.8667417074
@@ -7381,19 +7386,19 @@ obstacles:
       max:
       - -237.3355
       - -39.5145
-      - 33.6630036632
+      - 23.235294117647058
       center_enu_m:
       - -261.701125
       - -61.70475
-      - 16.806501831600002
+      - 11.592647058823529
       size_xyz_m:
       - 48.73125
       - 44.3805
-      - 33.7130036632
+      - 23.28529411764706
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 33.6630036632
-    height_above_ground_m: 33.6630036632
+    roof_z_m: 23.235294117647058
+    height_above_ground_m: 23.235294117647058
     transform:
       original_centroid_xy_m:
       - -104.0527545982
@@ -7443,19 +7448,19 @@ obstacles:
       max:
       - -237.33175
       - -87.44375
-      - 70.0
+      - 50.0
       center_enu_m:
       - -261.698
       - -110.227
-      - 34.975
+      - 24.975
       size_xyz_m:
       - 48.7325
       - 45.5665
-      - 70.05
+      - 50.05
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 70.0
-    height_above_ground_m: 70.0
+    roof_z_m: 50.0
+    height_above_ground_m: 50.0
     transform:
       original_centroid_xy_m:
       - -103.8389332466
@@ -7505,19 +7510,19 @@ obstacles:
       max:
       - 406.31925
       - -543.04975
-      - 61.501831502
+      - 44.11764705882353
       center_enu_m:
       - 383.439625
       - -564.0555
-      - 30.725915751000002
+      - 22.033823529411766
       size_xyz_m:
       - 45.75925
       - 42.0115
-      - 61.551831502
+      - 44.167647058823526
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 61.501831502
-    height_above_ground_m: 61.501831502
+    roof_z_m: 44.11764705882353
+    height_above_ground_m: 44.11764705882353
     transform:
       original_centroid_xy_m:
       - 152.1737814069
@@ -7567,19 +7572,19 @@ obstacles:
       max:
       - 20.614
       - -457.27325
-      - 52.1245421244
+      - 36.91176470588235
       center_enu_m:
       - 1.300125
       - -480.64725
-      - 26.037271062200002
+      - 18.430882352941175
       size_xyz_m:
       - 38.62775
       - 46.748
-      - 52.1745421244
+      - 36.961764705882345
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 52.1245421244
-    height_above_ground_m: 52.1245421244
+    roof_z_m: 36.91176470588235
+    height_above_ground_m: 36.91176470588235
     transform:
       original_centroid_xy_m:
       - -0.4026475851
@@ -7629,19 +7634,19 @@ obstacles:
       max:
       - 290.35575
       - 380.0775
-      - 48.3150183152
+      - 33.970588235294116
       center_enu_m:
       - 269.258625
       - 359.66025
-      - 24.1325091576
+      - 16.96029411764706
       size_xyz_m:
       - 42.19425
       - 40.8345
-      - 48.3650183152
+      - 34.02058823529411
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 48.3150183152
-    height_above_ground_m: 48.3150183152
+    roof_z_m: 33.970588235294116
+    height_above_ground_m: 33.970588235294116
     transform:
       original_centroid_xy_m:
       - 108.8266715334
@@ -7691,19 +7696,19 @@ obstacles:
       max:
       - 402.08375
       - 309.66825
-      - 30.2930402932
+      - 20.294117647058822
       center_enu_m:
       - 382.1755
       - 298.423375
-      - 15.1215201466
+      - 10.12205882352941
       size_xyz_m:
       - 39.8165
       - 22.48975
-      - 30.3430402932
+      - 20.344117647058823
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 30.2930402932
-    height_above_ground_m: 30.2930402932
+    roof_z_m: 20.294117647058822
+    height_above_ground_m: 20.294117647058822
     transform:
       original_centroid_xy_m:
       - 152.9896435871
@@ -7753,19 +7758,19 @@ obstacles:
       max:
       - -164.80725
       - -464.3865
-      - 64.8717948716
+      - 46.470588235294116
       center_enu_m:
       - -185.903375
       - -488.352125
-      - 32.4108974358
+      - 23.21029411764706
       size_xyz_m:
       - 42.19225
       - 47.93125
-      - 64.9217948716
+      - 46.52058823529411
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 64.8717948716
-    height_above_ground_m: 64.8717948716
+    roof_z_m: 46.470588235294116
+    height_above_ground_m: 46.470588235294116
     transform:
       original_centroid_xy_m:
       - -74.9027644344
@@ -7815,19 +7820,19 @@ obstacles:
       max:
       - 402.09325
       - 203.7415
-      - 43.7728937728
+      - 30.294117647058826
       center_enu_m:
       - 382.778625
       - 192.203875
-      - 21.861446886400003
+      - 15.122058823529413
       size_xyz_m:
       - 38.62925
       - 23.07525
-      - 43.8228937728
+      - 30.344117647058827
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 43.7728937728
-    height_above_ground_m: 43.7728937728
+    roof_z_m: 30.294117647058826
+    height_above_ground_m: 30.294117647058826
     transform:
       original_centroid_xy_m:
       - 153.1253073872
@@ -7877,19 +7882,19 @@ obstacles:
       max:
       - -492.30575
       - 472.93175
-      - 62.087912087999996
+      - 44.55882352941177
       center_enu_m:
       - -520.236
       - 448.374
-      - 31.018956044
+      - 22.254411764705885
       size_xyz_m:
       - 55.8605
       - 49.1155
-      - 62.13791208799999
+      - 44.608823529411765
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 62.087912087999996
-    height_above_ground_m: 62.087912087999996
+    roof_z_m: 44.55882352941177
+    height_above_ground_m: 44.55882352941177
     transform:
       original_centroid_xy_m:
       - -207.4087179133
@@ -7939,19 +7944,19 @@ obstacles:
       max:
       - 331.423
       - -357.834
-      - 30.7326007328
+      - 20.735294117647058
       center_enu_m:
       - 310.027125
       - -377.955375
-      - 15.3413003664
+      - 10.342647058823529
       size_xyz_m:
       - 42.79175
       - 40.24275
-      - 30.782600732800002
+      - 20.78529411764706
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 30.7326007328
-    height_above_ground_m: 30.7326007328
+    roof_z_m: 20.735294117647058
+    height_above_ground_m: 20.735294117647058
     transform:
       original_centroid_xy_m:
       - 123.792531462
@@ -8001,19 +8006,19 @@ obstacles:
       max:
       - 335.57425
       - -231.199
-      - 54.3223443224
+      - 38.82352941176471
       center_enu_m:
       - 312.39525
       - -257.8285
-      - 27.1361721612
+      - 19.386764705882356
       size_xyz_m:
       - 46.358
       - 53.259
-      - 54.3723443224
+      - 38.87352941176471
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 54.3223443224
-    height_above_ground_m: 54.3223443224
+    roof_z_m: 38.82352941176471
+    height_above_ground_m: 38.82352941176471
     transform:
       original_centroid_xy_m:
       - 126.6141754693
@@ -8063,19 +8068,19 @@ obstacles:
       max:
       - -166.02775
       - 62.27275
-      - 43.3333333332
+      - 29.852941176470587
       center_enu_m:
       - -185.340625
       - 40.082125
-      - 21.641666666600003
+      - 14.901470588235293
       size_xyz_m:
       - 38.62575
       - 44.38125
-      - 43.3833333332
+      - 29.902941176470588
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 43.3333333332
-    height_above_ground_m: 43.3333333332
+    roof_z_m: 29.852941176470587
+    height_above_ground_m: 29.852941176470587
     transform:
       original_centroid_xy_m:
       - -75.2246975897
@@ -8125,19 +8130,19 @@ obstacles:
       max:
       - 78.1985
       - 401.95225
-      - 50.2197802196
+      - 35.294117647058826
       center_enu_m:
       - 51.159375
       - 375.029125
-      - 25.0848901098
+      - 17.622058823529414
       size_xyz_m:
       - 54.07825
       - 53.84625
-      - 50.269780219599994
+      - 35.34411764705882
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 50.2197802196
-    height_above_ground_m: 50.2197802196
+    roof_z_m: 35.294117647058826
+    height_above_ground_m: 35.294117647058826
     transform:
       original_centroid_xy_m:
       - 19.6394184928
@@ -8187,19 +8192,19 @@ obstacles:
       max:
       - 35.9935
       - 556.98875
-      - 62.673992674000004
+      - 45.0
       center_enu_m:
       - 11.926
       - 533.32
-      - 31.311996337000004
+      - 22.475
       size_xyz_m:
       - 48.135
       - 47.3375
-      - 62.723992674
+      - 45.05
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 62.673992674000004
-    height_above_ground_m: 62.673992674000004
+    roof_z_m: 45.0
+    height_above_ground_m: 45.0
     transform:
       original_centroid_xy_m:
       - 5.6206543331
@@ -8249,19 +8254,19 @@ obstacles:
       max:
       - 334.9735
       - -166.69775
-      - 47.5824175824
+      - 33.38235294117647
       center_enu_m:
       - 313.87525
       - -190.9605
-      - 23.7662087912
+      - 16.666176470588237
       size_xyz_m:
       - 42.1965
       - 48.5255
-      - 47.632417582399995
+      - 33.43235294117647
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 47.5824175824
-    height_above_ground_m: 47.5824175824
+    roof_z_m: 33.38235294117647
+    height_above_ground_m: 33.38235294117647
     transform:
       original_centroid_xy_m:
       - 126.6900014417
@@ -8311,19 +8316,19 @@ obstacles:
       max:
       - 453.80475
       - 123.271
-      - 36.4468864468
+      - 24.852941176470587
       center_enu_m:
       - 430.329
       - 103.4465
-      - 18.1984432234
+      - 12.401470588235293
       size_xyz_m:
       - 46.9515
       - 39.649
-      - 36.4968864468
+      - 24.902941176470588
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 36.4468864468
-    height_above_ground_m: 36.4468864468
+    roof_z_m: 24.852941176470587
+    height_above_ground_m: 24.852941176470587
     transform:
       original_centroid_xy_m:
       - 173.0934088665
@@ -8373,19 +8378,19 @@ obstacles:
       max:
       - 5.107
       - 329.75425
-      - 39.2307692308
+      - 26.764705882352942
       center_enu_m:
       - -19.851375
       - 308.451375
-      - 19.5903846154
+      - 13.35735294117647
       size_xyz_m:
       - 49.91675
       - 42.60575
-      - 39.2807692308
+      - 26.814705882352943
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 39.2307692308
-    height_above_ground_m: 39.2307692308
+    roof_z_m: 26.764705882352942
+    height_above_ground_m: 26.764705882352942
     transform:
       original_centroid_xy_m:
       - -8.1435305719
@@ -8435,19 +8440,19 @@ obstacles:
       max:
       - 381.3495
       - -426.473
-      - 30.0
+      - 20.0
       center_enu_m:
       - 358.765375
       - -450.440875
-      - 14.975
+      - 9.975
       size_xyz_m:
       - 45.16825
       - 47.93575
-      - 30.05
+      - 20.05
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 30.0
-    height_above_ground_m: 30.0
+    roof_z_m: 20.0
+    height_above_ground_m: 20.0
     transform:
       original_centroid_xy_m:
       - 142.7876483849
@@ -8497,19 +8502,19 @@ obstacles:
       max:
       - 526.8905
       - 196.6515
-      - 40.695970696
+      - 27.941176470588236
       center_enu_m:
       - 507.873625
       - 186.000625
-      - 20.322985348000003
+      - 13.945588235294117
       size_xyz_m:
       - 38.03375
       - 21.30175
-      - 40.745970696
+      - 27.991176470588236
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 40.695970696
-    height_above_ground_m: 40.695970696
+    roof_z_m: 27.941176470588236
+    height_above_ground_m: 27.941176470588236
     transform:
       original_centroid_xy_m:
       - 203.1659331683
@@ -8559,19 +8564,19 @@ obstacles:
       max:
       - 430.0755
       - -356.642
-      - 35.5677655676
+      - 24.411764705882355
       center_enu_m:
       - 407.491125
       - -376.467625
-      - 17.7588827838
+      - 12.180882352941177
       size_xyz_m:
       - 45.16875
       - 39.65125
-      - 35.617765567599996
+      - 24.461764705882356
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 35.5677655676
-    height_above_ground_m: 35.5677655676
+    roof_z_m: 24.411764705882355
+    height_above_ground_m: 24.411764705882355
     transform:
       original_centroid_xy_m:
       - 162.8147480554
@@ -8621,19 +8626,19 @@ obstacles:
       max:
       - 430.67775
       - -435.34525
-      - 58.131868131999994
+      - 41.470588235294116
       center_enu_m:
       - 408.98425
       - -455.465375
-      - 29.040934066
+      - 20.71029411764706
       size_xyz_m:
       - 43.387
       - 40.24025
-      - 58.18186813199999
+      - 41.52058823529411
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 58.131868131999994
-    height_above_ground_m: 58.131868131999994
+    roof_z_m: 41.470588235294116
+    height_above_ground_m: 41.470588235294116
     transform:
       original_centroid_xy_m:
       - 164.7240815455
@@ -8683,19 +8688,19 @@ obstacles:
       max:
       - 280.31975
       - -426.4835
-      - 55.347985347999995
+      - 39.705882352941174
       center_enu_m:
       - 258.03225
       - -451.33775
-      - 27.648992674
+      - 19.82794117647059
       size_xyz_m:
       - 44.575
       - 49.7085
-      - 55.39798534799999
+      - 39.75588235294117
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 55.347985347999995
-    height_above_ground_m: 55.347985347999995
+    roof_z_m: 39.705882352941174
+    height_above_ground_m: 39.705882352941174
     transform:
       original_centroid_xy_m:
       - 102.1774493077
@@ -8745,19 +8750,19 @@ obstacles:
       max:
       - 431.84925
       - -236.5165
-      - 59.1575091576
+      - 42.5
       center_enu_m:
       - 410.75025
       - -260.778875
-      - 29.553754578800003
+      - 21.225
       size_xyz_m:
       - 42.198
       - 48.52475
-      - 59.2075091576
+      - 42.55
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 59.1575091576
-    height_above_ground_m: 59.1575091576
+    roof_z_m: 42.5
+    height_above_ground_m: 42.5
     transform:
       original_centroid_xy_m:
       - 165.5179335403
@@ -8807,19 +8812,19 @@ obstacles:
       max:
       - -438.7995
       - 20.2445
-      - 60.9157509156
+      - 43.529411764705884
       center_enu_m:
       - -461.679375
       - -3.130625
-      - 30.4328754578
+      - 21.739705882352943
       size_xyz_m:
       - 45.75975
       - 46.75025
-      - 60.9657509156
+      - 43.57941176470588
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 60.9157509156
-    height_above_ground_m: 60.9157509156
+    roof_z_m: 43.529411764705884
+    height_above_ground_m: 43.529411764705884
     transform:
       original_centroid_xy_m:
       - -183.538851242
@@ -8869,19 +8874,19 @@ obstacles:
       max:
       - 216.057
       - 583.04125
-      - 33.2234432236
+      - 22.941176470588236
       center_enu_m:
       - 189.31425
       - 560.553125
-      - 16.5867216118
+      - 11.445588235294117
       size_xyz_m:
       - 53.4855
       - 44.97625
-      - 33.2734432236
+      - 22.991176470588236
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 33.2234432236
-    height_above_ground_m: 33.2234432236
+    roof_z_m: 22.941176470588236
+    height_above_ground_m: 22.941176470588236
     transform:
       original_centroid_xy_m:
       - 75.7788651716
@@ -8931,19 +8936,19 @@ obstacles:
       max:
       - 89.472
       - 622.0885
-      - 45.238095238
+      - 31.176470588235293
       center_enu_m:
       - 69.56575
       - 598.71375
-      - 22.594047619
+      - 15.563235294117646
       size_xyz_m:
       - 39.8125
       - 46.7495
-      - 45.288095238
+      - 31.226470588235294
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 45.238095238
-    height_above_ground_m: 45.238095238
+    roof_z_m: 31.176470588235293
+    height_above_ground_m: 31.176470588235293
     transform:
       original_centroid_xy_m:
       - 26.4699852107
@@ -8993,19 +8998,19 @@ obstacles:
       max:
       - -358.552
       - -334.80325
-      - 53.0036630036
+      - 37.64705882352941
       center_enu_m:
       - -382.027
       - -356.107
-      - 26.476831501800003
+      - 18.798529411764708
       size_xyz_m:
       - 46.95
       - 42.6075
-      - 53.0536630036
+      - 37.69705882352941
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 53.0036630036
-    height_above_ground_m: 53.0036630036
+    roof_z_m: 37.64705882352941
+    height_above_ground_m: 37.64705882352941
     transform:
       original_centroid_xy_m:
       - -153.3008969744
@@ -9055,19 +9060,19 @@ obstacles:
       max:
       - -546.349
       - -322.3845
-      - 46.5567765568
+      - 32.5
       center_enu_m:
       - -569.527375
       - -343.9845
-      - 23.253388278400003
+      - 16.225
       size_xyz_m:
       - 46.35675
       - 43.2
-      - 46.6067765568
+      - 32.55
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 46.5567765568
-    height_above_ground_m: 46.5567765568
+    roof_z_m: 32.5
+    height_above_ground_m: 32.5
     transform:
       original_centroid_xy_m:
       - -227.7657215692
@@ -9119,19 +9124,19 @@ obstacles:
       max:
       - -129.193
       - 266.4285
-      - 45.824175824
+      - 31.764705882352942
       center_enu_m:
       - -150.884
       - 240.688125
-      - 22.887087912000002
+      - 15.85735294117647
       size_xyz_m:
       - 43.382
       - 51.48075
-      - 45.874175824
+      - 31.814705882352943
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 45.824175824
-    height_above_ground_m: 45.824175824
+    roof_z_m: 31.764705882352942
+    height_above_ground_m: 31.764705882352942
     transform:
       original_centroid_xy_m:
       - -60.8019242406
@@ -9181,19 +9186,19 @@ obstacles:
       max:
       - -244.45625
       - -187.45025
-      - 35.2747252748
+      - 24.11764705882353
       center_enu_m:
       - -265.2575
       - -209.346125
-      - 17.6123626374
+      - 12.033823529411764
       size_xyz_m:
       - 41.6025
       - 43.79175
-      - 35.324725274799995
+      - 24.16764705882353
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 35.2747252748
-    height_above_ground_m: 35.2747252748
+    roof_z_m: 24.11764705882353
+    height_above_ground_m: 24.11764705882353
     transform:
       original_centroid_xy_m:
       - -105.4984004068
@@ -9243,19 +9248,19 @@ obstacles:
       max:
       - 143.584
       - 177.09175
-      - 33.0769230768
+      - 22.794117647058822
       center_enu_m:
       - 120.4085
       - 154.60575
-      - 16.5134615384
+      - 11.37205882352941
       size_xyz_m:
       - 46.351
       - 44.972
-      - 33.1269230768
+      - 22.844117647058823
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 33.0769230768
-    height_above_ground_m: 33.0769230768
+    roof_z_m: 22.794117647058822
+    height_above_ground_m: 22.794117647058822
     transform:
       original_centroid_xy_m:
       - 48.2415403899
@@ -9305,19 +9310,19 @@ obstacles:
       max:
       - 380.12
       - 15.56575
-      - 61.3553113552
+      - 43.970588235294116
       center_enu_m:
       - 358.725875
       - -4.555625
-      - 30.652655677600002
+      - 21.96029411764706
       size_xyz_m:
       - 42.78825
       - 40.24275
-      - 61.4053113552
+      - 44.02058823529411
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 61.3553113552
-    height_above_ground_m: 61.3553113552
+    roof_z_m: 43.970588235294116
+    height_above_ground_m: 43.970588235294116
     transform:
       original_centroid_xy_m:
       - 143.5193021382
@@ -9369,19 +9374,19 @@ obstacles:
       max:
       - 298.0855
       - 303.15025
-      - 46.4102564104
+      - 32.35294117647059
       center_enu_m:
       - 265.400375
       - 282.733125
-      - 23.180128205200003
+      - 16.151470588235295
       size_xyz_m:
       - 65.37025
       - 40.83425
-      - 46.4602564104
+      - 32.402941176470584
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 46.4102564104
-    height_above_ground_m: 46.4102564104
+    roof_z_m: 32.35294117647059
+    height_above_ground_m: 32.35294117647059
     transform:
       original_centroid_xy_m:
       - 105.4619689898
@@ -9431,19 +9436,19 @@ obstacles:
       max:
       - -59.64175
       - -43.6445
-      - 57.8388278388
+      - 41.32352941176471
       center_enu_m:
       - -80.146
       - -67.01925
-      - 28.8944139194
+      - 20.636764705882356
       size_xyz_m:
       - 41.0085
       - 46.7495
-      - 57.8888278388
+      - 41.37352941176471
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 57.8388278388
-    height_above_ground_m: 57.8388278388
+    roof_z_m: 41.32352941176471
+    height_above_ground_m: 41.32352941176471
     transform:
       original_centroid_xy_m:
       - -31.7160861022
@@ -9489,19 +9494,19 @@ obstacles:
       max:
       - -354.415
       - 70.54575
-      - 56.813186813200005
+      - 40.58823529411765
       center_enu_m:
       - -376.105125
       - 46.876625
-      - 28.381593406600004
+      - 20.269117647058827
       size_xyz_m:
       - 43.38025
       - 47.33825
-      - 56.8631868132
+      - 40.63823529411765
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 56.813186813200005
-    height_above_ground_m: 56.813186813200005
+    roof_z_m: 40.58823529411765
+    height_above_ground_m: 40.58823529411765
     transform:
       original_centroid_xy_m:
       - -150.6340526189
@@ -9553,19 +9558,19 @@ obstacles:
       max:
       - 284.443
       - 15.5555
-      - 65.7509157508
+      - 47.205882352941174
       center_enu_m:
       - 260.67125
       - -3.973125
-      - 32.850457875400004
+      - 23.57794117647059
       size_xyz_m:
       - 47.5435
       - 39.05725
-      - 65.8009157508
+      - 47.25588235294117
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 65.7509157508
-    height_above_ground_m: 65.7509157508
+    roof_z_m: 47.205882352941174
+    height_above_ground_m: 47.205882352941174
     transform:
       original_centroid_xy_m:
       - 103.1382961751
@@ -9619,19 +9624,19 @@ obstacles:
       max:
       - -432.846
       - -183.31875
-      - 69.1208791208
+      - 49.26470588235294
       center_enu_m:
       - -456.321375
       - -205.213625
-      - 34.5354395604
+      - 24.607352941176472
       size_xyz_m:
       - 46.95075
       - 43.78975
-      - 69.1708791208
+      - 49.31470588235294
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 69.1208791208
-    height_above_ground_m: 69.1208791208
+    roof_z_m: 49.26470588235294
+    height_above_ground_m: 49.26470588235294
     transform:
       original_centroid_xy_m:
       - -181.6633695568
@@ -9685,19 +9690,19 @@ obstacles:
       max:
       - 591.71125
       - -237.687
-      - 46.7032967032
+      - 32.64705882352941
       center_enu_m:
       - 569.42425
       - -261.0615
-      - 23.326648351600003
+      - 16.298529411764708
       size_xyz_m:
       - 44.574
       - 46.749
-      - 46.7532967032
+      - 32.69705882352941
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 46.7032967032
-    height_above_ground_m: 46.7032967032
+    roof_z_m: 32.64705882352941
+    height_above_ground_m: 32.64705882352941
     transform:
       original_centroid_xy_m:
       - 228.4320040942
@@ -9751,19 +9756,19 @@ obstacles:
       max:
       - -549.928
       - -13.491
-      - 66.4835164836
+      - 47.5
       center_enu_m:
       - -570.1345
       - -35.97775
-      - 33.2167582418
+      - 23.725
       size_xyz_m:
       - 40.413
       - 44.9735
-      - 66.5335164836
+      - 47.55
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 66.4835164836
-    height_above_ground_m: 66.4835164836
+    roof_z_m: 47.5
+    height_above_ground_m: 47.5
     transform:
       original_centroid_xy_m:
       - -229.0963107969
@@ -9817,19 +9822,19 @@ obstacles:
       max:
       - 343.847
       - 300.19375
-      - 34.3956043956
+      - 23.676470588235293
       center_enu_m:
       - 318.8885
       - 266.167125
-      - 17.172802197800003
+      - 11.813235294117646
       size_xyz_m:
       - 49.917
       - 68.05325
-      - 34.4456043956
+      - 23.726470588235294
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 34.3956043956
-    height_above_ground_m: 34.3956043956
+    roof_z_m: 23.676470588235293
+    height_above_ground_m: 23.676470588235293
     transform:
       original_centroid_xy_m:
       - 127.2941904399
@@ -9883,19 +9888,19 @@ obstacles:
       max:
       - 382.506
       - -56.03875
-      - 40.9890109892
+      - 28.235294117647058
       center_enu_m:
       - 359.921875
       - -79.4135
-      - 20.4695054946
+      - 14.092647058823529
       size_xyz_m:
       - 45.16825
       - 46.7495
-      - 41.039010989199994
+      - 28.28529411764706
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 40.9890109892
-    height_above_ground_m: 40.9890109892
+    roof_z_m: 28.235294117647058
+    height_above_ground_m: 28.235294117647058
     transform:
       original_centroid_xy_m:
       - 142.6827938828
@@ -9949,19 +9954,19 @@ obstacles:
       max:
       - -379.38325
       - 244.5195
-      - 55.787545787599996
+      - 40.14705882352941
       center_enu_m:
       - -400.47975
       - 223.2175
-      - 27.8687728938
+      - 20.048529411764708
       size_xyz_m:
       - 42.193
       - 42.604
-      - 55.83754578759999
+      - 40.19705882352941
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 55.787545787599996
-    height_above_ground_m: 55.787545787599996
+    roof_z_m: 40.14705882352941
+    height_above_ground_m: 40.14705882352941
     transform:
       original_centroid_xy_m:
       - -159.1127502495
@@ -10015,19 +10020,19 @@ obstacles:
       max:
       - 483.47725
       - 575.964
-      - 50.805860806
+      - 35.88235294117647
       center_enu_m:
       - 471.590125
       - 552.88475
-      - 25.377930403
+      - 17.916176470588237
       size_xyz_m:
       - 23.77425
       - 46.1585
-      - 50.855860805999995
+      - 35.93235294117647
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 50.805860806
-    height_above_ground_m: 50.805860806
+    roof_z_m: 35.88235294117647
+    height_above_ground_m: 35.88235294117647
     transform:
       original_centroid_xy_m:
       - 188.4605912316
@@ -10081,19 +10086,19 @@ obstacles:
       max:
       - -395.4445
       - 561.69925
-      - 31.025641025600002
+      - 21.029411764705884
       center_enu_m:
       - -422.483125
       - 541.8755
-      - 15.4878205128
+      - 10.489705882352942
       size_xyz_m:
       - 54.07725
       - 39.6475
-      - 31.075641025600003
+      - 21.079411764705885
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 31.025641025600002
-    height_above_ground_m: 31.025641025600002
+    roof_z_m: 21.029411764705884
+    height_above_ground_m: 21.029411764705884
     transform:
       original_centroid_xy_m:
       - -168.4881920126
@@ -10147,19 +10152,19 @@ obstacles:
       max:
       - 445.444
       - 574.1855
-      - 36.5934065936
+      - 25.0
       center_enu_m:
       - 435.339875
       - 551.698125
-      - 18.271703296800002
+      - 12.475
       size_xyz_m:
       - 20.20825
       - 44.97475
-      - 36.6434065936
+      - 25.05
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 36.5934065936
-    height_above_ground_m: 36.5934065936
+    roof_z_m: 25.0
+    height_above_ground_m: 25.0
     transform:
       original_centroid_xy_m:
       - 174.0971539381
@@ -10213,19 +10218,19 @@ obstacles:
       max:
       - 18.79475
       - 45.123
-      - 68.827838828
+      - 49.11764705882353
       center_enu_m:
       - -4.380875
       - 24.412125
-      - 34.388919414
+      - 24.533823529411766
       size_xyz_m:
       - 46.35125
       - 41.42175
-      - 68.877838828
+      - 49.167647058823526
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 68.827838828
-    height_above_ground_m: 68.827838828
+    roof_z_m: 49.11764705882353
+    height_above_ground_m: 49.11764705882353
     transform:
       original_centroid_xy_m:
       - -2.5137981923
@@ -10279,19 +10284,19 @@ obstacles:
       max:
       - 459.72
       - 389.559
-      - 44.652014652
+      - 30.735294117647058
       center_enu_m:
       - 445.756125
       - 369.14375
-      - 22.301007326
+      - 15.342647058823529
       size_xyz_m:
       - 27.92775
       - 40.8305
-      - 44.702014651999995
+      - 30.78529411764706
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 44.652014652
-    height_above_ground_m: 44.652014652
+    roof_z_m: 30.735294117647058
+    height_above_ground_m: 30.735294117647058
     transform:
       original_centroid_xy_m:
       - 178.4427667874
@@ -10345,19 +10350,19 @@ obstacles:
       max:
       - 593.47
       - 29.7865
-      - 66.7765567764
+      - 47.64705882352941
       center_enu_m:
       - 569.697875
       - 6.4105
-      - 33.3632783882
+      - 23.798529411764708
       size_xyz_m:
       - 47.54425
       - 46.752
-      - 66.8265567764
+      - 47.69705882352941
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 66.7765567764
-    height_above_ground_m: 66.7765567764
+    roof_z_m: 47.64705882352941
+    height_above_ground_m: 47.64705882352941
     transform:
       original_centroid_xy_m:
       - 228.0886460959
@@ -10411,19 +10416,19 @@ obstacles:
       max:
       - -432.85225
       - -79.7615
-      - 30.1465201464
+      - 20.147058823529413
       center_enu_m:
       - -456.32675
       - -101.657125
-      - 15.0482600732
+      - 10.048529411764706
       size_xyz_m:
       - 46.949
       - 43.79125
-      - 30.1965201464
+      - 20.197058823529414
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 30.1465201464
-    height_above_ground_m: 30.1465201464
+    roof_z_m: 20.147058823529413
+    height_above_ground_m: 20.147058823529413
     transform:
       original_centroid_xy_m:
       - -182.8543623562
@@ -10477,19 +10482,19 @@ obstacles:
       max:
       - 480.59725
       - -435.3405
-      - 55.2014652016
+      - 39.55882352941177
       center_enu_m:
       - 457.716625
       - -455.462
-      - 27.575732600800002
+      - 19.754411764705885
       size_xyz_m:
       - 45.76125
       - 40.243
-      - 55.2514652016
+      - 39.608823529411765
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 55.2014652016
-    height_above_ground_m: 55.2014652016
+    roof_z_m: 39.55882352941177
+    height_above_ground_m: 39.55882352941177
     transform:
       original_centroid_xy_m:
       - 182.0593700716
@@ -10543,19 +10548,19 @@ obstacles:
       max:
       - 18.8075
       - -97.48725
-      - 67.0695970696
+      - 47.94117647058823
       center_enu_m:
       - -0.803875
       - -119.677875
-      - 33.5097985348
+      - 23.945588235294117
       size_xyz_m:
       - 39.22275
       - 44.38125
-      - 67.11959706959999
+      - 47.99117647058823
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 67.0695970696
-    height_above_ground_m: 67.0695970696
+    roof_z_m: 47.94117647058823
+    height_above_ground_m: 47.94117647058823
     transform:
       original_centroid_xy_m:
       - -0.6350622399
@@ -10609,19 +10614,19 @@ obstacles:
       max:
       - -545.15625
       - -437.1845
-      - 63.26007326
+      - 45.44117647058823
       center_enu_m:
       - -567.73975
       - -458.784375
-      - 31.60503663
+      - 22.695588235294117
       size_xyz_m:
       - 45.167
       - 43.19975
-      - 63.310073259999996
+      - 45.49117647058823
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 63.26007326
-    height_above_ground_m: 63.26007326
+    roof_z_m: 45.44117647058823
+    height_above_ground_m: 45.44117647058823
     transform:
       original_centroid_xy_m:
       - -227.9067543098
@@ -10675,19 +10680,19 @@ obstacles:
       max:
       - 332.619
       - -427.661
-      - 42.0146520148
+      - 29.11764705882353
       center_enu_m:
       - 310.034
       - -451.6275
-      - 20.9823260074
+      - 14.533823529411764
       size_xyz_m:
       - 45.17
       - 47.933
-      - 42.0646520148
+      - 29.16764705882353
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 42.0146520148
-    height_above_ground_m: 42.0146520148
+    roof_z_m: 29.11764705882353
+    height_above_ground_m: 29.11764705882353
     transform:
       original_centroid_xy_m:
       - 125.5482644401
@@ -10741,19 +10746,19 @@ obstacles:
       max:
       - -426.3295
       - 249.845
-      - 50.6593406592
+      - 35.73529411764706
       center_enu_m:
       - -448.02125
       - 227.062125
-      - 25.3046703296
+      - 17.84264705882353
       size_xyz_m:
       - 43.3835
       - 45.56575
-      - 50.709340659199995
+      - 35.785294117647055
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 50.6593406592
-    height_above_ground_m: 50.6593406592
+    roof_z_m: 35.73529411764706
+    height_above_ground_m: 35.73529411764706
     transform:
       original_centroid_xy_m:
       - -178.4838711631
@@ -10807,19 +10812,19 @@ obstacles:
       max:
       - 383.1175
       - -237.706
-      - 44.7985347984
+      - 30.88235294117647
       center_enu_m:
       - 361.127
       - -261.376875
-      - 22.3742673992
+      - 15.416176470588235
       size_xyz_m:
       - 43.981
       - 47.34175
-      - 44.848534798399996
+      - 30.93235294117647
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 44.7985347984
-    height_above_ground_m: 44.7985347984
+    roof_z_m: 30.88235294117647
+    height_above_ground_m: 30.88235294117647
     transform:
       original_centroid_xy_m:
       - 144.2664243576
@@ -10873,19 +10878,19 @@ obstacles:
       max:
       - -211.797
       - 240.978
-      - 55.4945054944
+      - 39.85294117647059
       center_enu_m:
       - -236.755625
       - 212.278875
-      - 27.722252747200002
+      - 19.901470588235295
       size_xyz_m:
       - 49.91725
       - 57.39825
-      - 55.5445054944
+      - 39.902941176470584
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 55.4945054944
-    height_above_ground_m: 55.4945054944
+    roof_z_m: 39.85294117647059
+    height_above_ground_m: 39.85294117647059
     transform:
       original_centroid_xy_m:
       - -94.1845688496
@@ -10939,19 +10944,19 @@ obstacles:
       max:
       - -12.143
       - 571.188
-      - 49.3406593408
+      - 34.705882352941174
       center_enu_m:
       - -38.5875
       - 549.293375
-      - 24.645329670400002
+      - 17.32794117647059
       size_xyz_m:
       - 52.889
       - 43.78925
-      - 49.3906593408
+      - 34.75588235294117
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 49.3406593408
-    height_above_ground_m: 49.3406593408
+    roof_z_m: 34.705882352941174
+    height_above_ground_m: 34.705882352941174
     transform:
       original_centroid_xy_m:
       - -16.3466556049
@@ -11005,19 +11010,19 @@ obstacles:
       max:
       - -431.0555
       - -382.14675
-      - 34.542124542
+      - 23.823529411764707
       center_enu_m:
       - -456.01525
       - -404.63325
-      - 17.246062271000003
+      - 11.886764705882353
       size_xyz_m:
       - 49.9195
       - 44.973
-      - 34.592124542
+      - 23.873529411764707
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 34.542124542
-    height_above_ground_m: 34.542124542
+    roof_z_m: 23.823529411764707
+    height_above_ground_m: 23.823529411764707
     transform:
       original_centroid_xy_m:
       - -182.2368075586
@@ -11073,19 +11078,19 @@ obstacles:
       max:
       - -231.3725
       - -359.058
-      - 61.7948717948
+      - 44.41176470588235
       center_enu_m:
       - -257.521125
       - -381.8405
-      - 30.872435897400003
+      - 22.180882352941175
       size_xyz_m:
       - 52.29725
       - 45.565
-      - 61.8448717948
+      - 44.461764705882345
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 61.7948717948
-    height_above_ground_m: 61.7948717948
+    roof_z_m: 44.41176470588235
+    height_above_ground_m: 44.41176470588235
     transform:
       original_centroid_xy_m:
       - -102.622963537
@@ -11139,19 +11144,19 @@ obstacles:
       max:
       - -35.887
       - 168.79475
-      - 63.6996336996
+      - 45.88235294117647
       center_enu_m:
       - -61.439625
       - 142.167
-      - 31.8248168498
+      - 22.916176470588237
       size_xyz_m:
       - 51.10525
       - 53.2555
-      - 63.7496336996
+      - 45.93235294117647
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 63.6996336996
-    height_above_ground_m: 63.6996336996
+    roof_z_m: 45.88235294117647
+    height_above_ground_m: 45.88235294117647
     transform:
       original_centroid_xy_m:
       - -24.1950854782
@@ -11205,19 +11210,19 @@ obstacles:
       max:
       - 132.902
       - 14.36225
-      - 58.864468864399996
+      - 42.205882352941174
       center_enu_m:
       - 108.534875
       - -9.900125
-      - 29.4072344322
+      - 21.07794117647059
       size_xyz_m:
       - 48.73425
       - 48.52475
-      - 58.91446886439999
+      - 42.25588235294117
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 58.864468864399996
-    height_above_ground_m: 58.864468864399996
+    roof_z_m: 42.205882352941174
+    height_above_ground_m: 42.205882352941174
     transform:
       original_centroid_xy_m:
       - 43.6625398206
@@ -11273,19 +11278,19 @@ obstacles:
       max:
       - -412.0285
       - -547.83725
-      - 53.15018315
+      - 37.794117647058826
       center_enu_m:
       - -434.90875
       - -570.915625
-      - 26.550091575
+      - 18.872058823529414
       size_xyz_m:
       - 45.7605
       - 46.15675
-      - 53.200183149999994
+      - 37.84411764705882
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 53.15018315
-    height_above_ground_m: 53.15018315
+    roof_z_m: 37.794117647058826
+    height_above_ground_m: 37.794117647058826
     transform:
       original_centroid_xy_m:
       - -175.4297497246
@@ -11341,19 +11346,19 @@ obstacles:
       max:
       - -443.55525
       - 72.91025
-      - 48.7545787544
+      - 34.26470588235294
       center_enu_m:
       - -466.4355
       - 47.759875
-      - 24.3522893772
+      - 17.107352941176472
       size_xyz_m:
       - 45.7605
       - 50.30075
-      - 48.8045787544
+      - 34.31470588235294
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 48.7545787544
-    height_above_ground_m: 48.7545787544
+    roof_z_m: 34.26470588235294
+    height_above_ground_m: 34.26470588235294
     transform:
       original_centroid_xy_m:
       - -185.5500588776
@@ -11411,19 +11416,19 @@ obstacles:
       max:
       - 599.453
       - -406.33525
-      - 32.783882784
+      - 22.5
       center_enu_m:
       - 573.303125
       - -427.638875
-      - 16.366941392
+      - 11.225
       size_xyz_m:
       - 52.29975
       - 42.60725
-      - 32.833882784
+      - 22.55
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 32.783882784
-    height_above_ground_m: 32.783882784
+    roof_z_m: 22.5
+    height_above_ground_m: 22.5
     transform:
       original_centroid_xy_m:
       - 229.6186111023
@@ -11481,19 +11486,19 @@ obstacles:
       max:
       - -357.963
       - -230.06325
-      - 44.065934066
+      - 30.441176470588236
       center_enu_m:
       - -377.8725
       - -252.25425
-      - 22.007967033
+      - 15.195588235294117
       size_xyz_m:
       - 39.819
       - 44.382
-      - 44.115934065999994
+      - 30.491176470588236
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 44.065934066
-    height_above_ground_m: 44.065934066
+    roof_z_m: 30.441176470588236
+    height_above_ground_m: 30.441176470588236
     transform:
       original_centroid_xy_m:
       - -152.11822152
@@ -11551,19 +11556,19 @@ obstacles:
       max:
       - -506.566
       - 435.6495
-      - 47.1428571428
+      - 33.088235294117645
       center_enu_m:
       - -541.62775
       - 405.470375
-      - 23.5464285714
+      - 16.519117647058824
       size_xyz_m:
       - 70.1235
       - 60.35825
-      - 47.192857142799994
+      - 33.13823529411764
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 47.1428571428
-    height_above_ground_m: 47.1428571428
+    roof_z_m: 33.088235294117645
+    height_above_ground_m: 33.088235294117645
     transform:
       original_centroid_xy_m:
       - -217.091441256
@@ -11621,19 +11626,19 @@ obstacles:
       max:
       - 381.32875
       - -167.28775
-      - 42.4542124544
+      - 29.411764705882355
       center_enu_m:
       - 359.636
       - -191.8455
-      - 21.2021062272
+      - 14.680882352941177
       size_xyz_m:
       - 43.3855
       - 49.1155
-      - 42.5042124544
+      - 29.461764705882356
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 42.4542124544
-    height_above_ground_m: 42.4542124544
+    roof_z_m: 29.411764705882355
+    height_above_ground_m: 29.411764705882355
     transform:
       original_centroid_xy_m:
       - 143.6231677619
@@ -11691,19 +11696,19 @@ obstacles:
       max:
       - 448.42
       - 526.25375
-      - 69.8534798536
+      - 49.85294117647059
       center_enu_m:
       - 436.23575
       - 501.6955
-      - 34.901739926800005
+      - 24.901470588235295
       size_xyz_m:
       - 24.3685
       - 49.1165
-      - 69.9034798536
+      - 49.902941176470584
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 69.8534798536
-    height_above_ground_m: 69.8534798536
+    roof_z_m: 49.85294117647059
+    height_above_ground_m: 49.85294117647059
     transform:
       original_centroid_xy_m:
       - 174.4062252524
@@ -11761,19 +11766,19 @@ obstacles:
       max:
       - -167.21325
       - 10.7895
-      - 45.9706959708
+      - 31.911764705882355
       center_enu_m:
       - -192.1725
       - -11.400875
-      - 22.960347985400002
+      - 15.930882352941177
       size_xyz_m:
       - 49.9185
       - 44.38075
-      - 46.0206959708
+      - 31.961764705882356
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 45.9706959708
-    height_above_ground_m: 45.9706959708
+    roof_z_m: 31.911764705882355
+    height_above_ground_m: 31.911764705882355
     transform:
       original_centroid_xy_m:
       - -76.8877679442
@@ -11831,19 +11836,19 @@ obstacles:
       max:
       - -357.384
       - 20.24725
-      - 59.304029304
+      - 42.64705882352941
       center_enu_m:
       - -382.0465
       - -0.76025
-      - 29.627014652
+      - 21.298529411764708
       size_xyz_m:
       - 49.325
       - 42.015
-      - 59.354029303999994
+      - 42.69705882352941
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 59.304029304
-    height_above_ground_m: 59.304029304
+    roof_z_m: 42.64705882352941
+    height_above_ground_m: 42.64705882352941
     transform:
       original_centroid_xy_m:
       - -153.1238542944
@@ -11901,19 +11906,19 @@ obstacles:
       max:
       - -430.4565
       - -437.77325
-      - 68.3882783884
+      - 48.82352941176471
       center_enu_m:
       - -454.82325
       - -460.555
-      - 34.1691391942
+      - 24.386764705882356
       size_xyz_m:
       - 48.7335
       - 45.5635
-      - 68.4382783884
+      - 48.87352941176471
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 68.3882783884
-    height_above_ground_m: 68.3882783884
+    roof_z_m: 48.82352941176471
+    height_above_ground_m: 48.82352941176471
     transform:
       original_centroid_xy_m:
       - -181.9521811901
@@ -11971,19 +11976,19 @@ obstacles:
       max:
       - -234.93075
       - -504.629
-      - 57.3992673992
+      - 41.029411764705884
       center_enu_m:
       - -260.7825
       - -526.525
-      - 28.6746336996
+      - 20.489705882352943
       size_xyz_m:
       - 51.7035
       - 43.792
-      - 57.4492673992
+      - 41.07941176470588
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 57.3992673992
-    height_above_ground_m: 57.3992673992
+    roof_z_m: 41.029411764705884
+    height_above_ground_m: 41.029411764705884
     transform:
       original_centroid_xy_m:
       - -104.9072660257
@@ -12041,19 +12046,19 @@ obstacles:
       max:
       - -461.355
       - -546.064
-      - 67.5091575092
+      - 48.38235294117647
       center_enu_m:
       - -485.424
       - -567.6635
-      - 33.7295787546
+      - 24.166176470588237
       size_xyz_m:
       - 48.138
       - 43.199
-      - 67.55915750919999
+      - 48.43235294117647
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 67.5091575092
-    height_above_ground_m: 67.5091575092
+    roof_z_m: 48.38235294117647
+    height_above_ground_m: 48.38235294117647
     transform:
       original_centroid_xy_m:
       - -194.1240479182
@@ -12111,19 +12116,19 @@ obstacles:
       max:
       - -357.9655
       - -180.35525
-      - 39.9633699632
+      - 27.5
       center_enu_m:
       - -381.440875
       - -203.434625
-      - 19.956684981600002
+      - 13.725
       size_xyz_m:
       - 46.95075
       - 46.15875
-      - 40.0133699632
+      - 27.55
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 39.9633699632
-    height_above_ground_m: 39.9633699632
+    roof_z_m: 27.5
+    height_above_ground_m: 27.5
     transform:
       original_centroid_xy_m:
       - -151.8540333318
@@ -12185,19 +12190,19 @@ obstacles:
       max:
       - 233.9645
       - -428.26225
-      - 55.6410256412
+      - 40.0
       center_enu_m:
       - 210.786125
       - -452.227375
-      - 27.795512820600003
+      - 19.975
       size_xyz_m:
       - 46.35675
       - 47.93025
-      - 55.6910256412
+      - 40.05
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 55.6410256412
-    height_above_ground_m: 55.6410256412
+    roof_z_m: 40.0
+    height_above_ground_m: 40.0
     transform:
       original_centroid_xy_m:
       - 85.5362594755
@@ -12259,19 +12264,19 @@ obstacles:
       max:
       - 482.29325
       - 524.48175
-      - 64.1391941392
+      - 46.17647058823529
       center_enu_m:
       - 471.001875
       - 500.810625
-      - 32.0445970696
+      - 23.063235294117646
       size_xyz_m:
       - 22.58275
       - 47.34225
-      - 64.1891941392
+      - 46.22647058823529
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 64.1391941392
-    height_above_ground_m: 64.1391941392
+    roof_z_m: 46.17647058823529
+    height_above_ground_m: 46.17647058823529
     transform:
       original_centroid_xy_m:
       - 188.449201153
@@ -12333,19 +12338,19 @@ obstacles:
       max:
       - -57.25875
       - -142.46575
-      - 41.7216117216
+      - 28.823529411764707
       center_enu_m:
       - -80.139125
       - -164.066
-      - 20.8358058608
+      - 14.386764705882353
       size_xyz_m:
       - 45.76075
       - 43.2005
-      - 41.771611721599996
+      - 28.873529411764707
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 41.7216117216
-    height_above_ground_m: 41.7216117216
+    roof_z_m: 28.823529411764707
+    height_above_ground_m: 28.823529411764707
     transform:
       original_centroid_xy_m:
       - -31.785096748
@@ -12407,19 +12412,19 @@ obstacles:
       max:
       - -241.483
       - -235.97375
-      - 41.4285714284
+      - 28.529411764705884
       center_enu_m:
       - -263.175
       - -265.858375
-      - 20.6892857142
+      - 14.239705882352942
       size_xyz_m:
       - 43.384
       - 59.76925
-      - 41.478571428399995
+      - 28.579411764705885
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 41.4285714284
-    height_above_ground_m: 41.4285714284
+    roof_z_m: 28.529411764705884
+    height_above_ground_m: 28.529411764705884
     transform:
       original_centroid_xy_m:
       - -105.2138292856
@@ -12481,19 +12486,19 @@ obstacles:
       max:
       - 29.4845
       - 149.86325
-      - 44.5054945056
+      - 30.588235294117645
       center_enu_m:
       - 2.445375
       - 125.897625
-      - 22.2277472528
+      - 15.269117647058822
       size_xyz_m:
       - 54.07825
       - 47.93125
-      - 44.555494505599995
+      - 30.638235294117646
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 44.5054945056
-    height_above_ground_m: 44.5054945056
+    roof_z_m: 30.588235294117645
+    height_above_ground_m: 30.588235294117645
     transform:
       original_centroid_xy_m:
       - 0.0007139264
@@ -12559,19 +12564,19 @@ obstacles:
       max:
       - 94.231
       - 559.36175
-      - 34.8351648352
+      - 23.970588235294116
       center_enu_m:
       - 64.816625
       - 529.773375
-      - 17.3925824176
+      - 11.960294117647058
       size_xyz_m:
       - 58.82875
       - 59.17675
-      - 34.885164835199994
+      - 24.020588235294117
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 34.8351648352
-    height_above_ground_m: 34.8351648352
+    roof_z_m: 23.970588235294116
+    height_above_ground_m: 23.970588235294116
     transform:
       original_centroid_xy_m:
       - 25.4282051901
@@ -12639,19 +12644,19 @@ obstacles:
       max:
       - 333.18175
       - -52.491
-      - 38.498168498
+      - 26.029411764705884
       center_enu_m:
       - 312.083
       - -77.640625
-      - 19.224084249
+      - 12.989705882352942
       size_xyz_m:
       - 42.1975
       - 50.29925
-      - 38.548168497999995
+      - 26.079411764705885
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 38.498168498
-    height_above_ground_m: 38.498168498
+    roof_z_m: 26.029411764705884
+    height_above_ground_m: 26.029411764705884
     transform:
       original_centroid_xy_m:
       - 126.1409308858
@@ -12735,19 +12740,19 @@ obstacles:
       max:
       - 15.86275
       - -506.3895
-      - 51.5384615384
+      - 36.470588235294116
       center_enu_m:
       - -11.1775
       - -539.823625
-      - 25.7442307692
+      - 18.21029411764706
       size_xyz_m:
       - 54.0805
       - 66.86825
-      - 51.5884615384
+      - 36.52058823529411
     foundation_z_m: -0.05
     ground_reference_z_m: 0.0
-    roof_z_m: 51.5384615384
-    height_above_ground_m: 51.5384615384
+    roof_z_m: 36.470588235294116
+    height_above_ground_m: 36.470588235294116
     transform:
       original_centroid_xy_m:
       - -4.0386547311
@@ -12757,12 +12762,12 @@ obstacles:
       - -535.181818484
       footprint_scale_xy: 2.5
 source_sha256:
-  source_city_coordinates_yaml: deda5830d956f4fe81862501463f595360af7e77a1052cf697b915b30e2d82c0
-  building_visual_collision_dae: 91337e73daa84e83845a45b6a5c153972c25dd8825d59a1b340b63d0ba491ac5
+  source_city_coordinates_yaml: 751910b50b4ccb5fb01423f8ad0ba5f516be8e382fe10e6ec53d2dff59844a72
+  building_visual_collision_dae: 3692d96187c9b512d2a29bb4c8bb3d3e91442819c3d88672f7c755d985d0fb7e
   terrain_heightmap: 7ddf3453a8bb15c66c10871141829dcfdf73d96eb890ea83f6bbc1ebaae8b248
   road_texture: d423372455090e91130f47dd9302525b9459056cf618d5241be9e8ca20601a1e
   normal_map: 7617614592a2c8fb502a2bfaa43d4450b63f84171d6c3b6e2c6871742624644c
-  astar_building_vertices_csv: 3a15a1951e1f846aa24f65e5eb7e14d15994506b96171aa8e1e2cfc27eccea6b
+  astar_building_vertices_csv: a4ae9bd04c4836fce04a7cb0479a2313aaa75a577a8dd6c9977d84745b443b0a
 derivation:
   source_yaml: gazebo/maps/city_coordinates.yaml
   generator: gazebo/tools/expand_city_for_uav.py
@@ -12774,7 +12779,8 @@ derivation:
   allowed_footprint_scales:
   - 2.5
   selection_reason: match origin/main initial-city proportions by scaling both building centroids and local XY footprints
-    by 2.5; retain the deterministic 205-building selection and remap only roof heights to 30--70m
+    by 2.5; retain the deterministic 205-building selection and remap only roof heights to 20--50m with exact 35m
+    mean
   building_reduction:
     source_count: 274
     removed_count: 69
@@ -12937,12 +12943,13 @@ derivation:
     source_range_m:
     - 10.0
     - 20.0
-    active_profile: deterministic_hash_rank_30_to_70m_v1
+    active_profile: deterministic_active_hash_rank_20_to_50m_mean35_v1
     active_range_m:
-    - 30.0
-    - 70.0
-    formula: 30 + 4 * (source_height_m - 10)
-    distribution: source SHA-256 hash-rank order, affine remap
+    - 20.0
+    - 50.0
+    formula: 20 + 30 * active_hash_rank / 204
+    distribution: source SHA-256 order re-ranked across retained 205 buildings
+    target_mean_m: 35.0
     foundation_and_ground_unchanged: true
   fixed_mission_coordinates_enu_m:
     drone_spawn:
@@ -12967,7 +12974,7 @@ derivation:
     logical_xy_vertex_count: 1962
     logical_xyz_vertex_count: 3924
     ring_closure: last next_vertex_order wraps to zero
-    sha256: 3a15a1951e1f846aa24f65e5eb7e14d15994506b96171aa8e1e2cfc27eccea6b
+    sha256: a4ae9bd04c4836fce04a7cb0479a2313aaa75a577a8dd6c9977d84745b443b0a
   collision_geometry:
     type: exact_per_building_polyline_prisms_dart
     count: 205

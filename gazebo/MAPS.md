@@ -67,12 +67,14 @@ GZ_SIM_RESOURCE_PATH="$PWD/gazebo/models:$PWD/gazebo/worlds" __NV_PRIME_RENDER_O
   the initial `origin/main` city
 - building IDs and centroid XY coordinates remain unchanged from the preceding
   active layout; foundations stay at `-0.05 m`, while only roof heights are
-  remapped from the source hash order into `30..70 m`
+  re-ranked in the retained source hash order into `20..50 m`, with exact
+  arithmetic mean `35 m`
 - removals use seed `7577`, 5x5 spatial Hamilton quotas and stable SHA-256
   ranking; all 25 regions contain removals, so no artificial diagonal corridor
   is baked into the map
-- every retained building uses the deterministic hash-rank `30..70 m`
-  skyline; foundations extend from `-0.05 m` to the flat `z=0` datum
+- every retained building uses the deterministic active hash-rank `20..50 m`
+  skyline with exact mean and median `35 m`; foundations extend from `-0.05 m`
+  to the flat `z=0` datum
 - the visual is one closed triangulated DAE; 205 exact DART polyline-prism
   collisions use the same YAML rings, so the courtyard remains open and all footprints remain disjoint,
   the physical minimum gap is `0.971942 m`, and invisible
@@ -212,7 +214,8 @@ python3 gazebo/tools/validate_self_contained_maps.py
 ```
 
 The validation asserts asset hashes, local URI closure, PX4 launch contracts,
-city road alignment, the active deterministic `30..70 m` skyline, retained
+city road alignment, the active deterministic `20..50 m` skyline with exact
+`35 m` mean, retained
 historical height-factor audit data, and deterministic mountain geometry. It
 checks PX4 spawn clearance, the spatial-random reduction audit, all exact DART
 city collision prisms, every tree trunk disk, the absence of maze entities,

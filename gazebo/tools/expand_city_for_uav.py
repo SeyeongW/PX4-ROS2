@@ -8,9 +8,10 @@ proportions of the initial ``origin/main`` 500 m city in the expanded map.
 Flight passages are created by removing buildings, never by moving retained
 buildings.
 Building foundations and the flat-ground datum are preserved.  The source
-city's stable SHA-256 height ordering is affinely remapped from 10--20 m to a
-30--70 m active skyline, so the result looks random while remaining exactly
-reproducible.
+city's stable SHA-256 height ordering is re-ranked inside the retained set and
+mapped to a 20--50 m active skyline.  The spatial assignment therefore looks
+random while the exact 205-building mean remains 35 m and the result stays
+fully reproducible.
 The active profile deterministically removes 69 buildings, retaining 205
 (exactly the nearest integer to three quarters) of the 274-building source
 city.  A deterministic spatially-stratified random selector distributes those
@@ -89,9 +90,10 @@ DEFAULT_FOOTPRINT_SCALE = 2.5
 SOURCE_HEIGHT_PROFILE = "deterministic_hash_rank_10_to_20m_v1"
 SOURCE_HEIGHT_MIN_M = 10.0
 SOURCE_HEIGHT_MAX_M = 20.0
-ACTIVE_HEIGHT_PROFILE = "deterministic_hash_rank_30_to_70m_v1"
-ACTIVE_HEIGHT_MIN_M = 30.0
-ACTIVE_HEIGHT_MAX_M = 70.0
+ACTIVE_HEIGHT_PROFILE = "deterministic_active_hash_rank_20_to_50m_mean35_v1"
+ACTIVE_HEIGHT_MIN_M = 20.0
+ACTIVE_HEIGHT_MAX_M = 50.0
+ACTIVE_HEIGHT_MEAN_M = 35.0
 VERTEX_CSV_SCHEMA_VERSION = 1
 FOOTPRINT_SCALE_CANDIDATES = (2.5,)
 SOURCE_BUILDING_COUNT = 274
@@ -124,7 +126,7 @@ REDUCTION_REMOVED_IDS = (
 )
 REDUCTION_PROTECTED_IDS = (
     # Map-envelope extrema, the sole courtyard, historical jo sentinels and
-    # the exact active 30 / 70 m height extrema are deliberately retained.
+    # the exact active 20 / 50 m height extrema are deliberately retained.
     "building_001", "building_009", "building_046", "building_047", "building_131",
     "building_141", "building_147", "building_171", "building_190", "building_202",
     "building_213",
@@ -542,22 +544,53 @@ def transform_ring(ring: Sequence[Point], centroid: Point, new_centroid: Point, 
     ]
 
 
-def active_height_from_source(source_height_m: float) -> float:
-    """Map the source hash-rank height into the active 30--70 m skyline."""
+def active_height_by_identifier(source_buildings: Sequence[dict]) -> dict[str, float]:
+    """Return the exact-mean active skyline using the source hash-rank order.
+
+    The source heights are a one-to-one encoding of the stable SHA-256 order.
+    Re-ranking only the retained 205 records keeps that pseudo-random spatial
+    assignment while filling every rank 0..204.  The evenly spaced symmetric
+    values have exact extrema 20 / 50 m and an exact arithmetic mean of 35 m.
+    """
+
+    require(len(source_buildings) >= 2, "height profile requires at least two buildings")
+    for record in source_buildings:
+        source_height_m = float(record["height_above_ground_m"])
+        require(
+            SOURCE_HEIGHT_MIN_M - EPS <= source_height_m <= SOURCE_HEIGHT_MAX_M + EPS,
+            f"source building height {source_height_m:g}m is outside 10--20m",
+        )
+    ordered = sorted(
+        source_buildings,
+        key=lambda record: (float(record["height_above_ground_m"]), str(record["id"])),
+    )
     require(
-        SOURCE_HEIGHT_MIN_M - EPS <= source_height_m <= SOURCE_HEIGHT_MAX_M + EPS,
-        f"source building height {source_height_m:g}m is outside 10--20m",
+        len({float(record["height_above_ground_m"]) for record in ordered})
+        == len(source_buildings),
+        "active source height ranks are not unique",
     )
-    fraction = (source_height_m - SOURCE_HEIGHT_MIN_M) / (
-        SOURCE_HEIGHT_MAX_M - SOURCE_HEIGHT_MIN_M
+    denominator = len(source_buildings) - 1
+    result = {
+        str(record["id"]): ACTIVE_HEIGHT_MIN_M
+        + (ACTIVE_HEIGHT_MAX_M - ACTIVE_HEIGHT_MIN_M) * rank / denominator
+        for rank, record in enumerate(ordered)
+    }
+    heights = list(result.values())
+    require(abs(min(heights) - ACTIVE_HEIGHT_MIN_M) <= EPS, "active height minimum changed")
+    require(abs(max(heights) - ACTIVE_HEIGHT_MAX_M) <= EPS, "active height maximum changed")
+    require(
+        abs(statistics.fmean(heights) - ACTIVE_HEIGHT_MEAN_M) <= EPS,
+        "active height mean is not exactly 35m",
     )
-    return ACTIVE_HEIGHT_MIN_M + fraction * (ACTIVE_HEIGHT_MAX_M - ACTIVE_HEIGHT_MIN_M)
+    require(len(set(heights)) == len(source_buildings), "active heights are not unique")
+    return result
 
 
 def transform_buildings(
     source_buildings: Sequence[dict], spacing_scale: float, footprint_scale: float, anchor: Point
 ) -> list[BuildingGeometry]:
     transformed: list[BuildingGeometry] = []
+    active_heights = active_height_by_identifier(source_buildings)
     for record in source_buildings:
         original_outer = normalize_ring(record["footprint"]["outer"], ccw=True)
         original_holes = [normalize_ring(hole, ccw=False) for hole in record["footprint"].get("holes", [])]
@@ -573,7 +606,7 @@ def transform_buildings(
             validate_ring(hole, f"{record['id']} hole {hole_index}")
             require(point_in_ring(hole[0], new_outer, include_boundary=False), f"{record['id']}: hole outside outer")
         ground_z = float(record["ground_reference_z_m"])
-        active_height = active_height_from_source(float(record["height_above_ground_m"]))
+        active_height = active_heights[str(record["id"])]
         transformed.append(
             BuildingGeometry(
                 identifier=str(record["id"]),
@@ -717,7 +750,8 @@ def choose_scale(
     reason = (
         "match origin/main initial-city proportions by scaling both building "
         "centroids and local XY footprints by 2.5; retain the deterministic "
-        "205-building selection and remap only roof heights to 30--70m"
+        "205-building selection and remap only roof heights to 20--50m "
+        "with exact 35m mean"
     )
     return layouts[selected], neighbor_pairs, evaluations, reason
 
@@ -1208,7 +1242,7 @@ def write_world(
     OUTPUT_WORLD.write_text(world, encoding="utf-8")
     OUTPUT_MODEL_CONFIG.write_text(
         """<?xml version="1.0"?>
-<model><name>Apple Park UAV city</name><version>1.0</version><sdf version="1.9">applepark_uav.world</sdf><author><name>PX4-ROS2 contributors</name></author><description>205-building UAV city with uniform 2.5x XY geometry, deterministic-random 30-70 m skyline and exact DART polyline-prism collisions.</description></model>
+<model><name>Apple Park UAV city</name><version>1.0</version><sdf version="1.9">applepark_uav.world</sdf><author><name>PX4-ROS2 contributors</name></author><description>205-building UAV city with uniform 2.5x XY geometry, deterministic-random 20-50 m skyline, exact 35 m mean and exact DART polyline-prism collisions.</description></model>
 """,
         encoding="utf-8",
     )
@@ -1266,8 +1300,9 @@ def write_yaml(
             "source_range_m": [SOURCE_HEIGHT_MIN_M, SOURCE_HEIGHT_MAX_M],
             "active_profile": ACTIVE_HEIGHT_PROFILE,
             "active_range_m": [ACTIVE_HEIGHT_MIN_M, ACTIVE_HEIGHT_MAX_M],
-            "formula": "30 + 4 * (source_height_m - 10)",
-            "distribution": "source SHA-256 hash-rank order, affine remap",
+            "formula": "20 + 30 * active_hash_rank / 204",
+            "distribution": "source SHA-256 order re-ranked across retained 205 buildings",
+            "target_mean_m": ACTIVE_HEIGHT_MEAN_M,
             "foundation_and_ground_unchanged": True,
         },
         "fixed_mission_coordinates_enu_m": {
@@ -1346,11 +1381,13 @@ def write_yaml(
             "link": "front_depth_link",
             "pose_xyz_rpy": [0.12, 0.0, 0.002, 0.0, 0.0, 0.0],
             "image_topic": "/front_depth/image",
+            "metric_image_topic": "/front_depth/image_raw",
             "points_topic": "/front_depth/points",
             "camera_info_topic": "/front_depth/camera_info",
             "optical_frame_id": "front_depth_optical_frame",
             "resolution": [320, 240],
-            "encoding": "32FC1",
+            "encoding": "mono8",
+            "metric_encoding": "32FC1",
             "nominal_update_rate_hz": 12.0,
         },
     }
@@ -1371,11 +1408,13 @@ def write_yaml(
             "link": "down_depth_link",
             "pose_xyz_rpy": [0.0, -0.03, -0.05, 0.0, 1.57079632679, 0.0],
             "image_topic": "/down_depth/image",
+            "metric_image_topic": "/down_depth/image_raw",
             "points_topic": "/down_depth/points",
             "camera_info_topic": "/down_depth/camera_info",
             "optical_frame_id": "down_depth_optical_frame",
             "resolution": [320, 240],
-            "encoding": "32FC1",
+            "encoding": "mono8",
+            "metric_encoding": "32FC1",
             "nominal_update_rate_hz": 15.0,
         },
         "lidar": {
@@ -1453,7 +1492,7 @@ def write_yaml(
             "footprint_scale_xy": building.footprint_scale,
         }
         # Foundations / ground remain source-aligned; roof and height use the
-        # deterministic 30--70 m active profile.
+        # deterministic 20--50 m active profile with exact 35 m mean.
         record["foundation_z_m"] = building.foundation_z
         record["ground_reference_z_m"] = building.ground_z
         record["roof_z_m"] = building.roof_z
@@ -1475,10 +1514,11 @@ def write_yaml(
         "removed_building_count": len(removed_building_ids),
         "active_height_profile": ACTIVE_HEIGHT_PROFILE,
         "height_distribution": {
-            "type": "deterministic_hash_rank_affine_uniform",
+            "type": "deterministic_active_hash_rank_uniform_exact_mean",
             "count": len(active_heights),
             "unique_count": len(set(active_heights)),
             "mean_m": statistics.fmean(active_heights),
+            "target_mean_m": ACTIVE_HEIGHT_MEAN_M,
             "median_m": statistics.median(active_heights),
             "q1_m": percentile(active_heights, 0.25),
             "q3_m": percentile(active_heights, 0.75),
@@ -1741,7 +1781,8 @@ def write_reports(
             "source_range_m": [SOURCE_HEIGHT_MIN_M, SOURCE_HEIGHT_MAX_M],
             "active_profile": ACTIVE_HEIGHT_PROFILE,
             "active_range_m": [ACTIVE_HEIGHT_MIN_M, ACTIVE_HEIGHT_MAX_M],
-            "formula": "30 + 4 * (source_height_m - 10)",
+            "formula": "20 + 30 * active_hash_rank / 204",
+            "target_mean_m": ACTIVE_HEIGHT_MEAN_M,
             "foundation_and_ground_maximum_absolute_error_m": 0.0,
         },
         "visual_collision_yaml_alignment": {"maximum_absolute_xy_error_m": 0.0, "tolerance_m": 0.01},
@@ -1795,7 +1836,8 @@ def write_reports(
 - Collision maximum undercoverage/outward error: `0.0 m`.
 - Building foundations and ground datum are unchanged from source (`0.0 m` error).
 - Roofs use `{ACTIVE_HEIGHT_PROFILE}` with exact range
-  `{fmt(ACTIVE_HEIGHT_MIN_M)}..{fmt(ACTIVE_HEIGHT_MAX_M)} m` above ground.
+  `{fmt(ACTIVE_HEIGHT_MIN_M)}..{fmt(ACTIVE_HEIGHT_MAX_M)} m` above ground and
+  exact arithmetic mean `{fmt(ACTIVE_HEIGHT_MEAN_M)} m`.
 - Selected footprint scale: `{fmt(buildings[0].footprint_scale)}` — {scale_reason}.
 
 The closed visual mesh and every collision prism are regenerated directly from

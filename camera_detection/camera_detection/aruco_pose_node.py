@@ -564,7 +564,7 @@ class ArucoPoseNode(Node):
         defaults = {
             "image_topic": "/down_camera/image",
             "camera_info_topic": "/down_camera/camera_info",
-            "depth_topic": "/down_depth/image",
+            "depth_topic": "/down_depth/image_raw",
             "aruco_dictionary": "DICT_4X4_50",
             "marker_size_m": 1.0,
             "marker_id": 0,

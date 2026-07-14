@@ -108,14 +108,13 @@ def validate() -> dict:
     maximum_centroid_error = 0.0
     maximum_footprint_error = 0.0
     expected_boundary_xyz: list[tuple[float, float, float]] = []
+    expected_height_by_id = gen.active_height_by_identifier(active_source_buildings)
     for source_record, derived_record in zip(active_source_buildings, derived_buildings):
         for key in ("foundation_z_m", "ground_reference_z_m"):
             error = abs(float(source_record[key]) - float(derived_record[key]))
             maximum_foundation_ground_error = max(maximum_foundation_ground_error, error)
             require(error <= TOLERANCE_Z_M, f"{derived_record['id']} changed {key} by {error}")
-        expected_height = gen.active_height_from_source(
-            float(source_record["height_above_ground_m"])
-        )
+        expected_height = expected_height_by_id[str(source_record["id"])]
         expected_roof = float(source_record["ground_reference_z_m"]) + expected_height
         for key, expected_value in (
             ("height_above_ground_m", expected_height),
@@ -125,7 +124,7 @@ def validate() -> dict:
             maximum_height_profile_error = max(maximum_height_profile_error, error)
             require(
                 error <= TOLERANCE_Z_M,
-                f"{derived_record['id']} does not follow the 30-70m height profile",
+                f"{derived_record['id']} does not follow the 20-50m height profile",
             )
 
         aabb = derived_record.get("aabb_xyz_m")
@@ -600,10 +599,13 @@ def validate() -> dict:
         "depth_camera": {
             "parent_link": "base_link", "link": "front_depth_link",
             "pose_xyz_rpy": [0.12, 0.0, 0.002, 0.0, 0.0, 0.0],
-            "image_topic": "/front_depth/image", "points_topic": "/front_depth/points",
+            "image_topic": "/front_depth/image",
+            "metric_image_topic": "/front_depth/image_raw",
+            "points_topic": "/front_depth/points",
             "camera_info_topic": "/front_depth/camera_info",
             "optical_frame_id": "front_depth_optical_frame",
-            "resolution": [320, 240], "encoding": "32FC1",
+            "resolution": [320, 240], "encoding": "mono8",
+            "metric_encoding": "32FC1",
             "nominal_update_rate_hz": 12.0,
         },
     }
@@ -620,10 +622,13 @@ def validate() -> dict:
         "depth_camera": {
             "parent_link": "base_link", "link": "down_depth_link",
             "pose_xyz_rpy": [0.0, -0.03, -0.05, 0.0, 1.57079632679, 0.0],
-            "image_topic": "/down_depth/image", "points_topic": "/down_depth/points",
+            "image_topic": "/down_depth/image",
+            "metric_image_topic": "/down_depth/image_raw",
+            "points_topic": "/down_depth/points",
             "camera_info_topic": "/down_depth/camera_info",
             "optical_frame_id": "down_depth_optical_frame",
-            "resolution": [320, 240], "encoding": "32FC1",
+            "resolution": [320, 240], "encoding": "mono8",
+            "metric_encoding": "32FC1",
             "nominal_update_rate_hz": 15.0,
         },
         "lidar": {
@@ -777,17 +782,23 @@ def validate() -> dict:
     require(
         [float(value) for value in obstacle_summary["roof_z_range_m"]]
         == [gen.ACTIVE_HEIGHT_MIN_M, gen.ACTIVE_HEIGHT_MAX_M],
-        "active roof range is not exactly 30-70m",
+        "active roof range is not exactly 20-50m",
     )
     require(obstacle_summary["shortest_building"]["id"] == "building_190",
-            "30m height sentinel was not retained")
+            "20m height sentinel was not retained")
     require(obstacle_summary["tallest_building"]["id"] == "building_171",
-            "70m height sentinel was not retained")
+            "50m height sentinel was not retained")
     height_distribution = obstacle_summary["height_distribution"]
     require(int(height_distribution["count"]) == gen.ACTIVE_BUILDING_COUNT,
             "height distribution count mismatch")
     require(int(height_distribution["unique_count"]) == gen.ACTIVE_BUILDING_COUNT,
             "active building heights are not uniquely distributed")
+    require(
+        abs(float(height_distribution["mean_m"]) - gen.ACTIVE_HEIGHT_MEAN_M) <= 1e-12
+        and abs(float(height_distribution["median_m"]) - gen.ACTIVE_HEIGHT_MEAN_M) <= 1e-12
+        and abs(float(height_distribution["target_mean_m"]) - gen.ACTIVE_HEIGHT_MEAN_M) <= 1e-12,
+        "active building height mean/median is not exactly 35m",
+    )
     require(int(obstacle_summary["building_overlap_count"]) == 0,
             "YAML reports overlapping building footprints")
     require(obstacle_summary["all_building_footprints_disjoint"] is True,

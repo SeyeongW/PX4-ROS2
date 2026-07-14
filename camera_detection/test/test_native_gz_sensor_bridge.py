@@ -9,6 +9,10 @@ from gz.msgs10.pointcloud_packed_pb2 import PointCloudPacked as GzPointCloud
 from sensor_msgs.msg import PointField
 
 from camera_detection.native_gz_sensor_bridge import (
+    DOWN_DEPTH_DISPLAY_TOPIC,
+    DOWN_DEPTH_METRIC_TOPIC,
+    FRONT_DEPTH_DISPLAY_TOPIC,
+    FRONT_DEPTH_METRIC_TOPIC,
     NativeGazeboSensorBridge,
     convert_camera_info,
     convert_depth_preview,
@@ -24,6 +28,13 @@ def _stamp_and_frame(message, frame="sensor_optical_frame"):
     datum = message.header.data.add()
     datum.key = "frame_id"
     datum.value.append(frame)
+
+
+def test_public_depth_topics_separate_display_from_metric_data():
+    assert FRONT_DEPTH_DISPLAY_TOPIC == "/front_depth/image"
+    assert FRONT_DEPTH_METRIC_TOPIC == "/front_depth/image_raw"
+    assert DOWN_DEPTH_DISPLAY_TOPIC == "/down_depth/image"
+    assert DOWN_DEPTH_METRIC_TOPIC == "/down_depth/image_raw"
 
 
 def test_rgb_and_depth_image_conversion_preserves_stamp_frame_and_payload():

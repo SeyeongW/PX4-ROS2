@@ -3,7 +3,7 @@ down_aruco_pose:
     use_sim_time: true
     image_topic: /down_camera/image
     camera_info_topic: /down_camera/camera_info
-    depth_topic: /down_depth/image
+    depth_topic: /down_depth/image_raw
     optical_frame_id: down_camera_optical_frame
     target_frame: base_link
     aruco_dictionary: DICT_4X4_50

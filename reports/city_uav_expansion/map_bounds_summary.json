@@ -1,16 +1,16 @@
 {
   "active_height_distribution": {
     "count": 205,
-    "mean_m": 49.68230143840975,
-    "median_m": 49.7802197804,
-    "q1_m": 39.9633699632,
-    "q3_m": 59.1575091576,
+    "mean_m": 35.0,
+    "median_m": 35.0,
+    "q1_m": 27.5,
+    "q3_m": 42.5,
     "unique_count": 205
   },
-  "active_height_profile": "deterministic_hash_rank_30_to_70m_v1",
+  "active_height_profile": "deterministic_active_hash_rank_20_to_50m_mean35_v1",
   "active_height_range_m": [
-    30.0,
-    70.0
+    20.0,
+    50.0
   ],
   "anchor_enu_m": [
     0.0,
@@ -21,7 +21,7 @@
     "logical_xyz_vertex_count": 3924,
     "path": "gazebo/maps/city_uav_building_vertices.csv",
     "schema_version": 1,
-    "sha256": "3a15a1951e1f846aa24f65e5eb7e14d15994506b96171aa8e1e2cfc27eccea6b"
+    "sha256": "a4ae9bd04c4836fce04a7cb0479a2313aaa75a577a8dd6c9977d84745b443b0a"
   },
   "bounds_enu_m": {
     "x": [
@@ -78,22 +78,23 @@
   ],
   "hard_corridor_width_m": 2.9,
   "height_transform": {
-    "active_profile": "deterministic_hash_rank_30_to_70m_v1",
+    "active_profile": "deterministic_active_hash_rank_20_to_50m_mean35_v1",
     "active_range_m": [
-      30.0,
-      70.0
+      20.0,
+      50.0
     ],
-    "formula": "30 + 4 * (source_height_m - 10)",
+    "formula": "20 + 30 * active_hash_rank / 204",
     "foundation_and_ground_maximum_absolute_error_m": 0.0,
     "source_profile": "deterministic_hash_rank_10_to_20m_v1",
     "source_range_m": [
       10.0,
       20.0
-    ]
+    ],
+    "target_mean_m": 35.0
   },
   "mesh": {
     "path": "gazebo/worlds/applepark_city_uav/mesh/buildings_uav.dae",
-    "sha256": "91337e73daa84e83845a45b6a5c153972c25dd8825d59a1b340b63d0ba491ac5",
+    "sha256": "3692d96187c9b512d2a29bb4c8bb3d3e91442819c3d88672f7c755d985d0fb7e",
     "triangles": 7032,
     "vertices": 21096
   },
@@ -183,7 +184,7 @@
     "building_265",
     "building_270"
   ],
-  "scale_selection_reason": "match origin/main initial-city proportions by scaling both building centroids and local XY footprints by 2.5; retain the deterministic 205-building selection and remap only roof heights to 30--70m",
+  "scale_selection_reason": "match origin/main initial-city proportions by scaling both building centroids and local XY footprints by 2.5; retain the deterministic 205-building selection and remap only roof heights to 20--50m with exact 35m mean",
   "selected_footprint_scale_xy": 2.5,
   "selected_layout_feasible": true,
   "source_building_count": 274,

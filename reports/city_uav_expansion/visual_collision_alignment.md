@@ -5,15 +5,16 @@
 - Derived coordinate geometry: `gazebo/maps/city_coordinates_uav.yaml`.
 - Gazebo visual URI: `mesh/buildings_uav.dae` at scale `1 1 1`.
 - Gazebo collision: 205 exact DART SDF polyline prisms.
-- Mesh SHA256: `91337e73daa84e83845a45b6a5c153972c25dd8825d59a1b340b63d0ba491ac5`.
+- Mesh SHA256: `3692d96187c9b512d2a29bb4c8bb3d3e91442819c3d88672f7c755d985d0fb7e`.
 - Vertex/triangle count: 21096 / 7032.
 - Maximum YAML-to-visual-mesh XY boundary error: `0.0 m` (limit `0.01 m`).
 - Collision source-vertex alignment error: `0.0 m` (limit `0.01 m`).
 - Collision maximum undercoverage/outward error: `0.0 m`.
 - Building foundations and ground datum are unchanged from source (`0.0 m` error).
-- Roofs use `deterministic_hash_rank_30_to_70m_v1` with exact range
-  `30..70 m` above ground.
-- Selected footprint scale: `2.5` — match origin/main initial-city proportions by scaling both building centroids and local XY footprints by 2.5; retain the deterministic 205-building selection and remap only roof heights to 30--70m.
+- Roofs use `deterministic_active_hash_rank_20_to_50m_mean35_v1` with exact range
+  `20..50 m` above ground and
+  exact arithmetic mean `35 m`.
+- Selected footprint scale: `2.5` — match origin/main initial-city proportions by scaling both building centroids and local XY footprints by 2.5; retain the deterministic 205-building selection and remap only roof heights to 20--50m with exact 35m mean.
 
 The closed visual mesh and every collision prism are regenerated directly from
 the same transformed outer/hole rings. No world-level building scale or pose
