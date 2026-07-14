@@ -59,7 +59,7 @@ def _poly_fit(x: np.ndarray, y: np.ndarray, order: int = 3) -> np.ndarray:
             # 시작점과 끝점을 잇는 직선과 중간 점들 사이의 최대 직교 거리 오차 계산
             cross = np.abs(dx * (y - y[0]) - dy * (x - x[0]))
             max_dev = np.max(cross) / np.sqrt(dist_sq)
-            if max_dev < 1e-4:
+            if max_dev < 5e-2:  # If deviation is < 5cm, treat as straight line to prevent polyfit divergence
                 order = min(order, 1)
         else:
             order = min(order, 1)

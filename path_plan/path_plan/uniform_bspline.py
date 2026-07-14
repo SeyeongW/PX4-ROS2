@@ -51,13 +51,22 @@ class UniformBspline:
         return spline.derivative(deriv) if deriv else spline
 
     def sample(self, num: int = 200):
-        """Return (t, position, velocity, acceleration) over the valid domain."""
+        """Return (t, position, velocity, acceleration) over the valid domain.
+
+        The evaluation times are clamped strictly inside the half-open domain
+        ``[knots[p], knots[n])``.  Without this, floating-point round-off makes
+        ``t0 + duration`` land a hair past ``knots[n]``, where scipy's
+        ``extrapolate=False`` returns NaN; the old ``nan_to_num`` then silently
+        turned the final sample into (0, 0, 0), corrupting the trajectory tail
+        (and hence any MPC reference / termination built from it).
+        """
         t0 = self.knots[self.p]
+        t_end = self.knots[len(self.q)]
         duration = self.duration()
-        t = t0 + np.linspace(0.0, duration, num)
-        pos = np.nan_to_num(self._bspline(0)(t))
-        vel = np.nan_to_num(self._bspline(1)(t))
-        acc = np.nan_to_num(self._bspline(2)(t))
+        t = np.clip(t0 + np.linspace(0.0, duration, num), t0, np.nextafter(t_end, t0))
+        pos = self._bspline(0)(t)
+        vel = self._bspline(1)(t)
+        acc = self._bspline(2)(t)
         return np.linspace(0.0, duration, num), pos, vel, acc
 
     # ------------------------------------------------------------- construction
