@@ -9,7 +9,8 @@ setup(
     data_files=[
         ("share/ament_index/resource_index/packages", [f"resource/{PACKAGE_NAME}"]),
         (f"share/{PACKAGE_NAME}", ["package.xml"]),
-        (f"share/{PACKAGE_NAME}/launch", ["launch/path_plan.launch.py"]),
+        (f"share/{PACKAGE_NAME}/launch",
+         ["launch/path_plan.launch.py", "launch/px4_mavros.launch.py"]),
         (f"share/{PACKAGE_NAME}/config", ["config/city_uav.yaml"]),
     ],
     install_requires=["setuptools", "numpy", "scipy", "PyYAML"],
@@ -28,6 +29,7 @@ setup(
             "sfc_node = path_plan.sfc_node:main",
             "bspline_node = path_plan.bspline_node:main",
             "mpc_node = path_plan.mpc_node:main",
+            "mavros_static_path = path_plan.mavros_static_path:main",
         ],
     },
 )

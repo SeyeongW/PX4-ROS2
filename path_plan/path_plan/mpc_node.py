@@ -22,6 +22,7 @@ import numpy as np
 import rclpy
 from geometry_msgs.msg import TwistStamped
 from nav_msgs.msg import Odometry, Path
+from rcl_interfaces.msg import SetParametersResult
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Range
@@ -58,6 +59,19 @@ class MPCNode(Node):
         self.trigger_m = p("depth_trigger_m", 10.0).value
         self.emergency_m = p("depth_emergency_m", 4.0).value
         self.lateral_m = p("avoid_lateral_m", 7.0).value
+        # Holonomic mode: a PX4 multicopter can strafe, so command the world
+        # velocity straight toward the look-ahead reference instead of the
+        # unicycle's nose-coupled velocity (which spins in place when the yaw
+        # can't keep up).  Yaw is decoupled: a gentle, non-blocking turn toward
+        # travel so the forward depth camera roughly faces the direction of
+        # motion.  Set holonomic=false to use the unicycle controller.
+        self.holonomic = bool(p("holonomic", True).value)
+        self.yaw_kp = float(p("yaw_kp", 1.0).value)
+        self.yaw_rate_max = float(p("yaw_rate_max_rad_s", 0.6).value)
+        self.goal_slow_m = float(p("goal_slow_radius_m", 6.0).value)
+        # Cruise speed can be updated live (e.g. the MAVROS bridge sets it from
+        # PX4's MPC_XY_VEL_MAX so we fly at the vehicle's real max, no hardcoding).
+        self.add_on_set_parameters_callback(self._on_set_params)
 
         self._traj_t = self._traj_p = self._traj_v = None
         self._pos = np.zeros(3)
@@ -76,6 +90,14 @@ class MPCNode(Node):
         self.get_logger().info("mpc_ros tracking MPC ready")
 
     # ------------------------------------------------------------- callbacks
+    def _on_set_params(self, params):
+        for prm in params:
+            if prm.name == "v_ref_m_s":
+                self.base_v_ref = float(prm.value)
+            elif prm.name == "v_max_m_s":
+                self.mpc.v_max = float(prm.value)
+        return SetParametersResult(successful=True)
+
     def _on_traj(self, msg: Float32MultiArray):
         self._traj_t, self._traj_p, self._traj_v = msg_to_trajectory(msg)
 
@@ -116,20 +138,54 @@ class MPCNode(Node):
             ref_p = ref_p + np.array([offset[0], offset[1], 0.0])
         self.mpc.v_ref = self.base_v_ref * scale     # brake near obstacles
 
-        result = self.mpc.solve(self._pos, self._yaw, self._speed,
-                                self._pos[2], ref_p)
+        if self.holonomic:
+            vx, vy, vz, yaw_rate, preview3d = self._holonomic_cmd(ref_p, scale)
+        else:
+            result = self.mpc.solve(self._pos, self._yaw, self._speed,
+                                    self._pos[2], ref_p)
+            vx, vy, vz = map(float, result.velocity_world)
+            yaw_rate = float(result.yaw_rate)
+            preview3d = np.column_stack(
+                [result.predicted_xy,
+                 np.full(len(result.predicted_xy), self._pos[2])])
 
         cmd = TwistStamped()
         cmd.header.frame_id = FRAME
         cmd.header.stamp = self.get_clock().now().to_msg()
-        vx, vy, vz = map(float, result.velocity_world)
         cmd.twist.linear.x, cmd.twist.linear.y, cmd.twist.linear.z = vx, vy, vz
-        cmd.twist.angular.z = float(result.yaw_rate)
+        cmd.twist.angular.z = yaw_rate
         self.cmd_pub.publish(cmd)
-
-        preview3d = np.column_stack([result.predicted_xy,
-                                     np.full(len(result.predicted_xy), self._pos[2])])
         self.preview_pub.publish(positions_to_path(preview3d, cmd.header.stamp))
+
+    def _holonomic_cmd(self, ref_p, scale):
+        """World-frame pure-pursuit velocity toward the look-ahead reference.
+
+        Decouples translation from heading (a multicopter strafes), so the
+        vehicle drives straight along the path regardless of yaw.  Yaw turns
+        gently toward the travel direction and never gates the velocity.
+        """
+        pos = self._pos
+        target = ref_p[-1]                       # furthest look-ahead point
+        d = target[:2] - pos[:2]
+        dist = float(np.hypot(d[0], d[1]))
+        # Cruise at v_ref, but decelerate smoothly into the final goal.
+        goal_dist = float(np.linalg.norm(self._traj_p[-1, :2] - pos[:2]))
+        speed = min(self.base_v_ref * scale, self.mpc.v_max)
+        speed = min(speed, self.base_v_ref * max(0.0, goal_dist / self.goal_slow_m))
+        vx = vy = 0.0
+        if dist > 1e-3:
+            vx, vy = (d / dist) * speed
+        z_ref = float(ref_p[min(len(ref_p) - 1, self.mpc.N // 2), 2])
+        vz = float(np.clip(self.mpc.z_kp * (z_ref - pos[2]),
+                           -self.mpc.vz_max, self.mpc.vz_max))
+        yaw_rate = 0.0
+        if speed > 0.3 and dist > 1e-3:
+            err = math.atan2(d[1], d[0]) - self._yaw
+            err = math.atan2(math.sin(err), math.cos(err))   # wrap to [-pi, pi]
+            yaw_rate = float(np.clip(self.yaw_kp * err,
+                                     -self.yaw_rate_max, self.yaw_rate_max))
+        preview3d = ref_p.copy()
+        return vx, vy, vz, yaw_rate, preview3d
 
 
 def main(args=None):

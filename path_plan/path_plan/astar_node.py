@@ -53,7 +53,9 @@ class AStarNode(Node):
         self.goal = np.asarray(p("goal_enu_m", [-300.0, -300.0, 25.0]).value, float)
         # Optional ordered via-points between start and goal, flat [x,y,z,...].
         # The path is forced through each, so use them to shape a hard route.
-        wps = list(p("waypoints_enu_m", []).value)
+        # An empty-list param default makes rclpy return None (it can't infer the
+        # element type), so coalesce to [] before iterating.
+        wps = list(p("waypoints_enu_m", []).value or [])
         self.waypoints = [np.asarray(wps[i:i + 3], float) for i in range(0, len(wps) - 2, 3)]
 
         self.pub = self.create_publisher(Path, "~/global_path", _LATCHED)

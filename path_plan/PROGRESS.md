@@ -29,6 +29,66 @@
 
 ## 최근 작업 (최신 위)
 
+### 2026-07-14 — PX4 연결(MAVROS OFFBOARD 브리지) — 정지목표 순항
+- wang을 main에 병합(로컬 wang-우선, 이후 push)한 뒤, main의 city 맵 기준으로 PX4 연결 시작.
+- **새 노드 `mavros_static_path.py`**: (1) `/mavros/local_position/odom`(local ENU)에
+  스폰 오프셋 **+(587,580,0)** 를 더해 `/path_plan/odometry`(map ENU)로 재발행(속도/자세는
+  평행이동이라 그대로), (2) MPC의 `/path_plan/cmd_vel`(TwistStamped)을
+  `/mavros/setpoint_velocity/cmd_vel`로 전달, (3) setpoint 선-스트리밍 후
+  `/mavros/set_mode`(OFFBOARD)+`/mavros/cmd/arming`으로 자동 arm. 이륙은 MPC vz(고도홀드,
+  z_ref≈25m)로 상승. 좌표 근거: PX4 EKF local 원점=스폰=맵(587,580).
+- **새 런치 `px4_mavros.launch.py`**: 기존 `path_plan.launch.py`(A*→SFC→Bspline→MPC,
+  이미 /path_plan/odometry·/path_plan/cmd_vel로 remap)만 include + 브리지 노드 추가.
+  world/PX4/MAVROS/gz-bridge는 **절대 재실행 안 함**(그건 `./gazebo/run_px4_map.sh city`가 담당).
+- setup.py entry point + package.xml `mavros_msgs` 추가. `colcon build --symlink-install` 성공,
+  executable/임포트 검증 완료. **실기(SITL) 비행 미검증**.
+- 실행: 터미널1 `./gazebo/run_px4_map.sh city` → 터미널2
+  `ros2 launch path_plan px4_mavros.launch.py`.
+- depth→Range는 미연결(mpc는 inf 기본으로 동작).
+
+#### SITL 1차 구동 디버깅 (같은 날)
+- **증상**: arm 직후 `Disarmed by auto preflight disarming`(arm 후 이륙 안 하면 자동 disarm).
+- **진짜 원인**: `astar_node`가 기동 즉시 크래시 → global_path/trajectory/cmd_vel 전무 →
+  브리지가 zero setpoint만 스트림 → 이륙 못 함. 크래시 지점
+  `wps = list(p("waypoints_enu_m", []).value)`: **rclpy는 빈 리스트 `[]` 기본값의
+  파라미터 `.value`를 None으로 반환**(타입 추론 불가) → `list(None)` TypeError.
+  config에도 `waypoints_enu_m: []`이 있어 항상 발동. → `.value or []`로 수정.
+- **브리지 보강**: (1) odom 확보 후에만 arm, (2) **순수 수직 이륙 phase**(cruise_floor
+  20m까지 vz만 상승 후 MPC 수평추종 인계) → preflight auto-disarm 회피 + 저고도 측방이동 방지.
+  런치에 `auto_arm`/`takeoff_alt_m` 인자 노출(`auto_arm:=false`=arm 없는 안전 드라이런).
+- **드라이런 검증(auto_arm:=false, sim 연결 상태)**: astar `A* path published: 6 wpts,
+  expanded 65471`, bspline→trajectory(latched), **MPC cmd_vel 5.9Hz 실출력**
+  (`linear x=0.28 y=-0.11 z=2.0`=상승중), 브리지 odom 30Hz·setpoint 20Hz. 체인 전체 정상.
+- **남은 성능 이슈**: 초기 A* 1회 계획이 **~45s**(res 4.0, 1260m 맵, 파이썬 shaped-cost).
+  이륙 phase가 그 동안 20m 호버로 버텨주긴 함. 필요시 resolution↑ 또는 계획 캐시.
+
+#### SITL 2차: 제자리 회전/병진불가 → holonomic 전환 (armed 비행 검증됨)
+- **증상**: 이륙·경로생성 OK인데 드론이 제자리에서 pitch/yaw만 까딱, 목표로 안 감.
+- **진단(라이브)**: cmd_vel `angular.z=±1.2`(omega_max) 계속 포화, 실제 yaw가
+  171°→-123°→-52°→0° 식으로 **빙글빙글**, 위치는 5초에 ~7m(정체). 원인:
+  유니사이클 MPC는 속도가 기수방향에 묶여(nose-coupled) 기수를 경로로 돌려야 전진하는데,
+  PX4 멀티콥터 yaw는 1.2보다 느리게(≈0.785 MPC_YAWRAUTO_MAX) 따라와 모델 불일치 →
+  리밋사이클 → 기수가 계속 돌아 속도벡터도 회전 → 병진 0. **유니사이클이 멀티콥터에 부적합.**
+- **수정**: `mpc_node`에 `holonomic`(기본 True) 모드 추가 — 멀티콥터는 옆으로도 날 수 있으니
+  월드좌표 pure-pursuit로 look-ahead ref를 향해 직접 병진(속도=기수와 무관), yaw는
+  진행방향으로 **부드럽게 분리**(yaw_kp/yaw_rate_max=0.6, 속도 게이팅 안 함), 목표 근처
+  감속(goal_slow_radius). 유니사이클은 `holonomic:=false`로 보존.
+- **검증(armed, OFFBOARD, 실비행)**: 드론이 (575,575,24)→(557,558,24)로 **SW ~4.1 m/s
+  꾸준히 병진**, yaw는 -135°(진행방향)로 안정, 회전 소멸. 목표(-587,-512)로 정상 진행.
+  ⇒ **PX4 SITL 실비행에서 A*→Bspline→MPC(holonomic)→OFFBOARD 파이프라인 동작 확인.**
+
+### 2026-07-14 — 순항속도를 PX4 MPC_XY_VEL_MAX에서 자동 취득 (하드코딩 제거)
+- 요구: "최대속도로 날되 12를 코드에 박고 싶진 않다."
+- MAVROS Humble은 PX4 파라미터를 **표준 ROS2 파라미터**로 노출(`/mavros/param`,
+  `ParamGet` srv는 deprecated). `MPC_XY_VEL_MAX=12.0`.
+- **구현**: 브리지가 부팅 시 `/mavros/param/get_parameters`로 `MPC_XY_VEL_MAX`를 읽어
+  (× `speed_scale`) `/tracking_mpc`의 `v_ref_m_s`·`v_max_m_s`를 `SetParameters`로 세팅.
+  mpc_node엔 `add_on_set_parameters_callback` 추가해 라이브 반영(base_v_ref/mpc.v_max).
+  런치 인자 `speed_from_fcu`(기본 true)·`speed_scale`(기본 1.0). 코드에 속도 숫자 없음.
+- **검증(실비행)**: 로그 `MPC_XY_VEL_MAX=12.0 -> MPC cruise 12.0`, `/tracking_mpc`
+  v_ref/v_max=12.0, 실측 |v_xy|≈**11.9~12.1 m/s**로 순항, 목표 근처 goal_slow 감속.
+  여유 두려면 `speed_scale:=0.9`.
+
 ### 2026-07-14 — pursuit_sim에 visualize_pipeline 시각화 로직 이식 + 회랑박스 누락 수정
 - **팔레트 통일**: `pursuit_sim.py`에 `visualize_pipeline.py`와 동일한 색 상수
   (`C_OBST/C_SFC/C_ASTAR/C_BSPL/C_MPC` + pursuit 전용 `C_TRAIL`) 도입. 드론 추종
