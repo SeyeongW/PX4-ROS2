@@ -41,9 +41,9 @@ class OptimizeResult:
 class BsplineOptimizer:
     def __init__(self, world: WorldModel, *, cruise_speed_m_s: float = 4.0,
                  ctrl_spacing_m: float = 5.0, order: int = 3,
-                 max_vel: float = 5.0, max_acc: float = 3.0,
-                 lambda_smooth: float = 1.0, lambda_dist: float = 0.5,
-                 lambda_feas: float = 1.0, lambda_fit: float = 0.2,
+                 max_vel: float = 5.0, max_acc: float = 1.5,
+                 lambda_smooth: float = 5.0, lambda_dist: float = 0.5,
+                 lambda_feas: float = 1.0, lambda_fit: float = 0.05,
                  demarcation_m: float = 0.3, max_rebound: int = 10,
                  dist_growth: float = 2.0, sfc: SafeFlightCorridor | None = None):
         self.world = world

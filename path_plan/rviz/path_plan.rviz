@@ -1,0 +1,102 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+    Property Tree Widget:
+      Expanded: ~
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Grid
+      Enabled: true
+      Cell Size: 20
+      Plane Cell Count: 65
+      Color: 160; 160; 164
+      Reference Frame: <Fixed Frame>
+      Value: true
+    - Class: rviz_default_plugins/TF
+      Name: TF
+      Enabled: true
+      Show Names: true
+      Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Name: Buildings
+      Enabled: true
+      Topic:
+        Value: /path_plan/buildings
+        Depth: 1
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Durability Policy: Transient Local
+      Value: true
+    - Class: rviz_default_plugins/Path
+      Name: GlobalPath_Astar
+      Enabled: true
+      Topic:
+        Value: /path_plan/global_path
+        Depth: 5
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Durability Policy: Transient Local
+      Color: 255; 255; 0
+      Line Style: Billboards
+      Line Width: 1.5
+      Value: true
+    - Class: rviz_default_plugins/Path
+      Name: MPC_Preview
+      Enabled: true
+      Topic:
+        Value: /tracking_mpc/mpc_preview
+        Depth: 5
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Durability Policy: Volatile
+      Color: 255; 0; 255
+      Line Style: Billboards
+      Line Width: 1.0
+      Value: true
+    - Class: rviz_default_plugins/Odometry
+      Name: Drone_Odometry
+      Enabled: true
+      Topic:
+        Value: /path_plan/odometry
+        Depth: 10
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Durability Policy: Volatile
+      Keep: 1
+      Shape:
+        Value: Arrow
+        Color: 0; 200; 255
+        Shaft Length: 3.0
+        Shaft Radius: 0.6
+        Head Length: 1.5
+        Head Radius: 1.2
+      Value: true
+  Global Options:
+    Fixed Frame: map
+    Background Color: 48; 48; 48
+    Frame Rate: 30
+  Tools:
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+    - Class: rviz_default_plugins/FocusCamera
+    - Class: rviz_default_plugins/Measure
+  Value: true
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Name: Current View
+      Distance: 1400
+      Focal Point:
+        X: 0
+        Y: 0
+        Z: 0
+      Pitch: 1.2
+      Yaw: 0.785
+      Target Frame: <Fixed Frame>
+Window Geometry:
+  Height: 900
+  Width: 1400
+  Hide Left Dock: false
+  Hide Right Dock: false

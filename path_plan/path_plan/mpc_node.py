@@ -168,7 +168,7 @@ class MPCNode(Node):
         target = ref_p[-1]                       # furthest look-ahead point
         d = target[:2] - pos[:2]
         dist = float(np.hypot(d[0], d[1]))
-        # Cruise at v_ref, but decelerate smoothly into the final goal.
+        # Cruise at v_ref (constant), but decelerate smoothly into the final goal.
         goal_dist = float(np.linalg.norm(self._traj_p[-1, :2] - pos[:2]))
         speed = min(self.base_v_ref * scale, self.mpc.v_max)
         speed = min(speed, self.base_v_ref * max(0.0, goal_dist / self.goal_slow_m))

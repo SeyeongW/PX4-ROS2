@@ -69,13 +69,18 @@ def a_star_search(
     heuristic: Callable[[object], float],
     *,
     max_expanded: int = 400_000,
+    weight: float = 1.0,
 ) -> SearchResult:
     """Domain-agnostic A*.  ``start``/``goal`` are any hashable, ``==``-comparable
     nodes; ``neighbors`` yields ``(node, edge_cost)``; ``heuristic`` estimates the
-    remaining cost to ``goal`` (must be admissible for an optimal path)."""
+    remaining cost to ``goal`` (must be admissible for an optimal path).
+
+    ``weight`` >= 1 runs *weighted A\\** (f = g + weight·h): the search is greedier
+    toward the goal, expanding far fewer nodes for a large speed-up, at the cost of
+    a path at most ``weight``× longer than optimal (bounded suboptimality)."""
     open_heap: list[tuple[float, int, object]] = []
     counter = 0
-    heapq.heappush(open_heap, (heuristic(start), counter, start))
+    heapq.heappush(open_heap, (weight * heuristic(start), counter, start))
     g_score = {start: 0.0}
     came_from: dict = {}
     closed: set = set()
@@ -102,7 +107,7 @@ def a_star_search(
                 g_score[neighbor] = tentative
                 counter += 1
                 heapq.heappush(open_heap,
-                               (tentative + heuristic(neighbor), counter, neighbor))
+                               (tentative + weight * heuristic(neighbor), counter, neighbor))
     return SearchResult(False, [], math.inf, expanded, "no path found")
 
 
@@ -128,15 +133,17 @@ class AStarPlanner3D:
     def __init__(self, world: WorldModel, resolution_m: float = 2.0,
                  max_expanded: int = 400_000,
                  *,
-                 clearance_weight: float = 0.4,
-                 clearance_pref_m: float = 3.0,
+                 clearance_weight: float = 2.0,
+                 clearance_pref_m: float = 10.0,
                  altitude_weight: float = 0.05,
                  altitude_pref_m: float | None = None,
-                 climb_weight: float = 0.5):
+                 climb_weight: float = 0.5,
+                 heuristic_weight: float = 1.0):
         self.world = world
         self.res = float(resolution_m)
         self.origin = world.bounds_min.astype(float)
         self.max_expanded = int(max_expanded)
+        self.h_weight = float(heuristic_weight)      # weighted A* (>=1 = faster)
         self.w_clear = float(clearance_weight)
         self.clear_pref = float(clearance_pref_m)
         self.w_alt = float(altitude_weight)
@@ -190,7 +197,7 @@ class AStarPlanner3D:
             return out
 
         result = a_star_search(start, goal, neighbors, heuristic,
-                               max_expanded=self.max_expanded)
+                               max_expanded=self.max_expanded, weight=self.h_weight)
         if not result.success:
             return AStarResult(False, np.empty((0, 3)), result.expanded, result.message)
         path = np.array([self._to_world(c) for c in result.nodes], dtype=float)

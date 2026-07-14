@@ -20,12 +20,17 @@ import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 _DEFAULT_MAP = os.path.expanduser(
     "~/ros2_ws/PX4-ROS2/gazebo/maps/city_coordinates_uav.yaml")
+# RViz config lives in the source tree (loaded by absolute path so no rebuild is
+# needed to tweak it), matching how the default map is referenced above.
+_RVIZ_CONFIG = os.path.expanduser(
+    "~/ros2_ws/PX4-ROS2/path_plan/rviz/path_plan.rviz")
 
 
 def generate_launch_description():
@@ -33,8 +38,10 @@ def generate_launch_description():
     map_yaml = LaunchConfiguration("map_yaml")
     auto_arm = LaunchConfiguration("auto_arm")
     takeoff_alt_m = LaunchConfiguration("takeoff_alt_m")
+    land_radius_m = LaunchConfiguration("land_radius_m")
     speed_from_fcu = LaunchConfiguration("speed_from_fcu")
     speed_scale = LaunchConfiguration("speed_scale")
+    rviz = LaunchConfiguration("rviz")
 
     pipeline = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -50,8 +57,23 @@ def generate_launch_description():
                      "rate_hz": 20.0,
                      "auto_arm": auto_arm,
                      "takeoff_alt_m": takeoff_alt_m,
+                     "land_radius_m": land_radius_m,
                      "speed_from_fcu": speed_from_fcu,
                      "speed_scale": speed_scale}],
+    )
+
+    rviz_node = Node(
+        package="rviz2", executable="rviz2", name="rviz2", output="screen",
+        arguments=["-d", _RVIZ_CONFIG],
+        condition=IfCondition(rviz),
+    )
+
+    # Publish the city buildings as real 3D prisms for RViz (only when RViz is on).
+    buildings_node = Node(
+        package="path_plan", executable="building_markers",
+        name="building_markers", output="screen",
+        parameters=[{"map_yaml": map_yaml}],
+        condition=IfCondition(rviz),
     )
 
     return LaunchDescription([
@@ -59,10 +81,30 @@ def generate_launch_description():
         # auto_arm:=false streams odom + setpoints WITHOUT arming (safe dry-run to
         # verify the A*->B-spline->MPC->cmd_vel chain before a real flight).
         DeclareLaunchArgument("auto_arm", default_value="true"),
-        DeclareLaunchArgument("takeoff_alt_m", default_value="20.0"),
-        # Cruise at PX4's real MPC_XY_VEL_MAX (no hardcoded speed); scale trims it.
-        DeclareLaunchArgument("speed_from_fcu", default_value="true"),
+        # Climb PURELY vertically to the cruise altitude (mid of the 30-40 m band)
+        # before any lateral motion.  City buildings are 20-50 m tall, so a lower
+        # takeoff (e.g. 20 m) would (a) make the A* start cell sit below the 30 m
+        # planning floor -> "start cell blocked", and (b) drive the vehicle sideways
+        # through the building band while still climbing -> wall strikes.  Keep this
+        # >= cruise_floor_m so the plan starts, and inside the band so it never
+        # overshoots the ceiling.
+        DeclareLaunchArgument("takeoff_alt_m", default_value="35.0"),
+        # Auto-land when the vehicle gets within this xy distance of the goal.
+        DeclareLaunchArgument("land_radius_m", default_value="12.0"),
+        # Fixed cruise speed from config (v_ref_m_s=10). speed_from_fcu:=true would
+        # instead pull PX4's MPC_XY_VEL_MAX and override the config speed.
+        DeclareLaunchArgument("speed_from_fcu", default_value="false"),
         DeclareLaunchArgument("speed_scale", default_value="1.0"),
+        # Open RViz showing the A* path, MPC preview and the vehicle (rviz:=false
+        # to skip it).
+        DeclareLaunchArgument("rviz", default_value="true"),
         pipeline,
         bridge,
+        rviz_node,
+        buildings_node,
+        Node(
+            package="path_plan", executable="flight_logger",
+            name="flight_logger", output="screen",
+            parameters=[{"map_yaml": map_yaml}],
+        ),
     ])

@@ -29,6 +29,113 @@
 
 ## 최근 작업 (최신 위)
 
+### 2026-07-15 — 등속10 복귀 + 벽이격 5m설정 + flight_logger 3종 figure
+- **가변속도 제거**: `mpc_node`에서 곡률 속도캡·`_path_curvature` 삭제, config
+  `a_lat_max/v_min` 삭제 → 등속. **속도 10 고정**: config `v_ref_m_s=v_max_m_s=10`,
+  launch `speed_from_fcu` 기본 false(FCU 12로 안 덮이게).
+- **벽 이격 5m 설정**: inflation 10→5(3노드), clearance_pref 15→5, demarc 1.0→0.3.
+  실측: **A* 경로 최소 11.9m, B-spline(실제 추종) 최소 6.1m**(스무딩 코너컷),
+  collision_free=False(가장 좁은 코너에서 5m 버퍼를 살짝 침범—단 실제 벽까진 6.1m).
+  ⇒ "12m"는 계획 경로 기준이고 실제 비행 최소는 ~6m. 하한(=날 수 있는 최소)은 5m.
+- **flight_logger 전면 개편**: disarm(착륙) 시 visualize_pipeline과 같은 팔레트로
+  3종 저장 — `gazebo_flight_topdown.png`(건물 폴리곤+A*주황+B-spline초록+실제비행
+  마젠타, **실제 비행 최소 벽이격을 제목에 주석**), `gazebo_flight_profiles.png`
+  (속도/가속도/고도 3단+순항밴드 음영), `gazebo_flight_mpc.png`(레퍼런스 vs 실제
+  탑다운 + 추종오차 cKDTree, mean/max). odom 속도·A* global_path·B-spline 구독 추가.
+  출력은 리포 `figures/`. 합성데이터로 3종 렌더 검증 OK.
+
+### 2026-07-15 — A* 속도 25배↑ (weighted A* + 해상도 8m)
+- **증상**: 실제 SITL A* 1회 계획이 ~77s(res 4.0, inflation 10, 1300m 맵, 파이썬
+  shaped-cost, 96,681 노드 확장) → 이륙 후 HOLD에서 오래 대기.
+- **원인**: 순수 파이썬 A* + 4m 격자로 1300m 맵(xy 셀 ~10만) + 노드마다
+  `clearance()`(205 건물 거리) + 26이웃 `is_free`.
+- **수정**: (1) `a_star_search`에 **weighted A*** 추가(`weight` 인자, f=g+weight·h;
+  AStarPlanner3D `heuristic_weight` → astar_node 파라미터 → config). (2) config
+  `resolution_m` 4→**8**, `heuristic_weight`=**1.5**.
+- **실측**(inflation 10, clearance_pref 15, spawn→trailer):
+  res4/w1=77s(96681노드) → res8/w1=21.9s → **res8/w1.5=3.0s**(2187노드) →
+  res8/w2.0=0.8s(487노드). **벽 이격은 전부 ~26m로 동일**(맵이 트여서 weighted A*
+  최적성 손해 사실상 0). 채택: **res8/w1.5 = 3초(25배↑)**. 더 빠르게=w2.0(0.8s).
+- 검증: 컴파일·config·planner 생성 OK. 재빌드 불필요(.py/config 심링크).
+
+### 2026-07-15 — 안전여유 10m + MPC 가변속도 + 랜딩 미작동 진단강화
+- **벽 이격 3→10m**: config 세 노드(`inflation_xy_m`) 3.0→**10.0**, `clearance_pref_m`
+  10→15, bspline `demarcation_m` 0.3→**1.0**. **오프라인 검증**: inflation 10m에서
+  A* 여전히 성공(웨이포인트 13, expanded 96681, 77s), **B-spline/경로 실제 벽 이격
+  최소 25m**(넓은 회랑 우회) → 10m는 충분히 실현가능하고 여유 큼. (기존 3m는 코너컷
+  + 추종오차에 먹혀 벽을 긁었음.)
+- **MPC 가변속도(등속 폐지)**: `mpc_node._holonomic_cmd`에 **측방가속도 한계 기반
+  속도캡** 추가 — 앞쪽 look-ahead 구간의 최대 Menger 곡률 κ로 `v=sqrt(a_lat_max/κ)`
+  계산, 직선=v_max·굽을수록 감속(`v_min` 바닥). config `/tracking_mpc`에
+  `a_lat_max_m_s2: 4.0`, `v_min_m_s: 2.0`. **검증**: 곡률 κ=1/R 정확, 직선→12,
+  R30→10.95, R15→7.75, R8→5.66 = √(a_lat·R) 정확. 목표근처 goal_slow 감속은 유지.
+- **랜딩 미작동 진단강화(`mavros_static_path.py`)**: land 반경 8→**12m**(더 일찍
+  트리거), CRUISE 중 **목표까지 거리 2s마다 로그**(`cruising: X m to goal`),
+  `AUTO.LAND` 요청에 **결과 콜백**(`mode_sent=False`면 "PX4 rejected AUTO.LAND" 경고
+  + `_ensure_landing`가 1Hz로 확정될 때까지 재시도). 이제 로그로 (a)목표 도달 여부와
+  (b)PX4가 AUTO.LAND를 거부하는지 구분 가능. PX4 SITL landing custom_mode="AUTO.LAND".
+- 재빌드 불필요(.py/config/launch 심링크). launch 파싱·임포트 OK.
+
+### 2026-07-15 — RViz에 건물을 실제 3D 형상으로 표시(박스 아님)
+- **새 노드 `building_markers.py`**: city YAML의 각 건물(`polygon_prism`)을 A*가
+  쓰는 팽창 AABB가 아니라 **실제 `footprint.outer` 폴리곤(4~27각형)을
+  foundation_z→roof_z로 압출한 3D 프리즘**으로 렌더. 좌표가 Gazebo 월드/계획경로와
+  정확히 일치(map ENU). MarkerArray 3종: 벽(TRIANGLE_LIST, 높이별 콘크리트색 음영),
+  지붕(TRIANGLE_LIST, **ear-clipping 삼각분할** — 오목 폴리곤도 정확), 수직 모서리선
+  (LINE_LIST). latched(TRANSIENT_LOCAL)라 RViz 늦게 붙어도 수신. `/path_plan/buildings`.
+- launch `px4_mavros.launch.py`에 `building_markers` 노드 추가(rviz 인자로 게이팅),
+  rviz config에 MarkerArray 디스플레이(Buildings) 추가, setup.py 엔트리포인트 등록.
+- 검증: `_triangulate`가 205개 건물 전부 n-2 삼각형으로 정확 분할(오류 0),
+  colcon build OK, 노드 실행 시 `Publishing 205 buildings ...` + 토픽 발행 확인,
+  launch 파싱 OK. **새 엔트리포인트라 colcon build 필요**(했음).
+
+### 2026-07-15 — RViz 자동실행 + 목표 도달 자동착륙 + 이륙후 경로완료까지 호버
+- **브리지 상태머신화(`mavros_static_path.py`)**: 기존 `_took_off` bool →
+  `phase ∈ {CLIMB, HOLD, CRUISE, LAND}`.
+  - `CLIMB`: `takeoff_alt_m`(35m)까지 **순수 수직**(vx=vy=0, vz=takeoff_vz).
+  - `HOLD`: 이륙고도 도달 시 A* 트리거(`/astar_planner/start` 발행) 후 **제자리
+    호버**(vz만 P제어로 고도유지, 측방 0). **`/path_plan/trajectory` 수신 =
+    경로계산 완료 시에만 CRUISE로 전환** → "이륙하자마자 비스듬히 상승/이동"하던
+    불안정 제거(사용자 요청: 경로 완료 후 출발).
+  - `CRUISE`: MPC cmd_vel 전달. 목표(=trajectory 마지막 점) xy 반경
+    `land_radius_m`(기본 8m) 안에 들면 LAND.
+  - `LAND`: `set_mode(AUTO.LAND)`를 1Hz로 재요청(확인될 때까지), OFFBOARD 재요청은
+    중단(착륙과 안 싸우게). 착륙 disarm 시 `flight_logger`가 결과 그림 저장.
+- **RViz 자동실행**: `px4_mavros.launch.py`에 `rviz2` 노드(+`rviz:=false`로 끄기)
+  + `rviz/path_plan.rviz`(fixed frame `map`, A* 경로=노랑, MPC preview=마젠타,
+  드론 Odometry 화살표, TF). MAVROS는 기본적으로 TF를 안 쏘므로 **브리지가
+  `map->base_link` TF를 직접 브로드캐스트**(RViz fixed frame `map` 존재 보장).
+  RViz config는 절대경로 로드(재빌드 불필요), setup.py data_files에도 등록.
+- **flight_logger 출력 경로 버그 수정**: `parents[3]`(=`~/ros2_ws/figures`, 리포
+  밖) → `parents[2]`(=리포 `figures/`). 이제 `figures/gazebo_flight_2d.png` 저장.
+- 검증: launch `--show-args` OK(takeoff 35 / land_radius 8 / rviz true), 브리지·
+  flight_logger·astar 런타임 임포트 OK, 상태머신 헬퍼 6종 존재 확인.
+- 참고: pursuit_sim gif는 코드정상이나 큰 맵+다수 리플랜으로 500s 타임아웃(EXIT
+  124)에 미완 — `--animate` 라이브 창은 즉시 동작. 시나리오 파일은 복구됨.
+
+### 2026-07-15 — 벽 충돌 근본원인 수정(이륙고도) + pursuit 애니메이션 복구
+- **증상1: 드론이 벽에 부딪힘.** 진짜 원인은 **이륙고도 불일치**. 현재 맵
+  `city_coordinates_uav.yaml`은 `a3d1d30(restore jo city)`에서 건물이 **20~50 m
+  (평균 35, 최대 50)**로 바뀌었는데(예전 10~20 m 아님!), 순항밴드는 30~40 m인데도
+  `px4_mavros.launch.py`의 `takeoff_alt_m` 기본값이 **20.0**이었음. 결과:
+  (a) 이륙 후 A*에 넘기는 start의 z=20이 순항 바닥(30 m) 아래 → `_to_cell`이
+  바운드 밖 셀로 스냅 → **"start cell blocked"로 A* 실패**(경로 없음), 또는
+  (b) 20→30 m로 상승하며 **측방 이동 → 건물(20 m~) 사이를 긁고 지나감**. (이전
+  세션이 "35 m 이륙" 코드라 설명했지만 런치 인자 기본값 20.0이 브리지 파라미터
+  기본값 35.0을 덮어써서 실제론 20 m로 떴던 것 — 그래서 "안 됐던" 것.)
+  → **수정: `takeoff_alt_m` 기본값 20.0 → 35.0**(순항밴드 중앙, 바닥≥floor).
+  이제 스폰에서 순수 수직으로 35 m까지 오른 뒤에야 A* 계산·측방 순항 시작.
+- **방어 로직**: `astar_node._replan`이 start/waypoint/goal의 z를
+  `[cruise_floor, cruise_ceiling]`으로 클램프(`_clamp_to_band`) → odom/이륙고도가
+  밴드를 1 m 벗어나도 "start cell blocked"로 죽지 않음.
+- **증상2: pursuit_sim 애니메이션이 사라짐.** 진짜 원인은 코드가 아니라 **시나리오
+  파일 부재**. `a3d1d30`이 `gazebo/maps/city_uav_trailer_loop.yaml`을 삭제 →
+  `python3 tools/pursuit_sim.py`가 실행 즉시 `FileNotFoundError`로 크래시(애니는
+  원래부터 `--animate`/`--gif` 플래그 필요, 코드는 멀쩡). → **git `c90cd31`에서
+  시나리오 파일 복구**. 실행법: `python3 tools/pursuit_sim.py --animate`(라이브
+  창) 또는 `--gif out.gif`(저장). 플래그 없으면 정적 피규어(5·6·7·8)만 생성.
+- 빌드 불필요: install→build→소스가 전부 심링크(런치/config/py 즉시 반영).
+
 ### 2026-07-14 — PX4 연결(MAVROS OFFBOARD 브리지) — 정지목표 순항
 - wang을 main에 병합(로컬 wang-우선, 이후 push)한 뒤, main의 city 맵 기준으로 PX4 연결 시작.
 - **새 노드 `mavros_static_path.py`**: (1) `/mavros/local_position/odom`(local ENU)에

@@ -32,17 +32,18 @@ from __future__ import annotations
 
 import numpy as np
 import rclpy
-from geometry_msgs.msg import TwistStamped
+from geometry_msgs.msg import TwistStamped, PoseStamped, TransformStamped
+from mavros_msgs.msg import State
+from mavros_msgs.srv import CommandBool, SetMode
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
-
-from mavros_msgs.msg import State
-from mavros_msgs.srv import CommandBool, SetMode
 from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
 from rcl_interfaces.srv import GetParameters, SetParameters
+from std_msgs.msg import Float32MultiArray
+from tf2_ros import TransformBroadcaster
 
-from .ros_msgs import FRAME
+from .ros_msgs import FRAME, msg_to_trajectory
 
 
 class MavrosStaticPathNode(Node):
@@ -57,8 +58,11 @@ class MavrosStaticPathNode(Node):
         # Pure-vertical takeoff: climb straight up to takeoff_alt_m before handing
         # over to the MPC, so the vehicle never moves laterally at low altitude and
         # always clears PX4's preflight auto-disarm window.
-        self.takeoff_alt_m = float(p("takeoff_alt_m", 20.0).value)
+        self.takeoff_alt_m = float(p("takeoff_alt_m", 35.0).value)
         self.takeoff_vz = float(p("takeoff_vz_m_s", 1.5).value)
+        # Auto-land once within this xy distance of the goal (the last trajectory
+        # point): the bridge switches PX4 to AUTO.LAND and stops OFFBOARD.
+        self.land_radius_m = float(p("land_radius_m", 12.0).value)
         # Fly at the vehicle's real max: read PX4's MPC_XY_VEL_MAX from MAVROS and
         # push it into the MPC's cruise speed (no hardcoded number).  speed_scale
         # trims it (e.g. 0.9 for margin); speed_from_fcu=false keeps config speed.
@@ -71,9 +75,19 @@ class MavrosStaticPathNode(Node):
         self._cmd = None          # latest MPC TwistStamped
         self._have_odom = False
         self._alt = 0.0           # latest altitude (map-frame z, ~AGL)
-        self._took_off = False
+        self._pos = np.zeros(3)   # latest map-frame position
+        # Flight phase state machine (advances only while armed + OFFBOARD):
+        #   CLIMB  -> pure vertical climb to takeoff_alt_m (no lateral motion)
+        #   HOLD   -> hover in place until the A*->B-spline trajectory is ready
+        #   CRUISE -> forward the MPC velocity toward the goal
+        #   LAND   -> reached the goal; hand off to PX4 AUTO.LAND
+        self.phase = "CLIMB"
+        self._have_traj = False
+        self._goal_xy = None
         self._setpoints_sent = 0
         self._last_request = self.get_clock().now()
+        self._last_land_req = self.get_clock().now()
+        self._last_goal_log = self.get_clock().now()
         self._speed_done = not self.speed_from_fcu
         self._speed_req = False
 
@@ -83,12 +97,20 @@ class MavrosStaticPathNode(Node):
         self.odom_pub = self.create_publisher(Odometry, "/path_plan/odometry", be)
         self.sp_pub = self.create_publisher(
             TwistStamped, "/mavros/setpoint_velocity/cmd_vel", 10)
+        self.start_pub = self.create_publisher(PoseStamped, "/astar_planner/start", 10)
 
         self.create_subscription(State, "/mavros/state", self._on_state, be)
         self.create_subscription(
             Odometry, "/mavros/local_position/odom", self._on_odom, be)
         self.create_subscription(
             TwistStamped, "/path_plan/cmd_vel", self._on_cmd, 10)
+        # Watch the trajectory: leave HOLD only once the path is computed, and
+        # take its last point as the goal for the auto-land trigger.
+        self.create_subscription(
+            Float32MultiArray, "/path_plan/trajectory", self._on_traj, 1)
+        # Broadcast map->base_link so RViz has a valid "map" fixed frame and can
+        # show the vehicle (MAVROS does not publish TF by default).
+        self.tf_bc = TransformBroadcaster(self)
 
         self.arm_cli = self.create_client(CommandBool, "/mavros/cmd/arming")
         self.mode_cli = self.create_client(SetMode, "/mavros/set_mode")
@@ -120,10 +142,29 @@ class MavrosStaticPathNode(Node):
         out.twist = msg.twist           # velocity is translation-invariant
         self.odom_pub.publish(out)
         self._alt = out.pose.pose.position.z
+        self._pos[0] = out.pose.pose.position.x
+        self._pos[1] = out.pose.pose.position.y
+        self._pos[2] = out.pose.pose.position.z
         self._have_odom = True
+        # map->base_link TF for RViz (fixed frame "map").
+        tf = TransformStamped()
+        tf.header.stamp = out.header.stamp
+        tf.header.frame_id = FRAME
+        tf.child_frame_id = "base_link"
+        tf.transform.translation.x = out.pose.pose.position.x
+        tf.transform.translation.y = out.pose.pose.position.y
+        tf.transform.translation.z = out.pose.pose.position.z
+        tf.transform.rotation = out.pose.pose.orientation
+        self.tf_bc.sendTransform(tf)
 
     def _on_cmd(self, msg: TwistStamped):
         self._cmd = msg
+
+    def _on_traj(self, msg: Float32MultiArray):
+        _, pos, _ = msg_to_trajectory(msg)
+        if len(pos) >= 2:
+            self._have_traj = True
+            self._goal_xy = pos[-1, :2]
 
     # ------------------------------------------------------------- main loop
     def _tick(self):
@@ -133,16 +174,28 @@ class MavrosStaticPathNode(Node):
         sp.header.frame_id = FRAME
         active = self._state.armed and self._state.mode == "OFFBOARD"
         if active:
-            if not self._took_off and self._alt >= self.takeoff_alt_m:
-                self._took_off = True
-                self.get_logger().info(
-                    f"takeoff complete at {self._alt:.1f} m -> handing over to MPC")
-            if not self._took_off:
-                # Pure vertical climb until we reach the cruise floor.
-                sp.twist.linear.z = self.takeoff_vz
-            elif self._cmd is not None:
-                sp.twist = self._cmd.twist      # MPC world velocity + yawrate
-            # else: hold zero (waiting for the first MPC command)
+            if self.phase == "CLIMB":
+                if self._alt >= self.takeoff_alt_m:
+                    self._enter_hold(sp.header.stamp)
+                else:
+                    sp.twist.linear.z = self.takeoff_vz   # pure vertical climb
+            if self.phase == "HOLD":
+                # Hover in place (hold altitude, zero lateral) until the
+                # A*->B-spline trajectory is ready, THEN start cruising.  This
+                # removes the slanted climb where the drone drifted sideways
+                # while still ascending.
+                sp.twist.linear.z = self._hold_vz()
+                if self._have_traj:
+                    self.phase = "CRUISE"
+                    self.get_logger().info("path ready -> cruising to goal")
+            if self.phase == "CRUISE":
+                self._log_goal_distance()
+                if self._reached_goal():
+                    self._enter_land()
+                elif self._cmd is not None:
+                    sp.twist = self._cmd.twist   # MPC world velocity + yawrate
+                # else: hold zero (waiting for the first MPC command)
+            # LAND: leave the setpoint at zero; PX4 flies AUTO.LAND now.
         self.sp_pub.publish(sp)
         self._setpoints_sent += 1
 
@@ -150,6 +203,11 @@ class MavrosStaticPathNode(Node):
         if not self._speed_done and self._state.connected:
             self._sync_speed_from_fcu()
 
+        # Once the goal is reached, keep requesting AUTO.LAND (and never re-request
+        # OFFBOARD, which would fight the landing) until PX4 confirms the mode.
+        if self.phase == "LAND":
+            self._ensure_landing()
+            return
         if not self.auto_arm:
             return
         # 2) OFFBOARD + arm handshake.  Gate on odometry so we only arm once the
@@ -176,6 +234,75 @@ class MavrosStaticPathNode(Node):
                 req.value = True
                 self.arm_cli.call_async(req)
                 self.get_logger().info("requesting arm")
+
+    # ----------------------------------------------------------- phase helpers
+    def _enter_hold(self, stamp):
+        """Reached takeoff altitude: trigger the A* plan and hover until ready."""
+        self.phase = "HOLD"
+        self.get_logger().info(
+            f"takeoff complete at {self._alt:.1f} m -> triggering path calculation "
+            f"(holding position until the trajectory is ready)")
+        start = PoseStamped()
+        start.header.stamp = stamp
+        start.header.frame_id = FRAME
+        start.pose.position.x = self._pos[0]
+        start.pose.position.y = self._pos[1]
+        start.pose.position.z = self._pos[2]
+        self.start_pub.publish(start)
+
+    def _hold_vz(self) -> float:
+        """P-controlled vertical velocity to hold the takeoff altitude in HOLD."""
+        err = self.takeoff_alt_m - self._alt
+        return float(np.clip(0.5 * err, -self.takeoff_vz, self.takeoff_vz))
+
+    def _goal_dist(self) -> float:
+        return float(np.hypot(self._pos[0] - self._goal_xy[0],
+                              self._pos[1] - self._goal_xy[1]))
+
+    def _log_goal_distance(self):
+        """Throttled progress log so it's visible whether the goal is reached."""
+        if self._goal_xy is None:
+            return
+        now = self.get_clock().now()
+        if (now - self._last_goal_log).nanoseconds < 2_000_000_000:
+            return
+        self._last_goal_log = now
+        self.get_logger().info(
+            f"cruising: {self._goal_dist():.1f} m to goal "
+            f"(auto-land within {self.land_radius_m:.0f} m)")
+
+    def _reached_goal(self) -> bool:
+        return self._goal_xy is not None and self._goal_dist() <= self.land_radius_m
+
+    def _enter_land(self):
+        self.phase = "LAND"
+        self.get_logger().info(
+            f"reached goal ({self._goal_dist():.1f} m, within {self.land_radius_m:.0f} m)"
+            f" -> AUTO.LAND")
+
+    def _ensure_landing(self):
+        """Request AUTO.LAND at ~1 Hz until PX4 confirms it (or has disarmed)."""
+        if self._state.mode == "AUTO.LAND" or not self._state.armed:
+            return
+        now = self.get_clock().now()
+        if (now - self._last_land_req).nanoseconds < 1_000_000_000:
+            return
+        self._last_land_req = now
+        if not self.mode_cli.service_is_ready():
+            self.get_logger().warn("set_mode service not ready; retrying AUTO.LAND")
+            return
+        req = SetMode.Request()
+        req.custom_mode = "AUTO.LAND"
+        self.mode_cli.call_async(req).add_done_callback(self._on_land_result)
+        self.get_logger().info("requesting AUTO.LAND")
+
+    def _on_land_result(self, fut):
+        try:
+            if not fut.result().mode_sent:
+                self.get_logger().warn(
+                    "PX4 rejected AUTO.LAND (mode_sent=False); will retry")
+        except Exception as exc:                       # noqa: BLE001
+            self.get_logger().warn(f"AUTO.LAND call failed ({exc}); will retry")
 
     # -------------------------------------------------- FCU max-speed -> MPC
     def _sync_speed_from_fcu(self):

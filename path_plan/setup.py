@@ -12,6 +12,7 @@ setup(
         (f"share/{PACKAGE_NAME}/launch",
          ["launch/path_plan.launch.py", "launch/px4_mavros.launch.py"]),
         (f"share/{PACKAGE_NAME}/config", ["config/city_uav.yaml"]),
+        (f"share/{PACKAGE_NAME}/rviz", ["rviz/path_plan.rviz"]),
     ],
     install_requires=["setuptools", "numpy", "scipy", "PyYAML"],
     zip_safe=True,
@@ -30,6 +31,8 @@ setup(
             "bspline_node = path_plan.bspline_node:main",
             "mpc_node = path_plan.mpc_node:main",
             "mavros_static_path = path_plan.mavros_static_path:main",
+            "flight_logger = path_plan.flight_logger:main",
+            "building_markers = path_plan.building_markers:main",
         ],
     },
 )

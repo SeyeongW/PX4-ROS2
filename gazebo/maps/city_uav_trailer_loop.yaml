@@ -1,0 +1,37 @@
+# Moving-trailer pursuit scenario (SEPARATE file — does NOT modify the base map).
+#
+# The drone starts at the base map's spawn and chases a trailer that continuously
+# drives a square loop around the map perimeter. Buildings/bounds come from the
+# unchanged base map; only the trailer motion + pursuit settings live here.
+# Used by:  path_plan/tools/pursuit_sim.py
+
+base_map: gazebo/maps/city_coordinates_uav.yaml   # buildings + geofence (unchanged)
+
+drone:
+  spawn_enu_m: [587.0, 580.0, 15.0]   # NE corner (base-map spawn), mid-band cruise 15 m
+  cruise_floor_m: 10.0                # 10-20 m cruise band (same as visualize_pipeline)
+  cruise_ceiling_m: 20.0
+  cruise_speed_m_s: 10.0               # faster than the trailer so it can intercept
+  inflation_xy_m: 1.0                 # 1 m wall clearance
+  overfly_allowed: true               # climb within the 10-20 m band to overfly buildings
+
+trailer:
+  motion: perimeter_square_loop
+  half_size_m: 600.0                  # loop runs along x,y = ±600 (building-clear ring)
+  speed_m_s: 6.0
+  start_corner: SW                    # start opposite the NE drone spawn -> real chase
+  direction: ccw
+  deck_height_m: 1.25
+  footprint_m: [5.5, 3.0]
+
+pursuit:
+  capture_radius_m: 5.0               # success when drone-trailer xy distance < this
+  replan_period_s: 6.0               # global A*->SFC->B-spline replan cadence (open chase)
+  terminal_homing_m: 40.0            # inside this range the MPC homes straight at the trailer
+  # res 10 A* is ~19 s per replan on the (now 20-50 m) city map, so a full ~400 s
+  # chase took ~15 min and the animation (which renders only AFTER the sim) never
+  # appeared.  res 18 A* is ~3 s/replan (still valid paths); max_sim_time bounds the
+  # run so the animation actually shows.  Raise max_sim_time_s for a full capture.
+  astar_resolution_m: 18.0
+  sim_dt_s: 0.1                       # = MPC control step
+  max_sim_time_s: 150.0

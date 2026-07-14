@@ -33,14 +33,15 @@ class AStarNode(Node):
         res = p("resolution_m", 2.0).value
         world = WorldModel.from_city_yaml(
             self.map_yaml,
-            inflation_xy_m=p("inflation_xy_m", 1.45).value,
+            inflation_xy_m=p("inflation_xy_m", 3.0).value,
             roof_clearance_m=p("roof_clearance_m", 10.0).value,
-            ground_clearance_m=p("cruise_floor_m", 20.0).value,
-            ceiling_m=p("cruise_ceiling_m", 30.0).value,
+            ground_clearance_m=p("cruise_floor_m", 30.0).value,
+            ceiling_m=p("cruise_ceiling_m", 40.0).value,
             overfly_allowed=p("overfly_allowed", True).value,
         )
-        floor = float(self.get_parameter("cruise_floor_m").value)
-        ceiling = float(self.get_parameter("cruise_ceiling_m").value)
+        self.floor = float(self.get_parameter("cruise_floor_m").value)
+        self.ceiling = float(self.get_parameter("cruise_ceiling_m").value)
+        floor, ceiling = self.floor, self.ceiling
         self.planner = AStarPlanner3D(
             world, resolution_m=res,
             max_expanded=int(p("max_expanded", 400000).value),
@@ -48,7 +49,8 @@ class AStarNode(Node):
             clearance_pref_m=p("clearance_pref_m", 3.0).value,
             altitude_weight=p("altitude_weight", 0.05).value,
             altitude_pref_m=p("altitude_pref_m", 0.5 * (floor + ceiling)).value,
-            climb_weight=p("climb_weight", 0.5).value)
+            climb_weight=p("climb_weight", 0.5).value,
+            heuristic_weight=p("heuristic_weight", 1.0).value)
         self.start = np.asarray(p("start_enu_m", [587.0, 580.0, 25.0]).value, float)
         self.goal = np.asarray(p("goal_enu_m", [-300.0, -300.0, 25.0]).value, float)
         # Optional ordered via-points between start and goal, flat [x,y,z,...].
@@ -62,20 +64,30 @@ class AStarNode(Node):
         self.create_subscription(PoseStamped, "~/goal", self._on_goal, 10)
         self.create_subscription(PoseStamped, "~/start", self._on_start, 10)
         self.get_logger().info(
-            f"A* ready: {len(world.boxes_min)} obstacles, res={res} m")
-        self._replan()
+            f"A* ready: {len(world.boxes_min)} obstacles, res={res} m. Waiting for start/goal to trigger calculation...")
 
     def _on_start(self, msg: PoseStamped):
         self.start = np.array([msg.pose.position.x, msg.pose.position.y,
                                msg.pose.position.z])
+        self.get_logger().info(f"Start received at {self.start}. Triggering path calculation...")
+        self._replan()
 
     def _on_goal(self, msg: PoseStamped):
         self.goal = np.array([msg.pose.position.x, msg.pose.position.y,
                               msg.pose.position.z])
         self._replan()
 
+    def _clamp_to_band(self, p):
+        """Keep an endpoint inside the cruise band so its A* start/goal cell is
+        never below the planning floor or above the ceiling (the takeoff altitude
+        or odometry can land a metre outside the band)."""
+        q = np.asarray(p, float).copy()
+        q[2] = float(np.clip(q[2], self.floor, self.ceiling))
+        return q
+
     def _replan(self):
-        route = [self.start, *self.waypoints, self.goal]
+        route = [self._clamp_to_band(p)
+                 for p in (self.start, *self.waypoints, self.goal)]
         result = self.planner.plan_through(route)
         if not result.success:
             self.get_logger().warn(f"A* failed: {result.message}")

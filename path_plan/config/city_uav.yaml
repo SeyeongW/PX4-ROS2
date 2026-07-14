@@ -3,33 +3,38 @@
 
 /astar_planner:
   ros__parameters:
-    resolution_m: 4.0           # finer keeps the path centred; needed for clean B-spline convergence
-    inflation_xy_m: 1.0         # wall clearance: path-centre >= 1 m from any wall
+    resolution_m: 8.0           # coarser grid = far fewer cells (huge speed-up); 26 m wall
+                                # clearance means 8 m grid is plenty precise (was 4.0 = ~77 s)
+    inflation_xy_m: 5.0         # wall clearance: path-centre >= 5 m from any wall
     roof_clearance_m: 10.0
-    cruise_floor_m: 20.0
-    cruise_ceiling_m: 30.0
+    cruise_floor_m: 30.0
+    cruise_ceiling_m: 40.0
     overfly_allowed: false      # every building = full-height no-fly column (avoid all)
     max_expanded: 400000
     # start = PX4 spawn (NE corner); goal = stationary trailer (SW corner).
-    start_enu_m: [587.0, 580.0, 25.0]
-    goal_enu_m: [-587.0, -512.0, 25.0]
+    start_enu_m: [587.0, 580.0, 35.0]
+    goal_enu_m: [-587.0, -512.0, 35.0]
     # Optional ordered via-points (flat [x,y,z, x,y,z, ...]). The path is forced
     # through each, so use them to shape a hard/slalom route. Empty = direct.
     # e.g. [300.0, 300.0, 25.0,  0.0, 100.0, 25.0,  -150.0, -100.0, 25.0]
     waypoints_enu_m: []
     # shaped-cost weights (BigZaphod-style pluggable cost function)
-    clearance_weight: 0.4      # penalty per metre inside clearance_pref of a wall
-    clearance_pref_m: 3.0      # want >= this much gap to the nearest building
+    clearance_weight: 2.0      # penalty per metre inside clearance_pref of a wall
+    clearance_pref_m: 5.0       # want >= this much gap to the nearest building
     altitude_weight: 0.05      # penalty per metre off the preferred cruise height
-    altitude_pref_m: 25.0      # middle of the 20-30 m band
+    altitude_pref_m: 35.0      # middle of the 30-40 m band
     climb_weight: 0.5          # extra penalty per metre of upward motion
+    # weighted A* (f = g + weight*h): >1 makes the search greedier toward the goal,
+    # expanding far fewer nodes.  1.5 = ~25x faster (77s->3s) with the SAME 26 m wall
+    # clearance here; raise to 2.0 for ~0.8 s (may take slightly longer detours).
+    heuristic_weight: 1.5
 
 /sfc_builder:
   ros__parameters:
-    inflation_xy_m: 1.0
+    inflation_xy_m: 5.0
     roof_clearance_m: 10.0
-    cruise_floor_m: 20.0
-    cruise_ceiling_m: 30.0
+    cruise_floor_m: 30.0
+    cruise_ceiling_m: 40.0
     overfly_allowed: false
     step_m: 0.5
     max_extent_m: 8.0
@@ -38,20 +43,20 @@
 /bspline_optimizer:
   ros__parameters:
     # obstacle model must match the other nodes (used for the rebound collision check)
-    inflation_xy_m: 1.0
+    inflation_xy_m: 5.0
     roof_clearance_m: 10.0
-    cruise_floor_m: 20.0
-    cruise_ceiling_m: 30.0
+    cruise_floor_m: 30.0
+    cruise_ceiling_m: 40.0
     overfly_allowed: false
     # ego-planner corridor B-spline optimizer (L-BFGS + rebound).
     cruise_speed_m_s: 4.0
     ctrl_spacing_m: 5.0     # control-point spacing (also one free box each)
     max_vel_m_s: 5.0
-    max_acc_m_s2: 3.0
-    lambda_smooth: 1.0      # jerk
+    max_acc_m_s2: 1.5
+    lambda_smooth: 5.0      # jerk
     lambda_dist: 0.5        # corridor rebound
     lambda_feas: 2.0        # velocity/accel limits
-    lambda_fit: 0.2         # guide-path alignment
+    lambda_fit: 0.05         # guide-path alignment
     demarcation_m: 0.3      # keep control points this far inside their box
     max_rebound: 10
     sample_count: 300
@@ -61,8 +66,8 @@
     # mpc_ros-style unicycle tracking MPC (inputs: yaw-rate omega, accel a).
     dt_s: 0.1
     horizon: 20
-    v_ref_m_s: 4.0
-    v_max_m_s: 5.0
+    v_ref_m_s: 10.0     # constant cruise speed (variable-speed logic removed)
+    v_max_m_s: 10.0
     omega_max_rad_s: 1.2
     a_max_m_s2: 3.0
     z_kp: 0.8            # altitude-hold P gain (decoupled vertical)
