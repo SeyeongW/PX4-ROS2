@@ -23,7 +23,7 @@ from matplotlib.patches import Rectangle
 
 from path_plan.astar import AStarPlanner3D
 from path_plan.bspline_optimizer import BsplineOptimizer
-from path_plan.mpc_ros import UnicycleMPC
+from path_plan.mpc_ros import UnicycleMPC, Weights
 from path_plan.world_model import WorldModel, _find_buildings
 
 REPO = Path(__file__).resolve().parents[2]
@@ -49,7 +49,7 @@ def raw_footprints(map_path):
     return out
 
 
-def mpc_rollout(traj, mpc, start, max_steps=2500, goal_tol=2.0):
+def mpc_rollout(traj, mpc, start, max_steps=None, goal_tol=2.0):
     """Closed-loop mpc_ros unicycle simulation tracking the B-spline.
 
     The vehicle perfectly follows the commanded world velocity setpoint each dt
@@ -57,6 +57,8 @@ def mpc_rollout(traj, mpc, start, max_steps=2500, goal_tol=2.0):
     """
     _t, tp, _tv, _a = traj.sample(600)
     tt = np.linspace(0.0, traj.duration(), len(tp))
+    if max_steps is None:                      # cover the whole trajectory (+30%)
+        max_steps = int(1.3 * traj.duration() / mpc.dt)
     pos = np.asarray(start, float).copy()
     d0 = tp[1, :2] - tp[0, :2]
     yaw = float(np.arctan2(d0[1], d0[0]))
@@ -89,7 +91,9 @@ def main():
     args = ap.parse_args()
     OUT.mkdir(exist_ok=True)
 
-    world = WorldModel.from_city_yaml(args.map, ground_clearance_m=20.0, ceiling_m=30.0)
+    world = WorldModel.from_city_yaml(args.map, inflation_xy_m=1.0,
+                                      ground_clearance_m=20.0, ceiling_m=30.0,
+                                      overfly_allowed=False)
     foots = raw_footprints(args.map)
     print(f"world: {len(world.boxes_min)} obstacles")
 
@@ -119,7 +123,9 @@ def main():
           f"rebound_iters={ores.rebound_iters} "
           f"collision_free={ores.collision_free} free_frac={ores.free_fraction:.3f}")
 
-    mpc = UnicycleMPC(dt_s=0.1, horizon=20, v_ref=4.0, v_max=5.0)
+    mpc = UnicycleMPC(dt_s=0.1, horizon=20, v_ref=4.0, v_max=5.0,
+                      weights=Weights(cte=6.0, epsi=4.0, v=1.0, omega=1.0,
+                                      a=0.05, domega=6.0, da=0.5))
     t0 = time.time()
     actual, ref_xyz = mpc_rollout(traj, mpc, args.start)
     print(f"MPC rollout {time.time()-t0:.1f}s: {len(actual)} steps (mpc_ros unicycle)")
@@ -127,7 +133,7 @@ def main():
     _fig_topdown(foots, wp, corridor, pos, args)
     _fig_altitude(tt, pos)
     _fig_profiles(tt, vel, acc)
-    _fig_mpc(ref_xyz, actual)
+    _fig_mpc(traj.sample(6000)[1], actual)   # dense reference for a true error metric
     print(f"figures written to {OUT}")
 
 
@@ -154,7 +160,8 @@ def _fig_topdown(foots, wp, corridor, pos, args):
     ax.set_aspect("equal")
     ax.set_xlabel("E  x [m]"); ax.set_ylabel("N  y [m]")
     ax.set_title("Global pipeline (top-down): A* → SFC → B-spline\n"
-                 "grey = building footprints (planner inflates by 1.45 m)", fontsize=12)
+                 "grey = building footprints — all avoided laterally (1 m wall clearance)",
+                 fontsize=12)
     ax.legend(loc="upper right", framealpha=0.9)
     m = 20
     ax.set_xlim(min(args.start[0], args.goal[0]) - m, max(args.start[0], args.goal[0]) + m)
@@ -193,8 +200,10 @@ def _fig_profiles(tt, vel, acc):
 
 
 def _fig_mpc(ref_xyz, actual):
-    err = np.linalg.norm(actual[:, :2] -
-                         _match(ref_xyz[:, :2], actual[:, :2]), axis=1)
+    # true cross-track error = distance to the nearest point on the DENSE
+    # reference (a sparse reference would sawtooth ~half the sample spacing).
+    from scipy.spatial import cKDTree
+    err, _ = cKDTree(ref_xyz[:, :2]).query(actual[:, :2])
     fig, (a1, a2) = plt.subplots(1, 2, figsize=(13, 5.5))
     a1.plot(ref_xyz[:, 0], ref_xyz[:, 1], "-", color=C_BSPL, lw=3, alpha=0.6,
             label="reference (B-spline)")
@@ -208,14 +217,6 @@ def _fig_mpc(ref_xyz, actual):
     a2.grid(alpha=0.3)
     fig.tight_layout(); fig.savefig(OUT / "4_mpc_tracking.png", dpi=130)
     plt.close(fig)
-
-
-def _match(ref, actual):
-    """Nearest reference point for each actual sample (for error display)."""
-    out = np.empty_like(actual)
-    for i, p in enumerate(actual):
-        out[i] = ref[np.argmin(np.linalg.norm(ref - p, axis=1))]
-    return out
 
 
 if __name__ == "__main__":

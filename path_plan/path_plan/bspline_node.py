@@ -40,7 +40,8 @@ class BSplineNode(Node):
             inflation_xy_m=p("inflation_xy_m", 1.45).value,
             roof_clearance_m=p("roof_clearance_m", 10.0).value,
             ground_clearance_m=p("cruise_floor_m", 20.0).value,
-            ceiling_m=p("cruise_ceiling_m", 30.0).value)
+            ceiling_m=p("cruise_ceiling_m", 30.0).value,
+            overfly_allowed=p("overfly_allowed", True).value)
         self.optimizer = BsplineOptimizer(
             world,
             cruise_speed_m_s=p("cruise_speed_m_s", 4.0).value,

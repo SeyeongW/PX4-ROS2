@@ -37,6 +37,7 @@ class AStarNode(Node):
             roof_clearance_m=p("roof_clearance_m", 10.0).value,
             ground_clearance_m=p("cruise_floor_m", 20.0).value,
             ceiling_m=p("cruise_ceiling_m", 30.0).value,
+            overfly_allowed=p("overfly_allowed", True).value,
         )
         floor = float(self.get_parameter("cruise_floor_m").value)
         ceiling = float(self.get_parameter("cruise_ceiling_m").value)
