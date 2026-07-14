@@ -1,0 +1,72 @@
+# path_plan pipeline parameters for the applepark_city_uav map.
+# map_yaml is overridden by the launch file with an absolute path.
+
+/astar_planner:
+  ros__parameters:
+    resolution_m: 2.0
+    inflation_xy_m: 1.45
+    roof_clearance_m: 10.0
+    cruise_floor_m: 20.0
+    cruise_ceiling_m: 30.0
+    max_expanded: 400000
+    # start = PX4 spawn (NE corner of the current map); goal across the city.
+    start_enu_m: [587.0, 580.0, 25.0]
+    goal_enu_m: [-300.0, -300.0, 25.0]
+    # Optional ordered via-points (flat [x,y,z, x,y,z, ...]). The path is forced
+    # through each, so use them to shape a hard/slalom route. Empty = direct.
+    # e.g. [300.0, 300.0, 25.0,  0.0, 100.0, 25.0,  -150.0, -100.0, 25.0]
+    waypoints_enu_m: []
+    # shaped-cost weights (BigZaphod-style pluggable cost function)
+    clearance_weight: 0.4      # penalty per metre inside clearance_pref of a wall
+    clearance_pref_m: 3.0      # want >= this much gap to the nearest building
+    altitude_weight: 0.05      # penalty per metre off the preferred cruise height
+    altitude_pref_m: 25.0      # middle of the 20-30 m band
+    climb_weight: 0.5          # extra penalty per metre of upward motion
+
+/sfc_builder:
+  ros__parameters:
+    inflation_xy_m: 1.45
+    roof_clearance_m: 10.0
+    cruise_floor_m: 20.0
+    cruise_ceiling_m: 30.0
+    step_m: 0.5
+    max_extent_m: 8.0
+    seed_spacing_m: 3.0
+
+/bspline_optimizer:
+  ros__parameters:
+    # ego-planner corridor B-spline optimizer (L-BFGS + rebound).
+    cruise_speed_m_s: 4.0
+    ctrl_spacing_m: 5.0     # control-point spacing (also one free box each)
+    max_vel_m_s: 5.0
+    max_acc_m_s2: 3.0
+    lambda_smooth: 1.0      # jerk
+    lambda_dist: 0.5        # corridor rebound
+    lambda_feas: 2.0        # velocity/accel limits
+    lambda_fit: 0.2         # guide-path alignment
+    demarcation_m: 0.3      # keep control points this far inside their box
+    max_rebound: 10
+    sample_count: 300
+
+/tracking_mpc:
+  ros__parameters:
+    # mpc_ros-style unicycle tracking MPC (inputs: yaw-rate omega, accel a).
+    dt_s: 0.1
+    horizon: 20
+    v_ref_m_s: 4.0
+    v_max_m_s: 5.0
+    omega_max_rad_s: 1.2
+    a_max_m_s2: 3.0
+    z_kp: 0.8            # altitude-hold P gain (decoupled vertical)
+    vz_max_m_s: 2.0
+    # mpc_ros cost weights
+    w_cte: 2.0          # cross-track error
+    w_epsi: 4.0         # heading error
+    w_v: 1.0            # speed vs v_ref
+    w_omega: 0.5        # yaw-rate effort
+    w_a: 0.05           # accel effort
+    w_domega: 2.0       # yaw-rate smoothness
+    w_da: 0.1           # accel smoothness
+    depth_trigger_m: 10.0
+    depth_emergency_m: 4.0
+    avoid_lateral_m: 7.0
