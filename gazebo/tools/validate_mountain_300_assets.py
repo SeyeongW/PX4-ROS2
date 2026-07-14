@@ -24,7 +24,7 @@ VISUAL_OBJ = TERRAIN / "meshes" / "ugv_mou_terrain_visual.obj"
 COLLISION_OBJ = TERRAIN / "meshes" / "ugv_mou_terrain_collision.obj"
 TREE_LAYOUT = FOREST / "source" / "tree_layout.source.xml"
 LOG = GAZEBO_ROOT / "validation" / "ugv_drone_mountain_300_static.log"
-RUNTIME_LOG = GAZEBO_ROOT / "validation" / "runtime" / "px4_dynamic_map_validation.log"
+RUNTIME_LOG = GAZEBO_ROOT / "validation" / "runtime" / "mountain_px4_runtime_validation.log"
 EXPECTED_HEIGHTMAP_SHA256 = (
     "dea9d2ca2f6a4f357037e0f626a90ab2bfb815d6b1185659cc8d53b1ed63548c"
 )

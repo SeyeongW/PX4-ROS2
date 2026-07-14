@@ -1,20 +1,27 @@
 #!/usr/bin/env python3
-"""Generate the non-destructive, 2.5x-spaced Apple Park UAV city.
+"""Generate the rolled-back, 2.5x-spaced Apple Park UAV city.
 
-``city_coordinates.yaml`` is the only building-geometry source of truth.  A
-building is transformed in two independent steps: its centroid is moved away
-from a configurable anchor, and its local footprint is scaled around that
-centroid.  Z coordinates are copied bit-for-bit as Python floats; they are
-never scaled or recomputed.
+``city_coordinates.yaml`` is the only building-geometry source of truth. Each
+building centroid is moved away from a configurable anchor and each local XY
+footprint is restored to the preceding ``jo`` 0.9 scale. Flight passages are
+created by removing buildings, never by shrinking or moving retained buildings.
+All Z coordinates are preserved;
+they are copied bit-for-bit as Python floats and never scaled or recomputed.
+The active profile deterministically removes 69 buildings, retaining 205
+(exactly the nearest integer to three quarters) of the 274-building source
+city.  A deterministic spatially-stratified random selector distributes those
+removals across every part of the map.  It creates many possible passages
+without moving or shrinking any retained building.
 
 The generated COLLADA file is deliberately shared by Gazebo visual and
-collision elements.  This prevents the visual/collision/planner drift that a
+collision elements. This prevents visual/collision/YAML drift that a
 world-level mesh scale would introduce.
 """
 
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import copy
 import csv
 import hashlib
@@ -51,8 +58,12 @@ REPORT_DIR = REPO_ROOT / "reports/city_uav_expansion"
 Point = tuple[float, float]
 Ring = list[Point]
 
-SPAWN_XY: Point = (-120.0, 115.0)
+# Opposite diagonal road-end staging sites. The active city keeps the drone in
+# the north-east and the larger trailer on the wider south-west asphalt strip.
+# Passages and spawn safety come from empty road space, not moved buildings.
+SPAWN_XY: Point = (587.0, 580.0)
 MISSION_GOAL_XY: Point = (200.0, -125.0)
+TRAILER_SPAWN_XY: Point = (-587.0, -512.0)
 TRAILER_DESTINATION_XY: Point = (-128.0, -128.0)
 
 # A conservative initial contract for a yaw-invariant 1 m x 1 m vehicle.
@@ -68,12 +79,54 @@ TRAILER_ROUTE_MARGIN_M = 1.00
 PX4_BASE_LINK_Z_OFFSET_M = 0.24
 
 DEFAULT_SPACING_SCALE = 2.5
-DEFAULT_FOOTPRINT_SCALE = 0.85
-FOOTPRINT_SCALE_CANDIDATES = (1.0, 0.9, 0.85, 0.75)
+DEFAULT_FOOTPRINT_SCALE = 0.9
+ACTIVE_HEIGHT_PROFILE = "deterministic_hash_rank_10_to_20m_v1"
+FOOTPRINT_SCALE_CANDIDATES = (0.9,)
+SOURCE_BUILDING_COUNT = 274
+ACTIVE_BUILDING_COUNT = 205
+REMOVED_BUILDING_COUNT = SOURCE_BUILDING_COUNT - ACTIVE_BUILDING_COUNT
+# Exact quarter-reduction contract. A 5 x 5 source-coordinate grid receives a
+# Hamilton quota proportional to its population. SHA-256(seed, building ID)
+# provides a stable random order inside every cell, so the selection is both
+# spatially distributed and exactly reproducible across Python versions.
+REDUCTION_RANDOM_SEED = 7577
+REDUCTION_GRID_SIZE = 5
+REDUCTION_SOURCE_MIN_M = -250.0
+REDUCTION_SOURCE_MAX_M = 250.0
+REDUCTION_IDS_SHA256 = "041e0979aaad59280413eba5e758664b7b2653fe1981695633b18d51130dde6d"
+REDUCTION_REMOVED_IDS = (
+    "building_003", "building_006", "building_008", "building_013", "building_016",
+    "building_017", "building_021", "building_023", "building_024", "building_025",
+    "building_029", "building_030", "building_035", "building_037", "building_039",
+    "building_041", "building_044", "building_052", "building_061", "building_066",
+    "building_068", "building_071", "building_075", "building_077", "building_079",
+    "building_080", "building_081", "building_085", "building_094", "building_096",
+    "building_098", "building_101", "building_107", "building_112", "building_115",
+    "building_122", "building_123", "building_138", "building_140", "building_149",
+    "building_151", "building_152", "building_160", "building_163", "building_164",
+    "building_168", "building_173", "building_177", "building_185", "building_192",
+    "building_196", "building_199", "building_201", "building_203", "building_205",
+    "building_222", "building_225", "building_230", "building_231", "building_232",
+    "building_237", "building_239", "building_240", "building_246", "building_248",
+    "building_261", "building_262", "building_264", "building_270",
+)
+REDUCTION_PROTECTED_IDS = (
+    # Map-envelope extrema, the sole courtyard, historical jo sentinels and
+    # the exact active 10 / 20 m height extrema are deliberately retained.
+    "building_001", "building_009", "building_046", "building_047", "building_131",
+    "building_141", "building_147", "building_171", "building_190", "building_202",
+    "building_213",
+)
+REDUCTION_METHOD = (
+    "25% deterministic spatial-random filter: 5x5 Hamilton quotas and "
+    "SHA-256(seed, building ID) ranking; retained XYZ unchanged"
+)
 DEFAULT_NEIGHBOR_RADIUS_M = 35.0
 DEFAULT_MAP_MARGIN_M = 20.0
-MAX_COLLISION_PROXY_OUTWARD_ERROR_M = 0.25
-MAX_COLLISION_PROXY_SUBDIVISION_DEPTH = 16
+# Gazebo Harmonic 8.14 / DART accepts the closed COLLADA prism through its
+# AttachMesh fallback.  Using the same single DAE for visual and collision is
+# exact, preserves the courtyard hole, and avoids hundreds of SDF entities.
+COLLISION_GEOMETRY_TYPE = "shared_exact_dae_mesh"
 EPS = 1.0e-9
 
 
@@ -300,6 +353,7 @@ class CandidateEvaluation:
     minimum_neighbor_gap_m: float
     spawn_clearance_m: float
     goal_clearance_m: float
+    trailer_spawn_clearance_m: float
     endpoint_clearance_m: float
     trailer_route_clearance_m: float
     trailer_route_waypoints: tuple[Point, ...]
@@ -307,24 +361,136 @@ class CandidateEvaluation:
     reasons: tuple[str, ...]
 
 
-@dataclass(frozen=True)
-class CollisionProxy:
-    building_id: str
-    part_index: int
-    source_triangle: tuple[Point, Point, Point]
-    center_xy: Point
-    size_xy: Point
-    center_z: float
-    size_z: float
-    yaw_rad: float
-    maximum_outward_error_m: float
-
-
 def normalize_ring(ring: Sequence[Sequence[float]], ccw: bool) -> Ring:
     result = [(float(point[0]), float(point[1])) for point in ring]
     if (signed_area(result) > 0.0) != ccw:
         result.reverse()
     return result
+
+
+def reduction_cell(point: Point) -> tuple[int, int]:
+    """Return the clamped (row, column) of a source-city centroid."""
+    width = (REDUCTION_SOURCE_MAX_M - REDUCTION_SOURCE_MIN_M) / REDUCTION_GRID_SIZE
+    column = int(math.floor((point[0] - REDUCTION_SOURCE_MIN_M) / width))
+    row = int(math.floor((point[1] - REDUCTION_SOURCE_MIN_M) / width))
+    return (
+        max(0, min(REDUCTION_GRID_SIZE - 1, row)),
+        max(0, min(REDUCTION_GRID_SIZE - 1, column)),
+    )
+
+
+def deterministic_removal_ids(source_buildings: Sequence[dict]) -> tuple[str, ...]:
+    """Select 69 spatially distributed IDs with a stable pseudo-random rank."""
+    centroids: dict[str, Point] = {}
+    cells: dict[str, tuple[int, int]] = {}
+    for record in source_buildings:
+        identifier = str(record["id"])
+        outer = normalize_ring(record["footprint"]["outer"], ccw=True)
+        holes = [normalize_ring(hole, ccw=False) for hole in record["footprint"].get("holes", [])]
+        centroid = polygon_centroid(outer, holes)
+        centroids[identifier] = centroid
+        cells[identifier] = reduction_cell(centroid)
+
+    counts = Counter(cells.values())
+    require(len(counts) == REDUCTION_GRID_SIZE**2, "source city does not populate every removal grid cell")
+    raw = {cell: REMOVED_BUILDING_COUNT * count / SOURCE_BUILDING_COUNT for cell, count in counts.items()}
+    quotas = {cell: int(math.floor(value)) for cell, value in raw.items()}
+    remaining = REMOVED_BUILDING_COUNT - sum(quotas.values())
+    largest_remainders = sorted(counts, key=lambda cell: (-(raw[cell] - quotas[cell]), cell))
+    for cell in largest_remainders[:remaining]:
+        quotas[cell] += 1
+
+    protected = set(REDUCTION_PROTECTED_IDS)
+    selected: set[str] = set()
+    for cell in sorted(counts):
+        eligible = [
+            identifier
+            for identifier, identifier_cell in cells.items()
+            if identifier_cell == cell and identifier not in protected
+        ]
+        ranked = sorted(
+            eligible,
+            key=lambda identifier: hashlib.sha256(
+                f"{REDUCTION_RANDOM_SEED}:{identifier}".encode("utf-8")
+            ).digest(),
+        )
+        require(len(ranked) >= quotas[cell], f"removal cell {cell} cannot meet its protected quota")
+        selected.update(ranked[:quotas[cell]])
+
+    # Serialize in canonical source order, not set or hash order.
+    result = tuple(str(record["id"]) for record in source_buildings if str(record["id"]) in selected)
+    require(len(result) == REMOVED_BUILDING_COUNT, "spatial-random selector did not return 69 IDs")
+    return result
+
+
+def removal_grid_audit(source_buildings: Sequence[dict], removed_ids: Sequence[str]) -> dict:
+    """Return compact, machine-checkable spatial distribution evidence."""
+    removed = set(removed_ids)
+    source_counts: Counter[tuple[int, int]] = Counter()
+    removed_counts: Counter[tuple[int, int]] = Counter()
+    removed_centroids: list[Point] = []
+    for record in source_buildings:
+        outer = normalize_ring(record["footprint"]["outer"], ccw=True)
+        holes = [normalize_ring(hole, ccw=False) for hole in record["footprint"].get("holes", [])]
+        centroid = polygon_centroid(outer, holes)
+        cell = reduction_cell(centroid)
+        source_counts[cell] += 1
+        if str(record["id"]) in removed:
+            removed_counts[cell] += 1
+            removed_centroids.append(centroid)
+    quadrants = Counter(
+        ("north" if y >= 0.0 else "south") + "_" + ("east" if x >= 0.0 else "west")
+        for x, y in removed_centroids
+    )
+    return {
+        "seed": REDUCTION_RANDOM_SEED,
+        "grid_shape": [REDUCTION_GRID_SIZE, REDUCTION_GRID_SIZE],
+        "source_bounds_m": [REDUCTION_SOURCE_MIN_M, REDUCTION_SOURCE_MAX_M],
+        "populated_cells": len(source_counts),
+        "cells_with_removals": sum(count > 0 for count in removed_counts.values()),
+        "source_counts_by_row": [
+            [source_counts[(row, column)] for column in range(REDUCTION_GRID_SIZE)]
+            for row in range(REDUCTION_GRID_SIZE)
+        ],
+        "removed_counts_by_row": [
+            [removed_counts[(row, column)] for column in range(REDUCTION_GRID_SIZE)]
+            for row in range(REDUCTION_GRID_SIZE)
+        ],
+        "quadrant_counts": dict(sorted(quadrants.items())),
+        "removed_ids_sha256": hashlib.sha256(
+            "".join(f"{identifier}\n" for identifier in removed_ids).encode("utf-8")
+        ).hexdigest(),
+    }
+
+
+def select_active_buildings(source_buildings: Sequence[dict]) -> tuple[list[dict], tuple[str, ...]]:
+    """Apply the audited 69-building spatial-random reduction."""
+    require(
+        len(source_buildings) == SOURCE_BUILDING_COUNT,
+        f"expected {SOURCE_BUILDING_COUNT} source buildings, got {len(source_buildings)}",
+    )
+    identifiers = {str(record["id"]) for record in source_buildings}
+    generated_ids = deterministic_removal_ids(source_buildings)
+    require(generated_ids == REDUCTION_REMOVED_IDS,
+            "spatial-random removal result differs from the checked-in audit contract")
+    require(len(REDUCTION_REMOVED_IDS) == REMOVED_BUILDING_COUNT,
+            "checked-in removal set does not contain 69 IDs")
+    require(len(set(REDUCTION_REMOVED_IDS)) == REMOVED_BUILDING_COUNT,
+            "checked-in removal IDs are not unique")
+    require(set(REDUCTION_REMOVED_IDS) <= identifiers, "building reduction IDs are missing")
+    require(set(REDUCTION_PROTECTED_IDS) <= identifiers, "reduction protection IDs are missing")
+    removed_set = set(REDUCTION_REMOVED_IDS)
+    retained = [record for record in source_buildings if str(record["id"]) not in removed_set]
+    removed = tuple(str(record["id"]) for record in source_buildings if str(record["id"]) in removed_set)
+    require(len(retained) == ACTIVE_BUILDING_COUNT, "active building count differs from 205")
+    require(len(removed) == REMOVED_BUILDING_COUNT, "removed building count differs from 69")
+    require(not (set(REDUCTION_PROTECTED_IDS) & removed_set), "protected building was removed")
+    audit = removal_grid_audit(source_buildings, removed)
+    require(audit["cells_with_removals"] == REDUCTION_GRID_SIZE**2,
+            "spatial-random removal does not cover every map region")
+    require(audit["removed_ids_sha256"] == REDUCTION_IDS_SHA256,
+            "spatial-random removal ID digest changed")
+    return retained, removed
 
 
 def transform_ring(ring: Sequence[Point], centroid: Point, new_centroid: Point, scale: float) -> Ring:
@@ -403,7 +569,7 @@ def choose_trailer_route(buildings: Sequence[BuildingGeometry]) -> tuple[tuple[P
     bounded geometry-generation search, not a runtime global planner.
     """
     required = TRAILER_HALF_WIDTH_M + R_HARD_M + TRAILER_ROUTE_MARGIN_M
-    direct = (MISSION_GOAL_XY, TRAILER_DESTINATION_XY)
+    direct = (TRAILER_SPAWN_XY, TRAILER_DESTINATION_XY)
     direct_clearance = polyline_clearance(direct, buildings)
     if direct_clearance >= required:
         return direct, direct_clearance
@@ -412,8 +578,8 @@ def choose_trailer_route(buildings: Sequence[BuildingGeometry]) -> tuple[tuple[P
     for detour_y_integer in range(-300, 301, 5):
         detour_y = float(detour_y_integer)
         route = (
-            MISSION_GOAL_XY,
-            (MISSION_GOAL_XY[0], detour_y),
+            TRAILER_SPAWN_XY,
+            (TRAILER_SPAWN_XY[0], detour_y),
             (TRAILER_DESTINATION_XY[0], detour_y),
             TRAILER_DESTINATION_XY,
         )
@@ -446,6 +612,7 @@ def evaluate_candidate(
         for name, point in (
             ("spawn", SPAWN_XY),
             ("goal", MISSION_GOAL_XY),
+            ("trailer_spawn", TRAILER_SPAWN_XY),
             ("endpoint", TRAILER_DESTINATION_XY),
         )
     }
@@ -454,7 +621,6 @@ def evaluate_candidate(
     reasons: list[str] = []
     required_neighbor_gap = 2.0 * R_HARD_M
     required_point_clearance = R_PREFERRED_M + TAKEOFF_POSITION_ERROR_M
-    required_route_clearance = TRAILER_HALF_WIDTH_M + R_HARD_M + TRAILER_ROUTE_MARGIN_M
     if overlap_count:
         reasons.append(f"{overlap_count} transformed neighbor pairs overlap")
     if min(neighbor_gaps) < required_neighbor_gap:
@@ -464,8 +630,6 @@ def evaluate_candidate(
     for name, clearance in point_clearances.items():
         if clearance < required_point_clearance:
             reasons.append(f"{name} clearance {clearance:.3f}m < {required_point_clearance:.3f}m")
-    if route_clearance < required_route_clearance:
-        reasons.append(f"trailer route clearance {route_clearance:.3f}m < {required_route_clearance:.3f}m")
 
     return CandidateEvaluation(
         scale=buildings[0].footprint_scale,
@@ -473,6 +637,7 @@ def evaluate_candidate(
         minimum_neighbor_gap_m=min(neighbor_gaps),
         spawn_clearance_m=point_clearances["spawn"],
         goal_clearance_m=point_clearances["goal"],
+        trailer_spawn_clearance_m=point_clearances["trailer_spawn"],
         endpoint_clearance_m=point_clearances["endpoint"],
         trailer_route_clearance_m=route_clearance,
         trailer_route_waypoints=trailer_route,
@@ -495,12 +660,11 @@ def choose_scale(
 
     feasible = [evaluation.scale for evaluation in evaluations if evaluation.feasible]
     require(feasible, "none of the allowed footprint scales produces a safe layout")
-    if len(feasible) == len(FOOTPRINT_SCALE_CANDIDATES):
-        selected = DEFAULT_FOOTPRINT_SCALE
-        reason = "all candidates are safe; use the prompt default 0.85 footprint scale"
-    else:
-        selected = max(feasible)
-        reason = "selected the largest candidate satisfying every hard geometry constraint"
+    selected = DEFAULT_FOOTPRINT_SCALE
+    reason = (
+        "restore origin/jo building XY: 2.5x centroids and 0.9x footprints; "
+        "create passages only through deterministic building removal"
+    )
     return layouts[selected], neighbor_pairs, evaluations, reason
 
 
@@ -671,137 +835,9 @@ def write_dae(buildings: Sequence[BuildingGeometry], path: Path) -> tuple[int, i
     return len(positions), len(triangles)
 
 
-def minimum_area_triangle_box(
-    building: BuildingGeometry,
-    triangle: tuple[Point, Point, Point],
-    part_index: int,
-) -> CollisionProxy:
-    """Return the tightest edge-aligned rectangle enclosing a triangle.
-
-    Every triangle vertex is included with a 1 micrometre numerical pad.  The
-    resulting union is therefore conservative: DART may see a little more
-    building than the visual, but never less.
-    """
-    candidates: list[tuple[float, float, float, float, float, float, float]] = []
-    for start, end in ring_edges(list(triangle)):
-        yaw = math.atan2(end[1] - start[1], end[0] - start[0])
-        cosine, sine = math.cos(yaw), math.sin(yaw)
-        local_x = [point[0] * cosine + point[1] * sine for point in triangle]
-        local_y = [-point[0] * sine + point[1] * cosine for point in triangle]
-        min_x, max_x = min(local_x), max(local_x)
-        min_y, max_y = min(local_y), max(local_y)
-        size_x, size_y = max_x - min_x, max_y - min_y
-        candidates.append((size_x * size_y, yaw, min_x, max_x, min_y, max_y, size_x + size_y))
-    _, yaw, min_x, max_x, min_y, max_y, _ = min(candidates, key=lambda value: (value[0], value[6], value[1]))
-    pad = 1.0e-6
-    size_x = max_x - min_x + 2.0 * pad
-    size_y = max_y - min_y + 2.0 * pad
-    center_local_x = 0.5 * (min_x + max_x)
-    center_local_y = 0.5 * (min_y + max_y)
-    cosine, sine = math.cos(yaw), math.sin(yaw)
-    center = (
-        center_local_x * cosine - center_local_y * sine,
-        center_local_x * sine + center_local_y * cosine,
-    )
-    half_x, half_y = 0.5 * size_x, 0.5 * size_y
-    corners = [
-        (
-            center[0] + sx * half_x * cosine - sy * half_y * sine,
-            center[1] + sx * half_x * sine + sy * half_y * cosine,
-        )
-        for sx in (-1.0, 1.0)
-        for sy in (-1.0, 1.0)
-    ]
-    outward_error = max(point_polygon_distance(corner, building.transformed) for corner in corners)
-    return CollisionProxy(
-        building_id=building.identifier,
-        part_index=part_index,
-        source_triangle=triangle,
-        center_xy=center,
-        size_xy=(size_x, size_y),
-        center_z=0.5 * (building.foundation_z + building.roof_z),
-        size_z=building.roof_z - building.foundation_z,
-        yaw_rad=yaw,
-        maximum_outward_error_m=outward_error,
-    )
-
-
-def generate_collision_proxies(buildings: Sequence[BuildingGeometry]) -> list[CollisionProxy]:
-    proxies: list[CollisionProxy] = []
-    for building in buildings:
-        pending = [(triangle, 0) for triangle in triangulate_polygon(building.transformed)]
-        building_proxies: list[CollisionProxy] = []
-        while pending:
-            triangle, depth = pending.pop()
-            proxy = minimum_area_triangle_box(building, triangle, len(building_proxies))
-            if (
-                proxy.maximum_outward_error_m <= MAX_COLLISION_PROXY_OUTWARD_ERROR_M + EPS
-                or depth >= MAX_COLLISION_PROXY_SUBDIVISION_DEPTH
-            ):
-                require(
-                    proxy.maximum_outward_error_m <= MAX_COLLISION_PROXY_OUTWARD_ERROR_M + 1.0e-6,
-                    f"{building.identifier}: collision proxy refinement did not converge",
-                )
-                building_proxies.append(proxy)
-                continue
-            _, first, second, opposite = max(
-                (
-                    math.dist(triangle[first_index], triangle[second_index]),
-                    first_index,
-                    second_index,
-                    3 - first_index - second_index,
-                )
-                for first_index, second_index in ((0, 1), (1, 2), (2, 0))
-            )
-            midpoint = (
-                0.5 * (triangle[first][0] + triangle[second][0]),
-                0.5 * (triangle[first][1] + triangle[second][1]),
-            )
-            pending.append(((triangle[first], midpoint, triangle[opposite]), depth + 1))
-            pending.append(((midpoint, triangle[second], triangle[opposite]), depth + 1))
-        proxies.extend(building_proxies)
-    return proxies
-
-
-def proxy_collision_sdf(proxies: Sequence[CollisionProxy]) -> str:
-    lines: list[str] = []
-    for proxy in proxies:
-        lines.append(
-            "      <collision name=\""
-            f"{proxy.building_id}_part_{proxy.part_index:03d}\"><pose>"
-            f"{fmt(proxy.center_xy[0])} {fmt(proxy.center_xy[1])} {fmt(proxy.center_z)} 0 0 {fmt(proxy.yaw_rad)}"
-            "</pose><geometry><box><size>"
-            f"{fmt(proxy.size_xy[0])} {fmt(proxy.size_xy[1])} {fmt(proxy.size_z)}"
-            "</size></box></geometry></collision>"
-        )
-    return "\n".join(lines)
-
-
-def collision_proxy_polygon(proxy: CollisionProxy) -> Polygon2D:
-    cosine, sine = math.cos(proxy.yaw_rad), math.sin(proxy.yaw_rad)
-    half_x, half_y = 0.5 * proxy.size_xy[0], 0.5 * proxy.size_xy[1]
-    corners = [
-        (
-            proxy.center_xy[0] + local_x * cosine - local_y * sine,
-            proxy.center_xy[1] + local_x * sine + local_y * cosine,
-        )
-        for local_x, local_y in ((-half_x, -half_y), (half_x, -half_y), (half_x, half_y), (-half_x, half_y))
-    ]
-    return Polygon2D(corners, [])
-
-
-def proxy_polyline_clearance(waypoints: Sequence[Point], proxies: Sequence[CollisionProxy]) -> float:
-    polygons = [collision_proxy_polygon(proxy) for proxy in proxies]
-    return min(
-        segment_polygon_distance(start, end, polygon)
-        for start, end in zip(waypoints, waypoints[1:])
-        for polygon in polygons
-    )
-
-
 def determine_bounds(buildings: Sequence[BuildingGeometry], margin: float) -> tuple[float, float, float, float]:
     all_points = [point for building in buildings for point in building.transformed.outer]
-    all_points.extend([SPAWN_XY, MISSION_GOAL_XY, TRAILER_DESTINATION_XY])
+    all_points.extend([SPAWN_XY, MISSION_GOAL_XY, TRAILER_SPAWN_XY, TRAILER_DESTINATION_XY])
     extent = max(max(abs(point[0]), abs(point[1])) for point in all_points) + margin
     half_size = math.ceil(extent / 10.0) * 10.0
     return -half_size, -half_size, half_size, half_size
@@ -843,9 +879,8 @@ def write_textures(bounds: tuple[float, float, float, float], spacing_scale: flo
     Image.new("RGB", (257, 257), color=(128, 128, 255)).save(OUTPUT_NORMAL, optimize=True)
 
 
-def write_world(bounds: tuple[float, float, float, float], proxies: Sequence[CollisionProxy]) -> None:
+def write_world(bounds: tuple[float, float, float, float]) -> None:
     map_size = bounds[2] - bounds[0]
-    proxy_sdf = proxy_collision_sdf(proxies)
     world = f'''<?xml version="1.0"?>
 <sdf version="1.9">
   <world name="applepark_city_uav">
@@ -864,7 +899,60 @@ def write_world(bounds: tuple[float, float, float, float], proxies: Sequence[Col
     <gravity>0 0 -9.8066</gravity>
     <scene><ambient>0.45 0.48 0.55 1</ambient><grid>false</grid><origin_visual>false</origin_visual><sky/></scene>
     <light type="directional" name="sun"><pose>0 -7000 7000 0 0 0</pose><diffuse>0.9 0.88 0.82 1</diffuse><specular>0 0 0 1</specular><direction>0 0.6 -0.6</direction></light>
-    <gui fullscreen="0"><plugin filename="MinimalScene" name="3D View"><engine>ogre2</engine><scene>scene</scene><camera_pose>0 -250 1200 0 1.3963 1.5708</camera_pose><camera_clip><near>0.1</near><far>50000</far></camera_clip></plugin><plugin filename="WorldControl" name="World control"><play_pause>true</play_pause><step>true</step><start_paused>true</start_paused></plugin><plugin filename="WorldStats" name="World stats"><sim_time>true</sim_time><real_time_factor>true</real_time_factor></plugin></gui>
+    <gui fullscreen="0">
+      <plugin filename="MinimalScene" name="3D View">
+        <gz-gui>
+          <title>3D View</title>
+          <property type="bool" key="showTitleBar">false</property>
+          <property type="string" key="state">docked</property>
+        </gz-gui>
+        <engine>ogre2</engine><scene>scene</scene>
+        <ambient_light>0.45 0.48 0.55</ambient_light>
+        <background_color>0.55 0.62 0.70</background_color>
+        <!-- Spawn-close fallback view. run_px4_map.sh reapplies this pose once
+             and explicitly leaves CameraTracking disabled by default. -->
+        <camera_pose>{fmt(SPAWN_XY[0] - 4.0)} {fmt(SPAWN_XY[1])} 3 0 0.45 0</camera_pose>
+        <camera_clip><near>0.1</near><far>50000</far></camera_clip>
+      </plugin>
+      <!-- MinimalScene only owns the render texture.  GzSceneManager is what
+           actually mirrors the world entities into that texture; omitting it
+           produces an otherwise healthy but completely black 3D panel. -->
+      <plugin filename="GzSceneManager" name="Scene Manager">
+        <gz-gui>
+          <property key="resizable" type="bool">false</property>
+          <property key="width" type="double">5</property>
+          <property key="height" type="double">5</property>
+          <property key="state" type="string">floating</property>
+          <property key="showTitleBar" type="bool">false</property>
+        </gz-gui>
+      </plugin>
+      <plugin filename="InteractiveViewControl" name="Interactive view control">
+        <gz-gui>
+          <property key="resizable" type="bool">false</property>
+          <property key="width" type="double">5</property>
+          <property key="height" type="double">5</property>
+          <property key="state" type="string">floating</property>
+          <property key="showTitleBar" type="bool">false</property>
+        </gz-gui>
+      </plugin>
+      <plugin filename="CameraTracking" name="Camera Tracking">
+        <gz-gui>
+          <property key="resizable" type="bool">false</property>
+          <property key="width" type="double">5</property>
+          <property key="height" type="double">5</property>
+          <property key="state" type="string">floating</property>
+          <property key="showTitleBar" type="bool">false</property>
+        </gz-gui>
+      </plugin>
+      <plugin filename="EntityTree" name="Entity tree">
+        <gz-gui>
+          <property type="bool" key="showTitleBar">false</property>
+          <property type="string" key="state">docked</property>
+        </gz-gui>
+      </plugin>
+      <plugin filename="WorldControl" name="World control"><play_pause>true</play_pause><step>true</step><start_paused>true</start_paused></plugin>
+      <plugin filename="WorldStats" name="World stats"><sim_time>true</sim_time><real_time_factor>true</real_time_factor></plugin>
+    </gui>
     <spherical_coordinates><surface_model>EARTH_WGS84</surface_model><latitude_deg>37.32977431415926</latitude_deg><longitude_deg>-121.99860517699835</longitude_deg><elevation>50.6</elevation></spherical_coordinates>
 
     <!-- Exactly flat z=0 datum.  The 1 mm heightmap is visual-only; Bullet/DART physics uses the box. -->
@@ -873,22 +961,21 @@ def write_world(bounds: tuple[float, float, float, float], proxies: Sequence[Col
       <visual name="ground_visual"><cast_shadows>false</cast_shadows><geometry><heightmap><use_terrain_paging>false</use_terrain_paging><texture><diffuse>mesh/road_surface_city_uav.png</diffuse><normal>mesh/normal_map_city_uav.png</normal><size>{fmt(map_size)}</size></texture><uri>mesh/height_map_city_uav.png</uri><size>{fmt(map_size)} {fmt(map_size)} 0.001</size><pos>0 0 -0.001</pos><sampling>1</sampling></heightmap></geometry></visual>
     </link></model>
 
-    <!-- The DAE is visual-only because gz-physics-dartsim cannot construct an
-         SDF collision mesh.  Collision boxes below conservatively cover the
-         exact same YAML prism triangulation. -->
+    <!-- The same closed, triangulated DAE is used once for rendering and once
+         for DART collision.  This keeps all 205 YAML prisms bit-aligned,
+         preserves the courtyard opening and replaces hundreds of per-building
+         collision entities with one static geometry. -->
     <model name="applepark_uav_buildings"><static>true</static><link name="buildings">
       <visual name="buildings_visual"><geometry><mesh><uri>mesh/buildings_uav.dae</uri><scale>1 1 1</scale></mesh></geometry></visual>
-    </link></model>
-
-    <model name="applepark_uav_building_collision_proxies"><static>true</static><link name="building_collision_proxies">
-{proxy_sdf}
+      <collision name="buildings_exact_shared_dae"><geometry><mesh><uri>mesh/buildings_uav.dae</uri><scale>1 1 1</scale></mesh></geometry></collision>
     </link></model>
 
     <!-- No visual spawn pad: PX4 model contact is referenced to the z=0 datum. -->
-    <frame name="drone_spawn"><pose>-120 115 0 0 0 0</pose></frame>
-    <frame name="mission_goal"><pose>200 -125 0 0 0 0</pose></frame>
-    <frame name="trailer_destination"><pose>-128 -128 0 0 0 0</pose></frame>
-    <include><uri>model://trailer_aruco</uri><name>trailer</name><pose>200 -125 0 0 0 0</pose></include>
+    <frame name="drone_spawn"><pose>{fmt(SPAWN_XY[0])} {fmt(SPAWN_XY[1])} 0 0 0 0</pose></frame>
+    <frame name="mission_goal"><pose>{fmt(MISSION_GOAL_XY[0])} {fmt(MISSION_GOAL_XY[1])} 0 0 0 0</pose></frame>
+    <frame name="trailer_spawn"><pose>{fmt(TRAILER_SPAWN_XY[0])} {fmt(TRAILER_SPAWN_XY[1])} 0 0 0 0</pose></frame>
+    <frame name="trailer_destination"><pose>{fmt(TRAILER_DESTINATION_XY[0])} {fmt(TRAILER_DESTINATION_XY[1])} 0 0 0 0</pose></frame>
+    <include><uri>model://trailer_aruco</uri><name>trailer</name><pose>{fmt(TRAILER_SPAWN_XY[0])} {fmt(TRAILER_SPAWN_XY[1])} 0 0 0 0</pose></include>
     <!-- PX4 SITL spawns the real sensor-equipped vehicle dynamically. -->
   </world>
 </sdf>
@@ -896,7 +983,7 @@ def write_world(bounds: tuple[float, float, float, float], proxies: Sequence[Col
     OUTPUT_WORLD.write_text(world, encoding="utf-8")
     OUTPUT_MODEL_CONFIG.write_text(
         """<?xml version="1.0"?>
-<model><name>Apple Park UAV city</name><version>1.0</version><sdf version="1.9">applepark_uav.world</sdf><author><name>PX4-ROS2 contributors</name></author><description>Non-destructive 2.5x-spaced UAV city derived from city_coordinates.yaml.</description></model>
+<model><name>Apple Park UAV city</name><version>1.0</version><sdf version="1.9">applepark_uav.world</sdf><author><name>PX4-ROS2 contributors</name></author><description>205-building UAV city with rolled-back jo 2.5x / 0.9x XY, 10-20 m skyline and one exact shared DART collision mesh.</description></model>
 """,
         encoding="utf-8",
     )
@@ -910,13 +997,13 @@ def rounded_point(point: Point) -> list[float]:
 def write_yaml(
     source: dict,
     buildings: Sequence[BuildingGeometry],
+    removed_building_ids: Sequence[str],
     bounds: tuple[float, float, float, float],
     spacing_scale: float,
     anchor: Point,
     scale_reason: str,
     mesh_vertices: int,
     mesh_triangles: int,
-    proxies: Sequence[CollisionProxy],
 ) -> None:
     output = copy.deepcopy(source)
     output["schema_version"] = 2
@@ -936,19 +1023,33 @@ def write_yaml(
         "building_footprint_scale_xy": buildings[0].footprint_scale,
         "allowed_footprint_scales": list(FOOTPRINT_SCALE_CANDIDATES),
         "selection_reason": scale_reason,
+        "building_reduction": {
+            "source_count": SOURCE_BUILDING_COUNT,
+            "removed_count": len(removed_building_ids),
+            "retained_count": len(buildings),
+            "removed_fraction": len(removed_building_ids) / SOURCE_BUILDING_COUNT,
+            "method": REDUCTION_METHOD,
+            "protected_ids": list(REDUCTION_PROTECTED_IDS),
+            "removed_ids": list(removed_building_ids),
+            "spatial_random_audit": removal_grid_audit(
+                source["obstacles"]["buildings"], removed_building_ids
+            ),
+        },
         "z_scale": 1.0,
         "fixed_mission_coordinates_enu_m": {
             "drone_spawn": list(SPAWN_XY),
-            "global_goal_and_trailer_spawn": list(MISSION_GOAL_XY),
+            "global_goal": list(MISSION_GOAL_XY),
+            "trailer_spawn": list(TRAILER_SPAWN_XY),
             "trailer_destination": list(TRAILER_DESTINATION_XY),
         },
         "mesh": {"vertices": mesh_vertices, "triangles": mesh_triangles},
-        "collision_proxy": {
-            "type": "conservative_oriented_box_prisms",
-            "count": len(proxies),
-            "source": "same transformed YAML polygon triangulation as visual DAE",
-            "maximum_outward_error_m": max(proxy.maximum_outward_error_m for proxy in proxies),
+        "collision_geometry": {
+            "type": COLLISION_GEOMETRY_TYPE,
+            "count": 1,
+            "source": "same closed triangulated buildings_uav.dae used by the visual",
+            "maximum_outward_error_m": 0.0,
             "maximum_undercoverage_m": 0.0,
+            "courtyard_holes_preserved": True,
         },
     }
     map_size = bounds[2] - bounds[0]
@@ -986,28 +1087,25 @@ def write_yaml(
             "entity_name": "trailer",
             "model_uri": "model://trailer_aruco",
             "spawn_pose_enu": {
-                "x": MISSION_GOAL_XY[0],
-                "y": MISSION_GOAL_XY[1],
+                "x": TRAILER_SPAWN_XY[0],
+                "y": TRAILER_SPAWN_XY[1],
                 "z": 0.0,
                 "roll": 0.0,
                 "pitch": 0.0,
                 "yaw": 0.0,
             },
-            "waypoints_enu_m": [list(point) for point in choose_trailer_route(buildings)[0]],
-            "destination_enu_m": list(TRAILER_DESTINATION_XY),
-            "cruise_speed_m_s": 3.0,
+            "motion": "stationary_spawn_only",
+            "waypoints_enu_m": [list(TRAILER_SPAWN_XY)],
             "body_footprint_m": [5.5, 3.0],
             "deck_height_m": 1.25,
             "command_topic": "/model/trailer/cmd_vel",
             "pose_topic": "/world/applepark_city_uav/dynamic_pose/info",
         }
     )
-    output["planner_defaults"] = {
-        "vehicle_minimum_xy_size_m": [1.0, 1.0],
-        "yaw_invariant_body_radius_m": R_BODY_XY_M,
-        "hard_inflation_radius_m": R_HARD_M,
-        "preferred_clearance_m": R_PREFERRED_M,
-    }
+    output["trailer"].pop("cruise_speed_m_s", None)
+    output["trailer"].pop("waypoint_tolerance_m", None)
+    output["trailer"].pop("route_surface", None)
+    output["trailer"]["surface"] = "exact_z0_flat_city_datum"
     output_buildings: list[dict] = []
     source_by_id = {record["id"]: record for record in source["obstacles"]["buildings"]}
     for building in buildings:
@@ -1019,6 +1117,21 @@ def write_yaml(
         record["aabb_xy_m"] = {
             "min": [round(building.transformed.bounds[0], 10), round(building.transformed.bounds[1], 10)],
             "max": [round(building.transformed.bounds[2], 10), round(building.transformed.bounds[3], 10)],
+        }
+        minimum_x, minimum_y, maximum_x, maximum_y = building.transformed.bounds
+        record["aabb_xyz_m"] = {
+            "min": [round(minimum_x, 10), round(minimum_y, 10), building.foundation_z],
+            "max": [round(maximum_x, 10), round(maximum_y, 10), building.roof_z],
+            "center_enu_m": [
+                round(0.5 * (minimum_x + maximum_x), 10),
+                round(0.5 * (minimum_y + maximum_y), 10),
+                0.5 * (building.foundation_z + building.roof_z),
+            ],
+            "size_xyz_m": [
+                round(maximum_x - minimum_x, 10),
+                round(maximum_y - minimum_y, 10),
+                building.roof_z - building.foundation_z,
+            ],
         }
         record["transform"] = {
             "original_centroid_xy_m": rounded_point(building.original_centroid),
@@ -1032,6 +1145,37 @@ def write_yaml(
         record["height_above_ground_m"] = building.height
         output_buildings.append(record)
     output["obstacles"]["buildings"] = output_buildings
+    shortest = min(output_buildings, key=lambda item: float(item["height_above_ground_m"]))
+    tallest = max(output_buildings, key=lambda item: float(item["height_above_ground_m"]))
+    minimum_gap = min(
+        polygon_distance(first.transformed, second.transformed)
+        for first, second in itertools.combinations(buildings, 2)
+    )
+    output["obstacles"]["summary"] = {
+        "source_building_count": SOURCE_BUILDING_COUNT,
+        "building_count": len(output_buildings),
+        "removed_building_count": len(removed_building_ids),
+        "active_height_profile": ACTIVE_HEIGHT_PROFILE,
+        "foundation_z_range_m": [
+            min(building.foundation_z for building in buildings),
+            max(building.foundation_z for building in buildings),
+        ],
+        "roof_z_range_m": [
+            min(building.roof_z for building in buildings),
+            max(building.roof_z for building in buildings),
+        ],
+        "shortest_building": {
+            "id": shortest["id"],
+            "height_above_ground_m": shortest["height_above_ground_m"],
+        },
+        "tallest_building": {
+            "id": tallest["id"],
+            "height_above_ground_m": tallest["height_above_ground_m"],
+        },
+        "minimum_building_gap_m": minimum_gap,
+        "minimum_required_drone_passage_m": 2.0,
+        "all_building_gaps_meet_requirement": minimum_gap >= 2.0,
+    }
     output["source_sha256"] = {
         "source_city_coordinates_yaml": sha256_file(SOURCE_YAML),
         "building_visual_collision_dae": sha256_file(OUTPUT_DAE),
@@ -1055,7 +1199,9 @@ def percentile(values: Sequence[float], fraction: float) -> float:
 
 
 def write_reports(
+    source_buildings: Sequence[dict],
     buildings: Sequence[BuildingGeometry],
+    removed_building_ids: Sequence[str],
     neighbor_pairs: Sequence[tuple[int, int, float]],
     evaluations: Sequence[CandidateEvaluation],
     bounds: tuple[float, float, float, float],
@@ -1064,11 +1210,10 @@ def write_reports(
     scale_reason: str,
     mesh_vertices: int,
     mesh_triangles: int,
-    proxies: Sequence[CollisionProxy],
 ) -> dict:
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
     with (REPORT_DIR / "building_transform.csv").open("w", newline="", encoding="utf-8") as stream:
-        writer = csv.writer(stream)
+        writer = csv.writer(stream, lineterminator="\n")
         writer.writerow(
             [
                 "building_id",
@@ -1112,7 +1257,7 @@ def write_reports(
             ratio_values.append(ratio)
         gap_records.append((buildings[first].identifier, buildings[second].identifier, original_gap, new_gap, ratio))
     with (REPORT_DIR / "pairwise_gap_before_after.csv").open("w", newline="", encoding="utf-8") as stream:
-        writer = csv.writer(stream)
+        writer = csv.writer(stream, lineterminator="\n")
         writer.writerow(["building_a", "building_b", "original_edge_gap_m", "new_edge_gap_m", "gap_ratio"])
         for first, second, original_gap, new_gap, ratio in gap_records:
             writer.writerow(
@@ -1121,7 +1266,7 @@ def write_reports(
 
     required_neighbor_gap = 2.0 * R_HARD_M
     with (REPORT_DIR / "invalid_or_tight_corridors.csv").open("w", newline="", encoding="utf-8") as stream:
-        writer = csv.writer(stream)
+        writer = csv.writer(stream, lineterminator="\n")
         writer.writerow(["kind", "entity_a", "entity_b", "measured_clearance_m", "required_clearance_m", "status"])
         tight_count = 0
         for first, second, _, new_gap, _ in gap_records:
@@ -1132,8 +1277,7 @@ def write_reports(
         mission_checks = (
             ("mission_point", "drone_spawn", "buildings", selected_evaluation.spawn_clearance_m, R_PREFERRED_M + TAKEOFF_POSITION_ERROR_M),
             ("mission_point", "global_goal", "buildings", selected_evaluation.goal_clearance_m, R_PREFERRED_M + TAKEOFF_POSITION_ERROR_M),
-            ("mission_point", "trailer_destination", "buildings", selected_evaluation.endpoint_clearance_m, R_PREFERRED_M + TAKEOFF_POSITION_ERROR_M),
-            ("trailer_route", "goal", "destination", selected_evaluation.trailer_route_clearance_m, TRAILER_HALF_WIDTH_M + R_HARD_M + TRAILER_ROUTE_MARGIN_M),
+            ("mission_point", "trailer_spawn", "buildings", selected_evaluation.trailer_spawn_clearance_m, R_PREFERRED_M + TAKEOFF_POSITION_ERROR_M),
         )
         for kind, first, second, measured, required in mission_checks:
             if measured < required:
@@ -1141,7 +1285,7 @@ def write_reports(
                 tight_count += 1
 
     with (REPORT_DIR / "scale_candidate_evaluation.csv").open("w", newline="", encoding="utf-8") as stream:
-        writer = csv.writer(stream)
+        writer = csv.writer(stream, lineterminator="\n")
         writer.writerow(
             [
                 "scale",
@@ -1150,6 +1294,7 @@ def write_reports(
                 "minimum_neighbor_gap_m",
                 "spawn_clearance_m",
                 "goal_clearance_m",
+                "trailer_spawn_clearance_m",
                 "endpoint_clearance_m",
                 "trailer_route_clearance_m",
                 "reasons",
@@ -1164,76 +1309,58 @@ def write_reports(
                     fmt(evaluation.minimum_neighbor_gap_m),
                     fmt(evaluation.spawn_clearance_m),
                     fmt(evaluation.goal_clearance_m),
+                    fmt(evaluation.trailer_spawn_clearance_m),
                     fmt(evaluation.endpoint_clearance_m),
                     fmt(evaluation.trailer_route_clearance_m),
                     "; ".join(evaluation.reasons),
                 ]
             )
 
-    with (REPORT_DIR / "collision_proxy_alignment.csv").open("w", newline="", encoding="utf-8") as stream:
-        writer = csv.writer(stream)
+    # The collision and visual are the same DAE.  Keep a compact per-building
+    # audit instead of emitting hundreds of synthetic proxy records.
+    stale_proxy_report = REPORT_DIR / "collision_proxy_alignment.csv"
+    stale_proxy_report.unlink(missing_ok=True)
+    with (REPORT_DIR / "collision_mesh_alignment.csv").open("w", newline="", encoding="utf-8") as stream:
+        writer = csv.writer(stream, lineterminator="\n")
         writer.writerow(
             [
                 "building_id",
-                "proxy_part",
-                "center_x_m",
-                "center_y_m",
-                "center_z_m",
-                "size_x_m",
-                "size_y_m",
-                "size_z_m",
-                "yaw_rad",
-                "source_vertex_alignment_error_m",
+                "foundation_z_m",
+                "roof_z_m",
+                "visual_collision_shared_dae",
+                "boundary_alignment_error_m",
                 "undercoverage_m",
-                "maximum_outward_error_m",
+                "outward_error_m",
             ]
         )
-        for proxy in proxies:
+        for building in buildings:
             writer.writerow(
                 [
-                    proxy.building_id,
-                    proxy.part_index,
-                    fmt(proxy.center_xy[0]),
-                    fmt(proxy.center_xy[1]),
-                    fmt(proxy.center_z),
-                    fmt(proxy.size_xy[0]),
-                    fmt(proxy.size_xy[1]),
-                    fmt(proxy.size_z),
-                    fmt(proxy.yaw_rad),
+                    building.identifier,
+                    fmt(building.foundation_z),
+                    fmt(building.roof_z),
+                    "true",
                     "0",
                     "0",
-                    fmt(proxy.maximum_outward_error_m),
+                    "0",
                 ]
             )
 
     selected = next(item for item in evaluations if item.scale == buildings[0].footprint_scale)
-    proxy_polygons = [collision_proxy_polygon(proxy) for proxy in proxies]
-    proxy_point_clearances = {
-        name: min(point_polygon_distance(point, polygon) for polygon in proxy_polygons)
+    collision_point_clearances = {
+        name: min(point_polygon_distance(point, building.transformed) for building in buildings)
         for name, point in (
             ("spawn", SPAWN_XY),
             ("goal", MISSION_GOAL_XY),
+            ("trailer_spawn", TRAILER_SPAWN_XY),
             ("endpoint", TRAILER_DESTINATION_XY),
         )
     }
-    proxy_route_clearance = proxy_polyline_clearance(selected.trailer_route_waypoints, proxies)
-    required_proxy_route_clearance = TRAILER_HALF_WIDTH_M + R_HARD_M + TRAILER_ROUTE_MARGIN_M
-    if proxy_route_clearance < required_proxy_route_clearance:
-        with (REPORT_DIR / "invalid_or_tight_corridors.csv").open("a", newline="", encoding="utf-8") as stream:
-            csv.writer(stream).writerow(
-                [
-                    "collision_proxy_trailer_route",
-                    "goal",
-                    "destination",
-                    fmt(proxy_route_clearance),
-                    fmt(required_proxy_route_clearance),
-                    "FAIL",
-                ]
-            )
-        tight_count += 1
     summary = {
-        "source_building_count": len(buildings),
+        "source_building_count": SOURCE_BUILDING_COUNT,
         "generated_building_count": len(buildings),
+        "removed_building_count": len(removed_building_ids),
+        "removed_building_ids": list(removed_building_ids),
         "anchor_enu_m": list(anchor),
         "city_spacing_scale_xy": spacing_scale,
         "selected_footprint_scale_xy": buildings[0].footprint_scale,
@@ -1252,32 +1379,31 @@ def write_reports(
         "preferred_corridor_width_m": 2.0 * R_PREFERRED_M,
         "mission_clearance_m": {
             "drone_spawn": selected.spawn_clearance_m,
-            "global_goal_and_trailer_spawn": selected.goal_clearance_m,
-            "trailer_destination": selected.endpoint_clearance_m,
-            "trailer_route": selected.trailer_route_clearance_m,
+            "global_goal": selected.goal_clearance_m,
+            "trailer_spawn": selected.trailer_spawn_clearance_m,
         },
-        "trailer_route_waypoints_enu_m": [list(point) for point in selected.trailer_route_waypoints],
+        "spatial_random_reduction": removal_grid_audit(source_buildings, removed_building_ids),
+        "trailer_motion": "stationary_spawn_only",
         "fixed_coordinates_enu_m": {
             "drone_spawn": list(SPAWN_XY),
-            "global_goal_and_trailer_spawn": list(MISSION_GOAL_XY),
+            "global_goal": list(MISSION_GOAL_XY),
+            "trailer_spawn": list(TRAILER_SPAWN_XY),
             "trailer_destination": list(TRAILER_DESTINATION_XY),
         },
         "z_preservation": {"maximum_absolute_error_m": 0.0, "tolerance_m": 1.0e-9},
         "visual_collision_yaml_alignment": {"maximum_absolute_xy_error_m": 0.0, "tolerance_m": 0.01},
-        "collision_proxy": {
-            "representation": "DART-compatible conservative oriented box prisms",
-            "count": len(proxies),
+        "collision_geometry": {
+            "representation": COLLISION_GEOMETRY_TYPE,
+            "count": 1,
+            "source": "same closed triangulated DAE as visual",
             "source_vertex_alignment_error_m": 0.0,
             "maximum_undercoverage_m": 0.0,
-            "maximum_outward_error_m": max(proxy.maximum_outward_error_m for proxy in proxies),
-            "mean_outward_error_m": statistics.fmean(proxy.maximum_outward_error_m for proxy in proxies),
-            "certified_minimum_neighbor_gap_m": selected.minimum_neighbor_gap_m
-            - 2.0 * max(proxy.maximum_outward_error_m for proxy in proxies),
+            "maximum_outward_error_m": 0.0,
+            "certified_minimum_neighbor_gap_m": selected.minimum_neighbor_gap_m,
             "mission_clearance_m": {
-                "drone_spawn": proxy_point_clearances["spawn"],
-                "global_goal_and_trailer_spawn": proxy_point_clearances["goal"],
-                "trailer_destination": proxy_point_clearances["endpoint"],
-                "trailer_route": proxy_route_clearance,
+                "drone_spawn": collision_point_clearances["spawn"],
+                "global_goal": collision_point_clearances["goal"],
+                "trailer_spawn": collision_point_clearances["trailer_spawn"],
             },
         },
         "mesh": {
@@ -1292,27 +1418,25 @@ def write_reports(
     (REPORT_DIR / "map_bounds_summary.json").write_text(
         json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
-    alignment = f"""# UAV city visual/collision/planner alignment
+    alignment = f"""# UAV city visual/collision/YAML alignment
 
-- Source of truth: `gazebo/maps/city_coordinates.yaml` ({len(buildings)} buildings).
-- Derived planner geometry: `gazebo/maps/city_coordinates_uav.yaml`.
+- Source of truth: `gazebo/maps/city_coordinates.yaml` ({SOURCE_BUILDING_COUNT} buildings).
+- Active reduction: {len(buildings)} retained / {len(removed_building_ids)} removed.
+- Derived coordinate geometry: `gazebo/maps/city_coordinates_uav.yaml`.
 - Gazebo visual URI: `mesh/buildings_uav.dae` at scale `1 1 1`.
-- Gazebo collision: {len(proxies)} DART-compatible oriented box prisms.
+- Gazebo collision: one static shared `mesh/buildings_uav.dae` triangle mesh.
 - Mesh SHA256: `{sha256_file(OUTPUT_DAE)}`.
 - Vertex/triangle count: {mesh_vertices} / {mesh_triangles}.
 - Maximum YAML-to-visual-mesh XY boundary error: `0.0 m` (limit `0.01 m`).
-- Proxy source-vertex alignment error: `0.0 m` (limit `0.01 m`).
-- Proxy maximum undercoverage: `0.0 m` (every source triangle is enclosed).
-- Proxy maximum conservative outward error: `{fmt(max(proxy.maximum_outward_error_m for proxy in proxies))} m`.
+- Collision source-vertex alignment error: `0.0 m` (limit `0.01 m`).
+- Collision maximum undercoverage/outward error: `0.0 m`.
 - Maximum foundation/roof Z error from source: `0.0 m` (limit `1e-9 m`).
 - Selected footprint scale: `{fmt(buildings[0].footprint_scale)}` — {scale_reason}.
 
-The visual mesh is regenerated directly from every transformed outer/hole
-ring.  No world-level building scale or pose is used.  DART does not implement
-SDF mesh collision construction, so each cap triangle is conservatively
-enclosed by its minimum-area edge-aligned rectangle and extruded over the
-unchanged foundation/roof interval.  The proxy union may occupy reported extra
-space, but cannot leave a visual/YAML building region collision-free.
+The closed mesh is regenerated directly from every transformed outer/hole
+ring. No world-level building scale or pose is used. Gazebo visual and DART
+collision both reference that same single file at scale `1 1 1`, so the
+courtyard remains open and no per-building collision entities are needed.
 """
     (REPORT_DIR / "visual_collision_alignment.md").write_text(alignment, encoding="utf-8")
     return summary
@@ -1336,38 +1460,35 @@ def main() -> int:
     require(args.map_margin >= DEFAULT_MAP_MARGIN_M, "map margin must be at least 20m")
     source = yaml.safe_load(args.source.read_text(encoding="utf-8"))
     source_buildings = source["obstacles"]["buildings"]
-    require(len(source_buildings) == 274, f"expected 274 buildings, got {len(source_buildings)}")
+    active_source_buildings, removed_building_ids = select_active_buildings(source_buildings)
     anchor = (args.anchor_x, args.anchor_y)
 
     OUTPUT_MESH_DIR.mkdir(parents=True, exist_ok=True)
     buildings, neighbor_pairs, evaluations, scale_reason = choose_scale(
-        source_buildings, args.spacing_scale, anchor, args.neighbor_radius
+        active_source_buildings, args.spacing_scale, anchor, args.neighbor_radius
     )
     selected = next(item for item in evaluations if item.scale == buildings[0].footprint_scale)
     require(selected.feasible, "selected layout is not feasible")
     bounds = determine_bounds(buildings, args.map_margin)
     mesh_vertices, mesh_triangles = write_dae(buildings, OUTPUT_DAE)
-    proxies = generate_collision_proxies(buildings)
-    require(
-        proxy_polyline_clearance(selected.trailer_route_waypoints, proxies)
-        >= TRAILER_HALF_WIDTH_M + R_HARD_M + TRAILER_ROUTE_MARGIN_M,
-        "DART collision proxy over-approximation blocks the selected trailer route",
-    )
+    require(selected.minimum_neighbor_gap_m >= 2.0, "shared DAE collision closes a required 2m corridor")
     write_textures(bounds, args.spacing_scale, anchor)
-    write_world(bounds, proxies)
+    write_world(bounds)
     write_yaml(
         source,
         buildings,
+        removed_building_ids,
         bounds,
         args.spacing_scale,
         anchor,
         scale_reason,
         mesh_vertices,
         mesh_triangles,
-        proxies,
     )
     summary = write_reports(
+        source_buildings,
         buildings,
+        removed_building_ids,
         neighbor_pairs,
         evaluations,
         bounds,
@@ -1376,7 +1497,6 @@ def main() -> int:
         scale_reason,
         mesh_vertices,
         mesh_triangles,
-        proxies,
     )
     print(
         "city_uav generated: "

@@ -2,7 +2,16 @@ PX4-ROS2 self-contained Gazebo map static validation
 result=PASS
 repository=/home/xogus/PX4-ROS2
 city_engine=Gazebo Harmonic
-city_size_m=500x500
+legacy_city_size_m=500x500
+active_uav_city_size_m=1260x1260
+active_uav_city_centroid_spacing_scale=2.5
+active_uav_city_footprint_scale=0.9
+active_uav_city_buildings=205
+active_uav_city_removed_buildings=69
+active_uav_city_removal_grid_cells=25
+active_uav_city_collision_geometries=1
+active_uav_city_minimum_building_gap_m=13.491759
+active_uav_city_spawn_separation_m=1603.352737
 city_buildings=274
 city_legacy_overlap_pixels=104410
 city_coordinate_corrected_asphalt_pixels_before_clearance=237
@@ -11,9 +20,12 @@ city_final_visible_road_overlap_pixels=0
 city_building_foundation_alignment=PASS
 city_foundation_extension_m=0.050000..0.050000
 city_building_height_scaling=PASS
-city_current_height_random_factor=2.001288..3.476403
-city_new_above_ground_height_m=15.907114..109.621338
-city_max_roof_z_m=109.621338
+city_active_height_profile=deterministic_hash_rank_10_to_20m_v1
+city_historical_height_random_factor=2.001288..3.476403
+city_active_height_rank=0..273
+city_active_height_extrema=building_190:10.000000..building_171:20.000000
+city_active_above_ground_height_m=10.000000..20.000000
+city_max_roof_z_m=20.000000
 city_visual_collision_terrain_z_alignment=PASS
 city_visual_collision_terrain_z_max_error_m=0.000000000000
 city_heightmap_visual_skirt_depth_m=0.001000
@@ -27,7 +39,9 @@ mountain_local_models=ugv_mou_terrain,ugv_mou_forest_obstacles,moving_platform_t
 mountain_external_runtime_assets=0
 mountain_deterministic_validator=PASS
 static_preview_drones=0
-seo_trailer_model=flat_platform maps=city,mountain
+legacy_city_and_mountain_trailer_model=flat_platform
+active_uav_city_drone_spawn_enu=587,580,0
+active_uav_city_trailer_model=trailer_aruco spawn_enu=-587,-512,0 motion=stationary
 trailer_waypoint_driver=gazebo_transport_no_mavros
 px4_dynamic_model=gz_x500_city_rgbd_lidar autostart=4001
 px4_model_repository_symlink=PASS

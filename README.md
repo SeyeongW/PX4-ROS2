@@ -31,7 +31,8 @@ PX4-ROS2/
 │   ├── worlds/iris_down_camera_runway.sdf
 │   ├── worlds/ugv_drone.world            # 300 m 산악 드론 월드
 │   ├── worlds/ugv_drone_map.world        # 300 m 산악맵(PX4 런타임 스폰 대상)
-│   ├── worlds/applepark_city/             # 500 m 도시맵 + 건물/도로/충돌 자산
+│   ├── worlds/applepark_city/             # 500 m 소스/회귀용 도시 자산
+│   ├── worlds/applepark_city_uav/         # 1260 m UAV 도시(205개, jo 2.5x/0.9x XY, 10–20 m 스카이라인)
 │   ├── launch/camera_bridge.launch.py    # Gazebo → ROS 2 카메라 브리지
 │   ├── install_apt_deps.sh
 │   ├── run_world.sh                      # city/mountain 맵 전용 실행기
@@ -213,52 +214,41 @@ cd ~/ros2_ws/src/PX4-ROS2
 # 산악맵 + PX4 x500
 ./gazebo/run_px4_map.sh mountain
 
-# PX4 드론 + seo 기반 트레일러 웨이포인트 주행을 함께 실행
-DRIVE_TRAILER=1 TRAILER_ROUTE_LOOPS=1 ./gazebo/run_px4_map.sh city
-# 또는 산악맵 중앙 평탄 통행로
+# 산악맵에서만 트레일러 웨이포인트 주행을 선택적으로 실행
 DRIVE_TRAILER=1 TRAILER_ROUTE_LOOPS=1 ./gazebo/run_px4_map.sh mountain
 ```
 
-두 맵에는 `seo` 브랜치의 5×5 m `flat_platform` 트레일러가 기본으로
-소환됩니다. 기본 상태는 정지이며 `DRIVE_TRAILER=1`일 때 좌표 YAML의
-웨이포인트를 주행합니다. 두 명령은 Gazebo를 먼저 실행한 뒤 동일한 world에 PX4 SITL이 실제
-`x500_city_rgbd_lidar_0` 엔티티를 동적으로 스폰합니다. 로컬
-`MicroXRCEAgent`가 있으면 UDP 8888 에이전트도 함께 실행하므로 ROS 2
-`/fmu/*` 토픽을 사용할 수 있습니다. 좌표와 장애물은
-`gazebo/maps/city_coordinates.yaml` 및 `mountain_coordinates.yaml`에
+두 맵에는 트레일러가 기본으로 소환됩니다. 도시맵은 드론을 북동 끝단 도로
+ENU `(587,580)`, 트레일러를 대각선 반대편 남서 끝단 도로
+`(-587,-512)`에 약 1.60 km 떨어뜨려 배치합니다. 도시 트레일러는 정지 상태로만 유지되며, 산악맵만 `DRIVE_TRAILER=1`일 때
+좌표 YAML의 웨이포인트를 주행합니다. 두 명령은 Gazebo를 먼저 실행한 뒤 동일한 world에 PX4 SITL이 실제
+`x500_city_rgbd_lidar_0` 엔티티를 동적으로 스폰합니다. 기본 통신은
+MAVROS/MAVLink 전용입니다. 실행기가 PX4의 임시 rcS 사본에서 DDS 시작 한 줄을
+부팅 전에 제외하므로 `uxrce_dds_client got no ping` 경쟁 로그도 발생하지 않습니다
+(`START_XRCE=1`일 때만 원본 rcS와 Agent를 사용). 현재 도시맵의
+전체 XYZ 구조물 계약은 `gazebo/maps/city_coordinates_uav.yaml`에, 산악맵은
+`gazebo/maps/mountain_coordinates.yaml`에
 Gazebo ENU와 PX4 NED 변환을 분리해 기록했습니다. 상세 내용은
 [`gazebo/MAPS.md`](gazebo/MAPS.md)를 참고하세요.
+활성 도시맵은 274개 중 69개를 제거한 205개 건물을 사용하며,
+`jo` 기준 2.5x 중심점·0.9x XY 발자국을 그대로 복원했습니다. 평면 지면은
+`z=0`, 기초는 `-0.05..0 m`, 지붕 고도는 정확히 `10..20 m`입니다.
+69개 제거 대상은 시드 `7577`의 5x5 공간 층화 난수 방식으로 지도 전역에
+분산됩니다. 유지 건물의 XY 크기와 좌표는 변경하지 않습니다.
 
-도시맵에서 `(-120,115)` 스폰 후 10 m 수직 이륙하고, A* + SFC 정적
-안전회랑 + cubic B-spline + 지역 MPC를 이용하여 ENU `(200,-125)`까지
-주행하는 통합 임무는 다음과 같이 실행합니다. 전방 depth는 미등록 장애물의
-임시 우회에, 하방 lidar는 바로 아래 표면과 10 m 간격 유지에 사용됩니다.
+Gazebo GUI는 스폰 위치 가까이에서 시작하지만 드론에 화면을 고정하지 않습니다.
+명시적으로 추적이 필요할 때만 `FOLLOW_DRONE=1 ./gazebo/run_px4_map.sh city`를
+사용합니다. 일반 실행은
+대화형 PX4 `pxh>` 콘솔을 표시하므로 `PX4_DAEMON=1`을 지정하지 않습니다.
 
-```bash
-# 새 PC에서 한 번
-./gazebo/setup_autonomy_deps.sh
-
-# 비행 없이 경로와 그림만 생성
-./gazebo/run_autonomous_city_mission.sh --plan-only
-
-# PX4 실제 동적 기체로 통합 비행
-./gazebo/run_autonomous_city_mission.sh
-```
-
-알고리즘, 좌표 변환, 안전조건과 A* 핵심 의사코드는
-[`docs/autonomous_city_mission.md`](docs/autonomous_city_mission.md)에
-정리했습니다.
-
-PX4 멀티콥터 내부 `AUTO.MISSION`의 L1-style waypoint crossing과 비교할 때도
-B-spline을 삭제하지 않습니다. 두 방식은 동시에 제어권을 잡을 수 없으며, 동일
-A*/SFC 계약과 paired metric으로 순차 A/B 실행합니다. 설치형 명령과 강제 authority
-확인은 [`docs/px4_l1_bspline_cross_validation.md`](docs/px4_l1_bspline_cross_validation.md)에
-정리했습니다.
+이 브랜치에서는 기존 실험용 3D planner/SFC/B-spline/MPC 계층을 제거했습니다.
+도시맵 형상 YAML, PX4 동적 기체, 전·하방 센서와 MAVROS 실행 경로만 유지합니다.
 
 드론 없이 맵 형상만 빠르게 확인할 때만 다음을 사용합니다.
 
 ```bash
 ./gazebo/run_world.sh city
+./gazebo/run_world.sh city-legacy  # 원본 500 x 500 m 도시맵
 ./gazebo/run_world.sh mountain
 ```
 
@@ -269,8 +259,8 @@ A*/SFC 계약과 paired metric으로 순차 A/B 실행합니다. 설치형 명�
 # 산악맵
 GZ_SIM_RESOURCE_PATH="$PWD/gazebo/models:$PWD/gazebo/worlds" __NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia __VK_LAYER_NV_optimus=NVIDIA_only QT_QPA_PLATFORM=xcb gz sim -v4 -r --physics-engine gz-physics-bullet-featherstone-plugin "$PWD/gazebo/worlds/ugv_drone_map.world"
 
-# 도시맵
-GZ_SIM_RESOURCE_PATH="$PWD/gazebo/models:$PWD/gazebo/worlds" __NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia __VK_LAYER_NV_optimus=NVIDIA_only QT_QPA_PLATFORM=xcb gz sim -v4 -r --physics-engine gz-physics-bullet-featherstone-plugin "$PWD/gazebo/worlds/applepark_city/applepark.world"
+# 현재 UAV 도시맵
+GZ_SIM_RESOURCE_PATH="$PWD/gazebo/models:$PWD/gazebo/worlds" __NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia __VK_LAYER_NV_optimus=NVIDIA_only QT_XCB_GL_INTEGRATION=xcb_glx QT_QPA_PLATFORM=xcb gz sim -v4 -r --physics-engine gz-physics-dartsim-plugin "$PWD/gazebo/worlds/applepark_city_uav/applepark_uav.world"
 ```
 
 ### 산악 드론 월드

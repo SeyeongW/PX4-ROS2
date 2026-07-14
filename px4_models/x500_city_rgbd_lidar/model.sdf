@@ -15,7 +15,9 @@
          optical axis 55 degrees downward. The separate front depth camera
          remains horizontal for obstacle perception. -->
     <link name="front_rgb_link">
-      <pose relative_to="base_link">0.12 0.03 0.242 0 0.959931089 0</pose>
+      <!-- x500_base places base_link at model-root z=0.24 m.  The stock
+           x500 camera mount is at root z=0.242 m, hence +0.002 m here. -->
+      <pose relative_to="base_link">0.12 0.03 0.002 0 0.959931089 0</pose>
       <inertial>
         <mass>0.03</mass>
         <inertia>
@@ -50,7 +52,7 @@
          native image /front_depth/image also makes gz-sensors publish its
          CameraInfo at /front_depth/camera_info (instead of global /camera_info). -->
     <link name="front_depth_link">
-      <pose relative_to="base_link">0.12 0.00 0.242 0 0 0</pose>
+      <pose relative_to="base_link">0.12 0.00 0.002 0 0 0</pose>
       <inertial>
         <mass>0.02</mass>
         <inertia>

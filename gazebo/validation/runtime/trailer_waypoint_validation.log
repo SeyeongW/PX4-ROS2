@@ -1,14 +1,7 @@
-PX4-ROS2 seo-derived trailer runtime validation
+PX4-ROS2 mountain trailer runtime validation (historical mountain-only record)
 date=2026-07-12 America/New_York
 engine=Gazebo Harmonic 8.14.0
 physics=gz-physics-bullet-featherstone-plugin
-
-city_flat_route=PASS
-city_waypoints_reached=9/9
-city_max_abs_z_error_m=0.070001
-city_max_abs_roll_deg=0.000092
-city_max_abs_pitch_deg=0.000084
-city_impulse_launch_detected=NO
 
 mountain_flat_route=PASS
 mountain_waypoints_reached=9/9
@@ -24,10 +17,3 @@ mountain_slope_max_abs_tracking_error_m=0.241003
 mountain_slope_max_abs_roll_deg=0.000006
 mountain_slope_max_abs_pitch_deg=0.000002
 mountain_slope_impulse_launch_detected=NO
-
-full_launcher_city=PASS
-full_launcher_entities=flat_platform,x500_mono_cam_down_0
-flat_platform_pose_enu=-174.999999522,140.000000753,-0.040002942
-x500_pose_enu=-119.999961828,115.000000017,0.146999279
-headless_real_time_factor=1.000534285
-cleanup=PASS

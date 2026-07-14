@@ -11,8 +11,9 @@ fi
 
 case "$MAP" in
   city)
-    # The normal city profile is the self-contained 2.5x UAV derivative.  The
-    # original 500 m asset remains available explicitly for regression work.
+    # The normal city profile is the self-contained 1260 m UAV derivative with
+    # rolled-back jo 2.5x centroids / 0.9x footprints and 10--20 m heights.
+    # The source 500 m asset remains available explicitly for regression work.
     COORDINATES="$SCRIPT_DIR/maps/city_coordinates_uav.yaml"
     ;;
   city-legacy)
@@ -27,19 +28,20 @@ Usage: $(basename "$0") <city|city-legacy|mountain> [additional gz sim options]
 
 Starts Gazebo Harmonic, waits for the selected world, then starts PX4 SITL.
 PX4 itself creates the dynamic x500_city_rgbd_lidar vehicle (default x500 quad
-with a forward depth camera and a downward lidar rangefinder).
-The seo-branch flat_platform trailer is included in both maps.
+with forward RGB/depth plus downward RGB/depth/lidar sensors).
+A repository-owned trailer model is included in each map. The city trailer is
+spawn-only; DRIVE_TRAILER=1 is available for the mountain profile.
 
 Environment:
   PX4_DIR=~/PX4-Autopilot  Existing PX4 source/build (firmware is not changed)
   HEADLESS=1              Gazebo server only
-  START_XRCE=0            Do not start Micro XRCE-DDS Agent
+  START_XRCE=1            Enable Micro XRCE-DDS Agent/client (default: off)
   START_MAVROS=0         Do not start MAVROS (MAVLink->ROS 2 bridge)
   MAVROS_FCU_URL=...     Override MAVROS fcu_url (default udp://:14540@127.0.0.1:14580)
   START_BRIDGE=0         Do not start the ros_gz camera/lidar bridge
   ROS_SETUP=...          ROS 2 setup.bash to source for MAVROS + bridge (default humble)
-  FOLLOW_DRONE=1          Lock the gz camera to follow the drone (default: free camera)
-  DRIVE_TRAILER=1         Drive the included trailer through YAML waypoints
+  FOLLOW_DRONE=1          Opt in to locking the gz camera to the drone (default: off)
+  DRIVE_TRAILER=1         Mountain only: drive the trailer through YAML waypoints
   TRAILER_ROUTE_LOOPS=1   Stop the driver after one complete route (0=repeat)
   TRAILER_ROUTE=slope     Mountain-only terrain-follow safeguard test
   USE_NVIDIA=0            Disable NVIDIA PRIME render variables
@@ -85,9 +87,11 @@ print(",".join(str(pose[key]) for key in keys))
 print(document["px4_vehicle"]["airframe_autostart_id"])
 print(document["px4_vehicle"]["simulation_model"])
 print(document["px4_vehicle"]["runtime_entity_name"])
+trailer = document["trailer"]["spawn_pose_enu"]
+print(",".join(str(trailer[key]) for key in keys))
 PY
 )
-[[ ${#MAP_CONFIG[@]} -eq 6 ]] || {
+[[ ${#MAP_CONFIG[@]} -eq 7 ]] || {
   echo "ERROR: failed to read launch values from $COORDINATES" >&2
   exit 2
 }
@@ -97,6 +101,7 @@ SPAWN_POSE="${MAP_CONFIG[2]}"
 AUTOSTART_ID="${MAP_CONFIG[3]}"
 SIM_MODEL="${MAP_CONFIG[4]}"
 ENTITY_NAME="${MAP_CONFIG[5]}"
+TRAILER_SPAWN_POSE="${MAP_CONFIG[6]}"
 
 PX4_DIR="$(realpath -m "${PX4_DIR:-$HOME/PX4-Autopilot}")"
 PX4_BUILD="$PX4_DIR/build/px4_sitl_default"
@@ -161,15 +166,18 @@ if [[ "${USE_NVIDIA:-1}" == "1" ]] && command -v nvidia-smi >/dev/null 2>&1; the
   export __GLX_VENDOR_LIBRARY_NAME=nvidia
   export __VK_LAYER_NV_optimus=NVIDIA_only
   export NVIDIA_VISIBLE_DEVICES="${NVIDIA_VISIBLE_DEVICES:-all}"
+  # Keep Qt Quick and OGRE2 on the same GLX path on PRIME laptops.  Without
+  # this, Qt may create a Mesa EGL surface while OGRE renders on NVIDIA.
+  export QT_XCB_GL_INTEGRATION="${QT_XCB_GL_INTEGRATION:-xcb_glx}"
 fi
 if [[ "${XDG_SESSION_TYPE:-}" == "wayland" && -z "${QT_QPA_PLATFORM:-}" ]]; then
   export QT_QPA_PLATFORM=xcb
 fi
 if [[ "${HEADLESS:-0}" != "1" && "${FOLLOW_DRONE:-0}" == "1" ]]; then
   export PX4_GZ_FOLLOW=1
-  export PX4_GZ_FOLLOW_OFFSET_X="${PX4_GZ_FOLLOW_OFFSET_X:--4.0}"
-  export PX4_GZ_FOLLOW_OFFSET_Y="${PX4_GZ_FOLLOW_OFFSET_Y:--4.0}"
-  export PX4_GZ_FOLLOW_OFFSET_Z="${PX4_GZ_FOLLOW_OFFSET_Z:-2.5}"
+  export PX4_GZ_FOLLOW_OFFSET_X="${PX4_GZ_FOLLOW_OFFSET_X:--6.0}"
+  export PX4_GZ_FOLLOW_OFFSET_Y="${PX4_GZ_FOLLOW_OFFSET_Y:--6.0}"
+  export PX4_GZ_FOLLOW_OFFSET_Z="${PX4_GZ_FOLLOW_OFFSET_Z:-4.0}"
 else
   unset PX4_GZ_FOLLOW
 fi
@@ -186,6 +194,59 @@ XRCE_PID=""
 TRAILER_PID=""
 MAVROS_PID=""
 BRIDGE_PID=""
+
+# PX4's POSIX SITL rcS starts uxrce_dds_client unconditionally.  In the
+# MAVROS-only profile, use PX4's supported `-s` option with a runtime copy of
+# rcS from which that single start command is removed.  This prevents the
+# startup race (and its misleading "got no ping" errors) without modifying the
+# user's PX4 source/build tree.  Fail closed if a future PX4 release changes
+# the expected rcS line instead of silently filtering the wrong command.
+MAVROS_RCS=""
+if [[ "${START_XRCE:-0}" != "1" ]]; then
+  PX4_STOCK_RCS="$PX4_BUILD/etc/init.d-posix/rcS"
+  MAVROS_RCS="$RUNTIME_DIR/rcS.mavros_only"
+  MAVROS_RCS_TMP="$MAVROS_RCS.tmp.$$"
+  [[ -f "$PX4_STOCK_RCS" ]] || {
+    echo "ERROR: PX4 startup script is missing: $PX4_STOCK_RCS" >&2
+    exit 3
+  }
+  DDS_START_COUNT="$(grep -Ec '^[[:space:]]*uxrce_dds_client[[:space:]]+start([[:space:]]|$)' "$PX4_STOCK_RCS" || true)"
+  [[ "$DDS_START_COUNT" == "1" ]] || {
+    echo "ERROR: expected exactly one uxrce_dds_client start line in $PX4_STOCK_RCS; found $DDS_START_COUNT." >&2
+    exit 3
+  }
+  awk '!/^[[:space:]]*uxrce_dds_client[[:space:]]+start([[:space:]]|$)/' \
+    "$PX4_STOCK_RCS" >"$MAVROS_RCS_TMP"
+  if ! /bin/sh -n "$MAVROS_RCS_TMP"; then
+    rm -f "$MAVROS_RCS_TMP"
+    echo "ERROR: generated MAVROS-only PX4 startup script is invalid." >&2
+    exit 3
+  fi
+  if grep -Eq '^[[:space:]]*uxrce_dds_client[[:space:]]+start([[:space:]]|$)' "$MAVROS_RCS_TMP"; then
+    rm -f "$MAVROS_RCS_TMP"
+    echo "ERROR: generated MAVROS-only PX4 startup script still starts DDS." >&2
+    exit 3
+  fi
+  mv -f "$MAVROS_RCS_TMP" "$MAVROS_RCS"
+fi
+
+stop_process() {
+  local pid="${1:-}"
+  [[ -n "$pid" ]] || return 0
+  if kill -0 "$pid" 2>/dev/null; then
+    kill "$pid" 2>/dev/null || true
+    for _ in {1..30}; do
+      kill -0 "$pid" 2>/dev/null || break
+      sleep 0.1
+    done
+    # Some gz-sim launcher wrappers do not terminate on SIGTERM.  Never let
+    # Ctrl-C leave a world running or make this cleanup wait indefinitely.
+    if kill -0 "$pid" 2>/dev/null; then
+      kill -KILL "$pid" 2>/dev/null || true
+    fi
+  fi
+  wait "$pid" 2>/dev/null || true
+}
 
 cleanup() {
   local status=$?
@@ -208,22 +269,10 @@ cleanup() {
       fi
     fi
   fi
-  if [[ -n "$BRIDGE_PID" ]] && kill -0 "$BRIDGE_PID" 2>/dev/null; then
-    kill "$BRIDGE_PID" 2>/dev/null || true
-    wait "$BRIDGE_PID" 2>/dev/null || true
-  fi
-  if [[ -n "$MAVROS_PID" ]] && kill -0 "$MAVROS_PID" 2>/dev/null; then
-    kill "$MAVROS_PID" 2>/dev/null || true
-    wait "$MAVROS_PID" 2>/dev/null || true
-  fi
-  if [[ -n "$XRCE_PID" ]] && kill -0 "$XRCE_PID" 2>/dev/null; then
-    kill "$XRCE_PID" 2>/dev/null || true
-    wait "$XRCE_PID" 2>/dev/null || true
-  fi
-  if [[ -n "$GAZEBO_PID" ]] && kill -0 "$GAZEBO_PID" 2>/dev/null; then
-    kill "$GAZEBO_PID" 2>/dev/null || true
-    wait "$GAZEBO_PID" 2>/dev/null || true
-  fi
+  stop_process "$BRIDGE_PID"
+  stop_process "$MAVROS_PID"
+  stop_process "$XRCE_PID"
+  stop_process "$GAZEBO_PID"
   exit "$status"
 }
 trap cleanup EXIT
@@ -249,6 +298,13 @@ echo "Gazebo spawn ENU : $SPAWN_POSE"
 echo "Expected entity  : $ENTITY_NAME"
 echo "GZ_PARTITION     : $GZ_PARTITION"
 echo "Physics          : $PHYSICS_ENGINE"
+if [[ "${HEADLESS:-0}" == "1" ]]; then
+  echo "Gazebo camera    : headless"
+elif [[ -n "${PX4_GZ_FOLLOW:-}" ]]; then
+  echo "Gazebo camera    : follow $ENTITY_NAME"
+else
+  echo "Gazebo camera    : free"
+fi
 echo "Gazebo log       : $GAZEBO_LOG"
 
 gz sim "${GZ_ARGS[@]}" >"$GAZEBO_LOG" 2>&1 &
@@ -273,7 +329,68 @@ if [[ "$ready" != "1" ]]; then
   exit 5
 fi
 
-if [[ "${START_XRCE:-1}" == "1" ]]; then
+# A user's persisted Gazebo GUI state can override the SDF camera pose. For the
+# default free-camera profile, move once to a close spawn view and explicitly
+# clear tracking. The vehicle remains visible when it appears, while the user
+# can immediately pan / orbit away without fighting a follow controller.
+if [[ "${HEADLESS:-0}" != "1" && -z "${PX4_GZ_FOLLOW:-}" ]]; then
+  free_camera_ready=0
+  for _ in {1..45}; do
+    if gz service -i --service /gui/move_to/pose 2>&1 | grep -q "Service providers"; then
+      free_camera_ready=1
+      break
+    fi
+    sleep 1
+  done
+  if [[ "$free_camera_ready" == "1" ]]; then
+    IFS=, read -r spawn_x spawn_y spawn_z _ <<<"$SPAWN_POSE"
+    read -r camera_x camera_y camera_z < <(
+      python3 - "$spawn_x" "$spawn_y" "$spawn_z" <<'PY'
+import sys
+print(float(sys.argv[1]) - 4.0, float(sys.argv[2]), float(sys.argv[3]) + 3.0)
+PY
+    )
+    # pitch=+0.45 rad points the Gazebo camera down toward the model root.
+    camera_reply="$(gz service -s /gui/move_to/pose \
+      --reqtype gz.msgs.GUICamera --reptype gz.msgs.Boolean --timeout 5000 \
+      --req "pose: {position: {x: $camera_x, y: $camera_y, z: $camera_z}, orientation: {x: 0, y: 0.2231063621, z: 0, w: 0.9747941071}}" 2>&1 || true)"
+    # CameraTrack::NONE is idempotent and prevents a stale persisted target.
+    gz topic -t /gui/track -m gz.msgs.CameraTrack -p 'track_mode: NONE' \
+      >/dev/null 2>&1 || true
+    if grep -q "data: true" <<<"$camera_reply"; then
+      echo "Gazebo camera    : spawn-close free view (tracking disabled)"
+    else
+      echo "WARN: could not apply the spawn-close free camera pose." >&2
+    fi
+  else
+    echo "WARN: /gui/move_to/pose was not advertised; using the world camera pose." >&2
+  fi
+fi
+
+# In opt-in follow mode, PX4 requests /gui/follow during its Gazebo startup
+# script. On a cold GUI start that service can appear after the world service.
+if [[ -n "${PX4_GZ_FOLLOW:-}" ]]; then
+  follow_ready=0
+  for _ in {1..45}; do
+    if ! kill -0 "$GAZEBO_PID" 2>/dev/null; then
+      echo "ERROR: Gazebo exited while waiting for the camera follow service." >&2
+      tail -80 "$GAZEBO_LOG" >&2 || true
+      exit 5
+    fi
+    if gz service -i --service /gui/follow 2>&1 | grep -q "Service providers"; then
+      follow_ready=1
+      break
+    fi
+    sleep 1
+  done
+  if [[ "$follow_ready" == "1" ]]; then
+    echo "Gazebo follow     : service ready"
+  else
+    echo "WARN: /gui/follow was not advertised; using the spawn-close fallback view." >&2
+  fi
+fi
+
+if [[ "${START_XRCE:-0}" == "1" ]]; then
   if pgrep -f 'MicroXRCEAgent.*udp4.*8888' >/dev/null 2>&1; then
     echo "Micro XRCE-DDS : reusing the existing UDP 8888 agent"
   elif [[ -x "$HOME/.local/bin/MicroXRCEAgent" ]]; then
@@ -294,6 +411,10 @@ if [[ "${START_XRCE:-1}" == "1" ]]; then
 fi
 
 if [[ "${DRIVE_TRAILER:-0}" == "1" ]]; then
+  if [[ "$MAP" == "city" ]]; then
+    echo "ERROR: the city trailer is intentionally spawn-only; leave DRIVE_TRAILER=0." >&2
+    exit 6
+  fi
   python3 -c 'import gz.transport13, gz.msgs10.pose_v_pb2, yaml' >/dev/null 2>&1 || {
     echo "ERROR: DRIVE_TRAILER=1 needs Gazebo Harmonic Python transport bindings." >&2
     exit 6
@@ -323,7 +444,11 @@ if [[ "${DRIVE_TRAILER:-0}" == "1" ]]; then
   fi
   echo "Trailer route    : active (log: $TRAILER_LOG)"
 else
-  echo "Trailer route    : spawned, stationary (set DRIVE_TRAILER=1 to drive)"
+  if [[ "$MAP" == "city" ]]; then
+    echo "Trailer          : spawned at ENU ($TRAILER_SPAWN_POSE), stationary"
+  else
+    echo "Trailer route    : spawned, stationary (set DRIVE_TRAILER=1 to drive)"
+  fi
 fi
 
 if [[ "${START_MAVROS:-1}" == "1" ]]; then
@@ -343,6 +468,24 @@ if [[ "${START_MAVROS:-1}" == "1" ]]; then
       echo "WARN: MAVROS failed to start; PX4 flight still works. Log:" >&2
       tail -30 "$MAVROS_LOG" >&2 || true
       MAVROS_PID=""
+    else
+      # PX4's data-link arming check expects a GCS heartbeat. MAVROS defaults
+      # to ONBOARD_CONTROLLER, which leaves gcs_connection_lost=true even
+      # though MAVLink is connected and causes ordinary arm to be rejected.
+      if (
+        set +u
+        # shellcheck disable=SC1090
+        source "$ROS_SETUP"
+        for _ in {1..30}; do
+          ros2 param set /mavros/sys heartbeat_mav_type GCS >/dev/null 2>&1 && exit 0
+          sleep 0.2
+        done
+        exit 1
+      ); then
+        echo "MAVROS heartbeat : GCS (PX4 arming data-link check enabled)"
+      else
+        echo "WARN: could not set MAVROS heartbeat type to GCS." >&2
+      fi
     fi
   else
     echo "WARN: ROS 2 setup not found at $ROS_SETUP; skipping MAVROS." >&2
@@ -382,6 +525,12 @@ if [[ "${PX4_DAEMON:-0}" == "1" ]]; then
   # Without this, redirecting a non-interactive shell to a file can emit ANSI
   # prompt refreshes indefinitely and consume gigabytes in a few minutes.
   PX4_ARGS+=(-d)
+fi
+if [[ "${START_XRCE:-0}" != "1" ]]; then
+  PX4_ARGS+=(-s "$MAVROS_RCS")
+  echo "PX4 transport     : MAVROS/MAVLink only (DDS disabled before rcS startup)"
+else
+  echo "PX4 transport     : MAVLink + Micro XRCE-DDS"
 fi
 PX4_GZ_STANDALONE=1 \
 PX4_GZ_WORLD="$WORLD_NAME" \

@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Build and validate the trailer-safe, completely flat city datum.
 
-The road texture and every building XY footprint stay unchanged.  Gazebo's
-visual heightmap and Bullet collision mesh are both placed at world z=0.
-Building prisms retain the already audited 2.0--3.5x randomized above-ground
-heights, with a small buried foundation below the common datum.
+The road texture and every building XY footprint stay unchanged. Gazebo's
+visual heightmap and engine-neutral collision box are both placed at world
+z=0. Building prisms use a deterministic hash-rank skyline bounded to exactly
+10--20 m, with a small buried foundation below the common datum. Historical
+pre-scale and 2.0--3.5x heights remain in the audit CSV for traceability.
 """
 
 from __future__ import annotations
@@ -34,6 +35,10 @@ FOUNDATION_AUDIT = GAZEBO / "validation" / "city" / "building_foundation_alignme
 
 DATUM_Z_M = 0.0
 FOUNDATION_Z_M = -0.05
+ACTIVE_HEIGHT_PROFILE = "deterministic_hash_rank_10_to_20m_v1"
+ACTIVE_HEIGHT_MIN_M = 10.0
+ACTIVE_HEIGHT_MAX_M = 20.0
+FACTOR_SEED = "px4-ros2-city-height-v2"
 EXPECTED_COMPONENTS = 274
 EXPECTED_TRIANGLES = 9248
 EXPECTED_VECTORS = 27744
@@ -118,6 +123,26 @@ def flatten_buildings(*, modify: bool) -> tuple[list[dict[str, object]], list[di
     require(len(data.position_indices) == EXPECTED_TRIANGLES, "city triangle count changed")
     require(len(data.positions) == EXPECTED_VECTORS, "city vector count changed")
 
+    # The existing factor digest is a stable SHA-256 of the source component.
+    # Rank all unique digests so heights are spatially pseudo-random, uniformly
+    # distributed, and include the requested exact 10 m / 20 m endpoints.
+    for row in heights:
+        component_id = int(row["post_height_component_ordinal"])
+        expected_digest = hashlib.sha256(
+            f"{FACTOR_SEED}:{component_id}".encode("ascii")
+        ).hexdigest()
+        require(row["factor_sha256"] == expected_digest,
+                f"component {component_id} factor digest changed")
+    digests = [row["factor_sha256"] for row in heights]
+    require(len(set(digests)) == EXPECTED_COMPONENTS, "city height digests are not unique")
+    ordered = sorted(
+        heights,
+        key=lambda row: (row["factor_sha256"], int(row["output_component_ordinal"])),
+    )
+    bounded_rank = {
+        int(row["output_component_ordinal"]): rank for rank, row in enumerate(ordered)
+    }
+
     new_heights: list[dict[str, object]] = []
     new_foundations: list[dict[str, object]] = []
     for ordinal, (faces, height, foundation) in enumerate(
@@ -142,9 +167,15 @@ def flatten_buildings(*, modify: bool) -> tuple[list[dict[str, object]], list[di
 
         old_height = float(height["old_above_ground_height_m"])
         factor = float(height["factor"])
-        above_ground = float(height["new_above_ground_height_m"])
-        require(abs(above_ground - old_height * factor) < 1e-5,
+        scaled_height = float(height["new_above_ground_height_m"])
+        require(abs(scaled_height - old_height * factor) < 1e-5,
                 f"building {ordinal} random height factor changed")
+        rank = bounded_rank[ordinal]
+        fraction = rank / (EXPECTED_COMPONENTS - 1)
+        bounded_height = ACTIVE_HEIGHT_MIN_M + (
+            ACTIVE_HEIGHT_MAX_M - ACTIVE_HEIGHT_MIN_M
+        ) * fraction
+        above_ground = bounded_height
 
         if modify:
             data.positions[position_ids[bottom], 2] = FOUNDATION_Z_M
@@ -160,7 +191,12 @@ def flatten_buildings(*, modify: bool) -> tuple[list[dict[str, object]], list[di
             reference_base_z="0",
             foundation_base_z=format_float(FOUNDATION_Z_M),
             old_roof_z=format_float(old_height),
-            new_roof_z=format_float(above_ground),
+            bounded_height_rank=rank,
+            bounded_height_fraction=format_float(fraction),
+            bounded_height_m=format_float(bounded_height),
+            active_roof_z=format_float(above_ground),
+            active_above_ground_height_m=format_float(above_ground),
+            active_profile=ACTIVE_HEIGHT_PROFILE,
         )
         new_heights.append(height_row)
 
@@ -247,6 +283,8 @@ def main() -> None:
     print("result=PASS")
     print(f"datum_z_m={DATUM_Z_M:.6f} foundation_z_m={FOUNDATION_Z_M:.6f}")
     print(f"buildings={EXPECTED_COMPONENTS} terrain_vertices={EXPECTED_TERRAIN_VERTICES}")
+    print(f"active_height_profile={ACTIVE_HEIGHT_PROFILE}")
+    print(f"active_height_range_m={ACTIVE_HEIGHT_MIN_M:.6f}..{ACTIVE_HEIGHT_MAX_M:.6f}")
     print(f"buildings_dae_sha256={sha256(BUILDINGS)}")
     print(f"heightmap_sha256={sha256(HEIGHTMAP)}")
     print(f"normalmap_sha256={sha256(NORMALMAP)}")

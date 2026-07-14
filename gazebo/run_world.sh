@@ -10,22 +10,31 @@ fi
 
 case "$MAP" in
   city)
+    WORLD="$SCRIPT_DIR/worlds/applepark_city_uav/applepark_uav.world"
+    DESCRIPTION="Apple Park UAV city (XY-spaced buildings, stationary trailer, no PX4 drone)"
+    DEFAULT_PHYSICS_ENGINE="gz-physics-dartsim-plugin"
+    ;;
+  city-legacy)
     WORLD="$SCRIPT_DIR/worlds/applepark_city/applepark.world"
-    DESCRIPTION="Apple Park 500 x 500 m city"
+    DESCRIPTION="Apple Park legacy 500 x 500 m city (no PX4 drone)"
+    DEFAULT_PHYSICS_ENGINE="gz-physics-bullet-featherstone-plugin"
     ;;
   mountain)
     WORLD="$SCRIPT_DIR/worlds/ugv_drone_map.world"
     DESCRIPTION="UGV/drone 300 x 300 m mountain (trailer included, no PX4 drone)"
+    DEFAULT_PHYSICS_ENGINE="gz-physics-bullet-featherstone-plugin"
     ;;
   mountain-sitl)
     WORLD="$SCRIPT_DIR/worlds/ugv_drone.world"
     DESCRIPTION="UGV/drone 300 x 300 m mountain with ArduPilot SITL model"
+    DEFAULT_PHYSICS_ENGINE="gz-physics-bullet-featherstone-plugin"
     ;;
   -h|--help|help|"")
     cat <<EOF
-Usage: $(basename "$0") <city|mountain|mountain-sitl> [gz sim options]
+Usage: $(basename "$0") <city|city-legacy|mountain|mountain-sitl> [gz sim options]
 
-  city          500 x 500 m city + stationary trailer (no PX4 drone)
+  city          Current UAV city + stationary trailer (no PX4 drone)
+  city-legacy   Original 500 x 500 m city (no PX4 drone)
   mountain      300 x 300 m mountain + stationary trailer (no PX4 drone)
   mountain-sitl Mountain plus Iris/ArduPilot integration (external plugin needed)
 
@@ -43,13 +52,13 @@ EOF
     exit 0
     ;;
   *)
-    echo "ERROR: unknown map '$MAP' (expected city, mountain, or mountain-sitl)." >&2
+    echo "ERROR: unknown map '$MAP' (expected city, city-legacy, mountain, or mountain-sitl)." >&2
     exit 2
     ;;
 esac
 
 GZ_BIN="${GZ_BIN:-gz}"
-PHYSICS_ENGINE="${PHYSICS_ENGINE:-gz-physics-bullet-featherstone-plugin}"
+PHYSICS_ENGINE="${PHYSICS_ENGINE:-$DEFAULT_PHYSICS_ENGINE}"
 AP_GAZEBO="${AP_GAZEBO:-$HOME/ardupilot_gazebo}"
 
 if ! command -v "$GZ_BIN" >/dev/null 2>&1 || ! "$GZ_BIN" sim --help >/dev/null 2>&1; then
@@ -89,6 +98,7 @@ if [[ "${USE_NVIDIA:-1}" == "1" ]] && command -v nvidia-smi >/dev/null 2>&1; the
   export __GLX_VENDOR_LIBRARY_NAME=nvidia
   export __VK_LAYER_NV_optimus=NVIDIA_only
   export NVIDIA_VISIBLE_DEVICES="${NVIDIA_VISIBLE_DEVICES:-all}"
+  export QT_XCB_GL_INTEGRATION="${QT_XCB_GL_INTEGRATION:-xcb_glx}"
 fi
 if [[ "${XDG_SESSION_TYPE:-}" == "wayland" && -z "${QT_QPA_PLATFORM:-}" ]]; then
   export QT_QPA_PLATFORM=xcb
