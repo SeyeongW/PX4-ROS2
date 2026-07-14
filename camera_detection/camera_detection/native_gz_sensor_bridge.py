@@ -18,6 +18,7 @@ import threading
 import time
 from typing import Callable
 
+import numpy as np
 from builtin_interfaces.msg import Time as RosTime
 from gz.msgs10.camera_info_pb2 import CameraInfo as GzCameraInfo
 from gz.msgs10.clock_pb2 import Clock as GzClock
@@ -80,6 +81,64 @@ def convert_image(message: GzImage) -> Image:
     output.is_bigendian = 0
     output.step = int(message.step)
     output.data = message.data
+    return output
+
+
+def convert_depth_preview(
+    message: GzImage,
+    near_m: float,
+    far_m: float,
+) -> Image:
+    """Convert metric ``R_FLOAT32`` depth into an rqt-safe mono8 preview.
+
+    The raw ``32FC1`` image remains the source for planning and measurement.
+    This display-only image masks NaN / Inf / out-of-range samples and maps
+    every valid distance to at least intensity 32, so Humble rqt_image_view
+    cannot collapse the frame to black when the raw image contains ``+Inf``.
+    Near pixels are bright and far pixels are dark.
+    """
+
+    if int(message.pixel_format_type) != gz_image_types.R_FLOAT32:
+        raise ValueError(
+            "depth preview requires Gazebo R_FLOAT32, got "
+            f"{message.pixel_format_type}"
+        )
+    width = int(message.width)
+    height = int(message.height)
+    source_step = int(message.step)
+    if width <= 0 or height <= 0 or source_step < width * 4 or source_step % 4:
+        raise ValueError(
+            f"invalid depth image geometry {width}x{height} step={source_step}"
+        )
+    if len(message.data) < source_step * height:
+        raise ValueError(
+            f"short depth payload {len(message.data)} < {source_step * height}"
+        )
+    if not (math.isfinite(near_m) and math.isfinite(far_m) and far_m > near_m):
+        raise ValueError(f"invalid depth preview range {near_m}..{far_m}")
+
+    row_floats = source_step // 4
+    depth = np.frombuffer(
+        message.data,
+        dtype="<f4",
+        count=row_floats * height,
+    ).reshape(height, row_floats)[:, :width]
+    valid = np.isfinite(depth) & (depth >= near_m) & (depth <= far_m)
+    preview = np.zeros((height, width), dtype=np.uint8)
+    if np.any(valid):
+        clipped = np.clip(depth[valid], near_m, far_m)
+        inverse_range = (far_m - clipped) / (far_m - near_m)
+        preview[valid] = np.rint(32.0 + 223.0 * inverse_range).astype(np.uint8)
+
+    output = Image()
+    output.header.stamp = _ros_time(message.header.stamp)
+    output.header.frame_id = _frame_id(message.header)
+    output.width = width
+    output.height = height
+    output.encoding = "mono8"
+    output.is_bigendian = 0
+    output.step = width
+    output.data = preview.tobytes()
     return output
 
 
@@ -189,6 +248,9 @@ class NativeGazeboSensorBridge(Node):
             "front_depth": self.create_publisher(
                 Image, "/front_depth/image", qos_profile_sensor_data
             ),
+            "front_depth_preview": self.create_publisher(
+                Image, "/front_depth/preview", qos_profile_sensor_data
+            ),
             "front_depth_points": self.create_publisher(
                 PointCloud2, "/front_depth/points", qos_profile_sensor_data
             ),
@@ -203,6 +265,9 @@ class NativeGazeboSensorBridge(Node):
             ),
             "down_depth": self.create_publisher(
                 Image, "/down_depth/image", qos_profile_sensor_data
+            ),
+            "down_depth_preview": self.create_publisher(
+                Image, "/down_depth/preview", qos_profile_sensor_data
             ),
             "down_depth_points": self.create_publisher(
                 PointCloud2, "/down_depth/points", qos_profile_sensor_data
@@ -232,7 +297,13 @@ class NativeGazeboSensorBridge(Node):
         self._subscribe(GzClock, "/clock", self._clock_callback, "clock")
         self._subscribe_image(topics["front_rgb_image_gz_topic"], "front_rgb")
         self._subscribe_info(topics["front_rgb_info_gz_topic"], "front_rgb_info")
-        self._subscribe_image(topics["front_depth_image_gz_topic"], "front_depth")
+        self._subscribe_image(
+            topics["front_depth_image_gz_topic"],
+            "front_depth",
+            preview_key="front_depth_preview",
+            preview_near_m=0.20,
+            preview_far_m=30.0,
+        )
         self._subscribe_cloud(
             topics["front_depth_points_gz_topic"], "front_depth_points"
         )
@@ -241,7 +312,13 @@ class NativeGazeboSensorBridge(Node):
         )
         self._subscribe_image(topics["down_rgb_image_gz_topic"], "down_rgb")
         self._subscribe_info(topics["down_rgb_info_gz_topic"], "down_rgb_info")
-        self._subscribe_image(topics["down_depth_image_gz_topic"], "down_depth")
+        self._subscribe_image(
+            topics["down_depth_image_gz_topic"],
+            "down_depth",
+            preview_key="down_depth_preview",
+            preview_near_m=0.15,
+            preview_far_m=80.0,
+        )
         self._subscribe_cloud(
             topics["down_depth_points_gz_topic"], "down_depth_points"
         )
@@ -315,18 +392,39 @@ class NativeGazeboSensorBridge(Node):
                 self.get_logger().warning(f"failed to unsubscribe {topic}: {exc}")
         self._gz_topics.clear()
 
-    def _subscribe_image(self, topic: str, key: str) -> None:
+    def _subscribe_image(
+        self,
+        topic: str,
+        key: str,
+        *,
+        preview_key: str | None = None,
+        preview_near_m: float = 0.0,
+        preview_far_m: float = 0.0,
+    ) -> None:
         def callback(message: GzImage) -> None:
             try:
                 publisher = self._sensor_publishers[key]
                 if self._should_publish(publisher):
                     publisher.publish(convert_image(message))
+                if preview_key is not None:
+                    preview_publisher = self._sensor_publishers[preview_key]
+                    if self._should_publish(preview_publisher):
+                        preview_publisher.publish(
+                            convert_depth_preview(
+                                message,
+                                preview_near_m,
+                                preview_far_m,
+                            )
+                        )
                 self._received(key)
             except ValueError as exc:
                 self.get_logger().error(str(exc))
 
+        demand_publishers = [self._sensor_publishers[key]]
+        if preview_key is not None:
+            demand_publishers.append(self._sensor_publishers[preview_key])
         self._register_demand_subscription(
-            GzImage, topic, callback, key, self._sensor_publishers[key]
+            GzImage, topic, callback, key, tuple(demand_publishers)
         )
 
     def _subscribe_info(self, topic: str, key: str) -> None:
@@ -358,6 +456,10 @@ class NativeGazeboSensorBridge(Node):
         self._received("lidar")
 
     def _should_publish(self, publisher) -> bool:
+        if isinstance(publisher, (tuple, list)):
+            return self.publish_sensor_data_without_subscribers or any(
+                item.get_subscription_count() > 0 for item in publisher
+            )
         return (
             self.publish_sensor_data_without_subscribers
             or publisher.get_subscription_count() > 0

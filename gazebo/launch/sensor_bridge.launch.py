@@ -5,9 +5,9 @@ The Gazebo-native names are launch arguments.  ROS consumers always receive
 the stable contract below, independent of the selected world or PX4 entity:
 
 * ``/front_camera/image`` and ``/front_camera/camera_info``
-* ``/front_depth/image``, ``/front_depth/points`` and camera info
+* ``/front_depth/image`` (metric), ``/front_depth/preview`` (rqt), points and info
 * ``/down_camera/image`` and ``/down_camera/camera_info``
-* ``/down_depth/image``, ``/down_depth/points`` and camera info
+* ``/down_depth/image`` (metric), ``/down_depth/preview`` (rqt), points and info
 * ``/down_lidar`` and ``/down_lidar/points``
 
 Camera link frames use Gazebo's +X-forward convention.  Their optical children
