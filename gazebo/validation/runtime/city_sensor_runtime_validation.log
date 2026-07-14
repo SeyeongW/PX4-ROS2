@@ -1,0 +1,44 @@
+PX4-ROS2 active city PX4/MAVROS/payload runtime validation
+status=historical_sensor_evidence_pre_1300m_polyline_collision
+current_map_runtime_validation=gazebo/validation/runtime/city_dart_collision_hover_validation.log
+date=2026-07-14 EDT
+result=PASS
+command=HEADLESS=1 START_MAVROS=1 START_BRIDGE=1 START_XRCE=0 PX4_DAEMON=1 ROS_DOMAIN_ID=79 GZ_PARTITION=city_sensor_final_20260714 PX4_MAP_RUNTIME_DIR=/tmp/px4_ros2_city_sensor_final ./gazebo/run_px4_map.sh city
+world=applepark_city_uav
+runtime_entities=applepark_uav_ground,applepark_uav_buildings,trailer,x500_city_rgbd_lidar_0
+px4_startup_script_returned_successfully=PASS
+px4_ready_for_takeoff=PASS
+px4_remained_alive_during_full_sensor_audit=PASS
+mavros_connected=true
+mavros_mode=AUTO.LOITER
+mavros_armed=false
+mavros_imu_data_wall_hz=50.00
+mavros_magnetic_field_wall_hz=7.14
+mavros_static_pressure_wall_hz=16.67
+mavros_global_position_wall_hz=50.01
+mavros_local_position_wall_hz=30.01
+mavros_altitude_wall_hz=10.00
+mavros_battery_wall_hz=0.50
+fmu_topic_count=0
+dds_profile=MAVROS_MAVLink_only
+front_rgb_pose_relative_base_link=0.12,0.03,0.002,0,0,0
+front_rgb=PASS size=640x360 encoding=rgb8 frame=front_camera_optical_frame min=16 max=198 mean=104.71 stddev=61.89 unique_values=183
+front_rgb_combined_demand_wall_hz=2.42
+front_rgb_single_subscriber_wall_hz_earlier_audit=15.0
+front_depth=PASS size=320x240 encoding=32FC1 frame=front_depth_optical_frame finite_ratio=0.4917 finite_range_m=0.414..19.813
+front_depth_points=PASS size=320x240 point_step=24 data_bytes=1843200
+front_depth_camera_info=PASS fx=216.248 fy=216.248
+down_rgb=PASS size=640x480 encoding=rgb8 frame=down_camera_optical_frame min=1 max=205 mean=68.07 stddev=37.17 unique_values=203
+down_depth=PASS size=320x240 encoding=32FC1 frame=down_depth_optical_frame finite_ratio=0.9803 finite_range_m=0.150..0.177
+down_depth_points=PASS size=320x240 point_step=24 data_bytes=1843200
+down_lidar=PASS samples=1 finite_samples=1 frame=lidar_sensor_link range_m=0.177
+down_lidar_points=PASS size=1x1 point_step=32 data_bytes=32
+payload_contract_topics_received=12/12
+heightmap_final_sampling_crop_warning_count=0
+duplicate_px4_preflight=PASS second_launcher_exit=4 existing_px4_preserved=true
+gazebo_exit_watchdog=PASS forced_gazebo_sigint_stopped_px4=true launcher_exit=5
+runtime_process_tree_stopped_without_orphan_bridge_or_tf=PASS
+map_bounds_enu_m=-750..750,-750..750
+southwest_query_enu_m=-600,-600
+southwest_query_boundary_clearance_m=150
+notes=Historical payload-topic evidence. All requested camera/depth/lidar messages were fresh and non-empty. The current 1300 m world and physical building collision are superseded by city_dart_collision_hover_validation.log; sensor link/topic configuration is unchanged.

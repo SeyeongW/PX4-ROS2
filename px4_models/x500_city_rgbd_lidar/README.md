@@ -10,7 +10,7 @@ PX4 재빌드가 필요 없습니다(`PX4_SIM_MODEL=gz_x500_city_rgbd_lidar`로 
 
 | 위치 | 센서 | 종류 | ROS 2 토픽 | 해상도/사양 |
 |------|------|------|-----------|------------|
-| 전방 | RGB 카메라(55° 하향) | camera | `/front_camera/image`, `/front_camera/camera_info` | 640×360 @ 15 Hz |
+| 전방 | RGB 카메라(수평) | camera | `/front_camera/image`, `/front_camera/camera_info` | 640×360 @ 15 Hz |
 | 전방 | Depth 카메라 | depth camera | `/front_depth/image`, `/front_depth/points`, `/front_depth/camera_info` | 320×240, 32FC1 @ 12 Hz |
 | 하방 | RGB 카메라 | camera | `/down_camera/image`, `/down_camera/camera_info` | 640×480 @ 20 Hz |
 | 하방 | Depth 카메라 | depth camera | `/down_depth/image`, `/down_depth/points`, `/down_depth/camera_info` | 320×240, 32FC1 @ 15 Hz |
@@ -30,6 +30,64 @@ PX4 재빌드가 필요 없습니다(`PX4_SIM_MODEL=gz_x500_city_rgbd_lidar`로 
 - 320×240와 제한된 update rate는 software/headless renderer에서도 sensor freshness를
   유지하기 위한 값입니다. adapter는 2×2 spatial stride 뒤에도 중앙 ROI의 3-percentile
   장애물 검출을 유지합니다.
+
+## 카메라와 센서 확인
+
+먼저 한 터미널에서 도시맵, PX4, MAVROS 및 센서 브리지를 함께 실행합니다.
+
+```bash
+cd ~/PX4-ROS2
+./gazebo/run_px4_map.sh city
+```
+
+`PX4 SITL instance 0 is already running`이 나오면 다른 터미널의 동일 런처가 아직
+실행 중인 것입니다. 그 터미널에서 `Ctrl-C`로 정상 종료하고 다시 실행하세요.
+런처는 중복 PX4와 UDP 14540/14580 충돌을 Gazebo 시작 전에 차단합니다.
+
+전방과 하방 RGB를 동시에 보려면 각각 별도 터미널에서 실행합니다.
+
+```bash
+source /opt/ros/humble/setup.bash
+ros2 run rqt_image_view rqt_image_view --clear-config /front_camera/image
+```
+
+```bash
+source /opt/ros/humble/setup.bash
+ros2 run rqt_image_view rqt_image_view /down_camera/image
+```
+
+- 실제 raw 토픽 이름은 `/front_camera/image`와 `/down_camera/image`이며
+  `_raw` 접미사가 없습니다.
+- 브리지는 구독자 요구 기반이므로 토픽을 선택한 뒤 첫 영상까지 1~3초 걸릴 수
+  있습니다. 인자 없이 rqt를 실행하면 이전에 저장된 토픽이 다시 선택될 수 있습니다.
+- `/front_depth/image` 또는 `/down_depth/image`는 `32FC1` 거리 영상입니다.
+  rqt의 **Dynamic range**를 켜야 검은 화면처럼 보이지 않습니다.
+
+전체 payload가 실제 메시지를 발행하는지 빠르게 확인하려면 다음을 사용합니다.
+
+```bash
+for topic in \
+  /front_camera/image /front_camera/camera_info \
+  /front_depth/image /front_depth/points /front_depth/camera_info \
+  /down_camera/image /down_camera/camera_info \
+  /down_depth/image /down_depth/points /down_depth/camera_info \
+  /down_lidar /down_lidar/points
+do
+  echo "===== $topic"
+  timeout 10 ros2 topic echo "$topic" --once \
+    --qos-profile sensor_data --no-arr
+done
+```
+
+MAVROS/PX4 기본 센서 연결은 아래 값들이 메시지를 내고 `connected: true`인지로
+확인합니다. 기본 실행은 MAVROS 전용이므로 `/fmu/*` 토픽이 없는 것이 정상입니다.
+
+```bash
+ros2 topic echo /mavros/state --once
+timeout 10 ros2 topic hz /mavros/imu/data --wall-time
+timeout 10 ros2 topic hz /mavros/local_position/pose --wall-time
+timeout 10 ros2 topic hz /mavros/global_position/global --wall-time
+```
 
 ## 물리 제원 (시뮬레이션 모델)
 

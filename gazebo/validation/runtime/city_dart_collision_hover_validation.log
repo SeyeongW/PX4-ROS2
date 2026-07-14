@@ -1,0 +1,65 @@
+PX4-ROS2 1300 m city DART collision + PX4 hover validation
+date=2026-07-14 EDT
+result=PASS
+world=applepark_city_uav
+physics=gz-physics-dartsim-plugin
+world_sha256=810379ea309f4f0c2ff5727217b22be7d2ad89f255ed7d0e0e1e72fd43c17e0e
+coordinates_sha256=e90f085d9682370e5d467110ce78ccff9fcaec540294faf865c99ae5d3bf5e0a
+astar_vertices_csv_sha256=3a15a1951e1f846aa24f65e5eb7e14d15994506b96171aa8e1e2cfc27eccea6b
+visual_dae_sha256=91337e73daa84e83845a45b6a5c153972c25dd8825d59a1b340b63d0ba491ac5
+vehicle_sdf_sha256=0831e4ae57e7a6f6f1f95ade8c79eb7efd35bbf1e176f5a97418805fbca7dd47
+map_bounds_enu_m=-650..650,-650..650
+ground_size_m=1300x1300
+visual_mesh_scale=1,1,1
+visual_mesh_triangles=7032
+building_collision_representation=exact_per_building_polyline_prisms_dart
+building_collision_count=205
+collision_polyline_ring_count=206
+collision_logical_xy_vertex_count=1962
+collision_mesh_construction_unsupported_count=0
+collision_fatal_error_count=0
+
+collision_probe_command=direct headless gz-sim DART world; four radius-1m spheres dropped for 12 wall seconds
+probe_quad_building=building_001
+probe_quad_roof_z_m=67.362637
+probe_quad_final_center_z_m=68.362600
+probe_concave_building=building_240
+probe_concave_roof_z_m=44.798535
+probe_concave_final_center_z_m=45.798500
+probe_courtyard_building=building_213
+probe_courtyard_shell_roof_z_m=56.813187
+probe_courtyard_shell_final_center_z_m=57.813200
+probe_courtyard_hole_final_center_z_m=0.960710
+probe_courtyard_hole_reached_ground=PASS
+collision_roofs_block_dynamic_bodies=PASS
+collision_courtyard_hole_remains_open=PASS
+
+px4_command=HEADLESS=1 FOLLOW_DRONE=0 START_BRIDGE=0 START_XRCE=0 START_MAVROS=1 GZ_PARTITION=city_dart_polyline_hover_20260714 PX4_MAP_RUNTIME_DIR=/tmp/px4_ros2_city_dart_polyline_hover ./gazebo/run_px4_map.sh city
+px4_airframe_autostart=4001
+px4_sim_model=gz_x500_city_rgbd_lidar
+px4_runtime_entity=x500_city_rgbd_lidar_0
+px4_spawn_enu_m=587,580,0
+px4_ready_for_takeoff=PASS
+mavros_connected=true
+commander_takeoff=PASS
+takeoff_detected=PASS
+hover_target_relative_altitude_m=2.5
+hover_wall_span_s=10.079769
+hover_pose_samples=400
+hover_x_min_m=586.932908
+hover_x_max_m=587.066086
+hover_y_min_m=579.894442
+hover_y_max_m=580.045491
+hover_z_min_m=2.501436
+hover_z_max_m=2.558847
+hover_z_span_m=0.057410
+hover_xy_box_diagonal_m=0.201376
+hover_xy_drift_from_mean_max_m=0.077090
+commander_land=PASS
+landing_detected=PASS
+automatic_disarm_after_landing=PASS
+landed_model_pose_enu_m=587.038,579.988,-0.013
+mavros_armed_after_landing=false
+runtime_process_tree_stopped=PASS
+
+notes=The original DAE collision was rejected by DART, while Bullet Featherstone destabilized takeoff and Bullet classic produced no lift. The final profile keeps PX4-stable DART and generates exact SDF polyline prisms from the same YAML rings as the visual DAE. Gazebo verbose-4 emits a generic SDFFeatures debug line for non-box polylines, but no unsupported mesh-construction message or fatal error occurs; roof and courtyard physical probes certify the resulting collision behavior.

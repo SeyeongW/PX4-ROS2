@@ -144,11 +144,11 @@ def _launch_setup(context, *args, **kwargs):
     optical_rpy = (-1.57079632679, 0.0, -1.57079632679)
     transforms = [
         _static_tf("tf_front_rgb_link", base_frame, "front_rgb_link",
-                   (0.12, 0.03, 0.242), (0.0, 0.0, 0.0)),
+                   (0.12, 0.03, 0.002), (0.0, 0.0, 0.0)),
         _static_tf("tf_front_rgb_optical", "front_rgb_link",
                    "front_camera_optical_frame", (0.0, 0.0, 0.0), optical_rpy),
         _static_tf("tf_front_depth_link", base_frame, "front_depth_link",
-                   (0.12, 0.0, 0.242), (0.0, 0.0, 0.0)),
+                   (0.12, 0.0, 0.002), (0.0, 0.0, 0.0)),
         _static_tf("tf_front_depth_optical", "front_depth_link",
                    "front_depth_optical_frame", (0.0, 0.0, 0.0), optical_rpy),
         _static_tf("tf_down_rgb_link", base_frame, "down_rgb_link",

@@ -1,0 +1,36 @@
+PX4-ROS2 active UAV city 30--70 m skyline runtime validation
+status=historical_pre_polyline_collision_runtime_evidence
+current_map_runtime_validation=gazebo/validation/runtime/city_dart_collision_hover_validation.log
+date=2026-07-14 EDT
+result=PASS_RENDERING
+scope=active_city_height_geometry_and_rendering
+command=GZ_SIM_RESOURCE_PATH=$PWD/gazebo/models:$PWD/gazebo/worlds GZ_PARTITION=codex_city_height3070 gz sim -v4 -r --physics-engine gz-physics-dartsim-plugin $PWD/gazebo/worlds/applepark_city_uav/applepark_uav.world
+world=applepark_city_uav
+world_sha256=e15b7fc1a88d4db9fbd3e35174fbd29036ed6d369f91190daef3420c9aab4ff9
+coordinates_sha256=24344288464056385a04a6a21e033217beb2681f6c0f4d8549658dceed0ec526
+buildings_dae_sha256=7eec58d800cf00bc1e0f000a368da867be0c6c326946891f0b26199a673f1609
+building_count=205
+building_height_profile=deterministic_hash_rank_30_to_70m_v1
+building_height_range_m=30.000000,70.000000
+building_height_unique_count=205
+building_height_mean_m=49.718753
+building_height_median_m=49.926740
+shortest_building=building_190:30.000000
+tallest_building=building_171:70.000000
+building_ids_xy_foundations_unchanged=PASS
+mesh_triangle_count=7048
+yaml_mesh_height_profile_maximum_error_m=0.0
+physics=gz-physics-dartsim-plugin
+physics_profile=2ms
+real_time_factor=1.000150523
+renderer_gpu=NVIDIA_GeForce_RTX_5060_Laptop_GPU
+renderer_gpu_memory_mib=336
+renderer_gpu_utilization_percent=27
+gazebo_runtime_entities=applepark_uav_ground,applepark_uav_buildings,trailer
+visual_rendering=PASS
+gazebo_sdf_validation=PASS
+runtime_warning=dartsim_mesh_construction_from_sdf_not_implemented_buildings_collision_geometry_not_created
+runtime_process_tree_stopped=PASS
+gazebo_screenshot=/home/xogus/city_uav_30_70m_gazebo.png
+height_reference_image=/home/xogus/city_uav_current_map_30_70m.png
+notes=Historical rendering evidence for the 30--70 m visual mesh. The superseding validation replaces the unsupported DART DAE collision with exact polyline prisms and includes physical roof/courtyard probes plus PX4 hover.

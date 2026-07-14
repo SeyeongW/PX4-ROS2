@@ -11,16 +11,19 @@ fi
 
 case "$MAP" in
   city)
-    # The normal city profile is the self-contained 1260 m UAV derivative with
-    # rolled-back jo 2.5x centroids / 0.9x footprints and 10--20 m heights.
+    # The normal city profile is the self-contained 1300 m UAV derivative with
+    # uniformly 2.5x-scaled centroids / footprints and 30--70 m heights.
     # The source 500 m asset remains available explicitly for regression work.
     COORDINATES="$SCRIPT_DIR/maps/city_coordinates_uav.yaml"
+    DEFAULT_PHYSICS_ENGINE="gz-physics-dartsim-plugin"
     ;;
   city-legacy)
     COORDINATES="$SCRIPT_DIR/maps/city_coordinates.yaml"
+    DEFAULT_PHYSICS_ENGINE="gz-physics-bullet-featherstone-plugin"
     ;;
   mountain)
     COORDINATES="$SCRIPT_DIR/maps/mountain_coordinates.yaml"
+    DEFAULT_PHYSICS_ENGINE="gz-physics-bullet-featherstone-plugin"
     ;;
   -h|--help|help|"")
     cat <<EOF
@@ -44,9 +47,11 @@ Environment:
   DRIVE_TRAILER=1         Mountain only: drive the trailer through YAML waypoints
   TRAILER_ROUTE_LOOPS=1   Stop the driver after one complete route (0=repeat)
   TRAILER_ROUTE=slope     Mountain-only terrain-follow safeguard test
+  PX4_GZ_PLATFORM_VEL=... City SEO trailer speed (default: 0 m/s)
+  PX4_GZ_PLATFORM_HEADING_DEG=...  City SEO trailer heading (default: 0 deg/east)
   USE_NVIDIA=0            Disable NVIDIA PRIME render variables
   GZ_PARTITION=...        Gazebo transport partition (shared with PX4)
-  PHYSICS_ENGINE=...      Override physics engine (default: DART)
+  PHYSICS_ENGINE=...      Override physics engine (city default: DART)
   PX4_DAEMON=1            Disable the interactive PX4 shell (for log/CI runs)
 EOF
     exit 0
@@ -133,7 +138,7 @@ if [[ ! -L "$CUSTOM_MODEL_TARGET" || "$(realpath -m "$CUSTOM_MODEL_TARGET")" != 
   echo "ERROR: PX4 custom model must link to this checkout: $CUSTOM_MODEL_TARGET -> $CUSTOM_MODEL_SOURCE" >&2
   exit 3
 fi
-for model in "$CUSTOM_MODEL" x500 x500_base OakD-Lite LW20; do
+for model in "$CUSTOM_MODEL" x500 x500_base; do
   [[ -f "$PX4_DIR/Tools/simulation/gz/models/$model/model.sdf" ]] || {
     echo "ERROR: PX4 Gazebo model asset is missing: $model" >&2
     if [[ "$model" == "$CUSTOM_MODEL" ]]; then
@@ -160,6 +165,22 @@ source "$PX4_ENV"
 export GZ_SIM_RESOURCE_PATH="$SCRIPT_DIR/models:$SCRIPT_DIR/worlds${GZ_SIM_RESOURCE_PATH:+:$GZ_SIM_RESOURCE_PATH}"
 export GZ_IP="${GZ_IP:-127.0.0.1}"
 export GZ_PARTITION="${GZ_PARTITION:-px4_ros2_${USER:-user}}"
+
+# SEO's MovingPlatformController is loaded by the Gazebo server and reads the
+# PX4 model name at plugin Configure time. Export it before starting gz sim,
+# not only on the later PX4 command. The city remains spawn-only by default;
+# an operator may explicitly set a non-zero speed for a motion experiment.
+export PX4_SIM_MODEL="$SIM_MODEL"
+if [[ "$MAP" == "city" ]]; then
+  export PX4_GZ_PLATFORM_VEL="${PX4_GZ_PLATFORM_VEL:-0}"
+  export PX4_GZ_PLATFORM_HEADING_DEG="${PX4_GZ_PLATFORM_HEADING_DEG:-0}"
+  for asset in model.sdf model.config arucotag.png; do
+    [[ -f "$SCRIPT_DIR/models/moving_platform_aruco/$asset" ]] || {
+      echo "ERROR: SEO trailer asset is missing: $SCRIPT_DIR/models/moving_platform_aruco/$asset" >&2
+      exit 3
+    }
+  done
+fi
 
 if [[ "${USE_NVIDIA:-1}" == "1" ]] && command -v nvidia-smi >/dev/null 2>&1; then
   export __NV_PRIME_RENDER_OFFLOAD=1
@@ -194,6 +215,40 @@ XRCE_PID=""
 TRAILER_PID=""
 MAVROS_PID=""
 BRIDGE_PID=""
+WATCHDOG_PID=""
+
+# PX4 SITL instance 0 owns a host-wide advisory lock.  Starting Gazebo first
+# and discovering the conflict only when PX4 launches makes the GUI appear and
+# then disappear, which looks like a spawn or physics crash.  Fail before any
+# child process is created and print the actual conflicting process instead.
+PX4_LOCK_PATH="/tmp/px4_lock-0"
+if pgrep -f "$PX4_BIN" >/dev/null 2>&1; then
+  echo "ERROR: PX4 SITL instance 0 is already running; refusing to start a second world." >&2
+  pgrep -af "$PX4_BIN" >&2 || true
+  echo "       Stop the existing PX4/run_px4_map.sh process, then retry." >&2
+  exit 4
+fi
+if command -v ss >/dev/null 2>&1; then
+  MAVLINK_PORT_USERS="$(ss -H -lunp 2>/dev/null | grep -E ':(14540|14580)([[:space:]]|$)' || true)"
+  if [[ -n "$MAVLINK_PORT_USERS" ]]; then
+    echo "ERROR: MAVROS/PX4 UDP port 14540 or 14580 is already in use:" >&2
+    echo "$MAVLINK_PORT_USERS" >&2
+    echo "       Stop the stale MAVROS/PX4 process, then retry." >&2
+    exit 4
+  fi
+fi
+if command -v flock >/dev/null 2>&1; then
+  exec {PX4_LOCK_FD}>"$PX4_LOCK_PATH"
+  if ! flock -n "$PX4_LOCK_FD"; then
+    echo "ERROR: PX4 SITL instance 0 is already running; refusing to start a second world." >&2
+    pgrep -af "$PX4_BIN" >&2 || true
+    echo "       Stop the existing PX4/run_px4_map.sh process, then retry." >&2
+    exec {PX4_LOCK_FD}>&-
+    exit 4
+  fi
+  flock -u "$PX4_LOCK_FD"
+  exec {PX4_LOCK_FD}>&-
+fi
 
 # PX4's POSIX SITL rcS starts uxrce_dds_client unconditionally.  In the
 # MAVROS-only profile, use PX4's supported `-s` option with a runtime copy of
@@ -230,22 +285,98 @@ if [[ "${START_XRCE:-0}" != "1" ]]; then
   mv -f "$MAVROS_RCS_TMP" "$MAVROS_RCS"
 fi
 
+collect_process_tree() {
+  local parent="${1:?missing parent pid}"
+  local child
+  if [[ -r "/proc/$parent/task/$parent/children" ]]; then
+    for child in $(<"/proc/$parent/task/$parent/children"); do
+      collect_process_tree "$child"
+    done
+  fi
+  printf '%s\n' "$parent"
+}
+
 stop_process() {
   local pid="${1:-}"
+  local process
+  local -a process_tree=()
   [[ -n "$pid" ]] || return 0
   if kill -0 "$pid" 2>/dev/null; then
-    kill "$pid" 2>/dev/null || true
+    # ros2 launch and gz sim both create descendants.  Killing only their
+    # launcher PID can orphan camera bridges and TF publishers, leading to
+    # duplicate ROS publishers on the next run.
+    mapfile -t process_tree < <(collect_process_tree "$pid")
+    for process in "${process_tree[@]}"; do
+      kill -TERM "$process" 2>/dev/null || true
+    done
     for _ in {1..30}; do
-      kill -0 "$pid" 2>/dev/null || break
+      local any_alive=0
+      for process in "${process_tree[@]}"; do
+        if kill -0 "$process" 2>/dev/null; then
+          any_alive=1
+          break
+        fi
+      done
+      [[ "$any_alive" == "0" ]] && break
       sleep 0.1
     done
-    # Some gz-sim launcher wrappers do not terminate on SIGTERM.  Never let
-    # Ctrl-C leave a world running or make this cleanup wait indefinitely.
-    if kill -0 "$pid" 2>/dev/null; then
-      kill -KILL "$pid" 2>/dev/null || true
-    fi
+    # Some launcher wrappers do not terminate on SIGTERM.  Never let Ctrl-C
+    # leave a world or bridge tree running indefinitely.
+    for process in "${process_tree[@]}"; do
+      kill -KILL "$process" 2>/dev/null || true
+    done
   fi
   wait "$pid" 2>/dev/null || true
+}
+
+find_direct_px4_child() {
+  local parent="${1:?missing parent pid}"
+  local child
+  local executable
+  [[ -r "/proc/$parent/task/$parent/children" ]] || return 1
+  for child in $(<"/proc/$parent/task/$parent/children"); do
+    executable="$(readlink -f "/proc/$child/exe" 2>/dev/null || true)"
+    if [[ "$executable" == "$PX4_BIN" ]]; then
+      printf '%s\n' "$child"
+      return 0
+    fi
+  done
+  return 1
+}
+
+watch_gazebo_while_px4_runs() {
+  local launcher_pid="${1:?missing launcher pid}"
+  local gazebo_pid="${2:?missing Gazebo pid}"
+  local px4_pid=""
+  local gazebo_failed=0
+
+  # This watcher starts just before the foreground PX4 command.  Locate that
+  # direct child without changing PX4's access to the interactive terminal.
+  for _ in {1..50}; do
+    if px4_pid="$(find_direct_px4_child "$launcher_pid")"; then
+      break
+    fi
+    if ! kill -0 "$gazebo_pid" 2>/dev/null; then
+      gazebo_failed=1
+    fi
+    sleep 0.1
+  done
+  [[ -n "$px4_pid" ]] || return 0
+
+  while kill -0 "$px4_pid" 2>/dev/null; do
+    if [[ "$gazebo_failed" == "1" ]] || ! kill -0 "$gazebo_pid" 2>/dev/null; then
+      echo "ERROR: Gazebo exited while PX4 was running; stopping the orphan PX4 session." >&2
+      kill -INT "$px4_pid" 2>/dev/null || true
+      for _ in {1..30}; do
+        kill -0 "$px4_pid" 2>/dev/null || break
+        sleep 0.1
+      done
+      kill -TERM "$px4_pid" 2>/dev/null || true
+      return 7
+    fi
+    sleep 0.5
+  done
+  return 0
 }
 
 cleanup() {
@@ -269,6 +400,7 @@ cleanup() {
       fi
     fi
   fi
+  stop_process "$WATCHDOG_PID"
   stop_process "$BRIDGE_PID"
   stop_process "$MAVROS_PID"
   stop_process "$XRCE_PID"
@@ -284,7 +416,7 @@ if gz topic -l 2>/dev/null | grep -q '^/world/.*/clock$'; then
   exit 4
 fi
 
-PHYSICS_ENGINE="${PHYSICS_ENGINE:-gz-physics-dartsim-plugin}"
+PHYSICS_ENGINE="${PHYSICS_ENGINE:-$DEFAULT_PHYSICS_ENGINE}"
 GZ_ARGS=(-v4 -r --physics-engine "$PHYSICS_ENGINE")
 if [[ "${HEADLESS:-0}" == "1" ]]; then
   GZ_ARGS+=(-s)
@@ -298,6 +430,11 @@ echo "Gazebo spawn ENU : $SPAWN_POSE"
 echo "Expected entity  : $ENTITY_NAME"
 echo "GZ_PARTITION     : $GZ_PARTITION"
 echo "Physics          : $PHYSICS_ENGINE"
+if [[ "$MAP" == "city" ]]; then
+  echo "SEO trailer      : moving_platform_aruco as trailer"
+  echo "Trailer control  : ${PX4_GZ_PLATFORM_VEL} m/s @ ${PX4_GZ_PLATFORM_HEADING_DEG} deg"
+  echo "Trailer noise    : stock SEO perturbations start after PX4 spawn"
+fi
 if [[ "${HEADLESS:-0}" == "1" ]]; then
   echo "Gazebo camera    : headless"
 elif [[ -n "${PX4_GZ_FOLLOW:-}" ]]; then
@@ -445,7 +582,7 @@ if [[ "${DRIVE_TRAILER:-0}" == "1" ]]; then
   echo "Trailer route    : active (log: $TRAILER_LOG)"
 else
   if [[ "$MAP" == "city" ]]; then
-    echo "Trailer          : spawned at ENU ($TRAILER_SPAWN_POSE), stationary"
+    echo "Trailer          : SEO model at ENU ($TRAILER_SPAWN_POSE), zero mean speed by default"
   else
     echo "Trailer route    : spawned, stationary (set DRIVE_TRAILER=1 to drive)"
   fi
@@ -532,9 +669,26 @@ if [[ "${START_XRCE:-0}" != "1" ]]; then
 else
   echo "PX4 transport     : MAVLink + Micro XRCE-DDS"
 fi
+LAUNCHER_PID=$$
+watch_gazebo_while_px4_runs "$LAUNCHER_PID" "$GAZEBO_PID" &
+WATCHDOG_PID=$!
+set +e
 PX4_GZ_STANDALONE=1 \
 PX4_GZ_WORLD="$WORLD_NAME" \
 PX4_GZ_MODEL_POSE="$SPAWN_POSE" \
 PX4_SYS_AUTOSTART="$AUTOSTART_ID" \
 PX4_SIM_MODEL="$SIM_MODEL" \
 "$PX4_BIN" "${PX4_ARGS[@]}"
+PX4_STATUS=$?
+wait "$WATCHDOG_PID"
+WATCHDOG_STATUS=$?
+WATCHDOG_PID=""
+set -e
+if [[ "$WATCHDOG_STATUS" == "7" ]]; then
+  exit 5
+fi
+if [[ "$PX4_STATUS" != "0" ]]; then
+  echo "ERROR: PX4 SITL exited with status $PX4_STATUS; Gazebo and ROS bridges will now stop." >&2
+  echo "       Check that no other PX4 instance owns $PX4_LOCK_PATH." >&2
+  exit "$PX4_STATUS"
+fi

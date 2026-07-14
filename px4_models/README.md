@@ -7,12 +7,17 @@
 ## 모델 목록
 
 ### `x500_city_rgbd_lidar`
-PX4 기본 쿼드콥터 `x500` + **전방 뎁스카메라(OAK-D Lite)** + **하방 라이다(LW20)**.
+PX4 기본 쿼드콥터 `x500`에 이 저장소가 직접 정의한 전방 RGB/depth, 하방
+RGB/depth 및 단일빔 라이다 payload를 장착한 모델입니다. 외부 OAK-D/LW20
+모델 include에 의존하지 않습니다.
 
-- 전방 뎁스카메라: gz `/depth_camera`(Image), `/depth_camera/points`, `/camera_info`
-- 전방 RGB카메라: OAK-D Lite IMX214 (월드 경로 토픽)
-- 하방 라이다: `.../lidar_sensor_link/sensor/lidar/scan` — PX4 gz 브릿지가 이
-  기본 경로를 구독해 `distance_sensor`(하방, `ROTATION_DOWNWARD_FACING`)로
+- 전방 RGB: `/front_camera/image`, `/front_camera/camera_info`
+- 전방 depth: `/front_depth/image`, `/front_depth/points`, `/front_depth/camera_info`
+- 하방 RGB: `/down_camera/image`, `/down_camera/camera_info`
+- 하방 depth: `/down_depth/image`, `/down_depth/points`, `/down_depth/camera_info`
+- 하방 라이다: `/down_lidar`, `/down_lidar/points`; Gazebo 원본
+  `.../lidar_sensor_link/sensor/lidar/scan`은 PX4 gz 브릿지가 구독해
+  `distance_sensor`(하방, `ROTATION_DOWNWARD_FACING`)로
   발행합니다. **이 라이다 센서에 `<topic>` 오버라이드를 넣지 마세요.** 넣으면
   PX4가 distance_sensor를 못 잡습니다.
 
