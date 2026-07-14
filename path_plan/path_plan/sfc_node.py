@@ -37,6 +37,7 @@ class SFCNode(Node):
             roof_clearance_m=p("roof_clearance_m", 10.0).value,
             ground_clearance_m=p("cruise_floor_m", 20.0).value,
             ceiling_m=p("cruise_ceiling_m", 30.0).value,
+            overfly_allowed=p("overfly_allowed", True).value,
         )
         self.sfc = SafeFlightCorridor(
             world, step_m=p("step_m", 0.5).value,

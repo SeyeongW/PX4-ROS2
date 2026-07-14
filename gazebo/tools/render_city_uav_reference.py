@@ -6,15 +6,11 @@ from __future__ import annotations
 import argparse
 import shutil
 from pathlib import Path
-from xml.etree import ElementTree as ET
 
 import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from matplotlib.cm import ScalarMappable
-from matplotlib.collections import LineCollection
-from matplotlib.colors import Normalize
 from matplotlib.lines import Line2D
 from matplotlib.patches import PathPatch, Patch
 from matplotlib.path import Path as MplPath
@@ -25,8 +21,7 @@ import expand_city_for_uav as gen
 
 REPO = Path(__file__).resolve().parents[2]
 DEFAULT_OUTPUT = REPO / "gazebo/validation/path_planning/city_uav_205_reference.png"
-DEFAULT_HOME_COPY = Path.home() / "city_uav_mesh_collision_map.png"
-COLLADA_NAMESPACE = {"c": "http://www.collada.org/2005/11/COLLADASchema"}
+DEFAULT_HOME_COPY = Path.home() / "city_uav_205_reference.png"
 
 
 def compound_patch(
@@ -80,31 +75,6 @@ def draw_context(ax: plt.Axes, document: dict, road: object) -> None:
     )
 
 
-def dae_xy_triangle_edges(path: Path) -> list[list[tuple[float, float]]]:
-    """Read the actual checked-in DAE triangle stream for a mesh overlay."""
-    root = ET.parse(path).getroot()
-    array = root.find(".//c:source[@id='positions']/c:float_array", COLLADA_NAMESPACE)
-    if array is None or not array.text:
-        raise RuntimeError("DAE positions are missing")
-    values = [float(value) for value in array.text.split()]
-    if len(values) % 9:
-        raise RuntimeError("DAE position stream is not triangle-aligned")
-    edges: list[list[tuple[float, float]]] = []
-    for offset in range(0, len(values), 9):
-        triangle = [
-            (values[offset + 3 * index], values[offset + 3 * index + 1])
-            for index in range(3)
-        ]
-        edges.extend(
-            [
-                [triangle[0], triangle[1]],
-                [triangle[1], triangle[2]],
-                [triangle[2], triangle[0]],
-            ]
-        )
-    return edges
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
@@ -128,28 +98,16 @@ def main() -> int:
         tuple(map(float, document["derivation"]["anchor_enu_m"])),
     )
     road = plt.imread(gen.OUTPUT_ROAD)
-    heights = [float(building["height_above_ground_m"]) for building in buildings]
-    height_min = min(heights)
-    height_max = max(heights)
-    height_norm = Normalize(vmin=height_min, vmax=height_max)
-    height_cmap = plt.get_cmap("turbo")
 
-    figure, axes = plt.subplots(1, 3, figsize=(24, 8.2), constrained_layout=True)
-    for axis_index, ax in enumerate(axes):
+    figure, axes = plt.subplots(1, 2, figsize=(17, 8.5), constrained_layout=True)
+    for ax in axes:
         draw_context(ax, document, road)
-        if axis_index == 1:
-            continue
         for building in buildings:
-            facecolor = (
-                height_cmap(height_norm(float(building["height_above_ground_m"])))
-                if axis_index == 0
-                else "#59636f"
-            )
             ax.add_patch(
                 compound_patch(
                     building["footprint"]["outer"],
                     building["footprint"].get("holes", []),
-                    facecolor=facecolor,
+                    facecolor="#59636f",
                     edgecolor="#f1f1f1",
                     linewidth=0.30,
                     alpha=0.96,
@@ -157,42 +115,12 @@ def main() -> int:
                 )
             )
 
-    mesh_edges = dae_xy_triangle_edges(gen.OUTPUT_DAE)
-    axes[1].add_collection(
-        LineCollection(
-            mesh_edges,
-            colors="#00d5ff",
-            linewidths=0.12,
-            alpha=0.42,
-            zorder=5,
-            rasterized=True,
-        )
-    )
-    for building in buildings:
-        axes[1].add_patch(
-            compound_patch(
-                building["footprint"]["outer"],
-                building["footprint"].get("holes", []),
-                facecolor="none",
-                edgecolor="#ffd400",
-                linewidth=0.45,
-                linestyle="--",
-                alpha=0.95,
-                zorder=6,
-            )
-        )
-
-    axes[0].set_title(
-        f"Active PX4 UAV city — height distribution {height_min:g}–{height_max:g} m"
-    )
+    axes[0].set_title(f"Active PX4 UAV city — {len(buildings)} retained buildings")
     axes[1].set_title(
-        "DAE visual triangles (cyan) / YAML + DART collision rings (yellow)"
-    )
-    axes[2].set_title(
         f"Reduction audit — {reduction['removed_count']} of {reduction['source_count']} removed"
     )
     for building in removed_geometry:
-        axes[2].add_patch(
+        axes[1].add_patch(
             compound_patch(
                 [list(point) for point in building.transformed.outer],
                 [[list(point) for point in hole] for hole in building.transformed.holes],
@@ -205,26 +133,16 @@ def main() -> int:
             )
         )
 
-    height_scalar = ScalarMappable(norm=height_norm, cmap=height_cmap)
-    height_scalar.set_array([])
-    colorbar = figure.colorbar(height_scalar, ax=axes[0], fraction=0.045, pad=0.018)
-    colorbar.set_label("Building height above ground (m)")
-
     legend = [
         Patch(facecolor="#59636f", edgecolor="white", label="Retained building"),
         Patch(facecolor="#ff3b30", edgecolor="#8b0000", hatch="//", label="Removed building"),
-        Line2D([], [], color="#00d5ff", lw=2, label="DAE visual triangles"),
-        Line2D([], [], color="#ffd400", lw=2, ls="--", label="YAML / DART collision rings"),
         Line2D([], [], marker="*", markersize=13, color="none", markerfacecolor="#28e77b", markeredgecolor="black", label="PX4 spawn"),
         Line2D([], [], marker="X", markersize=9, color="none", markerfacecolor="#ff5252", markeredgecolor="black", label="Mission goal"),
         Line2D([], [], marker="s", markersize=8, color="none", markerfacecolor="#3aa0ff", markeredgecolor="black", label="Trailer"),
     ]
-    figure.legend(handles=legend, loc="lower center", ncol=7, frameon=True, bbox_to_anchor=(0.5, -0.065))
-    map_size = float(document["map"]["bounds_enu_m"]["x"][1]) - float(
-        document["map"]["bounds_enu_m"]["x"][0]
-    )
+    figure.legend(handles=legend, loc="lower center", ncol=5, frameon=True, bbox_to_anchor=(0.5, -0.065))
     figure.suptitle(
-        f"PX4-ROS2 city map — {map_size:g} x {map_size:g} m, uniform 2.5x XY, exact DART collision prisms",
+        "PX4-ROS2 city map — rolled-back jo XY, 10–20 m skyline, spatial-random 25% reduction",
         fontsize=14,
         weight="bold",
         y=1.025,

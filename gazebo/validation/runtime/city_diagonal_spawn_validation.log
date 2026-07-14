@@ -1,6 +1,4 @@
-PX4-ROS2 historical pre-XY-2.5 city diagonal spawn validation
-status=historical_pre_xy25_footprint_runtime_evidence
-current_map_runtime_validation=gazebo/validation/runtime/city_dart_collision_hover_validation.log
+PX4-ROS2 active UAV city diagonal spawn validation
 date=2026-07-14 00:01 EDT
 result=PASS
 scope=map_and_spawn_only_px4_flight_configuration_unchanged

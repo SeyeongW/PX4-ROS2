@@ -1,10 +1,1 @@
 kind,entity_a,entity_b,measured_clearance_m,required_clearance_m,status
-building_pair,building_011,building_114,2.2527820879,2.9,FAIL
-building_pair,building_014,building_133,2.3588942772,2.9,FAIL
-building_pair,building_015,building_057,0.9719424079,2.9,FAIL
-building_pair,building_033,building_095,2.3771884182,2.9,FAIL
-building_pair,building_047,building_146,2.3409978677,2.9,FAIL
-building_pair,building_050,building_053,2.3075836549,2.9,FAIL
-building_pair,building_076,building_142,1.7753007938,2.9,FAIL
-building_pair,building_141,building_176,1.7752539111,2.9,FAIL
-building_pair,building_174,building_274,2.7451424529,2.9,FAIL

@@ -3,18 +3,14 @@ result=PASS
 repository=/home/xogus/PX4-ROS2
 city_engine=Gazebo Harmonic
 legacy_city_size_m=500x500
-active_uav_city_size_m=1300x1300
+active_uav_city_size_m=1260x1260
 active_uav_city_centroid_spacing_scale=2.5
-active_uav_city_footprint_scale=2.5
-active_uav_city_height_profile=deterministic_active_hash_rank_20_to_50m_mean35_v1
-active_uav_city_height_range_m=20.000000..50.000000
-active_uav_city_height_mean_m=35.000000
-active_uav_city_height_median_m=35.000000
+active_uav_city_footprint_scale=0.9
 active_uav_city_buildings=205
 active_uav_city_removed_buildings=69
 active_uav_city_removal_grid_cells=25
-active_uav_city_collision_geometries=205
-active_uav_city_minimum_building_gap_m=0.971942
+active_uav_city_collision_geometries=1
+active_uav_city_minimum_building_gap_m=13.491759
 active_uav_city_spawn_separation_m=1603.352737
 city_buildings=274
 city_legacy_overlap_pixels=104410
@@ -24,12 +20,12 @@ city_final_visible_road_overlap_pixels=0
 city_building_foundation_alignment=PASS
 city_foundation_extension_m=0.050000..0.050000
 city_building_height_scaling=PASS
-city_source_height_profile=deterministic_hash_rank_10_to_20m_v1
+city_active_height_profile=deterministic_hash_rank_10_to_20m_v1
 city_historical_height_random_factor=2.001288..3.476403
-city_source_height_rank=0..273
-city_source_height_extrema=building_190:10.000000..building_171:20.000000
-city_source_above_ground_height_m=10.000000..20.000000
-city_source_max_roof_z_m=20.000000
+city_active_height_rank=0..273
+city_active_height_extrema=building_190:10.000000..building_171:20.000000
+city_active_above_ground_height_m=10.000000..20.000000
+city_max_roof_z_m=20.000000
 city_visual_collision_terrain_z_alignment=PASS
 city_visual_collision_terrain_z_max_error_m=0.000000000000
 city_heightmap_visual_skirt_depth_m=0.001000
@@ -45,12 +41,12 @@ mountain_deterministic_validator=PASS
 static_preview_drones=0
 legacy_city_and_mountain_trailer_model=flat_platform
 active_uav_city_drone_spawn_enu=587,580,0
-active_uav_city_trailer_model=moving_platform_aruco entity=trailer spawn_enu=-587,-512,0 mean_velocity=0 noise=seo_default_after_px4_spawn
+active_uav_city_trailer_model=trailer_aruco spawn_enu=-587,-512,0 motion=stationary
 trailer_waypoint_driver=gazebo_transport_no_mavros
 px4_dynamic_model=gz_x500_city_rgbd_lidar autostart=4001
 px4_model_repository_symlink=PASS
 px4_local_origin=base_link_model_root_plus_0.24m
-front_rgb_optical_axis=pitch_0deg front_depth=pitch_0deg
+front_rgb_optical_axis=pitch_down_55deg front_depth=pitch_0deg
 coordinate_yaml_obstacles=city:274 mountain_trees:288 maze:0
 path_planning_reference_images=PASS
 active_sim_assets_or_absolute_home_references=0

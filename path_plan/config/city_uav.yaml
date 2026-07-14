@@ -3,15 +3,16 @@
 
 /astar_planner:
   ros__parameters:
-    resolution_m: 2.0
-    inflation_xy_m: 1.45
+    resolution_m: 4.0           # finer keeps the path centred; needed for clean B-spline convergence
+    inflation_xy_m: 1.0         # wall clearance: path-centre >= 1 m from any wall
     roof_clearance_m: 10.0
     cruise_floor_m: 20.0
     cruise_ceiling_m: 30.0
+    overfly_allowed: false      # every building = full-height no-fly column (avoid all)
     max_expanded: 400000
-    # start = PX4 spawn (NE corner of the current map); goal across the city.
+    # start = PX4 spawn (NE corner); goal = stationary trailer (SW corner).
     start_enu_m: [587.0, 580.0, 25.0]
-    goal_enu_m: [-300.0, -300.0, 25.0]
+    goal_enu_m: [-587.0, -512.0, 25.0]
     # Optional ordered via-points (flat [x,y,z, x,y,z, ...]). The path is forced
     # through each, so use them to shape a hard/slalom route. Empty = direct.
     # e.g. [300.0, 300.0, 25.0,  0.0, 100.0, 25.0,  -150.0, -100.0, 25.0]
@@ -25,16 +26,23 @@
 
 /sfc_builder:
   ros__parameters:
-    inflation_xy_m: 1.45
+    inflation_xy_m: 1.0
     roof_clearance_m: 10.0
     cruise_floor_m: 20.0
     cruise_ceiling_m: 30.0
+    overfly_allowed: false
     step_m: 0.5
     max_extent_m: 8.0
     seed_spacing_m: 3.0
 
 /bspline_optimizer:
   ros__parameters:
+    # obstacle model must match the other nodes (used for the rebound collision check)
+    inflation_xy_m: 1.0
+    roof_clearance_m: 10.0
+    cruise_floor_m: 20.0
+    cruise_ceiling_m: 30.0
+    overfly_allowed: false
     # ego-planner corridor B-spline optimizer (L-BFGS + rebound).
     cruise_speed_m_s: 4.0
     ctrl_spacing_m: 5.0     # control-point spacing (also one free box each)
@@ -60,13 +68,13 @@
     z_kp: 0.8            # altitude-hold P gain (decoupled vertical)
     vz_max_m_s: 2.0
     # mpc_ros cost weights
-    w_cte: 2.0          # cross-track error
+    w_cte: 6.0          # cross-track error (raised: tighter path adherence)
     w_epsi: 4.0         # heading error
     w_v: 1.0            # speed vs v_ref
-    w_omega: 0.5        # yaw-rate effort
+    w_omega: 1.0        # yaw-rate effort
     w_a: 0.05           # accel effort
-    w_domega: 2.0       # yaw-rate smoothness
-    w_da: 0.1           # accel smoothness
+    w_domega: 6.0       # yaw-rate smoothness (raised: less weaving)
+    w_da: 0.5           # accel smoothness
     depth_trigger_m: 10.0
     depth_emergency_m: 4.0
     avoid_lateral_m: 7.0

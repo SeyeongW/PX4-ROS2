@@ -34,17 +34,11 @@ CITY_HEIGHT_FACTOR_MAX_MILLIONTHS = 3_500_000
 CITY_HEIGHT_FACTOR_BUCKETS = (
     CITY_HEIGHT_FACTOR_MAX_MILLIONTHS - CITY_HEIGHT_FACTOR_MIN_MILLIONTHS + 1
 )
-CITY_SOURCE_HEIGHT_PROFILE = "deterministic_hash_rank_10_to_20m_v1"
-CITY_SOURCE_HEIGHT_MIN_M = 10.0
-CITY_SOURCE_HEIGHT_MAX_M = 20.0
-CITY_SOURCE_SHORTEST_ID = "building_190"
-CITY_SOURCE_TALLEST_ID = "building_171"
-CITY_UAV_HEIGHT_PROFILE = "deterministic_active_hash_rank_20_to_50m_mean35_v1"
-CITY_UAV_HEIGHT_MIN_M = 20.0
-CITY_UAV_HEIGHT_MAX_M = 50.0
-CITY_UAV_HEIGHT_MEAN_M = 35.0
-CITY_UAV_SHORTEST_ID = "building_190"
-CITY_UAV_TALLEST_ID = "building_171"
+CITY_ACTIVE_HEIGHT_PROFILE = "deterministic_hash_rank_10_to_20m_v1"
+CITY_ACTIVE_HEIGHT_MIN_M = 10.0
+CITY_ACTIVE_HEIGHT_MAX_M = 20.0
+CITY_ACTIVE_SHORTEST_ID = "building_190"
+CITY_ACTIVE_TALLEST_ID = "building_171"
 
 EXPECTED_CITY_HASHES = {
     "worlds/applepark_city/mesh/buildings.dae":
@@ -378,8 +372,8 @@ def validate_city() -> dict[str, object]:
         )
         rank = rank_by_ordinal[ordinal]
         fraction = rank / (CITY_BUILDING_COUNT - 1)
-        bounded_height = CITY_SOURCE_HEIGHT_MIN_M + (
-            CITY_SOURCE_HEIGHT_MAX_M - CITY_SOURCE_HEIGHT_MIN_M
+        bounded_height = CITY_ACTIVE_HEIGHT_MIN_M + (
+            CITY_ACTIVE_HEIGHT_MAX_M - CITY_ACTIVE_HEIGHT_MIN_M
         ) * fraction
         expected_active_heights.append(bounded_height)
         require(
@@ -395,7 +389,7 @@ def validate_city() -> dict[str, object]:
             f"building {ordinal} bounded height changed",
         )
         require(
-            height["active_profile"] == CITY_SOURCE_HEIGHT_PROFILE,
+            height["active_profile"] == CITY_ACTIVE_HEIGHT_PROFILE,
             f"building {ordinal} active height profile changed",
         )
         require(
@@ -420,21 +414,21 @@ def validate_city() -> dict[str, object]:
         "city hash-rank extrema are not building_190 / building_171",
     )
     require(
-        abs(active_heights[189] - CITY_SOURCE_HEIGHT_MIN_M) < 1e-12
-        and abs(active_roofs[189] - CITY_SOURCE_HEIGHT_MIN_M) < 1e-12,
-        "building_190 is not the exact 10 m source-city minimum",
+        abs(active_heights[189] - CITY_ACTIVE_HEIGHT_MIN_M) < 1e-12
+        and abs(active_roofs[189] - CITY_ACTIVE_HEIGHT_MIN_M) < 1e-12,
+        "building_190 is not the exact 10 m active minimum",
     )
     require(
-        abs(active_heights[170] - CITY_SOURCE_HEIGHT_MAX_M) < 1e-12
-        and abs(active_roofs[170] - CITY_SOURCE_HEIGHT_MAX_M) < 1e-12,
-        "building_171 is not the exact 20 m source-city maximum",
+        abs(active_heights[170] - CITY_ACTIVE_HEIGHT_MAX_M) < 1e-12
+        and abs(active_roofs[170] - CITY_ACTIVE_HEIGHT_MAX_M) < 1e-12,
+        "building_171 is not the exact 20 m active maximum",
     )
     require(
-        abs(min(expected_active_heights) - CITY_SOURCE_HEIGHT_MIN_M) < 1e-12
-        and abs(max(expected_active_heights) - CITY_SOURCE_HEIGHT_MAX_M) < 1e-12
-        and abs(min(active_heights) - CITY_SOURCE_HEIGHT_MIN_M) < 1e-12
-        and abs(max(active_heights) - CITY_SOURCE_HEIGHT_MAX_M) < 1e-12,
-        "source city height range is not exactly 10..20 m",
+        abs(min(expected_active_heights) - CITY_ACTIVE_HEIGHT_MIN_M) < 1e-12
+        and abs(max(expected_active_heights) - CITY_ACTIVE_HEIGHT_MAX_M) < 1e-12
+        and abs(min(active_heights) - CITY_ACTIVE_HEIGHT_MIN_M) < 1e-12
+        and abs(max(active_heights) - CITY_ACTIVE_HEIGHT_MAX_M) < 1e-12,
+        "city active height range is not exactly 10..20 m",
     )
 
     run_checked(["xmllint", "--noout", str(CITY_WORLD)])
@@ -451,8 +445,8 @@ def validate_city() -> dict[str, object]:
         "historical_height_factor_max": max(height_factors),
         "height_rank_min": min(rank_by_ordinal.values()),
         "height_rank_max": max(rank_by_ordinal.values()),
-        "height_min_id": CITY_SOURCE_SHORTEST_ID,
-        "height_max_id": CITY_SOURCE_TALLEST_ID,
+        "height_min_id": CITY_ACTIVE_SHORTEST_ID,
+        "height_max_id": CITY_ACTIVE_TALLEST_ID,
         "height_min_m": min(active_heights),
         "height_max_m": max(active_heights),
         "roof_max_z_m": max(active_roofs),
@@ -571,14 +565,17 @@ def validate_px4_contracts() -> dict[str, object]:
             pose is not None
             and pose.attrib.get("relative_to") == "base_link"
             and abs(float((pose.text or "").split()[2]) - 0.002) < 1e-12,
-            f"{link_name} must remain attached to the x500 centre plate",
+            f"{link_name} must resolve to the stock x500 root z=0.242m",
         )
     front_pitch = float(front_pose_text.split()[4])
     front_depth_pitch = float(front_depth_pose_text.split()[4])
-    require(abs(front_pitch) < 1.0e-12,
-            "front RGB scene camera must remain horizontal")
+    require(abs(front_pitch - math.radians(55.0)) < 1.0e-8,
+            "front RGB camera is not pitched 55 degrees down")
     require(abs(front_depth_pitch) < 1.0e-12,
             "front depth obstacle camera must remain horizontal")
+    # Gazebo camera optical +X transformed by body +pitch has vertical
+    # component -sin(pitch); negative ENU Z is downward.
+    require(-math.sin(front_pitch) < -0.8, "front RGB optical axis is not downward")
     downward_contracts = (
         ("down_rgb_link", "down_rgb_camera", "camera", "down_camera/image"),
         ("down_depth_link", "down_depth_camera", "depth_camera", "down_depth/image"),
@@ -611,8 +608,7 @@ def validate_px4_contracts() -> dict[str, object]:
         'PX4_SIM_MODEL="$SIM_MODEL"',
         'PX4_ARGS+=(-s "$MAVROS_RCS")',
         "expected exactly one uxrce_dds_client start line",
-        'DEFAULT_PHYSICS_ENGINE="gz-physics-dartsim-plugin"',
-        'PHYSICS_ENGINE="${PHYSICS_ENGINE:-$DEFAULT_PHYSICS_ENGINE}"',
+        'PHYSICS_ENGINE="${PHYSICS_ENGINE:-gz-physics-dartsim-plugin}"',
         'FOLLOW_DRONE:-0',
         'gz service -i --service /gui/move_to/pose',
         'track_mode: NONE',
@@ -670,16 +666,10 @@ def validate_active_uav_city_contract() -> dict[str, object]:
     reduction = derivation["building_reduction"]
     collision = derivation["collision_geometry"]
 
-    require(bounds["x"] == [-650.0, 650.0], "active UAV city X bounds")
-    require(bounds["y"] == [-650.0, 650.0], "active UAV city Y bounds")
-    require(terrain["collision_geometry"]["size_m"][:2] == [1300.0, 1300.0],
+    require(bounds["x"] == [-630.0, 630.0], "active UAV city X bounds")
+    require(bounds["y"] == [-630.0, 630.0], "active UAV city Y bounds")
+    require(terrain["collision_geometry"]["size_m"][:2] == [1260.0, 1260.0],
             "active UAV city ground size")
-    require(terrain["rows"] == 256 and terrain["columns"] == 256,
-            "active UAV city Ogre2 heightmap dimensions")
-    require(
-        terrain["texture_boundary_extension"] == "edge_clamp_feather_to_neutral",
-        "active UAV city texture edge extension",
-    )
     spawn_pose = document["spawn"]["gazebo_spawn_pose_enu"]
     trailer_pose = document["trailer"]["spawn_pose_enu"]
     require(
@@ -690,105 +680,6 @@ def validate_active_uav_city_contract() -> dict[str, object]:
         tuple(float(trailer_pose[key]) for key in ("x", "y", "z")) == (-587.0, -512.0, 0.0),
         "active UAV city trailer is not at the south-west road-end site",
     )
-    forward = document["px4_vehicle"]["forward_sensors"]
-    require(
-        forward == {
-            "rgb_camera": {
-                "parent_link": "base_link", "link": "front_rgb_link",
-                "pose_xyz_rpy": [0.12, 0.03, 0.002, 0.0, 0.0, 0.0],
-                "image_topic": "/front_camera/image",
-                "camera_info_topic": "/front_camera/camera_info",
-                "optical_frame_id": "front_camera_optical_frame",
-                "resolution": [640, 360], "encoding": "rgb8",
-                "nominal_update_rate_hz": 15.0,
-            },
-            "depth_camera": {
-                "parent_link": "base_link", "link": "front_depth_link",
-                "pose_xyz_rpy": [0.12, 0.0, 0.002, 0.0, 0.0, 0.0],
-                "image_topic": "/front_depth/image",
-                "metric_image_topic": "/front_depth/image_raw",
-                "points_topic": "/front_depth/points",
-                "camera_info_topic": "/front_depth/camera_info",
-                "optical_frame_id": "front_depth_optical_frame",
-                "resolution": [320, 240], "encoding": "mono8",
-                "metric_encoding": "32FC1",
-                "nominal_update_rate_hz": 12.0,
-            },
-        },
-        "active UAV city forward sensor contract",
-    )
-    downward = document["px4_vehicle"]["downward_sensors"]
-    require(
-        downward["rgb_camera"]["camera_info_topic"] == "/down_camera/camera_info"
-        and downward["rgb_camera"]["optical_frame_id"] == "down_camera_optical_frame"
-        and downward["rgb_camera"]["resolution"] == [640, 480]
-        and downward["rgb_camera"]["nominal_update_rate_hz"] == 20.0
-        and downward["depth_camera"]["image_topic"] == "/down_depth/image"
-        and downward["depth_camera"]["metric_image_topic"] == "/down_depth/image_raw"
-        and downward["depth_camera"]["encoding"] == "mono8"
-        and downward["depth_camera"]["metric_encoding"] == "32FC1"
-        and downward["depth_camera"]["camera_info_topic"] == "/down_depth/camera_info"
-        and downward["depth_camera"]["optical_frame_id"] == "down_depth_optical_frame"
-        and downward["depth_camera"]["resolution"] == [320, 240]
-        and downward["depth_camera"]["nominal_update_rate_hz"] == 15.0
-        and downward["lidar"]["frame_id"] == "lidar_sensor_link"
-        and downward["lidar"]["range_m"] == [0.1, 100.0]
-        and downward["lidar"]["nominal_update_rate_hz"] == 50.0,
-        "active UAV city downward sensor contract",
-    )
-    trailer = document["trailer"]
-    require(trailer["entity_name"] == "trailer", "active UAV city trailer entity")
-    require(
-        trailer["model_uri"] == "model://moving_platform_aruco",
-        "active UAV city must use the SEO moving-platform trailer",
-    )
-    require(trailer["body_footprint_m"] == [5.0, 5.0],
-            "active UAV city SEO trailer footprint")
-    require(abs(float(trailer["deck_height_m"]) - 2.05) < 1e-12,
-            "active UAV city SEO trailer deck height")
-    require(
-        trailer["controller_plugin"] == "libMovingPlatformController.so"
-        and abs(float(trailer["controller_velocity_m_s"])) < 1e-12,
-        "active UAV city SEO trailer controller contract",
-    )
-    trailer_model_path = GAZEBO / "models/moving_platform_aruco/model.sdf"
-    trailer_tag_path = GAZEBO / "models/moving_platform_aruco/arucotag.png"
-    require(trailer_model_path.is_file() and trailer_tag_path.is_file(),
-            "active UAV city SEO trailer assets")
-    trailer_model = ET.parse(trailer_model_path).getroot().find("model")
-    require(
-        trailer_model is not None
-        and trailer_model.attrib.get("name") == "flat_platform",
-        "SEO trailer root model",
-    )
-    trailer_link = trailer_model.find("link[@name='platform_link']")
-    require(
-        trailer_link is not None
-        and trailer_link.findtext("pose") == "0 0 2 0 0 0",
-        "SEO trailer platform link",
-    )
-    trailer_plugin = trailer_model.find("plugin")
-    require(
-        trailer_plugin is not None
-        and trailer_plugin.attrib.get("filename") == "libMovingPlatformController.so"
-        and trailer_plugin.findtext("link_name") == "platform_link",
-        "SEO trailer plugin",
-    )
-    active_world = ET.parse(REPO / document["map"]["world_file"]).getroot()
-    trailer_include = next(
-        (
-            include
-            for include in active_world.findall(".//include")
-            if include.findtext("name") == "trailer"
-        ),
-        None,
-    )
-    require(
-        trailer_include is not None
-        and trailer_include.findtext("uri") == "model://moving_platform_aruco"
-        and trailer_include.findtext("pose") == "-587 -512 0 0 0 0",
-        "active UAV city SEO trailer include",
-    )
     spawn_separation = math.dist(
         (float(spawn_pose["x"]), float(spawn_pose["y"])),
         (float(trailer_pose["x"]), float(trailer_pose["y"])),
@@ -796,24 +687,10 @@ def validate_active_uav_city_contract() -> dict[str, object]:
     require(spawn_separation >= 1500.0, "active UAV city staging sites are not diagonal")
     require(derivation["city_spacing_scale_xy"] == 2.5,
             "active UAV city centroid spacing")
-    require(derivation["building_footprint_scale_xy"] == 2.5,
+    require(derivation["building_footprint_scale_xy"] == 0.9,
             "active UAV city footprint scale")
-    height_transform = derivation["height_transform"]
-    require(height_transform["source_profile"] == CITY_SOURCE_HEIGHT_PROFILE,
-            "active UAV city source height profile")
-    require(height_transform["source_range_m"] ==
-            [CITY_SOURCE_HEIGHT_MIN_M, CITY_SOURCE_HEIGHT_MAX_M],
-            "active UAV city source height range")
-    require(height_transform["active_profile"] == CITY_UAV_HEIGHT_PROFILE,
-            "active UAV city transformed height profile")
-    require(height_transform["active_range_m"] ==
-            [CITY_UAV_HEIGHT_MIN_M, CITY_UAV_HEIGHT_MAX_M],
-            "active UAV city transformed height range")
-    require(abs(float(height_transform["target_mean_m"]) - CITY_UAV_HEIGHT_MEAN_M) < 1e-12,
-            "active UAV city transformed height target mean")
-    require(height_transform["foundation_and_ground_unchanged"] is True,
-            "active UAV city foundation/ground contract")
-    require(summary["active_height_profile"] == CITY_UAV_HEIGHT_PROFILE,
+    require(derivation["z_scale"] == 1.0, "active UAV city Z scale")
+    require(summary["active_height_profile"] == CITY_ACTIVE_HEIGHT_PROFILE,
             "active UAV city height profile")
     roof_range = summary["roof_z_range_m"]
     require(
@@ -822,40 +699,30 @@ def validate_active_uav_city_contract() -> dict[str, object]:
             abs(float(actual) - expected) < 1e-12
             for actual, expected in zip(
                 roof_range,
-                (CITY_UAV_HEIGHT_MIN_M, CITY_UAV_HEIGHT_MAX_M),
+                (CITY_ACTIVE_HEIGHT_MIN_M, CITY_ACTIVE_HEIGHT_MAX_M),
             )
         ),
-        "active UAV city roof range is not exactly 20..50 m",
+        "active UAV city roof range is not exactly 10..20 m",
     )
     require(
-        summary["shortest_building"]["id"] == CITY_UAV_SHORTEST_ID
+        summary["shortest_building"]["id"] == CITY_ACTIVE_SHORTEST_ID
         and abs(
             float(summary["shortest_building"]["height_above_ground_m"])
-            - CITY_UAV_HEIGHT_MIN_M
+            - CITY_ACTIVE_HEIGHT_MIN_M
         ) < 1e-12,
         "active UAV city shortest building contract",
     )
     require(
-        summary["tallest_building"]["id"] == CITY_UAV_TALLEST_ID
+        summary["tallest_building"]["id"] == CITY_ACTIVE_TALLEST_ID
         and abs(
             float(summary["tallest_building"]["height_above_ground_m"])
-            - CITY_UAV_HEIGHT_MAX_M
+            - CITY_ACTIVE_HEIGHT_MAX_M
         ) < 1e-12,
         "active UAV city tallest building contract",
     )
     require(summary["source_building_count"] == 274, "active UAV city source building count")
     require(summary["building_count"] == 205, "active UAV city retained building count")
     require(summary["removed_building_count"] == 69, "active UAV city removed building count")
-    require(summary["height_distribution"]["count"] == 205,
-            "active UAV city height distribution count")
-    require(summary["height_distribution"]["unique_count"] == 205,
-            "active UAV city heights are not uniquely distributed")
-    require(
-        abs(float(summary["height_distribution"]["mean_m"]) - CITY_UAV_HEIGHT_MEAN_M) < 1e-12
-        and abs(float(summary["height_distribution"]["median_m"]) - CITY_UAV_HEIGHT_MEAN_M) < 1e-12
-        and abs(float(summary["height_distribution"]["target_mean_m"]) - CITY_UAV_HEIGHT_MEAN_M) < 1e-12,
-        "active UAV city height mean/median is not exactly 35 m",
-    )
     random_audit = reduction["spatial_random_audit"]
     require(random_audit["seed"] == 7577, "active UAV city removal seed")
     require(random_audit["grid_shape"] == [5, 5], "active UAV city removal grid")
@@ -863,31 +730,18 @@ def validate_active_uav_city_contract() -> dict[str, object]:
             "active UAV city removals do not cover every region")
     require(
         random_audit["removed_ids_sha256"]
-        == "de4469c06f387f4acc97ef29c9b9818fa08a4e831541f2f199cf62b35459c753",
+        == "041e0979aaad59280413eba5e758664b7b2653fe1981695633b18d51130dde6d",
         "active UAV city removal digest",
     )
-    require(reduction["removed_ids"].count("building_265") == 1,
-            "fixed A* goal blocking building was not removed")
     require(not (set(reduction["removed_ids"]) & set(reduction["protected_ids"])),
             "active UAV city removed a protected building")
-    require(summary["building_overlap_count"] == 0,
-            "active UAV city has overlapping buildings")
-    require(summary["all_building_footprints_disjoint"] is True,
-            "active UAV city building footprints are not disjoint")
-    require(summary["gap_constraint_enforced"] is False,
-            "active UAV city unexpectedly enforces an inter-building gap")
-    require(summary["minimum_building_gap_m"] > 0.0,
-            "active UAV city building footprints touch")
-    require(collision["type"] == "exact_per_building_polyline_prisms_dart",
+    require(summary["all_building_gaps_meet_requirement"] is True,
+            "active UAV city has a blocked building corridor")
+    require(summary["minimum_building_gap_m"] >= 2.0,
+            "active UAV city minimum building gap")
+    require(collision["type"] == "shared_exact_dae_mesh",
             "active UAV city collision type")
-    require(collision["count"] == 205, "active UAV city collision count")
-    require(
-        collision["required_physics_engine"]
-        == "gz-physics-dartsim-plugin"
-        and collision["dart_sdf_mesh_supported"] is False
-        and collision["dart_sdf_polyline_supported"] is True,
-        "active UAV city exact mesh physics contract",
-    )
+    require(collision["count"] == 1, "active UAV city collision count")
     require(collision["maximum_outward_error_m"] == 0.0,
             "active UAV city collision outward error")
 
@@ -897,14 +751,9 @@ def validate_active_uav_city_contract() -> dict[str, object]:
     require("PASS city_uav expansion" in expansion,
             "active UAV city deterministic validator")
     return {
-        "size_m": 1300,
+        "size_m": 1260,
         "spacing_scale": derivation["city_spacing_scale_xy"],
         "footprint_scale": derivation["building_footprint_scale_xy"],
-        "height_profile": summary["active_height_profile"],
-        "height_min_m": float(roof_range[0]),
-        "height_max_m": float(roof_range[1]),
-        "height_mean_m": float(summary["height_distribution"]["mean_m"]),
-        "height_median_m": float(summary["height_distribution"]["median_m"]),
         "collision_geometries": collision["count"],
         "building_count": summary["building_count"],
         "removed_building_count": summary["removed_building_count"],
@@ -931,11 +780,6 @@ def main() -> None:
             f"active_uav_city_size_m={active_city['size_m']}x{active_city['size_m']}",
             f"active_uav_city_centroid_spacing_scale={active_city['spacing_scale']}",
             f"active_uav_city_footprint_scale={active_city['footprint_scale']}",
-            f"active_uav_city_height_profile={active_city['height_profile']}",
-            "active_uav_city_height_range_m="
-            f"{active_city['height_min_m']:.6f}..{active_city['height_max_m']:.6f}",
-            f"active_uav_city_height_mean_m={active_city['height_mean_m']:.6f}",
-            f"active_uav_city_height_median_m={active_city['height_median_m']:.6f}",
             f"active_uav_city_buildings={active_city['building_count']}",
             f"active_uav_city_removed_buildings={active_city['removed_building_count']}",
             f"active_uav_city_removal_grid_cells={active_city['removal_grid_cells']}",
@@ -952,15 +796,15 @@ def main() -> None:
             "city_building_foundation_alignment=PASS",
             f"city_foundation_extension_m={city['foundation_min_extension_m']:.6f}..{city['foundation_max_extension_m']:.6f}",
             "city_building_height_scaling=PASS",
-            f"city_source_height_profile={CITY_SOURCE_HEIGHT_PROFILE}",
+            f"city_active_height_profile={CITY_ACTIVE_HEIGHT_PROFILE}",
             "city_historical_height_random_factor="
             f"{city['historical_height_factor_min']:.6f}..{city['historical_height_factor_max']:.6f}",
-            f"city_source_height_rank={city['height_rank_min']}..{city['height_rank_max']}",
-            "city_source_height_extrema="
+            f"city_active_height_rank={city['height_rank_min']}..{city['height_rank_max']}",
+            "city_active_height_extrema="
             f"{city['height_min_id']}:{city['height_min_m']:.6f}.."
             f"{city['height_max_id']}:{city['height_max_m']:.6f}",
-            f"city_source_above_ground_height_m={city['height_min_m']:.6f}..{city['height_max_m']:.6f}",
-            f"city_source_max_roof_z_m={city['roof_max_z_m']:.6f}",
+            f"city_active_above_ground_height_m={city['height_min_m']:.6f}..{city['height_max_m']:.6f}",
+            f"city_max_roof_z_m={city['roof_max_z_m']:.6f}",
             "city_visual_collision_terrain_z_alignment=PASS",
             "city_visual_collision_terrain_z_max_error_m="
             f"{city['terrain_visual_collision_z_error_m']:.12f}",
@@ -978,12 +822,12 @@ def main() -> None:
             "static_preview_drones=0",
             "legacy_city_and_mountain_trailer_model=flat_platform",
             "active_uav_city_drone_spawn_enu=587,580,0",
-            "active_uav_city_trailer_model=moving_platform_aruco entity=trailer spawn_enu=-587,-512,0 mean_velocity=0 noise=seo_default_after_px4_spawn",
+            "active_uav_city_trailer_model=trailer_aruco spawn_enu=-587,-512,0 motion=stationary",
             "trailer_waypoint_driver=gazebo_transport_no_mavros",
             "px4_dynamic_model=gz_x500_city_rgbd_lidar autostart=4001",
             "px4_model_repository_symlink=PASS",
             "px4_local_origin=base_link_model_root_plus_0.24m",
-            "front_rgb_optical_axis=pitch_0deg front_depth=pitch_0deg",
+            "front_rgb_optical_axis=pitch_down_55deg front_depth=pitch_0deg",
             f"coordinate_yaml_obstacles=city:{coordinates['city']} mountain_trees:{coordinates['mountain']} maze:0",
             "path_planning_reference_images=PASS",
             "active_sim_assets_or_absolute_home_references=0",

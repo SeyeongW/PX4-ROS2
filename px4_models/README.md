@@ -7,9 +7,7 @@
 ## 모델 목록
 
 ### `x500_city_rgbd_lidar`
-PX4 기본 쿼드콥터 `x500`에 이 저장소가 직접 정의한 전방 RGB/depth, 하방
-RGB/depth 및 단일빔 라이다 payload를 장착한 모델입니다. 외부 OAK-D/LW20
-모델 include에 의존하지 않습니다.
+PX4 기본 쿼드콥터 `x500` + **전방 뎁스카메라(OAK-D Lite)** + **하방 라이다(LW20)**.
 
 - 전방 RGB: `/front_camera/image`, `/front_camera/camera_info`
 - 전방 depth: `/front_depth/image`(mono8 표시용), `/front_depth/image_raw`(32FC1 거리), `/front_depth/points`, `/front_depth/camera_info`

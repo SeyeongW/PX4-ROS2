@@ -1,2 +1,2 @@
 scale,feasible,overlap_count,minimum_neighbor_gap_m,spawn_clearance_m,goal_clearance_m,trailer_spawn_clearance_m,endpoint_clearance_m,trailer_route_clearance_m,reasons
-2.5,true,0,0.9719424079,28.2247894584,17.6083549097,31.6158610205,38.0431910547,0,
+0.9,true,0,13.4917590132,34.6264225057,15.3055958806,48.5170084435,52.9920770616,5.877113274,

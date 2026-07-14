@@ -32,7 +32,7 @@ PX4-ROS2/
 │   ├── worlds/ugv_drone.world            # 300 m 산악 드론 월드
 │   ├── worlds/ugv_drone_map.world        # 300 m 산악맵(PX4 런타임 스폰 대상)
 │   ├── worlds/applepark_city/             # 500 m 소스/회귀용 도시 자산
-│   ├── worlds/applepark_city_uav/         # 1300 m UAV 도시(205개, 균일 2.5x XY, 20–50 m·평균 35 m 스카이라인)
+│   ├── worlds/applepark_city_uav/         # 1260 m UAV 도시(205개, jo 2.5x/0.9x XY, 10–20 m 스카이라인)
 │   ├── launch/camera_bridge.launch.py    # Gazebo → ROS 2 카메라 브리지
 │   ├── install_apt_deps.sh
 │   ├── run_world.sh                      # city/mountain 맵 전용 실행기
@@ -231,12 +231,10 @@ MAVROS/MAVLink 전용입니다. 실행기가 PX4의 임시 rcS 사본에서 DDS 
 Gazebo ENU와 PX4 NED 변환을 분리해 기록했습니다. 상세 내용은
 [`gazebo/MAPS.md`](gazebo/MAPS.md)를 참고하세요.
 활성 도시맵은 274개 중 69개를 제거한 205개 건물을 사용하며,
-`origin/main` 초기 도시 비율을 따라 중심점과 XY 발자국을 모두 2.5x로 확대했습니다. 평면 지면은
-`z=0`, 기초는 `-0.05..0 m`, 지붕 고도는 재현 가능한 해시 순위 난수
-분포로 정확히 `20..50 m`, 평균 `35 m`입니다.
+`jo` 기준 2.5x 중심점·0.9x XY 발자국을 그대로 복원했습니다. 평면 지면은
+`z=0`, 기초는 `-0.05..0 m`, 지붕 고도는 정확히 `10..20 m`입니다.
 69개 제거 대상은 시드 `7577`의 5x5 공간 층화 난수 방식으로 지도 전역에
-분산됩니다. 유지 건물의 ID·중심 좌표·기초 높이는 그대로 두고, 각 건물의
-XY 발자국과 지붕 높이 프로파일만 위 계약대로 재생성합니다.
+분산됩니다. 유지 건물의 XY 크기와 좌표는 변경하지 않습니다.
 
 Gazebo GUI는 스폰 위치 가까이에서 시작하지만 드론에 화면을 고정하지 않습니다.
 명시적으로 추적이 필요할 때만 `FOLLOW_DRONE=1 ./gazebo/run_px4_map.sh city`를

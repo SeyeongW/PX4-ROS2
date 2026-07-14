@@ -70,7 +70,16 @@ class WorldModel:
         roof_clearance_m: float = 10.0,
         ground_clearance_m: float = 0.0,
         ceiling_m: float = 30.0,
+        overfly_allowed: bool = True,
     ) -> "WorldModel":
+        """Load building AABB obstacles from a city coordinate YAML.
+
+        ``inflation_xy_m`` is the horizontal wall clearance (path-centre keeps at
+        least this far from any wall).  When ``overfly_allowed`` is False every
+        building is treated as a full-height no-fly column (top set well above the
+        ceiling), so the vehicle must route around *all* buildings laterally
+        regardless of their height instead of flying over short ones.
+        """
         document = yaml.safe_load(Path(yaml_path).read_text(encoding="utf-8"))
         buildings = _find_buildings(document) or []
         lows, highs = [], []
@@ -81,9 +90,10 @@ class WorldModel:
             x1, y1 = pts.max(axis=0)
             z0 = float(b.get("foundation_z_m", 0.0))
             z1 = float(b["roof_z_m"])
+            top = (z1 + vertical_margin_m + roof_clearance_m if overfly_allowed
+                   else ceiling_m + 1.0e4)               # full-height column
             lows.append((x0 - inflation_xy_m, y0 - inflation_xy_m, z0 - vertical_margin_m))
-            highs.append((x1 + inflation_xy_m, y1 + inflation_xy_m,
-                          z1 + vertical_margin_m + roof_clearance_m))
+            highs.append((x1 + inflation_xy_m, y1 + inflation_xy_m, top))
         bounds = document.get("map", {}).get("bounds_enu_m", {})
         xb = bounds.get("x", [-1e4, 1e4])
         yb = bounds.get("y", [-1e4, 1e4])

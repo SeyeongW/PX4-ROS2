@@ -3,7 +3,7 @@ front_aruco_pose:
     use_sim_time: true
     image_topic: /front_camera/image
     camera_info_topic: /front_camera/camera_info
-    depth_topic: /front_depth/image_raw
+    depth_topic: /front_depth/image
     optical_frame_id: front_camera_optical_frame
     target_frame: base_link
     aruco_dictionary: DICT_4X4_50

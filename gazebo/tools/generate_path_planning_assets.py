@@ -354,9 +354,6 @@ def city_document(buildings: list[dict[str, object]]) -> dict[str, object]:
                     "link": "down_depth_link",
                     "pose_xyz_rpy": [0.0, -0.03, -0.05, 0.0, 1.57079632679, 0.0],
                     "image_topic": "/down_depth/image",
-                    "metric_image_topic": "/down_depth/image_raw",
-                    "encoding": "mono8",
-                    "metric_encoding": "32FC1",
                     "points_topic": "/down_depth/points",
                 },
                 "lidar": {

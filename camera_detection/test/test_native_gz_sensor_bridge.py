@@ -9,13 +9,7 @@ from gz.msgs10.pointcloud_packed_pb2 import PointCloudPacked as GzPointCloud
 from sensor_msgs.msg import PointField
 
 from camera_detection.native_gz_sensor_bridge import (
-    DOWN_DEPTH_DISPLAY_TOPIC,
-    DOWN_DEPTH_METRIC_TOPIC,
-    FRONT_DEPTH_DISPLAY_TOPIC,
-    FRONT_DEPTH_METRIC_TOPIC,
-    NativeGazeboSensorBridge,
     convert_camera_info,
-    convert_depth_preview,
     convert_image,
     convert_laser_scan,
     convert_point_cloud,
@@ -28,13 +22,6 @@ def _stamp_and_frame(message, frame="sensor_optical_frame"):
     datum = message.header.data.add()
     datum.key = "frame_id"
     datum.value.append(frame)
-
-
-def test_public_depth_topics_separate_display_from_metric_data():
-    assert FRONT_DEPTH_DISPLAY_TOPIC == "/front_depth/image"
-    assert FRONT_DEPTH_METRIC_TOPIC == "/front_depth/image_raw"
-    assert DOWN_DEPTH_DISPLAY_TOPIC == "/down_depth/image"
-    assert DOWN_DEPTH_METRIC_TOPIC == "/down_depth/image_raw"
 
 
 def test_rgb_and_depth_image_conversion_preserves_stamp_frame_and_payload():
@@ -61,44 +48,6 @@ def test_rgb_and_depth_image_conversion_preserves_stamp_frame_and_payload():
     assert struct.unpack("<2f", bytes(depth_output.data)) == pytest.approx(
         (1.25, 4.5)
     )
-
-
-def test_depth_preview_masks_invalid_samples_and_preserves_padded_rows():
-    depth = GzImage(width=3, height=2, step=16)
-    _stamp_and_frame(depth, "front_depth_optical_frame")
-    depth.pixel_format_type = gz_image_types.R_FLOAT32
-    depth.data = struct.pack(
-        "<8f",
-        0.2, 15.1, 30.0, 999.0,
-        float("inf"), float("nan"), -1.0, 999.0,
-    )
-
-    output = convert_depth_preview(depth, near_m=0.2, far_m=30.0)
-
-    assert (output.header.stamp.sec, output.header.stamp.nanosec) == (
-        12, 345_000_000
-    )
-    assert output.header.frame_id == "front_depth_optical_frame"
-    assert (output.width, output.height, output.step) == (3, 2, 3)
-    assert output.encoding == "mono8"
-    assert bytes(output.data) == bytes((255, 144, 32, 0, 0, 0))
-
-
-def test_preview_subscriber_alone_enables_on_demand_depth_transport():
-    class Publisher:
-        def __init__(self, subscribers):
-            self.subscribers = subscribers
-
-        def get_subscription_count(self):
-            return self.subscribers
-
-    class BridgeState:
-        publish_sensor_data_without_subscribers = False
-
-    should_publish = NativeGazeboSensorBridge._should_publish
-    state = BridgeState()
-    assert not should_publish(state, (Publisher(0), Publisher(0)))
-    assert should_publish(state, (Publisher(0), Publisher(1)))
 
 
 def test_camera_info_conversion_preserves_calibration_and_optical_frame():

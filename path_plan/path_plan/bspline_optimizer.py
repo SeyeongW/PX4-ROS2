@@ -160,6 +160,11 @@ class BsplineOptimizer:
         ts = max(length / (self.cruise * (K + 2 - self.p)), 1e-2)
         q = UniformBspline.parameterize_to_bspline(ts, interp_pts)  # (K+2,3)
         n = len(q)
+        
+        # Enforce exact clamping at start and end to guarantee Pos(0) == wp[0]
+        q[:self.p] = wp[0]
+        q[-self.p:] = wp[-1]
+        
         ref = self._resample(wp, n)                           # guide per ctrl pt
         corridor = self.sfc.boxes_for_points(ref)             # free box per ctrl pt
 

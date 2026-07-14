@@ -59,9 +59,6 @@ px4_vehicle:
       - 1.57079632679
       - 0.0
       image_topic: /down_depth/image
-      metric_image_topic: /down_depth/image_raw
-      encoding: mono8
-      metric_encoding: 32FC1
       points_topic: /down_depth/points
     lidar:
       parent_link: base_link
