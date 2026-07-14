@@ -8,12 +8,12 @@
 base_map: gazebo/maps/city_coordinates_uav.yaml   # buildings + geofence (unchanged)
 
 drone:
-  spawn_enu_m: [587.0, 580.0, 25.0]   # NE corner (base-map spawn), cruise altitude 25 m
-  cruise_floor_m: 20.0
-  cruise_ceiling_m: 30.0
+  spawn_enu_m: [587.0, 580.0, 15.0]   # NE corner (base-map spawn), mid-band cruise 15 m
+  cruise_floor_m: 10.0                # 10-20 m cruise band (same as visualize_pipeline)
+  cruise_ceiling_m: 20.0
   cruise_speed_m_s: 10.0               # faster than the trailer so it can intercept
   inflation_xy_m: 1.0                 # 1 m wall clearance
-  overfly_allowed: false              # avoid every building laterally
+  overfly_allowed: true               # climb within the 10-20 m band to overfly buildings
 
 trailer:
   motion: perimeter_square_loop

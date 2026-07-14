@@ -29,6 +29,33 @@
 
 ## 최근 작업 (최신 위)
 
+### 2026-07-14 — pursuit_sim에 visualize_pipeline 시각화 로직 이식 + 회랑박스 누락 수정
+- **팔레트 통일**: `pursuit_sim.py`에 `visualize_pipeline.py`와 동일한 색 상수
+  (`C_OBST/C_SFC/C_ASTAR/C_BSPL/C_MPC` + pursuit 전용 `C_TRAIL`) 도입. 드론 추종
+  궤적을 파이프라인과 동일하게 마젠타(MPC), B-spline 초록, SFC 파랑으로 정렬
+  (기존 빨강 B-spline/연두 드론 → 파이프라인 규약에 맞춤). animate 색도 통일.
+- **SFC 회랑박스 채우기**: 맵 피규어(`_fig_topdown`)의 회랑을 `facecolor="none"`
+  외곽선 → 파이프라인처럼 **옅은 파란 채우기**(alpha 0.12)로 변경.
+- **회랑박스 누락 수정(사용자 요청)**: MPC 추종 피규어(`_fig_mpc`)가 드론 이동경로에
+  회랑박스를 안 그리던 문제 해결 — 레퍼런스/추종 궤적 아래에 SFC 채움 박스 오버레이
+  + 범례 추가.
+- **3D 듀얼뷰 신규**(`_fig_3d` → `figures/8_pursuit_3d.png`): 파이프라인 `1_global_3d`
+  스타일로 Perspective + Side 두 앵글. 건물 `bar3d`(원 지붕높이, `raw_footprints`
+  이식), SFC 3D 와이어프레임, B-spline/드론 궤적은 순항고도, 트레일러 loop·경로는
+  지면(z=0), 드론 시작/캡처 마커.
+- **고도 밴드 파이프라인과 통일**: 시나리오(`city_uav_trailer_loop.yaml`)를 순항
+  10–20 m + `overfly_allowed: true`로 변경(기존 20–30 m/lateral-only). 이제 드론이
+  밴드 안에서 오르내리며 건물을 넘어감. mpc_ros의 분리형 고도홀드
+  (`vz=z_kp*(z_ref−z)`)가 B-spline의 가변 z를 추종 → 코드 로직 변경 불필요, config만.
+  3D 피규어(`_draw_pursuit_3d`)는 상수 cruise_z 대신 **실제 로그 z(`drone_z`)**를 그림.
+- **비행고도 그래프 추가**: `_fig_profiles`(피규어 6)를 speed/accel 2단 → **speed/accel/
+  altitude 3단**으로 확장. 고도 패널에 순항밴드(10–20 m) 음영 + 실제 `drone_z` 곡선.
+- **tools/에서 직접 실행 지원**: `python3 tools/pursuit_sim.py`를 `tools/` 안에서 돌리면
+  `ModuleNotFoundError: path_plan` 발생 → 스크립트 상단에서 패키지 루트(`parents[1]`)를
+  `sys.path`에 삽입해 해결.
+- **검증**: `python3 tools/pursuit_sim.py` 완주(캡처 t=175.2s, 17회 리플랜),
+  5·6·7·8 피규어 정상 생성. 3D는 건물 위 순항+지면 추격이 한눈에 보임.
+
 ### 2026-07-14 — MPC/스플라인 "터짐" 버그 수정 (`UniformBspline.sample` 끝점)
 - **증상**: visualize_pipeline에서 MPC 추종오차가 끝에서 375m로 폭발, 마젠타(MPC)가
   궤적 밖으로 발산. pursuit에서도 91m 스파이크.
