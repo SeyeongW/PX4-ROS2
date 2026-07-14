@@ -1,0 +1,95 @@
+"""ROS 2 node wrapping :class:`AStarPlanner3D` (global grid search).
+
+Subscribes
+    ~/goal   geometry_msgs/PoseStamped   replan target (ENU)
+    ~/start  geometry_msgs/PoseStamped   optional start override (ENU)
+Publishes
+    ~/global_path  nav_msgs/Path         latched A* waypoints (ENU / "map")
+"""
+
+from __future__ import annotations
+
+import numpy as np
+import rclpy
+from geometry_msgs.msg import PoseStamped
+from nav_msgs.msg import Path
+from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
+
+from .astar import AStarPlanner3D
+from .ros_msgs import positions_to_path
+from .world_model import WorldModel
+
+_LATCHED = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
+                      durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                      history=HistoryPolicy.KEEP_LAST)
+
+
+class AStarNode(Node):
+    def __init__(self):
+        super().__init__("astar_planner")
+        p = self.declare_parameter
+        self.map_yaml = p("map_yaml", "").value
+        res = p("resolution_m", 2.0).value
+        world = WorldModel.from_city_yaml(
+            self.map_yaml,
+            inflation_xy_m=p("inflation_xy_m", 1.45).value,
+            roof_clearance_m=p("roof_clearance_m", 10.0).value,
+            ground_clearance_m=p("cruise_floor_m", 20.0).value,
+            ceiling_m=p("cruise_ceiling_m", 30.0).value,
+        )
+        floor = float(self.get_parameter("cruise_floor_m").value)
+        ceiling = float(self.get_parameter("cruise_ceiling_m").value)
+        self.planner = AStarPlanner3D(
+            world, resolution_m=res,
+            max_expanded=int(p("max_expanded", 400000).value),
+            clearance_weight=p("clearance_weight", 0.4).value,
+            clearance_pref_m=p("clearance_pref_m", 3.0).value,
+            altitude_weight=p("altitude_weight", 0.05).value,
+            altitude_pref_m=p("altitude_pref_m", 0.5 * (floor + ceiling)).value,
+            climb_weight=p("climb_weight", 0.5).value)
+        self.start = np.asarray(p("start_enu_m", [587.0, 580.0, 25.0]).value, float)
+        self.goal = np.asarray(p("goal_enu_m", [-300.0, -300.0, 25.0]).value, float)
+        # Optional ordered via-points between start and goal, flat [x,y,z,...].
+        # The path is forced through each, so use them to shape a hard route.
+        wps = list(p("waypoints_enu_m", []).value)
+        self.waypoints = [np.asarray(wps[i:i + 3], float) for i in range(0, len(wps) - 2, 3)]
+
+        self.pub = self.create_publisher(Path, "~/global_path", _LATCHED)
+        self.create_subscription(PoseStamped, "~/goal", self._on_goal, 10)
+        self.create_subscription(PoseStamped, "~/start", self._on_start, 10)
+        self.get_logger().info(
+            f"A* ready: {len(world.boxes_min)} obstacles, res={res} m")
+        self._replan()
+
+    def _on_start(self, msg: PoseStamped):
+        self.start = np.array([msg.pose.position.x, msg.pose.position.y,
+                               msg.pose.position.z])
+
+    def _on_goal(self, msg: PoseStamped):
+        self.goal = np.array([msg.pose.position.x, msg.pose.position.y,
+                              msg.pose.position.z])
+        self._replan()
+
+    def _replan(self):
+        route = [self.start, *self.waypoints, self.goal]
+        result = self.planner.plan_through(route)
+        if not result.success:
+            self.get_logger().warn(f"A* failed: {result.message}")
+            return
+        self.pub.publish(positions_to_path(result.waypoints_m, self.get_clock().now().to_msg()))
+        self.get_logger().info(
+            f"A* path published: {len(result.waypoints_m)} waypoints "
+            f"(via {len(self.waypoints)}), expanded {result.expanded}")
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = AStarNode()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.try_shutdown()

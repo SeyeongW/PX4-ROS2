@@ -60,6 +60,8 @@ EXPECTED_CITY_BOUNDARY_VERTICES = 2585
 EXPECTED_TREES = 288
 GRID_RESOLUTION_M = 0.25
 SAFETY_INFLATION_M = 2.0
+PX4_BASE_LINK_Z_OFFSET_M = 0.24
+ACTIVE_CITY_HEIGHT_PROFILE = "deterministic_hash_rank_10_to_20m_v1"
 
 
 def require(condition: bool, message: str) -> None:
@@ -185,6 +187,15 @@ def city_buildings() -> list[dict[str, object]]:
         source_id = int(height["post_height_component_ordinal"])
         require(source_id == int(foundation["post_height_component_ordinal"]),
                 "city component identity differs between audits")
+        minimum_x = float(min(x for x, _ in all_points))
+        minimum_y = float(min(y for _, y in all_points))
+        maximum_x = float(max(x for x, _ in all_points))
+        maximum_y = float(max(y for _, y in all_points))
+        foundation_z = float(height["foundation_base_z"])
+        require(height.get("active_profile") == ACTIVE_CITY_HEIGHT_PROFILE,
+                "city height audit active profile changed")
+        roof_z = float(height["active_roof_z"])
+        height_above_ground = float(height["active_above_ground_height_m"])
         buildings.append(
             {
                 "id": f"building_{ordinal:03d}",
@@ -197,13 +208,27 @@ def city_buildings() -> list[dict[str, object]]:
                     ],
                 },
                 "aabb_xy_m": {
-                    "min": [float(min(x for x, _ in all_points)), float(min(y for _, y in all_points))],
-                    "max": [float(max(x for x, _ in all_points)), float(max(y for _, y in all_points))],
+                    "min": [minimum_x, minimum_y],
+                    "max": [maximum_x, maximum_y],
                 },
-                "foundation_z_m": float(height["foundation_base_z"]),
+                "aabb_xyz_m": {
+                    "min": [minimum_x, minimum_y, foundation_z],
+                    "max": [maximum_x, maximum_y, roof_z],
+                    "center_enu_m": [
+                        0.5 * (minimum_x + maximum_x),
+                        0.5 * (minimum_y + maximum_y),
+                        0.5 * (foundation_z + roof_z),
+                    ],
+                    "size_xyz_m": [
+                        maximum_x - minimum_x,
+                        maximum_y - minimum_y,
+                        roof_z - foundation_z,
+                    ],
+                },
+                "foundation_z_m": foundation_z,
                 "ground_reference_z_m": float(height["reference_base_z"]),
-                "roof_z_m": float(height["new_roof_z"]),
-                "height_above_ground_m": float(height["new_above_ground_height_m"]),
+                "roof_z_m": roof_z,
+                "height_above_ground_m": height_above_ground,
             }
         )
     require(ring_count == EXPECTED_CITY_RINGS, f"expected 275 city rings, got {ring_count}")
@@ -259,6 +284,11 @@ def mountain_trees() -> list[dict[str, object]]:
 
 
 def frame_contract(spawn: list[float]) -> dict[str, object]:
+    # PX4_GZ_MODEL_POSE addresses the outer model frame at the terrain contact
+    # datum. The stock x500_base model places base_link 0.24 m above that frame,
+    # and PX4 local NED initializes at base_link / IMU height, not at the tires.
+    local_origin = list(spawn[:3])
+    local_origin[2] += PX4_BASE_LINK_Z_OFFSET_M
     return {
         "gazebo_world": {
             "convention": "ENU",
@@ -270,7 +300,8 @@ def frame_contract(spawn: list[float]) -> dict[str, object]:
         },
         "px4_local": {
             "convention": "NED",
-            "origin_enu_m": spawn[:3],
+            "origin_enu_m": local_origin,
+            "origin_reference": "PX4 x500 base_link at rest (model root + 0.24 m)",
             "conversion_from_gazebo_enu": {
                 "x_north_m": "y_enu - origin_y",
                 "y_east_m": "x_enu - origin_x",
@@ -291,7 +322,11 @@ def write_yaml(path: Path, document: dict[str, object]) -> None:
 
 
 def city_document(buildings: list[dict[str, object]]) -> dict[str, object]:
-    spawn = [-120.0, 115.0, 0.16, 0.0, 0.0, 0.0]
+    spawn = [-120.0, 115.0, 0.0, 0.0, 0.0, 0.0]
+    shortest = min(buildings, key=lambda item: float(item["height_above_ground_m"]))
+    tallest = max(buildings, key=lambda item: float(item["height_above_ground_m"]))
+    foundations = [float(item["foundation_z_m"]) for item in buildings]
+    roofs = [float(item["roof_z_m"]) for item in buildings]
     return {
         "schema_version": 1,
         "map": {
@@ -302,14 +337,42 @@ def city_document(buildings: list[dict[str, object]]) -> dict[str, object]:
         },
         "frames": frame_contract(spawn),
         "px4_vehicle": {
-            "airframe_autostart_id": 4014,
-            "simulation_model": "gz_x500_mono_cam_down",
-            "runtime_entity_name": "x500_mono_cam_down_0",
+            "airframe_autostart_id": 4001,
+            "simulation_model": "gz_x500_city_rgbd_lidar",
+            "runtime_entity_name": "x500_city_rgbd_lidar_0",
+            "model_source": "px4_models/x500_city_rgbd_lidar/model.sdf",
+            "downward_sensors": {
+                "rgb_camera": {
+                    "parent_link": "base_link",
+                    "link": "down_rgb_link",
+                    "pose_xyz_rpy": [0.0, 0.0, -0.05, 0.0, 1.57079632679, 0.0],
+                    "image_topic": "/down_camera/image",
+                    "camera_info_topic": "/down_camera/camera_info",
+                },
+                "depth_camera": {
+                    "parent_link": "base_link",
+                    "link": "down_depth_link",
+                    "pose_xyz_rpy": [0.0, -0.03, -0.05, 0.0, 1.57079632679, 0.0],
+                    "image_topic": "/down_depth/image",
+                    "metric_image_topic": "/down_depth/image_raw",
+                    "encoding": "mono8",
+                    "metric_encoding": "32FC1",
+                    "points_topic": "/down_depth/points",
+                },
+                "lidar": {
+                    "parent_link": "base_link",
+                    "link": "lidar_sensor_link",
+                    "pose_xyz_rpy": [0.0, 0.0, -0.05, 0.0, 1.57079632679, 0.0],
+                    "scan_topic": "/down_lidar",
+                    "points_topic": "/down_lidar/points",
+                },
+            },
         },
         "terrain": {
-            "type": "completely_flat_heightmap_and_triangle_mesh",
+            "type": "completely_flat_heightmap_and_box_collision",
             "image": "gazebo/worlds/applepark_city/mesh/height_map_city_500m.png",
-            "collision_mesh": "gazebo/worlds/applepark_city/mesh/city_terrain_collision.obj",
+            "collision_geometry": {"shape": "box", "size_m": [500.0, 500.0, 0.1],
+                                   "center_z_m": -0.05, "top_z_m": 0.0},
             "rows": 257,
             "columns": 257,
             "sample_spacing_m": 1.953125,
@@ -322,8 +385,7 @@ def city_document(buildings: list[dict[str, object]]) -> dict[str, object]:
         "spawn": {
             "name": "city_drone_spawn",
             "gazebo_spawn_pose_enu": dict(zip(("x", "y", "z", "roll", "pitch", "yaw"), spawn)),
-            "pad": {"shape": "cylinder", "center_enu_m": [-120.0, 115.0, 0.08],
-                    "radius_m": 4.0, "length_m": 0.16, "top_z_m": 0.16},
+            "surface": "flat_road_datum_z0",
         },
         "trailer": {
             "entity_name": "flat_platform",
@@ -342,8 +404,23 @@ def city_document(buildings: list[dict[str, object]]) -> dict[str, object]:
             "waypoint_tolerance_m": 0.5,
             "route_surface": "exact_z0_flat_city_datum",
         },
-        "planner_defaults": {"obstacle_inflation_m": SAFETY_INFLATION_M},
-        "obstacles": {"buildings": buildings},
+        "obstacles": {
+            "summary": {
+                "building_count": len(buildings),
+                "active_height_profile": ACTIVE_CITY_HEIGHT_PROFILE,
+                "foundation_z_range_m": [min(foundations), max(foundations)],
+                "roof_z_range_m": [min(roofs), max(roofs)],
+                "shortest_building": {
+                    "id": shortest["id"],
+                    "height_above_ground_m": shortest["height_above_ground_m"],
+                },
+                "tallest_building": {
+                    "id": tallest["id"],
+                    "height_above_ground_m": tallest["height_above_ground_m"],
+                },
+            },
+            "buildings": buildings,
+        },
         "source_sha256": {
             "building_collision_dae": sha256(CITY_DAE),
             "terrain_heightmap": sha256(CITY_HEIGHT),
@@ -366,9 +443,9 @@ def mountain_document(trees: list[dict[str, object]]) -> dict[str, object]:
         },
         "frames": frame_contract(spawn),
         "px4_vehicle": {
-            "airframe_autostart_id": 4014,
-            "simulation_model": "gz_x500_mono_cam_down",
-            "runtime_entity_name": "x500_mono_cam_down_0",
+            "airframe_autostart_id": 4001,
+            "simulation_model": "gz_x500_city_rgbd_lidar",
+            "runtime_entity_name": "x500_city_rgbd_lidar_0",
         },
         "terrain": {
             "type": "heightmap_and_triangle_mesh",
@@ -617,26 +694,48 @@ def validate_trailer_route_free(
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--check", action="store_true", help="verify without writing")
+    parser.add_argument(
+        "--city-only",
+        action="store_true",
+        help="generate or validate only city assets (leave mountain assets untouched)",
+    )
     args = parser.parse_args()
     buildings = city_buildings()
-    trees = mountain_trees()
     city_contract = city_document(buildings)
-    mountain_contract = mountain_document(trees)
     if args.check:
         require(CITY_YAML.read_text(encoding="utf-8") == yaml_text(city_contract),
                 "city coordinate YAML is stale")
-        require(MOUNTAIN_YAML.read_text(encoding="utf-8") == yaml_text(mountain_contract),
-                "mountain coordinate YAML is stale")
     else:
         write_yaml(CITY_YAML, city_contract)
-        write_yaml(MOUNTAIN_YAML, mountain_contract)
     city_raw, city_inflated = city_occupancy(buildings)
-    mountain_raw, mountain_inflated = mountain_occupancy(trees)
     validate_spawn_free(city_raw, 250.0, (-120.0, 115.0))
-    validate_spawn_free(mountain_raw, 150.0, (-80.0, -80.0))
     validate_trailer_route_free(
         city_raw, 250.0, city_contract["trailer"]["waypoints_enu_m"], "city flat route"
     )
+    if args.check:
+        with tempfile.TemporaryDirectory(prefix="px4_path_assets_check_") as directory:
+            temporary = Path(directory)
+            city_temporary = temporary / CITY_FIGURE.name
+            plot_city(buildings, city_raw, city_inflated, city_temporary, None)
+            require(CITY_FIGURE.read_bytes() == city_temporary.read_bytes(),
+                    "city path-planning reference is stale")
+    else:
+        plot_city(buildings, city_raw, city_inflated)
+    print(f"city_yaml={CITY_YAML} buildings={len(buildings)} sha256={sha256(CITY_YAML)}")
+    print(f"city_reference={CITY_FIGURE} home_copy={HOME_CITY_FIGURE} sha256={sha256(CITY_FIGURE)}")
+    if args.city_only:
+        print("trailer_route_sweeps=city_flat:PASS clearance_m=3.785534")
+        return
+
+    trees = mountain_trees()
+    mountain_contract = mountain_document(trees)
+    if args.check:
+        require(MOUNTAIN_YAML.read_text(encoding="utf-8") == yaml_text(mountain_contract),
+                "mountain coordinate YAML is stale")
+    else:
+        write_yaml(MOUNTAIN_YAML, mountain_contract)
+    mountain_raw, mountain_inflated = mountain_occupancy(trees)
+    validate_spawn_free(mountain_raw, 150.0, (-80.0, -80.0))
     validate_trailer_route_free(
         mountain_raw, 150.0, mountain_contract["trailer"]["waypoints_enu_m"],
         "mountain flat route",
@@ -649,20 +748,13 @@ def main() -> None:
     if args.check:
         with tempfile.TemporaryDirectory(prefix="px4_path_assets_check_") as directory:
             temporary = Path(directory)
-            city_temporary = temporary / CITY_FIGURE.name
             mountain_temporary = temporary / MOUNTAIN_FIGURE.name
-            plot_city(buildings, city_raw, city_inflated, city_temporary, None)
             plot_mountain(trees, mountain_raw, mountain_inflated, mountain_temporary, None)
-            require(CITY_FIGURE.read_bytes() == city_temporary.read_bytes(),
-                    "city path-planning reference is stale")
             require(MOUNTAIN_FIGURE.read_bytes() == mountain_temporary.read_bytes(),
                     "mountain path-planning reference is stale")
     else:
-        plot_city(buildings, city_raw, city_inflated)
         plot_mountain(trees, mountain_raw, mountain_inflated)
-    print(f"city_yaml={CITY_YAML} buildings={len(buildings)} sha256={sha256(CITY_YAML)}")
     print(f"mountain_yaml={MOUNTAIN_YAML} trees={len(trees)} maze_walls=0 sha256={sha256(MOUNTAIN_YAML)}")
-    print(f"city_reference={CITY_FIGURE} home_copy={HOME_CITY_FIGURE} sha256={sha256(CITY_FIGURE)}")
     print(f"mountain_reference={MOUNTAIN_FIGURE} home_copy={HOME_MOUNTAIN_FIGURE} sha256={sha256(MOUNTAIN_FIGURE)}")
     print("trailer_route_sweeps=city_flat:PASS mountain_flat:PASS mountain_slope:PASS clearance_m=3.785534")
 

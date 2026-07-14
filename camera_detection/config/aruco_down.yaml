@@ -1,0 +1,36 @@
+down_aruco_pose:
+  ros__parameters:
+    use_sim_time: true
+    image_topic: /down_camera/image
+    camera_info_topic: /down_camera/camera_info
+    depth_topic: /down_depth/image_raw
+    optical_frame_id: down_camera_optical_frame
+    target_frame: base_link
+    aruco_dictionary: DICT_4X4_50
+    marker_id: 0
+    marker_size_m: 1.0
+    depth_required: true
+    depth_min_m: 0.15
+    depth_max_m: 80.0
+    depth_absolute_tolerance_m: 0.35
+    depth_relative_tolerance: 0.08
+    depth_sync_tolerance_s: 0.10
+    max_image_age_s: 0.25
+    camera_info_timeout_s: 2.0
+    max_reprojection_error_px: 2.5
+    min_facing_cosine: 0.15
+    min_ambiguity_ratio: 1.15
+    minimum_detection_frames: 3
+    maximum_detection_gap_s: 0.75
+    innovation_gate_squared: 16.27
+    innovation_process_variance: 4.0
+    innovation_reset_after_s: 1.0
+    detected_topic: /perception/down/aruco_detected
+    pose_topic: /perception/down/marker_pose
+    pose_covariance_topic: /perception/down/marker_pose_covariance
+    offset_topic: /perception/down/aruco_offset
+    quality_topic: /perception/down/quality
+    reprojection_error_topic: /perception/down/reprojection_error_px
+    rejected_candidates_topic: /perception/down/rejected_candidates
+    debug_topic: /perception/down/debug/compressed
+    publish_debug: true

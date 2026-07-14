@@ -1,0 +1,30 @@
+PX4-ROS2 unique vehicle model runtime smoke
+date=2026-07-13
+result=PASS
+physics=gz-physics-dartsim-plugin
+world=applepark_city_uav
+simulation_model=gz_x500_city_rgbd_lidar
+runtime_entity=x500_city_rgbd_lidar_0
+model_link=/home/xogus/PX4-Autopilot/Tools/simulation/gz/models/x500_city_rgbd_lidar -> /home/xogus/PX4-ROS2/px4_models/x500_city_rgbd_lidar
+builtin_collision_path_preserved=/home/xogus/PX4-Autopilot/Tools/simulation/gz/models/x500_depth_lidar
+model_root_spawn_enu_m=-120,115,0
+settled_model_root_z_enu_m=-0.0131869053
+base_link_pose_relative_model_z_m=0.24
+settled_base_link_z_enu_m=0.2268130947
+px4_local_position_ned_m=0.0016199,0.0092492,0.0140266
+base_link_to_px4_local_z_consistency_error_m=0.0008397
+yaml_px4_local_origin_enu_m=-120,115,0.24
+map_ground_surface_z_enu_m=0
+front_rgb_topic=/front_camera/image message=PASS frame=front_camera_optical_frame size=640x360
+front_depth_topic=/front_depth/image message=PASS size=320x240
+down_rgb_topic=/down_camera/image message=PASS size=640x480
+down_lidar_topic=/world/applepark_city_uav/model/x500_city_rgbd_lidar_0/link/lidar_sensor_link/sensor/lidar/scan advertised=PASS
+front_rgb_pitch_rad=0.959931089
+front_rgb_optical_axis_body=0.573576,0,-0.819152
+front_depth_pitch_rad=0
+front_depth_optical_axis_body=1,0,0
+aruco_smoke_geometry=vehicle_root(-120,115,10),trailer(-113.536,115,0),deck_z1.251
+aruco_dictionary=DICT_4X4_50 marker_id=0
+aruco_detection=PASS first_subscribed_frame=true centroid_px=320.5,184.0 mean_side_px=36.0078
+non_symlink_refusal_test=PASS
+stale_symlink_atomic_replacement_test=PASS

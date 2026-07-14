@@ -73,7 +73,7 @@ class Terrain:
     def __init__(self, document: dict[str, object]):
         terrain = document["terrain"]
         assert isinstance(terrain, dict)
-        self.flat = document["map"]["name"] == "city"  # type: ignore[index]
+        self.flat = str(document["map"]["name"]).startswith("city")  # type: ignore[index]
         self.pixels: np.ndarray | None = None
         if not self.flat:
             image_path = REPO / str(terrain["image"])
@@ -124,6 +124,11 @@ def publish_velocity(publisher: object, vx: float, vy: float, vz: float) -> None
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("map", choices=("city", "mountain"))
+    parser.add_argument(
+        "--coordinates",
+        type=Path,
+        help="coordinate YAML selected by the parent launcher",
+    )
     parser.add_argument("--loops", type=int, default=0,
                         help="route repetitions; 0 repeats until interrupted")
     parser.add_argument("--timeout", type=float, default=0.0,
@@ -144,7 +149,13 @@ def main() -> int:
     if args.rate <= 0.0:
         parser.error("--rate must be positive")
 
-    coordinate_path = GAZEBO / "maps" / f"{args.map}_coordinates.yaml"
+    coordinate_path = (
+        args.coordinates.expanduser().resolve()
+        if args.coordinates is not None
+        else GAZEBO / "maps" / f"{args.map}_coordinates.yaml"
+    )
+    if not coordinate_path.is_file():
+        parser.error(f"coordinate map does not exist: {coordinate_path}")
     document = yaml.safe_load(coordinate_path.read_text(encoding="utf-8"))
     trailer = document["trailer"]
     entity = str(trailer["entity_name"])
