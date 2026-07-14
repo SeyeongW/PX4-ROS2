@@ -32,10 +32,23 @@ Trajectory patterns (param `pattern`):
            looping. Exercises BOTH the drone's East-West and North-South
            obstacle-avoidance legs (line only exercises East-West), so the
            obstacle map's clear lane must stay clear along both axes.
+  route  : arbitrary closed loop of (e, n) waypoints loaded from
+           `route_file` (a plain YAML list under a `waypoints:` key, same
+           style as gazebo/config/patrol_route.yaml for the drone side) --
+           for maps like city_map where the trailer needs to roam a real
+           road network instead of a fixed geometric shape. Reuses the same
+           closed-loop P-servo + accel-capped tracker as 'cross'
+           (_cross_velocity_closed_loop, cross_kp/cross_arrive_radius/
+           cross_accel_max), just swapping in an arbitrary waypoint list
+           instead of the hardcoded "+" shape -- only wired up for
+           drive_mode='velocity' (teleport has no actual-pose feedback to
+           close the loop on).
   where w = speed / amplitude (rad/s) so `speed` is the path speed in m/s.
 """
 
 import math
+
+import yaml
 
 import rclpy
 from rclpy.node import Node
@@ -70,7 +83,8 @@ class MovingMarkerNode(Node):
         self.vel_topic = self.declare_parameter('vel_topic', '/marker/velocity').value
         self.rate = self.declare_parameter('rate', 50.0).value          # Hz (higher
         #   keeps the teleport step small at high speed: step = speed / rate)
-        self.pattern = self.declare_parameter('pattern', 'line').value  # static|line|circle|cross
+        self.pattern = self.declare_parameter('pattern', 'line').value  # static|line|circle|cross|route
+        self.route_file = self.declare_parameter('route_file', '').value  # pattern='route' only
         self.center_e = self.declare_parameter('center_e', 1.0).value   # m, ENU East
         self.center_n = self.declare_parameter('center_n', 0.0).value   # m, ENU North
         self.amplitude = self.declare_parameter('amplitude', 1.5).value  # m
@@ -161,19 +175,31 @@ class MovingMarkerNode(Node):
         self._actual = None      # (x, y) latest ACTUAL truck pose from gz (vel mode)
         self._actual_prev = None  # (e, n, t) previous actual pose, for external-mode finite diff
 
-        # "+"-shape waypoints for the closed-loop 'cross' driver: East tip, centre,
-        # North tip, centre, West tip, centre, South tip, centre -- looped. Visiting
-        # order differs from the old open-loop _cross_position (which did a full
-        # out-and-back on one axis before switching), but covers the same 4 arms and
-        # keeps every leg exactly axis-aligned, which is what obstacle_map.yaml's
+        # Waypoint list for the closed-loop 'cross'/'route' driver.
+        # 'cross': "+"-shape -- East tip, centre, North tip, centre, West tip,
+        # centre, South tip, centre -- looped. Visiting order differs from the
+        # old open-loop _cross_position (which did a full out-and-back on one
+        # axis before switching), but covers the same 4 arms and keeps every
+        # leg exactly axis-aligned, which is what obstacle_map.yaml's
         # clear_lane assumes.
-        A = self.amplitude
-        self._cross_wps = [
-            (self.center_e + A, self.center_n), (self.center_e, self.center_n),
-            (self.center_e, self.center_n + A), (self.center_e, self.center_n),
-            (self.center_e - A, self.center_n), (self.center_e, self.center_n),
-            (self.center_e, self.center_n - A), (self.center_e, self.center_n),
-        ]
+        # 'route': arbitrary loop loaded from route_file (see module
+        # docstring) -- no axis-alignment assumption, for a real road network.
+        if self.pattern == 'route':
+            if not self.route_file:
+                raise ValueError("pattern='route' requires route_file to be set")
+            with open(self.route_file) as f:
+                data = yaml.safe_load(f)
+            self._cross_wps = [(float(wp['e']), float(wp['n'])) for wp in data['waypoints']]
+            if len(self._cross_wps) < 2:
+                raise ValueError(f"route_file '{self.route_file}' needs at least 2 waypoints")
+        else:
+            A = self.amplitude
+            self._cross_wps = [
+                (self.center_e + A, self.center_n), (self.center_e, self.center_n),
+                (self.center_e, self.center_n + A), (self.center_e, self.center_n),
+                (self.center_e - A, self.center_n), (self.center_e, self.center_n),
+                (self.center_e, self.center_n - A), (self.center_e, self.center_n),
+            ]
         self._cross_idx = 0
 
         # --- gz mover -------------------------------------------------------
@@ -253,6 +279,12 @@ class MovingMarkerNode(Node):
                     self.center_n + self.amplitude * math.sin(self.w * t))
         if self.pattern == 'cross':
             return self._cross_position(t)
+        if self.pattern == 'route':
+            # No open-loop analytic trajectory for an arbitrary route (unlike
+            # 'cross', legs aren't axis-aligned) -- only meaningful as a
+            # target label; the actual driving is the closed-loop tracker in
+            # tick() (drive_mode='velocity' only, see module docstring).
+            return self._cross_wps[self._cross_idx]
         # default: line — CONSTANT-SPEED straight runs along East (a triangle wave,
         # not a sin: the velocity is constant in magnitude so the drone's velocity
         # feed-forward matches it exactly and it lands cleanly). The platform runs
@@ -384,11 +416,12 @@ class MovingMarkerNode(Node):
 
         e, n = self._position()       # analytic trajectory TARGET
 
-        if self.pattern == 'cross' and self.drive_mode == 'velocity':
-            # Closed-loop P-servo toward the current "+"-shape waypoint using the
+        if self.pattern in ('cross', 'route') and self.drive_mode == 'velocity':
+            # Closed-loop P-servo toward the current waypoint using the
             # ACTUAL gz pose (see _cross_velocity_closed_loop) -- decelerates
             # approaching each turn instead of flipping direction open-loop, so
-            # real momentum/plugin dynamics can't overshoot past it.
+            # real momentum/plugin dynamics can't overshoot past it. Works the
+            # same way for 'route' as 'cross' -- only the waypoint list differs.
             vx, vy = self._cross_velocity_closed_loop()
         elif self.pattern == 'cross':
             # Teleport mode has no physics/momentum, so the open-loop analytic

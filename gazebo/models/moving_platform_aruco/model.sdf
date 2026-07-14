@@ -6,20 +6,26 @@
            landing plate so this reads as "a box with a bigger flat bed on
            top" instead of a plate floating at z=2 with nothing under it.
            Same link as the plate (rigid, moves as one unit driven by
-           MovingPlatformController). Footprint matches the 5x5 plate
-           exactly, centred on the same origin; an earlier smaller/centred
-           version (3.5x3.5) was fine sitting still, but under
+           MovingPlatformController). Footprint matches the plate exactly
+           (both 5x5), centred on the same origin; an earlier smaller/centred
+           version (3.5x3.5) tipped the whole platform under
            MovingPlatformController's actual driving (acceleration + ground
-           friction on the box) it tipped the whole platform: the huge
-           <inertial> below is a flat round-number placeholder (not derived
-           from this geometry) that implicitly assumes the collision mass is
-           distributed symmetrically about the link origin, and any offset or
-           undersized footprint breaks that assumption, giving the drive
-           force a lever arm to rotate against. Matching the plate exactly
-           removes the asymmetry regardless of how (in)accurate the inertia
-           numbers are. Height (1.9) touches the plate's underside (world
-           z=1.95) while stopping just short of the ground (world z=0.05) to
-           avoid z-fighting/resting-contact jitter with ground_plane. -->
+           friction on the box): the huge inertial block below is a flat
+           round-number placeholder (not derived from this geometry) that
+           implicitly assumes the collision mass is distributed symmetrically
+           about the link origin, and any offset or undersized footprint
+           breaks that assumption, giving the drive force a lever arm to
+           rotate against. Matching the plate exactly removes the asymmetry
+           regardless of how (in)accurate the inertia numbers are.
+           A 2026-07-13 experiment shrinking this to 4x4 (see git history)
+           tipped repeatedly under real route-following driving (VelocityControl,
+           moving_marker_node pattern='route' on gazebo/models/moving_platform_aruco_route)
+           even on flat ground, confirming 5x5's footprint margin is load-bearing,
+           not just cosmetic; do not shrink this again without a real driving
+           retest, not just a static resting check. Height (1.9) touches the
+           plate's underside (world z=1.95) while stopping just short of the
+           ground (world z=0.05) to avoid z-fighting/resting-contact jitter
+           with ground_plane. -->
       <visual name="body_visual">
         <pose>0 0 -1.0 0 0 0</pose>
         <geometry>
@@ -57,7 +63,7 @@
            z offset = half the platform thickness (0.05) + a hair (0.001) to
            avoid z-fighting with platform_visual. Not PX4's own arucotag model
            (that's a separate static model, so it wouldn't move WITH the
-           platform) -- same texture asset, applied as an extra visual on this
+           platform); same texture asset, applied as an extra visual on this
            link instead so it rides along with MovingPlatformController. -->
       <visual name="aruco_visual">
         <pose>0 0 0.051 0 0 0</pose>

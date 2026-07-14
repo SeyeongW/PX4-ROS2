@@ -13,6 +13,10 @@ case "$MAP" in
     WORLD="$SCRIPT_DIR/worlds/city_map/city_map.world"
     DESCRIPTION="500 x 500 m city"
     ;;
+  city-mission)
+    WORLD="$SCRIPT_DIR/worlds/city_map/city_map_mission.world"
+    DESCRIPTION="500 x 500 m city + trailer (capstone scenario, see launch_all_px4_city.sh)"
+    ;;
   mountain)
     WORLD="$SCRIPT_DIR/worlds/mountain_map.world"
     DESCRIPTION="300 x 300 m mountain (map-only)"
@@ -23,9 +27,10 @@ case "$MAP" in
     ;;
   -h|--help|help|"")
     cat <<EOF
-Usage: $(basename "$0") <city|mountain|mountain-sitl> [gz sim options]
+Usage: $(basename "$0") <city|city-mission|mountain|mountain-sitl> [gz sim options]
 
   city          500 x 500 m city, fully self-contained
+  city-mission  city + trailer for the full PX4 capstone scenario
   mountain      300 x 300 m mountain, fully self-contained map preview
   mountain-sitl Mountain plus Iris/ArduPilot integration (external plugin needed)
 
@@ -39,7 +44,7 @@ EOF
     exit 0
     ;;
   *)
-    echo "ERROR: unknown map '$MAP' (expected city, mountain, or mountain-sitl)." >&2
+    echo "ERROR: unknown map '$MAP' (expected city, city-mission, mountain, or mountain-sitl)." >&2
     exit 2
     ;;
 esac

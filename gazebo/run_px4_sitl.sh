@@ -32,14 +32,15 @@ if [[ ! -x "$PX4_BIN" ]]; then
   exit 1
 fi
 
-# Default spawn pose per map (pad top + clearance so the vehicle doesn't spawn
-# embedded in the pad). truck_mission_px4 (platform top ~2.05m) keeps the
-# original 0,0,2.3 default when MAP is unset.
+# Default spawn pose per map (pad/platform top + clearance so the vehicle
+# doesn't spawn embedded in it). truck_mission_px4 (platform top ~2.05m)
+# keeps the original 0,0,2.3 default when MAP is unset.
 case "${MAP:-}" in
-  mountain) DEFAULT_POSE="-80,-80,0.4" ;;   # drone_launch_pad top z=0.16
-  city)     DEFAULT_POSE="-120,115,-2.8" ;; # drone_spawn_pad top z=-3.019558902
-  "")       DEFAULT_POSE="0,0,2.3" ;;
-  *)        echo "ERROR: unknown MAP '$MAP' (expected city or mountain)." >&2; exit 2 ;;
+  mountain)     DEFAULT_POSE="-80,-80,0.4" ;;      # drone_launch_pad top z=0.16
+  city)         DEFAULT_POSE="-120,115,0.38" ;;    # drone_spawn_pad top z=0.16 (flat datum, 2026-07-13)
+  city-mission) DEFAULT_POSE="-120,115,2.30" ;;    # moving_platform_aruco_route plate top ~z=2.05 (flat datum, 2026-07-13; see city_map_mission.world)
+  "")           DEFAULT_POSE="0,0,2.3" ;;
+  *)            echo "ERROR: unknown MAP '$MAP' (expected city, mountain, or city-mission)." >&2; exit 2 ;;
 esac
 
 export GZ_IP="${GZ_IP:-127.0.0.1}"

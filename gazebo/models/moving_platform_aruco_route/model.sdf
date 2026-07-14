@@ -1,0 +1,128 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<sdf version="1.9">
+  <model name="flat_platform">
+    <link name="platform_link">
+      <!-- Same body/plate as moving_platform_aruco (5x5m; a 4x4 attempt on
+           2026-07-13 tipped repeatedly under real route-following driving even
+           on flat ground, see that model's comment), EXCEPT driven by gz's own
+           VelocityControl plugin below instead of PX4's MovingPlatformController,
+           copied from gazebo/models/moving_platform_track/model.sdf's proven
+           pattern (that model already drives a flat_platform via
+           VelocityControl, just from track_follower_node instead of
+           moving_marker_node). MovingPlatformController only supports constant
+           velocity/heading (PX4_GZ_PLATFORM_VEL/HEADING_DEG env vars), not an
+           arbitrary waypoint route, so it can't drive moving_marker_node's new
+           pattern='route' (see gazebo/config/trailer_route_city.yaml). -->
+      <!-- Body top stays flush against platform_visual's bottom (local z=-0.05,
+           unchanged) so the deck still sits right on the box. Bottom is raised
+           from -1.95 to -1.65 (2026-07-13): the model settles at root z≈-0.29
+           on the flat datum, which put this box's bottom ~0.25m *below*
+           ground (link z=2, so world bottom = -0.29+2-1.95 = -0.24) -- a large
+           flat face sunk into the flat ground heightmap, which is exactly the
+           near-coplanar-surface case that causes OGRE2 z-fighting/flicker as
+           the model drives. -1.65 leaves a small ~0.06m real gap above ground
+           instead (still reads as "grounded", not floating) with no overlap.
+           Collision (below) is untouched -- this is a visual-only fix. -->
+      <visual name="body_visual">
+        <pose>0 0 -0.85 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>5 5 1.6</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.55 0.32 0.05 1</ambient>
+          <diffuse>0.6 0.38 0.08 1</diffuse>
+          <specular>0.2 0.2 0.2 1</specular>
+        </material>
+      </visual>
+      <!-- Collision is SHORTER than the visual and raised to match: bottom
+           face at local z=-1.70, so the body rests 0.25m off the ground
+           instead of clipping small terrain-mesh bumps while driving (found
+           2026-07-13: it hit one ~10s into a straight-line drive on the city
+           map, before any turn). The visual box (above) was independently
+           re-raised later the same day to close a ground z-fighting gap --
+           the two boxes' bottoms are no longer at the same height by design,
+           see the visual's own comment. Raising the SPAWN pose instead (tried
+           first) doesn't
+           work: gravity always settles the body back to wherever the
+           collision box meets the ground, so that only made the fall (and
+           impact) longer, not the resting clearance; confirmed by the
+           settled pose landing at the same height as before despite a higher
+           spawn point. -->
+      <collision name="body_collision">
+        <pose>0 0 -0.875 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>5 5 1.65</size>
+          </box>
+        </geometry>
+      </collision>
+      <visual name="platform_visual">
+        <geometry>
+          <box>
+            <size>5 5 0.1</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.3 0.3 0.3 1</ambient>
+          <diffuse>0.3 0.3 0.3 1</diffuse>
+          <specular>0.1 0.1 0.1 1</specular>
+        </material>
+      </visual>
+      <!-- ArUco decal on the top face, centred, well clear of the 5x5 edges.
+           Same asset/geometry as moving_platform_aruco. -->
+      <visual name="aruco_visual">
+        <pose>0 0 0.051 0 0 0</pose>
+        <geometry>
+          <plane>
+            <normal>0 0 1</normal>
+            <size>1.0 1.0</size>
+          </plane>
+        </geometry>
+        <material>
+          <diffuse>1 1 1 1</diffuse>
+          <specular>0.4 0.4 0.4 1</specular>
+          <pbr>
+            <metal>
+              <albedo_map>model://moving_platform_aruco_route/arucotag.png</albedo_map>
+            </metal>
+          </pbr>
+        </material>
+      </visual>
+      <collision name="platform_collision">
+        <geometry>
+          <box>
+            <size>5 5 0.1</size>
+          </box>
+        </geometry>
+      </collision>
+      <pose>0 0 2 0 0 0</pose>
+      <!-- Solid-box inertia for a 5x5x1.9m plate at mass=10000kg:
+           Ixx=Iyy=m(5^2+1.9^2)/12=23841.67, Izz=m(5^2+5^2)/12=41666.67.
+           The old isotropic ixx=iyy=izz=10000 under-stated roll/pitch
+           inertia by ~2.4x relative to the box's actual mass distribution,
+           making it tip far more easily than a real 5x5x1.9m platform would
+           under the same cornering-friction torque (2026-07-13, suspected
+           root cause of repeated tip-overs on now-confirmed-flat terrain). -->
+      <inertial>
+          <mass>10000</mass>
+          <inertia>
+              <ixx>23841.67</ixx>
+              <iyy>23841.67</iyy>
+              <izz>41666.67</izz>
+          </inertia>
+      </inertial>
+      <sensor name="navsat_sensor" type="navsat">
+        <always_on>1</always_on>
+        <update_rate>30</update_rate>
+      </sensor>
+    </link>
+    <!-- Driven by an external cmd_vel (moving_marker_node, pattern='route'),
+         not MovingPlatformController, see the link comment above. -->
+    <plugin filename="gz-sim-velocity-control-system"
+            name="gz::sim::systems::VelocityControl">
+      <topic>/model/flat_platform/cmd_vel</topic>
+    </plugin>
+  </model>
+</sdf>
