@@ -35,11 +35,17 @@ class BSplineNode(Node):
     def __init__(self):
         super().__init__("bspline_optimizer")
         p = self.declare_parameter
+        # ground_clearance_m defaults to 0 (no hard floor): cruise altitude is held by
+        # the SFC corridor built around the A* guide points (all at cruise height), so
+        # the floor is redundant for cruise but WOULD block a terminal descent whose
+        # guide points drop to the deck. Keeping it 0 lets the moving-trailer landing
+        # feed a drone->deck global_path straight through this optimizer (no separate
+        # optimizer needed). Raise it only if a cruise-only run needs a hard sag guard.
         world = WorldModel.from_city_yaml(
             p("map_yaml", "").value,
             inflation_xy_m=p("inflation_xy_m", 1.45).value,
             roof_clearance_m=p("roof_clearance_m", 10.0).value,
-            ground_clearance_m=p("cruise_floor_m", 20.0).value,
+            ground_clearance_m=p("ground_clearance_m", 0.0).value,
             ceiling_m=p("cruise_ceiling_m", 30.0).value,
             overfly_allowed=p("overfly_allowed", True).value)
         self.optimizer = BsplineOptimizer(

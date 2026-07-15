@@ -33,10 +33,18 @@ solved independently.
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 
 import numpy as np
 from scipy.optimize import LinearConstraint, minimize
+
+# SLSQP evaluates trial points outside the box bounds during its line search and
+# clips them itself -- harmless and expected, but scipy emits a RuntimeWarning each
+# time, which floods the log at the control rate. Silence just that message.
+warnings.filterwarnings(
+    "ignore", message="Values in x were outside bounds",
+    category=RuntimeWarning, module="scipy.optimize._slsqp_py")
 
 
 def _condense(dt: float, N: int):
@@ -102,6 +110,7 @@ class TrackingMPC:
         # eq. (4) velocity limits as a linear constraint on U
         vel_con = LinearConstraint(Gv, -self.v_max - v_free, self.v_max - v_free)
         bounds = [(-self.a_max, self.a_max)] * self.N
+        warm = np.clip(warm, -self.a_max, self.a_max)   # start inside the box bounds
         res = minimize(cost, warm, jac=grad, method="SLSQP",
                        bounds=bounds, constraints=[vel_con],
                        options={"maxiter": 60, "ftol": 1e-4})

@@ -4,13 +4,14 @@
 > 맨 위 "최근 작업"에 날짜와 함께 추가합니다. 알고리즘 상세는 `README.md`,
 > 노드별 파라미터는 `docs/nodes.md` 참고.
 
-## 현재 상태 (2026-07-14 기준)
+## 현재 상태 (2026-07-16 기준)
 
-- **완성**: A* → SFC → B-spline → MPC 파이프라인. 스폰(587,580)→트레일러(-587,-512)
-  경로 생성 + 추종을 오프라인 시각화로 검증 완료 (충돌 0, 추종오차 순항 ~0.08 m).
-- **미완(다음)**: 실제 Gazebo+PX4 sim 연결 — `/path_plan/odometry`, `/path_plan/depth`
-  브리지 입력 + `/path_plan/cmd_vel` → PX4 OFFBOARD `TrajectorySetpoint` 브리지.
-- **브랜치**: `wang`에 푸시 (jo 기반, jo는 팀원 mandu38의 52ddc82 위에 쌓음).
+- **완성**: A* → SFC → B-spline → **진짜 QP-MPC(`TrackingMPC`)** 파이프라인. 로컬 추종을
+  pursuit 근사에서 홀로노믹 이중적분기 최적화 MPC로 교체하고 발산(속도>20, 가속~700) 수정.
+  순항 10 m/s, |v|≤12 / |a|≤4. 이동 트레일러는 등속 인터셉트 + B-spline glide로 착륙.
+- **미완(다음)**: 로컬 `pursuit:=true` 실비행으로 MPC 게인/재계획 주기, 착륙 인터셉트
+  타이밍 튜닝. depth 로컬 회피 실측 검증.
+- **브랜치**: `main`에 푸시.
 
 ## 구성 요소
 
@@ -28,6 +29,41 @@
 ---
 
 ## 최근 작업 (최신 위)
+
+### 2026-07-16 — 로컬 컨트롤러 진짜 QP-MPC 전환 + 발산 수정 + 이동착륙 인터셉트
+- **배경**: 지금까지 "MPC"라던 로컬 추종은 실제로는 pursuit/unicycle 근사였음. 도심
+  실비행에서 속도명령이 발산(속도 >20 m/s, 가속 ~700 m/s²)해 피치가 떨리는 문제 확인.
+- **`mpc.py` / `mpc_node.py`**: 기본 컨트롤러를 **진짜 최적화 MPC(`TrackingMPC`)**로 교체.
+  홀로노믹 3D 이중적분기 위의 condensed QP + SLSQP, |v|/|a| 하드제약 + terminal cost.
+  `controller: mpc | pursuit | unicycle` 셀렉터 추가(기본 `mpc`, `holonomic` bool은 legacy로
+  pursuit↔unicycle만 선택). strafing 멀티콥터에 홀로노믹이 맞아 unicycle의 nose-coupled
+  제자리 스핀 없음.
+- **발산 수정**: 원인은 속도 추정을 world-frame으로 못 먹여 매 tick MPC 최적점이 `a_max·dt`로
+  붕괴한 것. (1) `/path_plan/odometry` 위치 **유한차분 + EMA**로 world 속도 추정, 스폰 스파이크
+  게이트. (2) MPC integrator state를 **측정속도가 아닌 마지막 명령속도**로 두고
+  **anti-windup 앵커**(`cmd_lead_max`)로 명령이 측정을 앞서는 양 제한. (3) 속도명령에 **jerk
+  제한**(C1-연속) → 피치 attitude 매끈. (4) SLSQP warm-start를 box bound 안으로 clip +
+  "Values in x were outside bounds" RuntimeWarning만 silence(제어율 로그 홍수 제거).
+- **`config/city_uav.yaml`**: 순항 4→**10 m/s**, `max_vel` 5→**12**, `max_acc` 1.5→**4**
+  (PX4 `MPC_XY_VEL_MAX`=12에 정렬). MPC cost 가중치 `mpc_q_pos=4 / q_vel=0.4 / r_acc=0.05 /
+  q_terminal=20` 추가. B-spline `cruise_speed`가 MPC가 추종하는 속도프로파일의 실질 상한이라
+  같이 상향.
+- **`moving_land_node.py`(이동 트레일러 착륙 개선)**: `land_vel_gain`(0.45) 추가 — 최종단계는
+  부드러운 게인으로 스냅 없이 안착. 데크 **등속 예측 인터셉트**(pos + vel·T_go)로 움직이는
+  덱을 앞질러 조준하고 **B-spline glide**로 강하, `/path_plan/cmd_vel` 구독, 핸드오프 때 현재
+  드론속도로 slew limiter 시딩. 하강 퍼널(`descend_cone`)은 인터셉트+글라이드 방식으로 대체.
+- **`flight_logger.py`**: disarm 시 **Gazebo 실비행 figure 4종**(`gazebo_flight_topdown /
+  _mpc / _profiles / _compute.png`) 저장 — visualize_pipeline과 동일 시각언어, 매 재계획의
+  A*/B-spline 레퍼런스 전부 누적해 추종오차·compute 부하(A* plan time, MPC per-tick) 표시.
+- **`gazebo/maps/city_uav_trailer_loop.yaml` + `run_px4_map.sh`**: 도심 실제 건물을 피하는
+  **building-clear 폐루프 웨이포인트**(최소 이격 6.9 m, 둘레 ~4068 m) 추가 — gz 트레일러는
+  실제 충돌하므로 analytic 정사각 대신 A*로 뽑은 개활 회랑을 위빙. `trailer_loop_driver`가 존재
+  시 이를 추종, `tools/pursuit_sim.py`(무충돌)는 정사각 유지.
+- **`visualize_pipeline.py`**: 폰트 크게+볼드, 장애물 색 밝게(경로 가림 방지), 기본값 갱신
+  (`res` 8.0, goal=트레일러 SW `-587,-512`, `cruise_z` 35m=30~40m 밴드 중앙, full-height
+  no-fly 컬럼, inflation 5.0). figures 1~8 + `pursuit.gif` 전면 재생성.
+- **검증**: 본 환경엔 ROS2/Gazebo 없어 오프라인 시각화 + `py_compile` 기준. 다음: 로컬
+  `pursuit:=true` 실비행으로 MPC 게인/재계획 주기, 착륙 인터셉트 타이밍 확인.
 
 ### 2026-07-15 — 이동 트레일러 추격 + 착륙 (pursuit_sim 실비행 이식, PR #34 main 병합)
 - **배경**: 기존 도심 비행은 **정적 좌표**로만 갔음 — `mavros_static_path`가 고정 goal

@@ -42,7 +42,8 @@ from __future__ import annotations
 
 import numpy as np
 import rclpy
-from geometry_msgs.msg import TwistStamped, PoseStamped, PointStamped, TransformStamped
+from geometry_msgs.msg import (TwistStamped, PoseStamped, PointStamped,
+                               TransformStamped, Vector3Stamped)
 from mavros_msgs.msg import State
 from mavros_msgs.srv import CommandBool, SetMode
 from nav_msgs.msg import Odometry
@@ -88,7 +89,18 @@ class MavrosStaticPathNode(Node):
         # Altitude of the replanned goal (kept inside the cruise band; A* clamps it).
         self.cruise_alt_m = float(p("cruise_alt_m", 35.0).value)
         self.trailer_topic = str(p("trailer_topic", "/trailer/position").value)
+        self.vel_topic = str(p("trailer_vel_topic", "/trailer/velocity").value)
         self.goal_topic = str(p("goal_topic", "/astar_planner/goal").value)
+        # Target LEADING: the trailer keeps moving during the replan cadence AND the
+        # A* solve, so aiming at its reported position always lags. Lead the goal to
+        # where the trailer WILL be = pos + vel * horizon. The goal is "active" from
+        # (t0 + solve) to (t0 + period + solve); its time-centre is solve + period/2,
+        # so lead_time defaults to half the replan period and the measured A* solve
+        # time is added on top at runtime. lead_max_m caps it so a loop corner (where
+        # the straight-line extrapolation would overshoot into a building) can't fling
+        # the goal; a blocked goal just makes that one replan fail and keep the old path.
+        self.lead_time_s = float(p("lead_time_s", 0.5 * self.replan_period_s).value)
+        self.lead_max_m = float(p("lead_max_m", 50.0).value)
 
         self._state = State()
         self._cmd = None          # latest MPC TwistStamped
@@ -102,6 +114,7 @@ class MavrosStaticPathNode(Node):
         #   LAND   -> reached the goal; hand off to PX4 AUTO.LAND
         self.phase = "CLIMB"
         self._have_traj = False
+        self._plan_triggered = False   # A* fired once odom is up (concurrent w/ climb)
         self._goal_xy = None
         self._setpoints_sent = 0
         self._last_request = self.get_clock().now()
@@ -109,10 +122,12 @@ class MavrosStaticPathNode(Node):
         self._last_goal_log = self.get_clock().now()
         self._speed_done = not self.speed_from_fcu
         self._speed_req = False
-        # Pursuit state: latest trailer cue + replan cadence.
+        # Pursuit state: latest trailer cue + velocity + replan cadence.
         self._trailer_xy = None
+        self._trailer_vel = np.zeros(2)   # (vE, vN) map ENU
         self._trailer_stamp = None
         self._last_replan_time = None
+        self._last_plan_s = 0.0           # last measured A* solve time (latency comp)
 
         # BEST_EFFORT subscribers are compatible with both reliable and
         # best-effort publishers, so they never silently drop MAVROS topics.
@@ -134,6 +149,11 @@ class MavrosStaticPathNode(Node):
             self.land_enable_pub.publish(Bool(data=False))
             self.create_subscription(
                 PointStamped, self.trailer_topic, self._on_trailer, 10)
+            self.create_subscription(
+                Vector3Stamped, self.vel_topic, self._on_trailer_vel, 10)
+            # Learn the real A* solve time to add to the lead horizon.
+            self.create_subscription(
+                Float32MultiArray, "/path_plan/astar_stats", self._on_astar_stats, 10)
 
         self.create_subscription(State, "/mavros/state", self._on_state, be)
         self.create_subscription(
@@ -206,24 +226,43 @@ class MavrosStaticPathNode(Node):
         self._trailer_xy = (msg.point.x, msg.point.y)
         self._trailer_stamp = self.get_clock().now()
 
+    def _on_trailer_vel(self, msg: Vector3Stamped):
+        self._trailer_vel = np.array([msg.vector.x, msg.vector.y])
+
+    def _on_astar_stats(self, msg: Float32MultiArray):
+        if msg.data:
+            self._last_plan_s = float(msg.data[0])   # [plan_s, expanded, n_wp]
+
     # ------------------------------------------------------------- main loop
     def _tick(self):
         # 1) Always stream a setpoint so PX4 keeps OFFBOARD alive.
         sp = TwistStamped()
         sp.header.stamp = self.get_clock().now().to_msg()
         sp.header.frame_id = FRAME
+        # Kick off A*->SFC->B-spline as soon as we know where we are, so the plan is
+        # computed CONCURRENTLY with the climb instead of only after takeoff. The plan
+        # starts from the spawn xy (A* clamps z into the cruise band), which is where
+        # the drone will be once it finishes the pure-vertical climb.
+        if self._have_odom and not self._plan_triggered:
+            self._trigger_plan(sp.header.stamp)
+            self._plan_triggered = True
         active = self._state.armed and self._state.mode == "OFFBOARD"
         if active:
             if self.phase == "CLIMB":
                 if self._alt >= self.takeoff_alt_m:
-                    self._enter_hold(sp.header.stamp)
+                    # Reached cruise altitude: if the concurrent plan is already ready,
+                    # cruise straight away; otherwise hold briefly until it lands.
+                    if self._have_traj:
+                        self.phase = "CRUISE"
+                        self.get_logger().info(
+                            "takeoff complete; path already computed -> cruising")
+                    else:
+                        self._enter_hold(sp.header.stamp)
                 else:
                     sp.twist.linear.z = self.takeoff_vz   # pure vertical climb
             if self.phase == "HOLD":
-                # Hover in place (hold altitude, zero lateral) until the
-                # A*->B-spline trajectory is ready, THEN start cruising.  This
-                # removes the slanted climb where the drone drifted sideways
-                # while still ascending.
+                # Only reached if the climb finished before the plan; hover in place
+                # (hold altitude, zero lateral) until the trajectory lands, then cruise.
                 sp.twist.linear.z = self._hold_vz()
                 if self._have_traj:
                     self.phase = "CRUISE"
@@ -289,12 +328,9 @@ class MavrosStaticPathNode(Node):
                 self.get_logger().info("requesting arm")
 
     # ----------------------------------------------------------- phase helpers
-    def _enter_hold(self, stamp):
-        """Reached takeoff altitude: trigger the A* plan and hover until ready."""
-        self.phase = "HOLD"
-        self.get_logger().info(
-            f"takeoff complete at {self._alt:.1f} m -> triggering path calculation "
-            f"(holding position until the trajectory is ready)")
+    def _trigger_plan(self, stamp):
+        """Publish the A* start (spawn xy) to kick off A*->SFC->B-spline. Fired once,
+        as soon as odometry is up, so planning overlaps the climb."""
         start = PoseStamped()
         start.header.stamp = stamp
         start.header.frame_id = FRAME
@@ -302,6 +338,14 @@ class MavrosStaticPathNode(Node):
         start.pose.position.y = self._pos[1]
         start.pose.position.z = self._pos[2]
         self.start_pub.publish(start)
+        self.get_logger().info(
+            "odometry up -> triggering path calculation now (concurrent with climb)")
+
+    def _enter_hold(self, stamp):
+        """Climb finished before the plan was ready: hover until the trajectory lands."""
+        self.phase = "HOLD"
+        self.get_logger().info(
+            f"takeoff complete at {self._alt:.1f} m -> holding for the trajectory")
 
     def _hold_vz(self) -> float:
         """P-controlled vertical velocity to hold the takeoff altitude in HOLD."""
@@ -355,17 +399,39 @@ class MavrosStaticPathNode(Node):
                >= self.replan_period_s)
         if not due:
             return
+        # Replan from the drone's CURRENT position, not the fixed takeoff point.
+        # astar_node keeps its last start until a new ~/start arrives, so without
+        # this every pursuit replan would re-plan from the initial hold point.
+        # Publish start (live pose) and goal (live trailer) together; astar_node
+        # coalesces the pair into a single plan.
+        start = PoseStamped()
+        start.header.stamp = stamp
+        start.header.frame_id = FRAME
+        start.pose.position.x = float(self._pos[0])
+        start.pose.position.y = float(self._pos[1])
+        start.pose.position.z = float(self.cruise_alt_m)
+        self.start_pub.publish(start)
+        # LEAD the goal: aim where the trailer WILL be after the staleness horizon
+        # (replan period + last A* solve time), so the plan targets a near-future
+        # position instead of one that is already ~lead_time*speed metres behind.
+        horizon = self.lead_time_s + self._last_plan_s
+        lead = self._trailer_vel * horizon
+        n = float(np.hypot(lead[0], lead[1]))
+        if n > self.lead_max_m:                      # cap so a corner doesn't fling it
+            lead *= self.lead_max_m / n
+        goal_xy = np.array(self._trailer_xy) + lead
         goal = PoseStamped()
         goal.header.stamp = stamp
         goal.header.frame_id = FRAME
-        goal.pose.position.x = float(self._trailer_xy[0])
-        goal.pose.position.y = float(self._trailer_xy[1])
+        goal.pose.position.x = float(goal_xy[0])
+        goal.pose.position.y = float(goal_xy[1])
         goal.pose.position.z = float(self.cruise_alt_m)
         self.goal_pub.publish(goal)
         self._last_replan_time = now
         self.get_logger().info(
-            f"pursuit replan -> trailer ({self._trailer_xy[0]:.0f},"
-            f"{self._trailer_xy[1]:.0f}); {self._trailer_dist():.0f} m to go "
+            f"pursuit replan -> lead ({goal_xy[0]:.0f},{goal_xy[1]:.0f}) "
+            f"[trailer ({self._trailer_xy[0]:.0f},{self._trailer_xy[1]:.0f}) "
+            f"+{n:.0f} m over {horizon:.1f} s]; {self._trailer_dist():.0f} m to go "
             f"(handoff within {self.terminal_range_m:.0f} m)")
 
     def _reached_trailer(self) -> bool:

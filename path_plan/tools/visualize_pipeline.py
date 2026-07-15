@@ -21,6 +21,27 @@ import numpy as np
 import yaml
 from matplotlib.patches import Rectangle
 
+
+def _setup_fonts():
+    """All text large + bold (English only)."""
+    plt.rcParams.update({
+        "axes.unicode_minus": False,
+        "font.weight": "bold",
+        "font.size": 14,
+        "axes.titlesize": 18,
+        "axes.titleweight": "bold",
+        "axes.labelsize": 15,
+        "axes.labelweight": "bold",
+        "xtick.labelsize": 12,
+        "ytick.labelsize": 12,
+        "legend.fontsize": 13,
+        "figure.titlesize": 20,
+        "figure.titleweight": "bold",
+    })
+
+
+_setup_fonts()
+
 from path_plan.astar import AStarPlanner3D
 from path_plan.bspline_optimizer import BsplineOptimizer
 from path_plan.mpc_ros import UnicycleMPC, Weights
@@ -30,7 +51,7 @@ REPO = Path(__file__).resolve().parents[2]
 DEFAULT_MAP = REPO / "gazebo/maps/city_coordinates_uav.yaml"
 OUT = Path(__file__).resolve().parents[1] / "figures"
 
-C_OBST = "#9aa4ad"
+C_OBST = "#e9ecef"   # very light gray so the path stays visible through buildings
 C_ASTAR = "#e8590c"
 C_SFC = "#1c7ed6"
 C_BSPL = "#2f9e44"
@@ -83,26 +104,28 @@ def mpc_rollout(traj, mpc, start, max_steps=None, goal_tol=2.0):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--map", default=str(DEFAULT_MAP))
-    ap.add_argument("--res", type=float, default=4.0)
-    ap.add_argument("--start", nargs=3, type=float, default=[587, 580, 0])
-    ap.add_argument("--goal", nargs=3, type=float, default=[-300, -300, 0])
+    ap.add_argument("--res", type=float, default=8.0)   # city_uav.yaml resolution_m
+    ap.add_argument("--start", nargs=3, type=float, default=[587, 580, 0])   # PX4 spawn (NE)
+    ap.add_argument("--goal", nargs=3, type=float, default=[-587, -512, 0])  # trailer (SW)
     ap.add_argument("--waypoints", nargs="*", type=float, default=[],
                     help="flat via-points x y z x y z ... (forced slalom route)")
-    ap.add_argument("--no-overfly", action="store_true",
-                    help="Disable flying over buildings (force lateral avoidance)")
+    ap.add_argument("--overfly", action="store_true",
+                    help="Allow flying over buildings (default: full-height no-fly columns)")
     args = ap.parse_args()
     OUT.mkdir(exist_ok=True)
 
-    world = WorldModel.from_city_yaml(args.map, inflation_xy_m=1.0,
-                                      ground_clearance_m=10.0, ceiling_m=20.0,
-                                      overfly_allowed=not args.no_overfly)
+    # obstacle model matches path_plan/config/city_uav.yaml (30-40 m cruise band)
+    world = WorldModel.from_city_yaml(args.map, inflation_xy_m=5.0, roof_clearance_m=10.0,
+                                      ground_clearance_m=30.0, ceiling_m=40.0,
+                                      overfly_allowed=args.overfly)
     foots = raw_footprints(args.map)
     print(f"world: {len(world.boxes_min)} obstacles")
 
     t0 = time.time()
     astar = AStarPlanner3D(world, resolution_m=args.res)
-    start_10 = [args.start[0], args.start[1], max(10.0, args.start[2])]
-    goal_10 = [args.goal[0], args.goal[1], max(10.0, args.goal[2])]
+    cruise_z = 35.0                               # middle of the 30-40 m cruise band
+    start_10 = [args.start[0], args.start[1], max(cruise_z, args.start[2])]
+    goal_10 = [args.goal[0], args.goal[1], max(cruise_z, args.goal[2])]
     
     wp_list = args.waypoints
     route = [start_10] + [wp_list[i:i + 3] for i in range(0, len(wp_list) - 2, 3)] + [goal_10]
@@ -122,8 +145,8 @@ def main():
     wp = np.vstack(([args.start], wp_cruise, [args.goal]))
 
     t0 = time.time()
-    opt = BsplineOptimizer(world, cruise_speed_m_s=4.0, ctrl_spacing_m=5.0,
-                           max_vel=5.0, max_acc=3.0, lambda_feas=2.0)
+    opt = BsplineOptimizer(world, cruise_speed_m_s=10.0, ctrl_spacing_m=5.0,
+                           max_vel=12.0, max_acc=4.0, lambda_feas=2.0)
     ores = opt.optimize(wp_cruise)
     corridor = ores.corridor
     traj = ores.spline
@@ -135,7 +158,7 @@ def main():
           f"rebound_iters={ores.rebound_iters} "
           f"collision_free={ores.collision_free} free_frac={ores.free_fraction:.3f}")
 
-    mpc = UnicycleMPC(dt_s=0.1, horizon=20, v_ref=4.0, v_max=5.0,
+    mpc = UnicycleMPC(dt_s=0.1, horizon=20, v_ref=10.0, v_max=12.0,
                       weights=Weights(cte=6.0, epsi=4.0, v=1.0, omega=1.0,
                                       a=0.05, domega=6.0, da=0.5))
     t0 = time.time()
@@ -162,7 +185,7 @@ def main():
 def _draw_obstacles(ax, foots):
     # foots is [(x, y, w, h, z), ...]
     for x, y, w, h, z in foots:
-        ax.bar3d(x, y, 0, w, h, z, color=C_OBST, alpha=0.3, edgecolor="none", shade=True)
+        ax.bar3d(x, y, 0, w, h, z, color=C_OBST, alpha=0.12, edgecolor="none", shade=False)
 
 
 def _draw_3d_content(ax, foots, wp, corridor, pos, actual, args):
@@ -189,7 +212,10 @@ def _draw_3d_content(ax, foots, wp, corridor, pos, actual, args):
     # Fake legend for SFC
     ax.plot([], [], [], color=C_SFC, alpha=0.5, label="SFC corridor (Wireframe)")
     
-    ax.set_xlabel("E x [m]"); ax.set_ylabel("N y [m]"); ax.set_zlabel("U z [m]")
+    ax.set_xlabel("E x [m]", fontsize=15, fontweight="bold", labelpad=12)
+    ax.set_ylabel("N y [m]", fontsize=15, fontweight="bold", labelpad=12)
+    ax.set_zlabel("U z [m]", fontsize=15, fontweight="bold", labelpad=8)
+    ax.tick_params(labelsize=11)
     
     # Setup view box dimensions
     m = 20
@@ -205,23 +231,22 @@ def _draw_3d_content(ax, foots, wp, corridor, pos, actual, args):
 def _fig_3d_map(foots, wp, corridor, pos, actual, args):
     fig = plt.figure(figsize=(20, 9))
     
-    mode = "Overfly Buildings" if not args.no_overfly else "Avoid Buildings Laterally"
-    fig.suptitle(f"Global pipeline (3D View): {mode}\nA* → SFC → B-spline → MPC", fontsize=16)
+    fig.suptitle("Global Path (3D)", fontsize=22, fontweight="bold")
 
     # 1. Perspective View
     ax1 = fig.add_subplot(121, projection='3d')
     _draw_3d_content(ax1, foots, wp, corridor, pos, actual, args)
     ax1.view_init(elev=30, azim=-60)
-    ax1.set_title("Perspective View (측면 상단 뷰)", fontsize=14)
-    ax1.legend(loc="upper right", framealpha=0.9)
+    ax1.set_title("Perspective", fontsize=17, fontweight="bold", pad=14)
+    ax1.legend(loc="upper right", framealpha=0.9, fontsize=13)
 
     # 2. Side View
     ax2 = fig.add_subplot(122, projection='3d')
     _draw_3d_content(ax2, foots, wp, corridor, pos, actual, args)
     ax2.view_init(elev=5, azim=-90)
-    ax2.set_title("Side View (완전 측면 고도 뷰)", fontsize=14)
-    
-    fig.tight_layout(); fig.savefig(OUT / "1_global_3d.png", dpi=130)
+    ax2.set_title("Side", fontsize=17, fontweight="bold", pad=14)
+
+    fig.tight_layout(); fig.savefig(OUT / "1_global_3d.png", dpi=200)
     plt.close(fig)
 
 
@@ -239,12 +264,11 @@ def _fig_altitude(tt, pos, args, foots):
             ax.fill_between([dist[idx[0]], dist[idx[-1]]], [0, 0], [z, z], 
                             color=C_OBST, alpha=0.6, zorder=1)
 
-    ax.axhspan(10, 20, color=C_SFC, alpha=0.12, label="10–20 m cruise band")
+    ax.axhspan(30, 40, color=C_SFC, alpha=0.12, label="30–40 m cruise band")
     ax.plot(dist, pos[:, 2], color=C_BSPL, lw=2.2, label="B-spline altitude", zorder=2)
     ax.set_xlabel("path distance [m]"); ax.set_ylabel("altitude z [m]")
-    ax.set_ylim(0, 40)
-    mode = "(overfly allowed)" if not args.no_overfly else "(no overfly)"
-    ax.set_title(f"Altitude Profile: Takeoff -> Cruise (10–20m) -> Landing {mode}")
+    ax.set_ylim(0, 60)
+    ax.set_title("Altitude Profile")
     ax.legend(loc="lower right"); ax.grid(alpha=0.3)
     fig.tight_layout(); fig.savefig(OUT / "2_altitude.png", dpi=130)
     plt.close(fig)
@@ -257,7 +281,7 @@ def _fig_profiles(tt, vel, acc):
     a1.plot(tt, speed, color=C_BSPL, lw=2)
     a1.axhline(5.0, ls="--", color="#c92a2a", label="v_max 5 m/s")
     a1.set_ylabel("speed [m/s]"); a1.legend(); a1.grid(alpha=0.3)
-    a1.set_title("B-spline speed & acceleration profiles")
+    a1.set_title("Speed & Acceleration")
     a2.plot(tt, accel, color=C_ASTAR, lw=2)
     a2.axhline(3.0, ls="--", color="#c92a2a", label="a_max 3 m/s²")
     a2.set_ylabel("|accel| [m/s²]"); a2.set_xlabel("time [s]")
@@ -276,11 +300,11 @@ def _fig_mpc(ref_xyz, actual):
             label="reference (B-spline)")
     a1.plot(actual[:, 0], actual[:, 1], "--", color=C_MPC, lw=2, label="MPC tracked")
     a1.set_aspect("equal"); a1.set_xlabel("x [m]"); a1.set_ylabel("y [m]")
-    a1.set_title("mpc_ros unicycle MPC — closed-loop tracking (top-down)")
+    a1.set_title("MPC Tracking (top-down)")
     a1.legend(); a1.grid(alpha=0.3)
     a2.plot(err, color=C_MPC, lw=1.8)
     a2.set_xlabel("MPC step"); a2.set_ylabel("lateral tracking error [m]")
-    a2.set_title(f"Tracking error (mean {err.mean():.2f} m, max {err.max():.2f} m)")
+    a2.set_title(f"Tracking Error (mean {err.mean():.2f} m, max {err.max():.2f} m)")
     a2.grid(alpha=0.3)
     fig.tight_layout(); fig.savefig(OUT / "4_mpc_tracking.png", dpi=130)
     plt.close(fig)

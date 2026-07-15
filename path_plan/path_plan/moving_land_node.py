@@ -46,16 +46,19 @@ from __future__ import annotations
 import math
 from enum import Enum
 
+import numpy as np
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import (qos_profile_sensor_data, QoSProfile, QoSDurabilityPolicy,
                        QoSReliabilityPolicy, QoSHistoryPolicy)
 
 from geometry_msgs.msg import PointStamped, TwistStamped, Vector3Stamped
-from nav_msgs.msg import Odometry
+from nav_msgs.msg import Odometry, Path
 from std_msgs.msg import Bool, String
 from mavros_msgs.msg import State
 from mavros_msgs.srv import CommandLong
+
+from .ros_msgs import positions_to_path
 
 
 DT = 0.05  # 20 Hz control period
@@ -155,18 +158,38 @@ class MovingLandNode(Node):
         self.enable_topic = str(p("enable_topic", "/pursuit/land_enable").value)
         self.odom_topic = str(p("odom_topic", "/path_plan/odometry").value)
         # Horizontal velocity servo (v = v_target_ff + vel_gain * error, clamped).
-        self.vel_gain = float(p("vel_gain", 0.9).value)          # 1/s
-        self.vel_max = float(p("vel_max", 8.0).value)            # m/s
-        # Deck geometry + descent funnel. The marker/deck sits platform_height above
-        # the ground; all vertical logic uses the height ABOVE the deck.
+        # The final phase uses the gentler land_vel_gain so it doesn't snap violently
+        # at the moving deck (the earlier 0.9 gain spiked accel to ~35 m/s^2).
+        self.vel_gain = float(p("vel_gain", 0.9).value)          # 1/s (approach)
+        self.land_vel_gain = float(p("land_vel_gain", 0.45).value)  # 1/s (final, gentle)
+        self.vel_max = float(p("vel_max", 10.0).value)           # m/s (> trailer speed)
+        # Slew-rate (acceleration) limit on the published setpoint so neither the final
+        # servo nor the glide->final handoff commands a violent jerk. Bounds |dv|/tick.
+        self.accel_limit = float(p("accel_limit", 6.0).value)    # m/s^2
+        # Deck geometry. The marker/deck sits platform_height above the ground; all
+        # vertical logic uses the height ABOVE the deck.
         self.platform_height = float(p("platform_height", 1.25).value)  # m (trailer deck)
-        self.land_align_radius = float(p("land_align_radius", 0.35).value)  # m, funnel floor
-        self.descend_cone = float(p("descend_cone", 0.35).value)  # m error / m height
-        self.descend_rate = float(p("descend_rate", 0.8).value)   # m/s downward
+        self.land_align_radius = float(p("land_align_radius", 0.35).value)  # m
+        self.descend_rate = float(p("descend_rate", 0.8).value)   # m/s, gentle final descent
         self.descend_min_scale = float(p("descend_min_scale", 0.3).value)
         self.land_clearance = float(p("land_clearance", 0.25).value)  # m above deck -> disarm
         # Below this height above the deck, finish straight down on the cue centre.
         self.final_descent_h = float(p("final_descent_h", 1.0).value)
+        # --- Predicted-intercept descent via the REAL B-spline pipeline -----------
+        # The drone is faster than the trailer, so it aims at where the trailer WILL be
+        # (constant-velocity prediction: pos + vel*T_go) and descends there on a smooth
+        # 3D curve. Rather than a hand-rolled glide, this feeds a drone->intercept-deck
+        # global_path straight into the existing ego-planner bspline_node (its ground
+        # floor is now 0 so the curve can reach the deck) and lets mpc_node track it;
+        # we forward that MPC command as our setpoint (single authority). Regenerated at
+        # descent_period, not every tick (L-BFGS is too heavy for 20 Hz). No KF is needed
+        # while the trailer velocity is broadcast; a KF slots behind the estimator only
+        # once the target comes from noisy on-board vision.
+        self.approach_speed = float(p("approach_speed", 9.0).value)   # m/s used to solve T_go
+        self.min_time_to_go = float(p("min_time_to_go", 1.0).value)   # s, T_go floor
+        self.descent_period = float(p("descent_replan_period", 1.0).value)  # s, spline refresh
+        self.global_path_topic = str(p("global_path_topic", "/path_plan/global_path").value)
+        self.mpc_cmd_topic = str(p("mpc_cmd_topic", "/path_plan/cmd_vel").value)
 
         # --- State ------------------------------------------------------------
         self.stage = Stage.DORMANT
@@ -174,22 +197,32 @@ class MovingLandNode(Node):
         self.mav_state = State()
         self.pos = [0.0, 0.0, 0.0]     # drone map-ENU position
         self.cmd_vel = [0.0, 0.0, 0.0]
+        self.drone_vel = [0.0, 0.0, 0.0]   # latest odom world velocity
+        self._prev_pub = [0.0, 0.0, 0.0]   # last published setpoint (for slew limiting)
         self.dbg_tick = 0
+        self._mpc_cmd = None           # latest mpc_node cmd (tracking the descent spline)
+        self._last_descent = None      # time of the last descent global_path publish
 
         # --- Publishers -------------------------------------------------------
         self.sp_pub = self.create_publisher(
             TwistStamped, "/mavros/setpoint_velocity/cmd_vel", 10)
         self.debug_pub = self.create_publisher(String, "/moving_land/debug", 10)
+        latched = QoSProfile(
+            depth=1, history=QoSHistoryPolicy.KEEP_LAST,
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            durability=QoSDurabilityPolicy.TRANSIENT_LOCAL)
+        # Descent global_path -> bspline_node (bypasses A*: the terminal descent is a
+        # short open-air diagonal above the trailer, no grid search needed).
+        self.path_pub = self.create_publisher(Path, self.global_path_topic, latched)
 
         # --- Subscribers ------------------------------------------------------
         self.create_subscription(State, "/mavros/state", self._state_cb, 10)
         self.create_subscription(
             Odometry, self.odom_topic, self._odom_cb, qos_profile_sensor_data)
-        latched = QoSProfile(
-            depth=1, history=QoSHistoryPolicy.KEEP_LAST,
-            reliability=QoSReliabilityPolicy.RELIABLE,
-            durability=QoSDurabilityPolicy.TRANSIENT_LOCAL)
         self.create_subscription(Bool, self.enable_topic, self._enable_cb, latched)
+        # mpc_node's output (it tracks the descent spline we publish); we forward it.
+        self.create_subscription(
+            TwistStamped, self.mpc_cmd_topic, self._mpc_cmd_cb, 10)
 
         # --- Target estimator (the pluggable swap point) ----------------------
         self.estimator = self._make_estimator()
@@ -220,9 +253,14 @@ class MovingLandNode(Node):
         self.pos[0] = msg.pose.pose.position.x
         self.pos[1] = msg.pose.pose.position.y
         self.pos[2] = msg.pose.pose.position.z
+        v = msg.twist.twist.linear
+        self.drone_vel = [v.x, v.y, v.z]     # for seeding the slew limiter at handoff
 
     def _enable_cb(self, msg: Bool):
         self.land_enabled = msg.data
+
+    def _mpc_cmd_cb(self, msg: TwistStamped):
+        self._mpc_cmd = msg.twist
 
     # -------------------------------------------------------------- main loop
     def tick(self):
@@ -239,6 +277,9 @@ class MovingLandNode(Node):
         if self.stage == Stage.DORMANT:
             self._log("land_enable -> LANDING (taking setpoint authority)")
             self.stage = Stage.LANDING
+            # Seed the slew limiter with the drone's current velocity so the first
+            # setpoint continues the cruise motion instead of braking to zero.
+            self._prev_pub = list(self.drone_vel)
 
         if self.stage == Stage.DONE:
             if self.mav_state.armed:
@@ -258,14 +299,15 @@ class MovingLandNode(Node):
                 self._log("target invalid -> holding")
             return
 
-        # Horizontal: match the target velocity and close the offset.
-        err = self._servo_to(tE, tN, vE, vN)
-
-        # Vertical: descent funnel keyed on the height above the deck.
+        err = math.hypot(tE - self.pos[0], tN - self.pos[1])   # true offset NOW
         h = self._height_above_deck()
-        funnel = max(self.land_align_radius, self.descend_cone * h)
+
         if h < self.final_descent_h:
-            # Near the deck: finish straight down once centred; converge first if not.
+            # Final phase: aim at the trailer's ACTUAL position (no lead) so the drone
+            # centres on the moving deck and settles, matching its velocity. Use the
+            # gentle land gain so it eases in instead of snapping.
+            self._servo_to(tE, tN, vE, vN, gain=self.land_vel_gain)
+            t_go = 0.0
             if err < self.land_align_radius:
                 if h < self.land_clearance:
                     self._log(f"centred ({err:.2f} m) over deck at h={h:.2f} m "
@@ -274,34 +316,92 @@ class MovingLandNode(Node):
                     return
                 self.cmd_vel[2] = -self.descend_rate * self.descend_min_scale
             else:
-                self.cmd_vel[2] = 0.0
-        elif err <= funnel:
-            # Inside the funnel: creep down, faster the more centred.
-            scale = max(self.descend_min_scale, min(1.0, 1.0 - err / funnel))
-            self.cmd_vel[2] = -self.descend_rate * scale
+                self.cmd_vel[2] = 0.0        # hold height, converge onto the deck
         else:
-            self.cmd_vel[2] = 0.0            # too far off for this height: converge
+            # Glide phase: descend on a REAL B-spline. Publish a drone->intercept-deck
+            # global_path (refreshed at descent_period) into bspline_node, and FORWARD
+            # mpc_node's tracking command as our setpoint. The predicted intercept
+            # (pos + vel*t_go) leads the moving deck; the spline's z drops to it and
+            # MPC's altitude hold follows it down.
+            t_go, aimE, aimN = self._intercept(tE, tN, vE, vN)
+            self._maybe_publish_descent(now, aimE, aimN)
+            if self._mpc_cmd is not None:
+                self.cmd_vel = [self._mpc_cmd.linear.x, self._mpc_cmd.linear.y,
+                                self._mpc_cmd.linear.z]
+            else:
+                # MPC output not up yet: fall back to a direct servo toward the aim.
+                self._servo_to(aimE, aimN, vE, vN)
 
         self.dbg_tick += 1
         if self.dbg_tick % 20 == 0:
-            self._log(f"LANDING err={err:.2f} m h={h:.2f} m "
-                      f"vz={self.cmd_vel[2]:+.2f} funnel={funnel:.2f}")
+            src = "mpc" if (h >= self.final_descent_h and self._mpc_cmd) else "servo"
+            self._log(f"LANDING err={err:.2f} m h={h:.2f} m vz={self.cmd_vel[2]:+.2f} "
+                      f"t_go={t_go:.1f}s src={src}")
         self._publish_velocity()
 
+    def _maybe_publish_descent(self, now, aimE, aimN):
+        """At descent_period, publish a drone->intercept-deck global_path so the
+        existing bspline_node fits a smooth 3D descent spline for mpc_node to track."""
+        if (self._last_descent is not None
+                and (now - self._last_descent).nanoseconds * 1e-9 < self.descent_period):
+            return
+        self._last_descent = now
+        pts = np.array([[self.pos[0], self.pos[1], self.pos[2]],
+                        [aimE, aimN, self.platform_height]], float)
+        self.path_pub.publish(positions_to_path(pts, now.to_msg()))
+
     # -------------------------------------------------------------- helpers
-    def _servo_to(self, tE, tN, vffE=0.0, vffN=0.0):
+    def _servo_to(self, tE, tN, vffE=0.0, vffN=0.0, gain=None):
         """First-order velocity servo toward (tE, tN) with target-velocity feed-
-        forward: v = v_ff + vel_gain * error, clamped. Returns the horizontal error."""
+        forward: v = v_ff + gain * error, clamped. Returns the horizontal error."""
+        g = self.vel_gain if gain is None else gain
         eE = tE - self.pos[0]
         eN = tN - self.pos[1]
-        self.cmd_vel[0] = self._clamp(vffE + self.vel_gain * eE, -self.vel_max, self.vel_max)
-        self.cmd_vel[1] = self._clamp(vffN + self.vel_gain * eN, -self.vel_max, self.vel_max)
+        self.cmd_vel[0] = self._clamp(vffE + g * eE, -self.vel_max, self.vel_max)
+        self.cmd_vel[1] = self._clamp(vffN + g * eN, -self.vel_max, self.vel_max)
         return math.hypot(eE, eN)
+
+    def _intercept(self, tE, tN, vE, vN):
+        """Constant-velocity intercept: smallest T_go>0 such that flying straight at
+        ``approach_speed`` from the drone reaches the trailer's predicted position
+        ``(tE,tN) + (vE,vN)*T``. Solves |R + V T| = v T  ->  quadratic in T. Returns
+        (T_go, aimE, aimN); falls back to a range/speed estimate if no real intercept
+        exists (e.g. trailer momentarily faster than the drone)."""
+        rx = tE - self.pos[0]
+        ry = tN - self.pos[1]
+        v = self.approach_speed
+        a = vE * vE + vN * vN - v * v
+        b = 2.0 * (rx * vE + ry * vN)
+        c = rx * rx + ry * ry
+        t = None
+        if abs(a) < 1e-6:
+            if abs(b) > 1e-6:
+                t = -c / b
+        else:
+            disc = b * b - 4.0 * a * c
+            if disc >= 0.0:
+                sq = math.sqrt(disc)
+                for cand in ((-b - sq) / (2.0 * a), (-b + sq) / (2.0 * a)):
+                    if cand > 1e-3 and (t is None or cand < t):
+                        t = cand
+        if t is None or t <= 0.0:
+            t = math.hypot(rx, ry) / max(v, 0.1)     # can't formally intercept -> coast in
+        t = max(t, self.min_time_to_go)
+        return t, tE + vE * t, tN + vN * t
 
     def _height_above_deck(self):
         return max(self.pos[2] - self.platform_height, 0.05)
 
     def _publish_velocity(self):
+        # Slew-rate limit: bound |dv| per tick to accel_limit*DT so the setpoint (final
+        # servo AND the glide->final handoff) can't jerk. This is what tames the ~35
+        # m/s^2 spikes seen at touchdown while leaving smooth commands untouched.
+        dv_max = self.accel_limit * DT
+        for i in range(3):
+            self.cmd_vel[i] = self._clamp(self.cmd_vel[i],
+                                          self._prev_pub[i] - dv_max,
+                                          self._prev_pub[i] + dv_max)
+        self._prev_pub = list(self.cmd_vel)
         sp = TwistStamped()
         sp.header.stamp = self.get_clock().now().to_msg()
         sp.header.frame_id = "map"

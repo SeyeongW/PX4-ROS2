@@ -23,6 +23,37 @@ trailer:
   direction: ccw
   deck_height_m: 1.25
   footprint_m: [5.5, 3.0]
+  # Building-CLEAR closed loop through the real Gazebo city (min 6.9 m clearance to
+  # any building, ~4068 m perimeter). The GAZEBO trailer physically collides with the
+  # 205 building collisions, so the analytic square (which crosses buildings) jams it;
+  # this waypoint circuit weaves through the open gaps. trailer_loop_driver follows
+  # these when present; tools/pursuit_sim.py (no collision) keeps using the square.
+  # Generated once by A* over the inflated footprints; wp[0] == trailer spawn (-587,
+  # -512, 2.8 m away, 31.6 m clear) so the trailer starts ON the loop (no cross-map dash).
+  loop_waypoints_enu:
+    - [-585.0, -510.0]
+    - [-360.0, -550.0]
+    - [-280.0, -615.0]
+    - [190.0, -595.0]
+    - [265.0, -530.0]
+    - [480.0, -490.0]
+    - [495.0, -470.0]
+    - [540.0, -225.0]
+    - [600.0, -180.0]
+    - [610.0, 245.0]
+    - [605.0, 250.0]
+    - [595.0, 350.0]
+    - [520.0, 400.0]
+    - [-290.0, 515.0]
+    - [-310.0, 505.0]
+    - [-310.0, 500.0]
+    - [-305.0, 430.0]
+    - [-290.0, 415.0]
+    - [-350.0, -35.0]
+    - [-410.0, -80.0]
+    - [-430.0, -290.0]
+    - [-510.0, -340.0]
+    - [-540.0, -495.0]
 
 pursuit:
   capture_radius_m: 5.0               # success when drone-trailer xy distance < this

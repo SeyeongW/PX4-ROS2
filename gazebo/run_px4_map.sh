@@ -251,6 +251,37 @@ if command -v flock >/dev/null 2>&1; then
   exec {PX4_LOCK_FD}>&-
 fi
 
+# Fresh-start cleanup (CLEAN_STATE=0 to skip).  We only reach here once the
+# guards above confirmed there is NO live PX4 instance 0 and the MAVLink ports
+# are free, so anything matched below is a leftover from a previous, dead run:
+#   1. Orphaned path_plan pipeline nodes.  A px4_mavros.launch.py that aborts
+#      part-way (e.g. a missing executable) can leave astar/sfc/bspline/mpc and
+#      especially mavros_static_path alive; that stray bridge keeps re-arming
+#      and streaming OFFBOARD setpoints, so the *next* drone appears to "fly a
+#      saved path on its own".  Kill them before the new world comes up.
+#   2. PX4's persisted mission storage (dataman) and old SITL logs, so no stale
+#      uploaded mission/geofence is replayed and logs do not grow unbounded.
+if [[ "${CLEAN_STATE:-1}" == "1" ]]; then
+  PIPELINE_MATCH="install/path_plan/lib/path_plan/"
+  if pgrep -f "$PIPELINE_MATCH" >/dev/null 2>&1; then
+    echo "Cleanup          : killing orphaned path_plan pipeline nodes"
+    pkill -TERM -f "$PIPELINE_MATCH" 2>/dev/null || true
+    for _ in {1..20}; do
+      pgrep -f "$PIPELINE_MATCH" >/dev/null 2>&1 || break
+      sleep 0.1
+    done
+    pkill -KILL -f "$PIPELINE_MATCH" 2>/dev/null || true
+  fi
+  for stale in "$PX4_ROOTFS/dataman" "$PX4_ROOTFS"/*_dataman; do
+    [[ -e "$stale" ]] || continue
+    rm -f "$stale" && echo "Cleanup          : removed PX4 mission cache $(basename "$stale")"
+  done
+  if [[ -d "$PX4_ROOTFS/log" ]]; then
+    rm -rf "$PX4_ROOTFS/log"/* 2>/dev/null || true
+    echo "Cleanup          : cleared old PX4 SITL logs"
+  fi
+fi
+
 # PX4's POSIX SITL rcS starts uxrce_dds_client unconditionally.  In the
 # MAVROS-only profile, use PX4's supported `-s` option with a runtime copy of
 # rcS from which that single start command is removed.  This prevents the

@@ -30,6 +30,9 @@ Topic / service contract:
 
 from __future__ import annotations
 
+import getpass
+import os
+import time
 from pathlib import Path
 
 import numpy as np
@@ -37,6 +40,7 @@ import rclpy
 import yaml
 from geometry_msgs.msg import PointStamped, Vector3Stamped
 from rclpy.node import Node
+from visualization_msgs.msg import Marker
 
 # gz-transport is optional: without it we still publish the analytic cue, we just
 # can't physically drive the Gazebo trailer (publish-only / external-driver mode).
@@ -104,6 +108,19 @@ class TrailerLoopDriver(Node):
         start_corner = str(p("start_corner", tr.get("start_corner", "SW")).value).upper()
         self.s0 = _CORNER_S.get(start_corner, 6.0) * self.half
 
+        # Preferred motion: a building-CLEAR waypoint circuit (the analytic square
+        # crosses buildings and physically jams the Gazebo trailer). Fall back to the
+        # square only if no waypoints are provided (e.g. the offline pursuit_sim).
+        self._wp = None
+        wps = tr.get("loop_waypoints_enu")
+        if wps and len(wps) >= 3:
+            self._build_waypoint_loop(np.asarray(wps, float))
+            self.get_logger().info(
+                f"following building-clear waypoint loop: {len(self._wp)} pts, "
+                f"perimeter {self._perim:.0f} m")
+        else:
+            self.get_logger().info("no loop_waypoints_enu -> analytic square loop")
+
         # --- State ----------------------------------------------------------
         self._actual = None                 # latest actual (E, N) from gz
         self._prev_target = None            # (E, N) analytic target last tick (for v_ff)
@@ -112,8 +129,25 @@ class TrailerLoopDriver(Node):
         # --- ROS I/O --------------------------------------------------------
         self.pos_pub = self.create_publisher(PointStamped, self.pos_topic, 10)
         self.vel_pub = self.create_publisher(Vector3Stamped, self.vel_topic, 10)
+        # RViz marker for the live trailer position. Sized to be visible on the
+        # ~1300 m city map (a raw point is invisible at that zoom).
+        self.marker_pub = self.create_publisher(Marker, "/trailer/marker", 10)
+        self.marker_size_m = float(p("marker_size_m", 25.0).value)
 
         # --- gz transport ---------------------------------------------------
+        # run_px4_map.sh starts gz sim inside GZ_PARTITION=px4_ros2_<user>. This
+        # node runs in a separate `ros2 launch` shell that normally has no such
+        # env var, so its gz-transport Node would land on the DEFAULT partition
+        # and silently fail to reach the trailer's VelocityControl plugin (the
+        # trailer never moves). Match run_px4_map.sh's partition before creating
+        # the gz Node -- honour an explicitly-set GZ_PARTITION, else rebuild the
+        # same default. Overridable with the `gz_partition` ROS param.
+        default_partition = os.environ.get(
+            "GZ_PARTITION", f"px4_ros2_{getpass.getuser()}")
+        partition = str(p("gz_partition", default_partition).value)
+        if partition:
+            os.environ["GZ_PARTITION"] = partition
+            self.get_logger().info(f"gz transport partition: {partition}")
         self.gz = None
         self.cmd_vel_pub = None
         if _GZ_OK:
@@ -144,9 +178,28 @@ class TrailerLoopDriver(Node):
                 f"scenario '{path}' unreadable ({exc}); using built-in loop defaults")
             return {}
 
+    def _build_waypoint_loop(self, wp: np.ndarray):
+        """Precompute the closed piecewise-linear circuit for arc-length lookup."""
+        self._wp = wp
+        closed = np.vstack([wp, wp[:1]])                 # wrap back to start
+        seglen = np.hypot(*(np.diff(closed, axis=0).T))
+        self._cum = np.concatenate([[0.0], np.cumsum(seglen)])   # (N+1,)
+        self._perim = float(self._cum[-1])
+
     def _loop_point(self, t: float) -> np.ndarray:
-        """Analytic loop target position at time ``t`` (map ENU)."""
-        return square_loop_pos(self.s0 + self.sign * self.speed * t, self.half)
+        """Loop target position at time ``t`` (map ENU), constant ground speed."""
+        if self._wp is None:
+            return square_loop_pos(self.s0 + self.sign * self.speed * t, self.half)
+        # Arc-length distance travelled along the closed circuit (spawn == wp[0]).
+        d = (self.sign * self.speed * t) % self._perim
+        i = int(np.searchsorted(self._cum, d, side="right") - 1)
+        i = min(max(i, 0), len(self._wp) - 1)
+        seg_d = d - self._cum[i]
+        a = self._wp[i]
+        b = self._wp[(i + 1) % len(self._wp)]
+        seg_len = self._cum[i + 1] - self._cum[i]
+        frac = seg_d / seg_len if seg_len > 1e-6 else 0.0
+        return a + (b - a) * frac
 
     def tick(self):
         now = self.get_clock().now()
@@ -188,6 +241,24 @@ class TrailerLoopDriver(Node):
         pos.point.z = 0.0
         self.pos_pub.publish(pos)
 
+        # Bright marker at the live trailer position (visible on the big map).
+        mk = Marker()
+        mk.header.stamp = stamp
+        mk.header.frame_id = self.frame_id
+        mk.ns = "trailer"
+        mk.id = 0
+        mk.type = Marker.CUBE
+        mk.action = Marker.ADD
+        mk.pose.position.x = float(cue[0])
+        mk.pose.position.y = float(cue[1])
+        mk.pose.position.z = 0.5 * self.marker_size_m
+        mk.pose.orientation.w = 1.0
+        mk.scale.x = self.marker_size_m
+        mk.scale.y = self.marker_size_m
+        mk.scale.z = self.marker_size_m
+        mk.color.r, mk.color.g, mk.color.b, mk.color.a = 1.0, 0.55, 0.0, 0.9
+        self.marker_pub.publish(mk)
+
         # Velocity cue = the commanded loop velocity (smooth, what the trailer tracks).
         vel = Vector3Stamped()
         vel.header.stamp = stamp
@@ -202,6 +273,20 @@ class TrailerLoopDriver(Node):
                 self._actual = (pose.position.x, pose.position.y)
                 return
 
+    def stop_trailer(self):
+        """Zero the trailer velocity. The gz VelocityControl plugin HOLDS the last
+        command, so if this driver stops/crashes without this the trailer keeps
+        coasting at its last velocity straight off the map. Send a few zeros to be
+        sure the plugin latches the stop."""
+        if self.cmd_vel_pub is None:
+            return
+        try:
+            for _ in range(5):
+                self.cmd_vel_pub.publish(GzTwist())   # all-zero twist
+                time.sleep(0.02)
+        except Exception:            # never let cleanup raise
+            pass
+
 
 def main(args=None):
     rclpy.init(args=args)
@@ -211,6 +296,7 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
+        node.stop_trailer()          # don't leave the trailer coasting off the map
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()

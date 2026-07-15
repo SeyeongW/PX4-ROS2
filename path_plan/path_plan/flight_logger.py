@@ -2,16 +2,19 @@
 """Log a Gazebo/PX4 flight and render diagnostic figures on disarm.
 
 Records the vehicle odometry (position + world velocity) while armed, plus the
-A* global path and the B-spline reference, then on landing (disarm) saves three
-figures in the SAME visual language as tools/visualize_pipeline.py:
+A* global path, the B-spline reference and per-node compute metrics, then on
+landing (disarm) saves four figures in the SAME visual language as
+tools/visualize_pipeline.py:
 
     figures/gazebo_flight_topdown.png   buildings + A* + B-spline + flown path
                                         (annotated with the real min wall clearance)
     figures/gazebo_flight_profiles.png  speed / acceleration / altitude vs time
     figures/gazebo_flight_mpc.png       MPC tracking: reference vs flown + error
+    figures/gazebo_flight_compute.png   compute load + speed: A* plan time /
+                                        nodes expanded per replan, MPC solve time/tick
 
 Subscribes: /path_plan/odometry, /path_plan/trajectory, /path_plan/global_path,
-/mavros/state.
+/mavros/state, /path_plan/astar_stats, /path_plan/mpc_stats.
 """
 import matplotlib
 matplotlib.use("Agg")
@@ -51,11 +54,21 @@ class FlightLoggerNode(Node):
         self.ceiling = float(self.declare_parameter("cruise_ceiling_m", 40.0).value)
 
         self.t, self.pos, self.vel = [], [], []      # flown time-series (armed only)
-        self.ref_path = None                          # B-spline reference (N,3)
-        self.astar_path = None                        # A* global path (N,3)
+        self.ref_path = None                          # latest B-spline reference (N,3)
+        self.astar_path = None                        # latest A* global path (N,3)
+        # Pursuit continuously REPLANS, so keep every A*/B-spline reference (not just
+        # the last) -> the figures can show all commanded paths and the tracking error
+        # is measured against the union of what was actually commanded.
+        self.ref_paths = []                           # all B-spline references
+        self.astar_paths = []                         # all A* global paths
         self.armed = False
         self.was_armed = False
         self.reported = False
+
+        # Compute metrics: A* per-replan [t, plan_s, expanded, n_wp]; MPC per-tick
+        # [t, solve_ms].  t is wall-clock (node) seconds so we can align to flight.
+        self.astar_stats = []       # rows [t, plan_s, expanded, n_wp]
+        self.mpc_stats = []         # rows [t, solve_ms]
 
         self.create_subscription(Odometry, "/path_plan/odometry",
                                  self.odom_cb, qos_profile_sensor_data)
@@ -64,7 +77,14 @@ class FlightLoggerNode(Node):
         self.create_subscription(Path, "/path_plan/global_path",
                                  self.global_path_cb, _LATCHED)
         self.create_subscription(State, "/mavros/state", self.state_cb, 10)
+        self.create_subscription(Float32MultiArray, "/path_plan/astar_stats",
+                                 self.astar_stats_cb, 10)
+        self.create_subscription(Float32MultiArray, "/path_plan/mpc_stats",
+                                 self.mpc_stats_cb, 10)
         self.get_logger().info("Flight logger ready. Recording once armed...")
+
+    def _now_s(self):
+        return self.get_clock().now().nanoseconds * 1e-9
 
     # ------------------------------------------------------------- callbacks
     def odom_cb(self, msg):
@@ -80,9 +100,27 @@ class FlightLoggerNode(Node):
     def traj_cb(self, msg):
         _, pos, _ = msg_to_trajectory(msg)
         self.ref_path = pos
+        if pos is not None and len(pos) > 1 and (
+                not self.ref_paths or not np.array_equal(pos, self.ref_paths[-1])):
+            self.ref_paths.append(pos)
 
     def global_path_cb(self, msg):
-        self.astar_path = path_to_positions(msg)
+        pos = path_to_positions(msg)
+        self.astar_path = pos
+        if pos is not None and len(pos) > 1 and (
+                not self.astar_paths or not np.array_equal(pos, self.astar_paths[-1])):
+            self.astar_paths.append(pos)
+
+    def astar_stats_cb(self, msg):
+        d = list(msg.data)
+        if len(d) >= 3:
+            self.astar_stats.append([self._now_s(), d[0], d[1], d[2]])
+
+    def mpc_stats_cb(self, msg):
+        if not self.armed:      # only the real-time control loop while flying
+            return
+        if msg.data:
+            self.mpc_stats.append([self._now_s(), float(msg.data[0])])
 
     def state_cb(self, msg):
         self.armed = msg.armed
@@ -111,31 +149,55 @@ class FlightLoggerNode(Node):
         self._fig_topdown(out / "gazebo_flight_topdown.png", pos, foots)
         self._fig_profiles(out / "gazebo_flight_profiles.png", t, pos, vel)
         self._fig_mpc(out / "gazebo_flight_mpc.png", pos)
-        self.get_logger().info(f"Saved 3 flight figures to {out}")
+        n_compute = self._fig_compute(out / "gazebo_flight_compute.png")
+        self.get_logger().info(
+            f"Saved {3 + n_compute} flight figures to {out}")
 
     # ------------------------------------------------------------ figure 1
-    def _fig_topdown(self, path, pos, foots):
-        fig, ax = plt.subplots(figsize=(11, 11))
+    def _draw_buildings(self, ax, foots):
         for poly in foots:
             ax.add_patch(MplPolygon(poly, closed=True, facecolor=C_OBST,
                                     edgecolor="#5c636a", lw=0.4, alpha=0.55, zorder=1))
-        if self.astar_path is not None and len(self.astar_path) > 1:
-            ax.plot(self.astar_path[:, 0], self.astar_path[:, 1], "-o", color=C_ASTAR,
-                    lw=1.5, ms=3, label="A* global path", zorder=3)
-        if self.ref_path is not None and len(self.ref_path) > 1:
-            ax.plot(self.ref_path[:, 0], self.ref_path[:, 1], "-", color=C_BSPL,
-                    lw=3, alpha=0.7, label="B-spline reference", zorder=4)
-        ax.plot(pos[:, 0], pos[:, 1], "--", color=C_MPC, lw=2,
-                label="flown path (MPC)", zorder=5)
-        ax.scatter(pos[0, 0], pos[0, 1], c="#1c7ed6", s=90, zorder=6, label="start")
-        ax.scatter(pos[-1, 0], pos[-1, 1], c="#c92a2a", s=90, zorder=6, label="end")
 
+    def _fig_topdown(self, path, pos, foots):
+        """Three top-down panels in one file: the A* global paths, the B-spline
+        references, and the two combined — each over the flown path. Pursuit replans
+        continuously, so every replanned path is overlaid (not just the last)."""
+        fig, axes = plt.subplots(1, 3, figsize=(19, 7))
         clr = self._min_clearance(pos)
         note = f"min wall clearance (flown): {clr:.1f} m" if clr is not None else ""
-        ax.set_aspect("equal")
-        ax.set_xlabel("E  x [m]"); ax.set_ylabel("N  y [m]")
-        ax.set_title(f"Gazebo Flight (Top-Down): A* -> B-spline -> MPC\n{note}")
-        ax.legend(loc="upper right", framealpha=0.9); ax.grid(alpha=0.3)
+
+        def draw_flown(ax):
+            ax.plot(pos[:, 0], pos[:, 1], "--", color=C_MPC, lw=2, zorder=5,
+                    label="flown (MPC)")
+            ax.scatter(pos[0, 0], pos[0, 1], c="#1c7ed6", s=70, zorder=6, label="start")
+            ax.scatter(pos[-1, 0], pos[-1, 1], c="#c92a2a", s=70, zorder=6, label="end")
+
+        def draw_astar(ax):
+            for i, ap in enumerate(self.astar_paths):
+                ax.plot(ap[:, 0], ap[:, 1], "-", color=C_ASTAR, lw=1.0, alpha=0.35,
+                        zorder=3, label="A* global path" if i == 0 else None)
+
+        def draw_bspline(ax):
+            for i, rp in enumerate(self.ref_paths):
+                ax.plot(rp[:, 0], rp[:, 1], "-", color=C_BSPL, lw=1.3, alpha=0.4,
+                        zorder=4, label="B-spline reference" if i == 0 else None)
+
+        # Panel A: A* only; B: B-spline only; C: combined.
+        self._draw_buildings(axes[0], foots); draw_astar(axes[0]); draw_flown(axes[0])
+        axes[0].set_title(f"A* global path ({len(self.astar_paths)} replans)")
+        self._draw_buildings(axes[1], foots); draw_bspline(axes[1]); draw_flown(axes[1])
+        axes[1].set_title(f"B-spline reference ({len(self.ref_paths)} replans)")
+        self._draw_buildings(axes[2], foots)
+        draw_astar(axes[2]); draw_bspline(axes[2]); draw_flown(axes[2])
+        axes[2].set_title("combined")
+
+        for ax in axes:
+            ax.set_aspect("equal"); ax.grid(alpha=0.3)
+            ax.set_xlabel("E  x [m]"); ax.set_ylabel("N  y [m]")
+            ax.legend(loc="upper right", fontsize=8, framealpha=0.9)
+        fig.suptitle(f"Gazebo Flight (Top-Down): A* -> B-spline -> MPC    |    {note}",
+                     fontsize=13)
         fig.tight_layout(); fig.savefig(path, dpi=130); plt.close(fig)
 
     # ------------------------------------------------------------ figure 2
@@ -160,22 +222,93 @@ class FlightLoggerNode(Node):
 
     # ------------------------------------------------------------ figure 3
     def _fig_mpc(self, path, pos):
-        if self.ref_path is None or len(self.ref_path) < 2:
+        """Closed-loop tracking. Pursuit replans continuously, so the error is the
+        distance from each flown point to the NEAREST point of ANY reference that was
+        actually commanded (the union of all B-spline replans) -- not the last one
+        (comparing the whole flight to only the final descent spline gave a bogus
+        hundreds-of-metres 'error')."""
+        refs = self.ref_paths or ([self.ref_path] if self.ref_path is not None else [])
+        refs = [r for r in refs if r is not None and len(r) > 1]
+        if not refs:
             return
         from scipy.spatial import cKDTree
-        err, _ = cKDTree(self.ref_path[:, :2]).query(pos[:, :2])
+        allref = np.vstack([r[:, :2] for r in refs])
+        err, _ = cKDTree(allref).query(pos[:, :2])
         fig, (a1, a2) = plt.subplots(1, 2, figsize=(13, 5.5))
-        a1.plot(self.ref_path[:, 0], self.ref_path[:, 1], "-", color=C_BSPL, lw=3,
-                alpha=0.6, label="reference (B-spline)")
+        for i, r in enumerate(refs):
+            a1.plot(r[:, 0], r[:, 1], "-", color=C_BSPL, lw=1.2, alpha=0.4,
+                    label="reference (B-spline, all replans)" if i == 0 else None)
         a1.plot(pos[:, 0], pos[:, 1], "--", color=C_MPC, lw=2, label="flown (MPC)")
         a1.set_aspect("equal"); a1.set_xlabel("x [m]"); a1.set_ylabel("y [m]")
-        a1.set_title("MPC closed-loop tracking (top-down)")
-        a1.legend(); a1.grid(alpha=0.3)
-        a2.plot(err, color=C_MPC, lw=1.5)
-        a2.set_xlabel("sample"); a2.set_ylabel("lateral tracking error [m]")
-        a2.set_title(f"Tracking error (mean {err.mean():.2f} m, max {err.max():.2f} m)")
+        a1.set_title("Closed-loop tracking (top-down)")
+        a1.legend(fontsize=8); a1.grid(alpha=0.3)
+        a2.plot(err, color=C_MPC, lw=1.2)
+        a2.set_xlabel("flown sample"); a2.set_ylabel("dist to nearest commanded ref [m]")
+        a2.set_title(f"Tracking error vs all references — mean {err.mean():.2f} m, "
+                     f"median {np.median(err):.2f} m, max {err.max():.2f} m")
         a2.grid(alpha=0.3)
         fig.tight_layout(); fig.savefig(path, dpi=130); plt.close(fig)
+
+    # ------------------------------------------------------------ figure 4
+    def _fig_compute(self, path):
+        """Computation load + speed: A* planning cost per replan and the MPC
+        controller solve time per tick. Returns 1 if saved, 0 if no data."""
+        astar = np.asarray(self.astar_stats, float) if self.astar_stats else None
+        mpc = np.asarray(self.mpc_stats, float) if self.mpc_stats else None
+        if astar is None and mpc is None:
+            self.get_logger().warn("No compute stats captured; skipping compute figure.")
+            return 0
+
+        fig, (a1, a2) = plt.subplots(2, 1, figsize=(11, 9))
+
+        # --- A* planning: time (ms) per replan + nodes expanded (twin axis) ---
+        if astar is not None and len(astar):
+            idx = np.arange(1, len(astar) + 1)
+            plan_ms = astar[:, 1] * 1e3
+            expanded = astar[:, 2]
+            a1.bar(idx, plan_ms, color=C_ASTAR, alpha=0.75, label="plan time")
+            a1.set_xlabel("A* replan #")
+            a1.set_ylabel("plan time [ms]", color=C_ASTAR)
+            a1.tick_params(axis="y", labelcolor=C_ASTAR)
+            a1.set_xticks(idx)
+            at = a1.twinx()
+            at.plot(idx, expanded, "-o", color="#1c7ed6", lw=1.5, ms=4,
+                    label="nodes expanded")
+            at.set_ylabel("nodes expanded", color="#1c7ed6")
+            at.tick_params(axis="y", labelcolor="#1c7ed6")
+            a1.set_title(
+                f"A* planning cost — {len(astar)} replan(s), "
+                f"mean {plan_ms.mean():.0f} ms / {expanded.mean():.0f} nodes, "
+                f"max {plan_ms.max():.0f} ms")
+            a1.grid(alpha=0.3)
+        else:
+            a1.set_title("A* planning cost — no data")
+
+        # --- MPC controller: solve time (ms) per tick vs flight time ----------
+        if mpc is not None and len(mpc) > 1:
+            tm = mpc[:, 0] - mpc[0, 0]
+            solve_ms = mpc[:, 1]
+            a2.plot(tm, solve_ms, color=C_MPC, lw=1.0, alpha=0.9, label="solve time")
+            # real-time budget = median control period between ticks
+            dt = np.diff(mpc[:, 0])
+            dt = dt[dt > 1e-4]
+            if len(dt):
+                budget_ms = float(np.median(dt)) * 1e3
+                rate = 1e3 / budget_ms
+                a2.axhline(budget_ms, color="#c92a2a", ls="--", lw=1.2,
+                           label=f"control period {budget_ms:.0f} ms ({rate:.0f} Hz)")
+            a2.set_xlabel("flight time [s]")
+            a2.set_ylabel("MPC solve [ms]")
+            a2.set_title(
+                f"MPC controller solve time — {len(mpc)} ticks, "
+                f"mean {solve_ms.mean():.2f} ms, max {solve_ms.max():.2f} ms")
+            a2.legend(loc="upper right", framealpha=0.9)
+            a2.grid(alpha=0.3)
+        else:
+            a2.set_title("MPC controller solve time — no data")
+
+        fig.tight_layout(); fig.savefig(path, dpi=130); plt.close(fig)
+        return 1
 
     # --------------------------------------------------------------- helpers
     def _footprints(self):

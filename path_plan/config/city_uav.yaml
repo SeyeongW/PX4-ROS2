@@ -49,10 +49,13 @@
     cruise_ceiling_m: 40.0
     overfly_allowed: false
     # ego-planner corridor B-spline optimizer (L-BFGS + rebound).
-    cruise_speed_m_s: 4.0
+    # Trajectory speed = the real cap on cruise: the MPC tracks this velocity profile,
+    # so it must match the MPC/PX4 limits or the drone stays slow. (PX4 MPC_XY_VEL_MAX
+    # defaults to 12, so keep <=12 unless you also raise that FCU param.)
+    cruise_speed_m_s: 10.0
     ctrl_spacing_m: 5.0     # control-point spacing (also one free box each)
-    max_vel_m_s: 5.0
-    max_acc_m_s2: 1.5
+    max_vel_m_s: 12.0
+    max_acc_m_s2: 4.0
     lambda_smooth: 5.0      # jerk
     lambda_dist: 0.5        # corridor rebound
     lambda_feas: 2.0        # velocity/accel limits
@@ -63,14 +66,27 @@
 
 /tracking_mpc:
   ros__parameters:
-    # mpc_ros-style unicycle tracking MPC (inputs: yaw-rate omega, accel a).
+    # Active controller:
+    #   mpc      = TrackingMPC, a REAL optimisation MPC (condensed QP + SLSQP, |v|/|a|
+    #              constraints, terminal cost) over a HOLONOMIC 3D double-integrator.
+    #              Holonomic suits a strafing multicopter, so it is a true MPC without
+    #              the unicycle's nose-coupled limit-cycle spin.  [DEFAULT]
+    #   pursuit  = lightweight holonomic pure-pursuit law (fast, not an MPC).
+    #   unicycle = mpc_ros UnicycleMPC (needs a slow-yaw ground-like vehicle).
+    controller: mpc
     dt_s: 0.1
     horizon: 20
-    v_ref_m_s: 10.0     # constant cruise speed (variable-speed logic removed)
-    v_max_m_s: 10.0
+    v_ref_m_s: 12.0     # cruise speed (pursuit/unicycle); MPC tracks the B-spline vel
+    v_max_m_s: 12.0     # hard |v| limit (all controllers); PX4 MPC_XY_VEL_MAX caps this
+    a_max_m_s2: 5.0     # hard |a| limit (raised so it can reach speed + turn at 12 m/s)
+    # TrackingMPC cost weights (position / velocity / accel-effort / terminal).
+    mpc_q_pos: 4.0
+    mpc_q_vel: 0.4
+    mpc_r_acc: 0.05
+    mpc_q_terminal: 20.0
+    # Unicycle/pursuit-only vertical + yaw settings.
     omega_max_rad_s: 1.2
-    a_max_m_s2: 3.0
-    z_kp: 0.8            # altitude-hold P gain (decoupled vertical)
+    z_kp: 0.8            # altitude-hold P gain (pursuit decoupled vertical)
     vz_max_m_s: 2.0
     # mpc_ros cost weights
     w_cte: 6.0          # cross-track error (raised: tighter path adherence)

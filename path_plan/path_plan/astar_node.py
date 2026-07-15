@@ -9,12 +9,15 @@ Publishes
 
 from __future__ import annotations
 
+import time
+
 import numpy as np
 import rclpy
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Path
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
+from std_msgs.msg import Float32MultiArray
 
 from .astar import AStarPlanner3D
 from .ros_msgs import positions_to_path
@@ -61,21 +64,46 @@ class AStarNode(Node):
         self.waypoints = [np.asarray(wps[i:i + 3], float) for i in range(0, len(wps) - 2, 3)]
 
         self.pub = self.create_publisher(Path, "~/global_path", _LATCHED)
+        # Compute metrics for the flight report: [plan_time_s, expanded_nodes,
+        # n_waypoints] published once per replan.
+        self.stats_pub = self.create_publisher(
+            Float32MultiArray, "/path_plan/astar_stats", 10)
         self.create_subscription(PoseStamped, "~/goal", self._on_goal, 10)
         self.create_subscription(PoseStamped, "~/start", self._on_start, 10)
+        # Coalesced replan: start and goal arrive as two separate messages (the
+        # pursuit bridge republishes BOTH the live drone position and the moving
+        # trailer each cycle). Replanning immediately in each callback would plan
+        # twice -- once with a stale endpoint -- so mark the request dirty and let
+        # a lightweight timer fire a single plan ~_settle_s after the last update.
+        self._dirty = False
+        self._last_change = self.get_clock().now()
+        self._settle_s = float(p("replan_settle_s", 0.15).value)
+        self.create_timer(0.05, self._maybe_replan)
         self.get_logger().info(
             f"A* ready: {len(world.boxes_min)} obstacles, res={res} m. Waiting for start/goal to trigger calculation...")
+
+    def _mark_dirty(self):
+        self._dirty = True
+        self._last_change = self.get_clock().now()
+
+    def _maybe_replan(self):
+        if not self._dirty:
+            return
+        if (self.get_clock().now() - self._last_change).nanoseconds < self._settle_s * 1e9:
+            return
+        self._dirty = False
+        self._replan()
 
     def _on_start(self, msg: PoseStamped):
         self.start = np.array([msg.pose.position.x, msg.pose.position.y,
                                msg.pose.position.z])
         self.get_logger().info(f"Start received at {self.start}. Triggering path calculation...")
-        self._replan()
+        self._mark_dirty()
 
     def _on_goal(self, msg: PoseStamped):
         self.goal = np.array([msg.pose.position.x, msg.pose.position.y,
                               msg.pose.position.z])
-        self._replan()
+        self._mark_dirty()
 
     def _clamp_to_band(self, p):
         """Keep an endpoint inside the cruise band so its A* start/goal cell is
@@ -88,14 +116,21 @@ class AStarNode(Node):
     def _replan(self):
         route = [self._clamp_to_band(p)
                  for p in (self.start, *self.waypoints, self.goal)]
+        t0 = time.perf_counter()
         result = self.planner.plan_through(route)
+        plan_s = time.perf_counter() - t0
         if not result.success:
             self.get_logger().warn(f"A* failed: {result.message}")
             return
         self.pub.publish(positions_to_path(result.waypoints_m, self.get_clock().now().to_msg()))
+        stats = Float32MultiArray()
+        stats.data = [float(plan_s), float(result.expanded),
+                      float(len(result.waypoints_m))]
+        self.stats_pub.publish(stats)
         self.get_logger().info(
             f"A* path published: {len(result.waypoints_m)} waypoints "
-            f"(via {len(self.waypoints)}), expanded {result.expanded}")
+            f"(via {len(self.waypoints)}), expanded {result.expanded}, "
+            f"plan {plan_s * 1e3:.0f} ms")
 
 
 def main(args=None):
