@@ -29,6 +29,34 @@
 
 ## 최근 작업 (최신 위)
 
+### 2026-07-15 — 이동 트레일러 추격 + 착륙 (pursuit_sim 실비행 이식, PR #34 main 병합)
+- **배경**: 기존 도심 비행은 **정적 좌표**로만 갔음 — `mavros_static_path`가 고정 goal
+  (트레일러 스폰)로 A*→SFC→B-spline→MPC를 **한 번** 계획하고 `AUTO.LAND`. `tools/
+  pursuit_sim.py`가 오프라인으로 증명한 "이동 트레일러를 계속 재계획으로 추격" 거동을
+  실제 PX4+Gazebo+MAVROS sim으로 옮기고, **움직이는 트레일러 위에 착륙**하도록 확장.
+- **`trailer_loop_driver.py`(신규)**: 도심 트레일러(`trailer_aruco`)를 pursuit_sim과
+  **동일한 정사각 루프**로 gz `cmd_vel` 구동(루프 지오메트리는 공용 `gazebo/maps/
+  city_uav_trailer_loop.yaml`에서 로드), 실제 위치를 `/trailer/position` +
+  `/trailer/velocity`(map ENU)로 방송. gz 미탑재 시 해석적 큐만 발행하도록 폴백.
+- **`mavros_static_path.py`(수정)**: `pursuit_mode` 추가(기본 **false** → 정적 데모 불변).
+  CRUISE에서 `replan_period_s`마다 트레일러 실시간 위치를 `/astar_planner/goal`로 재발행
+  →파이프라인이 이동 표적으로 연속 재계획. `terminal_range_m` 이내 진입 시
+  `/pursuit/land_enable` 래치 + **셋포인트 스트림 중단**으로 착륙 권한 이양(단일 권한).
+  이동표적이라 `AUTO.LAND`(수직 하강)는 정적 데모에서만 사용.
+- **`moving_land_node.py`(신규, 착륙 로직 단일 파일)**: 파라미터를 **전부 노드 내부**에
+  두어 런치는 설정 없이 노드만 로드. 속도매칭 큐추종(`v = v_ff + kp·e`) + 하강 퍼널 +
+  덱 위 force-disarm. 표적 소스를 **교체형 estimator** 뒤로 분리 — 지금은
+  `CueVelocityEstimator`(속도기반), 나중에 `ArucoEstimator`(비전) 스텁으로 전환 시
+  **이 파일만** 수정. 드론 위치는 `/path_plan/odometry`(map ENU)로 받아 큐와 동일 프레임.
+- **월드**: 도심 트레일러 include를 cmd_vel 구동 가능한 `trailer_aruco`로 교체(미구동 시
+  정지 → 정적 데모 영향 없음).
+- **런치/등록**: `px4_mavros.launch.py`에 `pursuit:=true` 인자(참이면 드라이버+착륙노드
+  스폰, 착륙노드는 파라미터 블록 없이), `setup.py`에 두 엔트리포인트 등록.
+- **검증**: 본 환경엔 ROS2/Gazebo 없어 SITL 실행 불가 → 변경 파이썬 `py_compile` 통과 +
+  월드 SDF XML well-formed만 확인. 실행 절차는 PR 본문 참조(`run_px4_map.sh city` →
+  `ros2 launch path_plan px4_mavros.launch.py pursuit:=true`). 다음: 로컬에서
+  `pursuit:=true` 실비행으로 타이밍/게인(재계획 주기, 착륙 vel_gain/퍼널) 확인.
+
 ### 2026-07-15 — 등속10 복귀 + 벽이격 5m설정 + flight_logger 3종 figure
 - **가변속도 제거**: `mpc_node`에서 곡률 속도캡·`_path_curvature` 삭제, config
   `a_lat_max/v_min` 삭제 → 등속. **속도 10 고정**: config `v_ref_m_s=v_max_m_s=10`,
