@@ -31,6 +31,8 @@ setup(
             "bspline_node = path_plan.bspline_node:main",
             "mpc_node = path_plan.mpc_node:main",
             "mavros_static_path = path_plan.mavros_static_path:main",
+            "trailer_loop_driver = path_plan.trailer_loop_driver:main",
+            "moving_land_node = path_plan.moving_land_node:main",
             "flight_logger = path_plan.flight_logger:main",
             "building_markers = path_plan.building_markers:main",
         ],

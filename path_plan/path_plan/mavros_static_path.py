@@ -3,6 +3,16 @@
 Flies the static-target cruise: PX4 spawn -> stationary trailer, tracking the
 A* -> SFC -> B-spline -> MPC pipeline over MAVROS.
 
+Moving-trailer pursuit (``pursuit_mode:=true``): instead of a one-shot plan to a
+fixed goal, the CRUISE phase periodically republishes the trailer's LIVE position
+(``/trailer/position``) to the A* planner's ``~/goal`` every ``replan_period_s``, so
+the pipeline continuously replans toward the moving trailer (the live-flight version
+of ``tools/pursuit_sim.py``). When the vehicle closes within ``terminal_range_m`` of
+the trailer it latches ``/pursuit/land_enable`` and STOPS streaming setpoints, handing
+the terminal land onto the moving deck to ``moving_land_node`` (single setpoint
+authority). ``AUTO.LAND`` is used ONLY in the static demo — it descends vertically and
+would miss a moving target.
+
 Subscribes
     /mavros/state                    mavros_msgs/State       FCU arm/mode
     /mavros/local_position/odom      nav_msgs/Odometry       vehicle state (local ENU)
@@ -32,15 +42,16 @@ from __future__ import annotations
 
 import numpy as np
 import rclpy
-from geometry_msgs.msg import TwistStamped, PoseStamped, TransformStamped
+from geometry_msgs.msg import TwistStamped, PoseStamped, PointStamped, TransformStamped
 from mavros_msgs.msg import State
 from mavros_msgs.srv import CommandBool, SetMode
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy
+from rclpy.qos import (QoSProfile, ReliabilityPolicy, DurabilityPolicy,
+                       HistoryPolicy)
 from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
 from rcl_interfaces.srv import GetParameters, SetParameters
-from std_msgs.msg import Float32MultiArray
+from std_msgs.msg import Bool, Float32MultiArray
 from tf2_ros import TransformBroadcaster
 
 from .ros_msgs import FRAME, msg_to_trajectory
@@ -70,6 +81,14 @@ class MavrosStaticPathNode(Node):
         self.speed_param = str(p("speed_param", "MPC_XY_VEL_MAX").value)
         self.speed_scale = float(p("speed_scale", 1.0).value)
         mpc_node = str(p("mpc_node", "tracking_mpc").value)
+        # Moving-trailer pursuit. pursuit_mode=false keeps the static-goal demo.
+        self.pursuit_mode = bool(p("pursuit_mode", False).value)
+        self.replan_period_s = float(p("replan_period_s", 6.0).value)
+        self.terminal_range_m = float(p("terminal_range_m", 15.0).value)
+        # Altitude of the replanned goal (kept inside the cruise band; A* clamps it).
+        self.cruise_alt_m = float(p("cruise_alt_m", 35.0).value)
+        self.trailer_topic = str(p("trailer_topic", "/trailer/position").value)
+        self.goal_topic = str(p("goal_topic", "/astar_planner/goal").value)
 
         self._state = State()
         self._cmd = None          # latest MPC TwistStamped
@@ -90,6 +109,10 @@ class MavrosStaticPathNode(Node):
         self._last_goal_log = self.get_clock().now()
         self._speed_done = not self.speed_from_fcu
         self._speed_req = False
+        # Pursuit state: latest trailer cue + replan cadence.
+        self._trailer_xy = None
+        self._trailer_stamp = None
+        self._last_replan_time = None
 
         # BEST_EFFORT subscribers are compatible with both reliable and
         # best-effort publishers, so they never silently drop MAVROS topics.
@@ -98,6 +121,19 @@ class MavrosStaticPathNode(Node):
         self.sp_pub = self.create_publisher(
             TwistStamped, "/mavros/setpoint_velocity/cmd_vel", 10)
         self.start_pub = self.create_publisher(PoseStamped, "/astar_planner/start", 10)
+        # Pursuit: republish the trailer's live position as the A* goal, and latch the
+        # landing-authority gate for moving_land_node (transient_local so it gets the
+        # value even if it subscribes after we publish).
+        self.goal_pub = self.create_publisher(PoseStamped, self.goal_topic, 10)
+        latched = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
+                             durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                             history=HistoryPolicy.KEEP_LAST)
+        self.land_enable_pub = self.create_publisher(
+            Bool, "/pursuit/land_enable", latched)
+        if self.pursuit_mode:
+            self.land_enable_pub.publish(Bool(data=False))
+            self.create_subscription(
+                PointStamped, self.trailer_topic, self._on_trailer, 10)
 
         self.create_subscription(State, "/mavros/state", self._on_state, be)
         self.create_subscription(
@@ -166,6 +202,10 @@ class MavrosStaticPathNode(Node):
             self._have_traj = True
             self._goal_xy = pos[-1, :2]
 
+    def _on_trailer(self, msg: PointStamped):
+        self._trailer_xy = (msg.point.x, msg.point.y)
+        self._trailer_stamp = self.get_clock().now()
+
     # ------------------------------------------------------------- main loop
     def _tick(self):
         # 1) Always stream a setpoint so PX4 keeps OFFBOARD alive.
@@ -189,13 +229,26 @@ class MavrosStaticPathNode(Node):
                     self.phase = "CRUISE"
                     self.get_logger().info("path ready -> cruising to goal")
             if self.phase == "CRUISE":
-                self._log_goal_distance()
-                if self._reached_goal():
-                    self._enter_land()
-                elif self._cmd is not None:
-                    sp.twist = self._cmd.twist   # MPC world velocity + yawrate
+                if self.pursuit_mode:
+                    # Chase the moving trailer: periodically replan A* toward its
+                    # live position, and hand off to the moving-target lander once
+                    # we close in.
+                    self._pursuit_replan(sp.header.stamp)
+                    if self._reached_trailer():
+                        self._enter_handoff()
+                    elif self._cmd is not None:
+                        sp.twist = self._cmd.twist
+                else:
+                    self._log_goal_distance()
+                    if self._reached_goal():
+                        self._enter_land()
+                    elif self._cmd is not None:
+                        sp.twist = self._cmd.twist   # MPC world velocity + yawrate
                 # else: hold zero (waiting for the first MPC command)
             # LAND: leave the setpoint at zero; PX4 flies AUTO.LAND now.
+        # HANDOFF: go silent so moving_land_node is the sole setpoint authority.
+        if self.phase == "HANDOFF":
+            return
         self.sp_pub.publish(sp)
         self._setpoints_sent += 1
 
@@ -279,6 +332,52 @@ class MavrosStaticPathNode(Node):
         self.get_logger().info(
             f"reached goal ({self._goal_dist():.1f} m, within {self.land_radius_m:.0f} m)"
             f" -> AUTO.LAND")
+
+    # ------------------------------------------------------- pursuit helpers
+    def _trailer_fresh(self) -> bool:
+        if self._trailer_xy is None or self._trailer_stamp is None:
+            return False
+        age = (self.get_clock().now() - self._trailer_stamp).nanoseconds * 1e-9
+        return age < 2.0
+
+    def _trailer_dist(self) -> float:
+        return float(np.hypot(self._pos[0] - self._trailer_xy[0],
+                              self._pos[1] - self._trailer_xy[1]))
+
+    def _pursuit_replan(self, stamp):
+        """Every replan_period_s, republish the trailer's live position as the A*
+        goal so the pipeline continuously replans toward the moving target."""
+        if not self._trailer_fresh():
+            return
+        now = self.get_clock().now()
+        due = (self._last_replan_time is None
+               or (now - self._last_replan_time).nanoseconds * 1e-9
+               >= self.replan_period_s)
+        if not due:
+            return
+        goal = PoseStamped()
+        goal.header.stamp = stamp
+        goal.header.frame_id = FRAME
+        goal.pose.position.x = float(self._trailer_xy[0])
+        goal.pose.position.y = float(self._trailer_xy[1])
+        goal.pose.position.z = float(self.cruise_alt_m)
+        self.goal_pub.publish(goal)
+        self._last_replan_time = now
+        self.get_logger().info(
+            f"pursuit replan -> trailer ({self._trailer_xy[0]:.0f},"
+            f"{self._trailer_xy[1]:.0f}); {self._trailer_dist():.0f} m to go "
+            f"(handoff within {self.terminal_range_m:.0f} m)")
+
+    def _reached_trailer(self) -> bool:
+        return self._trailer_fresh() and self._trailer_dist() <= self.terminal_range_m
+
+    def _enter_handoff(self):
+        self.phase = "HANDOFF"
+        self.land_enable_pub.publish(Bool(data=True))
+        self.get_logger().info(
+            f"trailer within {self.terminal_range_m:.0f} m "
+            f"({self._trailer_dist():.1f} m) -> handoff to moving_land_node "
+            f"(/pursuit/land_enable=true); OFFBOARD setpoints released")
 
     def _ensure_landing(self):
         """Request AUTO.LAND at ~1 Hz until PX4 confirms it (or has disarmed)."""
