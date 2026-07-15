@@ -297,10 +297,11 @@
     <frame name="mission_goal"><pose>200 -128 0 0 0 0</pose></frame>
     <frame name="trailer_spawn"><pose>-587 -512 0 0 0 0</pose></frame>
     <frame name="trailer_destination"><pose>-128 -128 0 0 0 0</pose></frame>
-    <!-- SEO branch's default PX4 moving-platform trailer. The city launcher
-         pins its mean controller velocity to zero. The stock SEO controller
-         still applies its built-in perturbations after the PX4 entity spawns. -->
-    <include><uri>model://moving_platform_aruco</uri><name>trailer</name><pose>-587 -512 0 0 0 0</pose></include>
+    <!-- Repo-owned trailer with a gz VelocityControl plugin on /model/trailer/cmd_vel.
+         It is STATIC when undriven (so the static-coordinate demo is unchanged), and
+         the path_plan trailer_loop_driver drives it around the perimeter loop for the
+         moving-trailer pursuit (ros2 launch path_plan px4_mavros.launch.py pursuit:=true). -->
+    <include><uri>model://trailer_aruco</uri><name>trailer</name><pose>-587 -512 0 0 0 0</pose></include>
     <!-- PX4 SITL spawns the real sensor-equipped vehicle dynamically. -->
   </world>
 </sdf>

@@ -24,9 +24,13 @@ from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 _DEFAULT_MAP = os.path.expanduser(
     "~/ros2_ws/PX4-ROS2/gazebo/maps/city_coordinates_uav.yaml")
+# Moving-trailer pursuit scenario (loop geometry). Same file tools/pursuit_sim.py uses.
+_DEFAULT_SCENARIO = os.path.expanduser(
+    "~/ros2_ws/PX4-ROS2/gazebo/maps/city_uav_trailer_loop.yaml")
 # RViz config lives in the source tree (loaded by absolute path so no rebuild is
 # needed to tweak it), matching how the default map is referenced above.
 _RVIZ_CONFIG = os.path.expanduser(
@@ -42,6 +46,9 @@ def generate_launch_description():
     speed_from_fcu = LaunchConfiguration("speed_from_fcu")
     speed_scale = LaunchConfiguration("speed_scale")
     rviz = LaunchConfiguration("rviz")
+    pursuit = LaunchConfiguration("pursuit")
+    scenario = LaunchConfiguration("scenario")
+    world = LaunchConfiguration("world")
 
     pipeline = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -59,7 +66,28 @@ def generate_launch_description():
                      "takeoff_alt_m": takeoff_alt_m,
                      "land_radius_m": land_radius_m,
                      "speed_from_fcu": speed_from_fcu,
-                     "speed_scale": speed_scale}],
+                     "speed_scale": speed_scale,
+                     # pursuit:=true -> chase the moving trailer instead of a fixed goal.
+                     "pursuit_mode": ParameterValue(pursuit, value_type=bool),
+                     "cruise_alt_m": ParameterValue(takeoff_alt_m, value_type=float)}],
+    )
+
+    # Moving-trailer pursuit: drive the city trailer around the perimeter loop and
+    # broadcast its live pose. Only spawned with pursuit:=true.
+    trailer_driver = Node(
+        package="path_plan", executable="trailer_loop_driver",
+        name="trailer_loop_driver", output="screen",
+        parameters=[{"world": world, "scenario": scenario}],
+        condition=IfCondition(pursuit),
+    )
+
+    # Terminal landing onto the moving trailer. Self-contained: it owns ALL of its
+    # own tuning, so we add NO parameter block here (the file handles everything).
+    # Starts DORMANT and only acts once the bridge latches /pursuit/land_enable.
+    moving_land = Node(
+        package="path_plan", executable="moving_land_node",
+        name="moving_land_node", output="screen",
+        condition=IfCondition(pursuit),
     )
 
     rviz_node = Node(
@@ -98,8 +126,16 @@ def generate_launch_description():
         # Open RViz showing the A* path, MPC preview and the vehicle (rviz:=false
         # to skip it).
         DeclareLaunchArgument("rviz", default_value="true"),
+        # pursuit:=true drives the trailer around the loop and chases + lands on it
+        # (the live-flight version of tools/pursuit_sim.py). Default false = the
+        # original static-goal cruise + AUTO.LAND.
+        DeclareLaunchArgument("pursuit", default_value="false"),
+        DeclareLaunchArgument("scenario", default_value=_DEFAULT_SCENARIO),
+        DeclareLaunchArgument("world", default_value="applepark_city_uav"),
         pipeline,
         bridge,
+        trailer_driver,
+        moving_land,
         rviz_node,
         buildings_node,
         Node(
