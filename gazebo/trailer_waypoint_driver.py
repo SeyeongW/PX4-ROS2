@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Drive the seo-branch moving platform through map-defined ENU waypoints.
+"""Drive the seo-branch moving platform along a map-defined ENU route.
 
 This talks directly to Gazebo Transport, so it needs neither MAVROS nor a ROS
 workspace build.  The platform is kinematic rather than a wheeled vehicle.
@@ -11,6 +11,7 @@ can penetrate its 5x5 m footprint.
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import math
 from pathlib import Path
 import signal
@@ -69,11 +70,223 @@ class PoseReceiver:
             return self.value
 
 
+@dataclass(frozen=True)
+class _RoundedCorner:
+    entry: tuple[float, float]
+    exit: tuple[float, float]
+    center: tuple[float, float]
+    incoming: tuple[float, float]
+    outgoing: tuple[float, float]
+
+
+class RoundedSquareRoute:
+    """Constant-speed four-waypoint loop with tangent rounded corners."""
+
+    def __init__(
+        self,
+        waypoints: list[tuple[float, float]],
+        corner_radius_m: float,
+        waypoint_tolerance_m: float,
+    ) -> None:
+        if len(waypoints) != 4:
+            raise ValueError("rounded route requires exactly four waypoints")
+        if not math.isfinite(corner_radius_m) or corner_radius_m <= 0.0:
+            raise ValueError("corner radius must be finite and positive")
+        if not math.isfinite(waypoint_tolerance_m) \
+                or waypoint_tolerance_m <= 0.0:
+            raise ValueError("waypoint tolerance must be finite and positive")
+
+        directions: list[tuple[float, float]] = []
+        lengths: list[float] = []
+        for start, end in zip(waypoints, waypoints[1:] + waypoints[:1]):
+            dx = end[0] - start[0]
+            dy = end[1] - start[1]
+            if (abs(dx) <= 1.0e-9) == (abs(dy) <= 1.0e-9):
+                raise ValueError(
+                    "rounded route must be an axis-aligned square"
+                )
+            length = math.hypot(dx, dy)
+            lengths.append(length)
+            directions.append((dx / length, dy / length))
+        if any(length <= 2.0 * corner_radius_m for length in lengths):
+            raise ValueError(
+                "route side length must exceed twice the corner radius"
+            )
+        if abs(lengths[0] - lengths[2]) > 1.0e-6 \
+                or abs(lengths[1] - lengths[3]) > 1.0e-6:
+            raise ValueError("opposite route sides must be equal")
+
+        corners: list[_RoundedCorner] = []
+        for index, point in enumerate(waypoints):
+            incoming = directions[(index - 1) % 4]
+            outgoing = directions[index]
+            cross = incoming[0] * outgoing[1] - incoming[1] * outgoing[0]
+            dot = incoming[0] * outgoing[0] + incoming[1] * outgoing[1]
+            if cross <= 0.999999 or abs(dot) > 1.0e-6:
+                raise ValueError(
+                    "rounded route must use 90-degree counter-clockwise turns"
+                )
+            entry = (
+                point[0] - corner_radius_m * incoming[0],
+                point[1] - corner_radius_m * incoming[1],
+            )
+            exit_point = (
+                point[0] + corner_radius_m * outgoing[0],
+                point[1] + corner_radius_m * outgoing[1],
+            )
+            center = (
+                entry[0] + corner_radius_m * outgoing[0],
+                entry[1] + corner_radius_m * outgoing[1],
+            )
+            corners.append(
+                _RoundedCorner(
+                    entry=entry,
+                    exit=exit_point,
+                    center=center,
+                    incoming=incoming,
+                    outgoing=outgoing,
+                )
+            )
+        self._corners = tuple(corners)
+        self._corner_radius_m = corner_radius_m
+        self._waypoint_tolerance_m = waypoint_tolerance_m
+        # The trailer starts at waypoint A and first travels toward B.
+        self._corner_index = 1
+        self._on_arc = False
+        self.completed_loops = 0
+        self.reached_corners = 0
+
+    def direction(self, x: float, y: float) -> tuple[float, float]:
+        corner = self._corners[self._corner_index]
+        if not self._on_arc:
+            remaining = (
+                (corner.entry[0] - x) * corner.incoming[0]
+                + (corner.entry[1] - y) * corner.incoming[1]
+            )
+            if remaining > self._waypoint_tolerance_m:
+                return corner.incoming
+            self._on_arc = True
+            print(
+                f"corner_arc_entry={self._corner_index} "
+                f"x={x:.3f} y={y:.3f}"
+            )
+
+        exit_progress = (
+            (x - corner.exit[0]) * corner.outgoing[0]
+            + (y - corner.exit[1]) * corner.outgoing[1]
+        )
+        if exit_progress >= 0.0:
+            completed_corner = self._corner_index
+            self.reached_corners += 1
+            if completed_corner == 0:
+                self.completed_loops += 1
+            print(
+                f"corner_arc_exit={completed_corner} "
+                f"x={x:.3f} y={y:.3f}"
+            )
+            self._corner_index = (self._corner_index + 1) % 4
+            self._on_arc = False
+            return corner.outgoing
+
+        radial_x = x - corner.center[0]
+        radial_y = y - corner.center[1]
+        radial_distance = math.hypot(radial_x, radial_y)
+        if radial_distance <= 1.0e-9:
+            return corner.incoming
+        radial_unit_x = radial_x / radial_distance
+        radial_unit_y = radial_y / radial_distance
+        tangent_x = -radial_unit_y
+        tangent_y = radial_unit_x
+        radial_error_ratio = (
+            radial_distance - self._corner_radius_m
+        ) / self._corner_radius_m
+        radial_correction = max(
+            -0.20,
+            min(0.20, -0.50 * radial_error_ratio),
+        )
+        direction_x = tangent_x + radial_correction * radial_unit_x
+        direction_y = tangent_y + radial_correction * radial_unit_y
+        norm = math.hypot(direction_x, direction_y)
+        return direction_x / norm, direction_y / norm
+
+
+class CircularRoute:
+    """Constant-speed circular route without waypoint corner transients."""
+
+    def __init__(
+        self,
+        center: tuple[float, float],
+        radius_m: float,
+        direction: str,
+    ) -> None:
+        if not all(math.isfinite(value) for value in center):
+            raise ValueError("circle center must be finite")
+        if not math.isfinite(radius_m) or radius_m <= 0.0:
+            raise ValueError("circle radius must be finite and positive")
+        normalized_direction = direction.strip().lower().replace("-", "_")
+        if normalized_direction not in ("counterclockwise", "clockwise"):
+            raise ValueError(
+                "circle direction must be counterclockwise or clockwise"
+            )
+        self.center = center
+        self.radius_m = radius_m
+        self._direction_sign = (
+            1.0 if normalized_direction == "counterclockwise" else -1.0
+        )
+        self._previous_angle: float | None = None
+        self._angle_travelled = 0.0
+        self.completed_loops = 0
+
+    def direction(self, x: float, y: float) -> tuple[float, float]:
+        radial_x = x - self.center[0]
+        radial_y = y - self.center[1]
+        radial_distance = math.hypot(radial_x, radial_y)
+        if radial_distance <= 1.0e-9:
+            raise ValueError("trailer cannot be at the circle center")
+
+        angle = math.atan2(radial_y, radial_x)
+        if self._previous_angle is not None:
+            angle_step = math.atan2(
+                math.sin(angle - self._previous_angle),
+                math.cos(angle - self._previous_angle),
+            )
+            forward_step = self._direction_sign * angle_step
+            # Ignore tiny reverse motion caused by Gazebo pose jitter.
+            if forward_step > 0.0:
+                self._angle_travelled += forward_step
+                self.completed_loops = int(
+                    self._angle_travelled / (2.0 * math.pi)
+                )
+        self._previous_angle = angle
+
+        radial_unit_x = radial_x / radial_distance
+        radial_unit_y = radial_y / radial_distance
+        tangent_x = -self._direction_sign * radial_unit_y
+        tangent_y = self._direction_sign * radial_unit_x
+
+        # The tangent field is the actual route.  A small smooth radial term
+        # only cancels numerical / physics drift without creating waypoints.
+        radial_error_ratio = (
+            radial_distance - self.radius_m
+        ) / self.radius_m
+        radial_correction = max(
+            -0.20,
+            min(0.20, -0.50 * radial_error_ratio),
+        )
+        direction_x = tangent_x + radial_correction * radial_unit_x
+        direction_y = tangent_y + radial_correction * radial_unit_y
+        norm = math.hypot(direction_x, direction_y)
+        return direction_x / norm, direction_y / norm
+
+
 class Terrain:
     def __init__(self, document: dict[str, object]):
         terrain = document["terrain"]
         assert isinstance(terrain, dict)
-        self.flat = str(document["map"]["name"]).startswith("city")  # type: ignore[index]
+        self.flat = (
+            str(document["map"]["name"]).startswith("city")  # type: ignore[index]
+            or str(terrain.get("type", "")) == "flat_box"
+        )
         self.pixels: np.ndarray | None = None
         if not self.flat:
             image_path = REPO / str(terrain["image"])
@@ -123,7 +336,9 @@ def publish_velocity(publisher: object, vx: float, vy: float, vz: float) -> None
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("map", choices=("city", "mountain"))
+    parser.add_argument(
+        "map", choices=("city", "mountain", "precision-landing-moving")
+    )
     parser.add_argument(
         "--coordinates",
         type=Path,
@@ -133,7 +348,10 @@ def main() -> int:
                         help="route repetitions; 0 repeats until interrupted")
     parser.add_argument("--timeout", type=float, default=0.0,
                         help="wall-clock timeout in seconds; 0 disables")
-    parser.add_argument("--rate", type=float, default=20.0)
+    parser.add_argument(
+        "--rate", type=float,
+        help="command rate; defaults to trailer.command_rate_hz or 20 Hz",
+    )
     parser.add_argument("--speed", type=float, default=0.0,
                         help="override the YAML cruise speed; 0 uses YAML")
     parser.add_argument("--start-index", type=int, default=0,
@@ -146,7 +364,7 @@ def main() -> int:
         parser.error("--loops must be non-negative")
     if args.timeout < 0.0:
         parser.error("--timeout must be non-negative")
-    if args.rate <= 0.0:
+    if args.rate is not None and args.rate <= 0.0:
         parser.error("--rate must be positive")
 
     coordinate_path = (
@@ -161,17 +379,67 @@ def main() -> int:
     entity = str(trailer["entity_name"])
     topic = str(trailer["command_topic"])
     pose_topic = str(trailer["pose_topic"])
-    route_key = (
-        "slope_validation_waypoints_enu_m"
-        if args.route == "slope" else "waypoints_enu_m"
-    )
-    if route_key not in trailer:
-        parser.error(f"the {args.map} map does not define a {args.route} route")
-    waypoints = [(float(point[0]), float(point[1])) for point in trailer[route_key]]
-    if not 0 <= args.start_index < len(waypoints):
-        parser.error(f"--start-index must be in 0..{len(waypoints) - 1}")
+    route_type = str(trailer.get("route_type", "waypoints")).strip().lower()
+    circle_route = None
+    waypoints: list[tuple[float, float]] = []
+    if route_type == "circle":
+        if args.route != "flat":
+            parser.error("circle route is only available for the flat route")
+        if args.start_index != 0:
+            parser.error("circle route requires --start-index 0")
+        try:
+            center_values = trailer["circle_center_enu_m"]
+            center = (float(center_values[0]), float(center_values[1]))
+            circle_route = CircularRoute(
+                center,
+                float(trailer["circle_radius_m"]),
+                str(trailer.get("circle_direction", "counterclockwise")),
+            )
+        except (KeyError, IndexError, TypeError, ValueError) as exc:
+            parser.error(f"invalid circle route: {exc}")
+    elif route_type == "waypoints":
+        route_key = (
+            "slope_validation_waypoints_enu_m"
+            if args.route == "slope" else "waypoints_enu_m"
+        )
+        if route_key not in trailer:
+            parser.error(
+                f"the {args.map} map does not define a {args.route} route"
+            )
+        waypoints = [
+            (float(point[0]), float(point[1]))
+            for point in trailer[route_key]
+        ]
+        if not 0 <= args.start_index < len(waypoints):
+            parser.error(f"--start-index must be in 0..{len(waypoints) - 1}")
+    else:
+        parser.error(f"unsupported trailer route_type: {route_type}")
     speed = args.speed if args.speed > 0.0 else float(trailer["cruise_speed_m_s"])
+    command_rate_hz = (
+        float(args.rate)
+        if args.rate is not None
+        else float(trailer.get("command_rate_hz", 20.0))
+    )
     tolerance = float(trailer["waypoint_tolerance_m"])
+    acceleration = float(trailer.get("acceleration_m_s2", 1.0))
+    if not math.isfinite(speed) or speed <= 0.0:
+        parser.error("trailer cruise speed must be finite and positive")
+    if not math.isfinite(command_rate_hz) or command_rate_hz <= 0.0:
+        parser.error("trailer command rate must be finite and positive")
+    if not math.isfinite(acceleration) or acceleration <= 0.0:
+        parser.error("trailer acceleration must be finite and positive")
+    rounded_route = None
+    if route_type == "waypoints" and "corner_radius_m" in trailer:
+        if args.start_index != 0:
+            parser.error("rounded square route requires --start-index 0")
+        try:
+            rounded_route = RoundedSquareRoute(
+                waypoints,
+                float(trailer["corner_radius_m"]),
+                tolerance,
+            )
+        except ValueError as exc:
+            parser.error(str(exc))
     terrain = Terrain(document)
 
     node = Node()
@@ -181,8 +449,20 @@ def main() -> int:
     for handled in (signal.SIGINT, signal.SIGTERM):
         signal.signal(handled, lambda *_: STOP.set())
 
-    print(f"trailer_map={args.map} route={args.route} entity={entity} waypoints={len(waypoints)}")
-    print(f"command_topic={topic} pose_topic={pose_topic}")
+    print(
+        f"trailer_map={args.map} route={args.route} "
+        f"route_type={route_type} entity={entity} waypoints={len(waypoints)}"
+    )
+    if circle_route is not None:
+        print(
+            f"circle_center=({circle_route.center[0]:.9f},"
+            f"{circle_route.center[1]:.9f}) "
+            f"circle_radius_m={circle_route.radius_m:.3f}"
+        )
+    print(
+        f"command_topic={topic} pose_topic={pose_topic} "
+        f"command_rate_hz={command_rate_hz:.3f}"
+    )
     start = time.monotonic()
     while receiver.get() is None and not STOP.is_set():
         if time.monotonic() - start > 15.0:
@@ -201,7 +481,7 @@ def main() -> int:
     max_abs_z_error = max_abs_roll = max_abs_pitch = 0.0
     tracking_error_samples = 0
     excessive_tilt_samples = 0
-    period = 1.0 / args.rate
+    period = 1.0 / command_rate_hz
 
     try:
         while not STOP.is_set():
@@ -214,28 +494,47 @@ def main() -> int:
                 time.sleep(period)
                 continue
             x, y, z, roll, pitch, _yaw = pose
-            target_x, target_y = waypoints[index]
-            dx, dy = target_x - x, target_y - y
-            distance = math.hypot(dx, dy)
-            if distance <= tolerance:
-                reached += 1
-                print(f"waypoint_reached={index} x={x:.3f} y={y:.3f} z={z:.3f}")
-                index += 1
-                if index == len(waypoints):
-                    completed_loops += 1
-                    if args.loops > 0 and completed_loops >= args.loops:
-                        break
-                    index = 0
+            if circle_route is not None:
+                direction_x, direction_y = circle_route.direction(x, y)
+                completed_loops = circle_route.completed_loops
+                if args.loops > 0 and completed_loops >= args.loops:
+                    break
+                desired_vx = speed * direction_x
+                desired_vy = speed * direction_y
+            elif rounded_route is not None:
+                direction_x, direction_y = rounded_route.direction(x, y)
+                reached = rounded_route.reached_corners
+                completed_loops = rounded_route.completed_loops
+                if args.loops > 0 and completed_loops >= args.loops:
+                    break
+                desired_vx = speed * direction_x
+                desired_vy = speed * direction_y
+            else:
                 target_x, target_y = waypoints[index]
                 dx, dy = target_x - x, target_y - y
                 distance = math.hypot(dx, dy)
+                if distance <= tolerance:
+                    reached += 1
+                    print(
+                        f"waypoint_reached={index} "
+                        f"x={x:.3f} y={y:.3f} z={z:.3f}"
+                    )
+                    index += 1
+                    if index == len(waypoints):
+                        completed_loops += 1
+                        if args.loops > 0 and completed_loops >= args.loops:
+                            break
+                        index = 0
+                    target_x, target_y = waypoints[index]
+                    dx, dy = target_x - x, target_y - y
+                    distance = math.hypot(dx, dy)
 
-            desired_xy_speed = min(speed, 1.25 * distance)
-            if distance > 1e-9:
-                desired_vx = desired_xy_speed * dx / distance
-                desired_vy = desired_xy_speed * dy / distance
-            else:
-                desired_vx = desired_vy = 0.0
+                desired_xy_speed = min(speed, 1.25 * distance)
+                if distance > 1e-9:
+                    desired_vx = desired_xy_speed * dx / distance
+                    desired_vy = desired_xy_speed * dy / distance
+                else:
+                    desired_vx = desired_vy = 0.0
             expected_z = (
                 terrain.safe_root_z(x, y)
                 if not args.no_terrain_follow else float(trailer["spawn_pose_enu"]["z"])
@@ -244,7 +543,9 @@ def main() -> int:
 
             dt = max(now - previous_time, 1e-3)
             desired = np.array([desired_vx, desired_vy, desired_vz], dtype=np.float64)
-            max_delta = np.array([1.0, 1.0, 3.0], dtype=np.float64) * dt
+            max_delta = np.array(
+                [acceleration, acceleration, 3.0], dtype=np.float64
+            ) * dt
             delta = np.clip(desired - previous_velocity, -max_delta, max_delta)
             command = previous_velocity + delta
             publish_velocity(publisher, float(command[0]), float(command[1]), float(command[2]))

@@ -10,6 +10,18 @@ if [[ $# -gt 0 ]]; then
 fi
 
 case "$MAP" in
+  precision-landing)
+    # Bounded flat baseline for downward-camera ArUco precision landing.
+    COORDINATES="$SCRIPT_DIR/maps/precision_landing_200m.yaml"
+    # DART is the qualified engine for the fixed-joint RGB-D X500 payload.
+    # Bullet Featherstone can trap the vehicle in the ground contact and then
+    # eject it when takeoff thrust rises (see the Stage-10 SITL evidence).
+    DEFAULT_PHYSICS_ENGINE="gz-physics-dartsim-plugin"
+    ;;
+  precision-landing-moving)
+    COORDINATES="$SCRIPT_DIR/maps/precision_landing_200m_moving.yaml"
+    DEFAULT_PHYSICS_ENGINE="gz-physics-dartsim-plugin"
+    ;;
   city)
     # The normal city profile is the self-contained 1300 m UAV derivative with
     # uniformly 2.5x-scaled centroids / footprints and 20--50 m heights
@@ -28,13 +40,14 @@ case "$MAP" in
     ;;
   -h|--help|help|"")
     cat <<EOF
-Usage: $(basename "$0") <city|city-legacy|mountain> [additional gz sim options]
+Usage: $(basename "$0") <precision-landing|precision-landing-moving|city|city-legacy|mountain> [additional gz sim options]
 
 Starts Gazebo Harmonic, waits for the selected world, then starts PX4 SITL.
 PX4 itself creates the dynamic x500_city_rgbd_lidar vehicle (default x500 quad
 with forward RGB/depth plus downward RGB/depth/lidar sensors).
-A repository-owned trailer model is included in each map. The city trailer is
-spawn-only; DRIVE_TRAILER=1 is available for the mountain profile.
+A repository-owned trailer model is included in each map. The stationary
+precision-landing baseline cannot be driven; the moving profile follows its
+map-defined circular route with DRIVE_TRAILER=1.
 
 Environment:
   PX4_DIR=~/PX4-Autopilot  Existing PX4 source/build (firmware is not changed)
@@ -42,28 +55,30 @@ Environment:
   START_XRCE=1            Enable Micro XRCE-DDS Agent/client (default: off)
   START_MAVROS=0         Do not start MAVROS (MAVLink->ROS 2 bridge)
   MAVROS_FCU_URL=...     Override MAVROS fcu_url (default udp://:14540@127.0.0.1:14580)
-  START_BRIDGE=0         Do not start the ros_gz camera/lidar bridge
+  MAVROS_HEARTBEAT_TYPE=GCS  MAVROS identity used for PX4 data-link health
+  MAVROS_HEARTBEAT_RATE=10.0 Optional MAVROS heartbeat rate override in Hz
+  START_BRIDGE=0         Do not start the sensor bridge (requires START_MAVROS=0)
   ROS_SETUP=...          ROS 2 setup.bash to source for MAVROS + bridge (default humble)
   FOLLOW_DRONE=1          Opt in to locking the gz camera to the drone (default: off)
-  DRIVE_TRAILER=1         Mountain only: drive the trailer through YAML waypoints
+  DRIVE_TRAILER=1         Drive mountain or moving-landing YAML waypoints
   TRAILER_ROUTE_LOOPS=1   Stop the driver after one complete route (0=repeat)
   TRAILER_ROUTE=slope     Mountain-only terrain-follow safeguard test
   PX4_GZ_PLATFORM_VEL=... City SEO trailer speed (default: 0 m/s)
   PX4_GZ_PLATFORM_HEADING_DEG=...  City SEO trailer heading (default: 0 deg/east)
   USE_NVIDIA=0            Disable NVIDIA PRIME render variables
   GZ_PARTITION=...        Gazebo transport partition (shared with PX4)
-  PHYSICS_ENGINE=...      Override physics engine (city default: DART)
+  PHYSICS_ENGINE=...      Override physics engine (precision/city default: DART)
   PX4_DAEMON=1            Disable the interactive PX4 shell (for log/CI runs)
 EOF
     exit 0
     ;;
   *)
-    echo "ERROR: expected 'city', 'city-legacy' or 'mountain', got '$MAP'." >&2
+    echo "ERROR: unsupported map '$MAP'." >&2
     exit 2
     ;;
 esac
 
-for command in python3 gz; do
+for command in python3 gz timeout; do
   command -v "$command" >/dev/null 2>&1 || {
     echo "ERROR: required command is missing: $command" >&2
     exit 2
@@ -95,9 +110,13 @@ print(document["px4_vehicle"]["simulation_model"])
 print(document["px4_vehicle"]["runtime_entity_name"])
 trailer = document["trailer"]["spawn_pose_enu"]
 print(",".join(str(trailer[key]) for key in keys))
+overrides = document["px4_vehicle"].get("sitl_parameter_overrides", {})
+print(overrides.get("LNDMC_Z_VEL_MAX", ""))
+print(overrides.get("LNDMC_XY_VEL_MAX", ""))
+print(overrides.get("COM_DISARM_LAND", ""))
 PY
 )
-[[ ${#MAP_CONFIG[@]} -eq 7 ]] || {
+[[ ${#MAP_CONFIG[@]} -eq 10 ]] || {
   echo "ERROR: failed to read launch values from $COORDINATES" >&2
   exit 2
 }
@@ -108,6 +127,45 @@ AUTOSTART_ID="${MAP_CONFIG[3]}"
 SIM_MODEL="${MAP_CONFIG[4]}"
 ENTITY_NAME="${MAP_CONFIG[5]}"
 TRAILER_SPAWN_POSE="${MAP_CONFIG[6]}"
+PX4_LNDMC_Z_VEL_MAX="${MAP_CONFIG[7]}"
+PX4_LNDMC_XY_VEL_MAX="${MAP_CONFIG[8]}"
+PX4_COM_DISARM_LAND="${MAP_CONFIG[9]}"
+
+if [[ -n "$PX4_LNDMC_Z_VEL_MAX" || -n "$PX4_LNDMC_XY_VEL_MAX" || -n "$PX4_COM_DISARM_LAND" ]]; then
+  python3 - "$PX4_LNDMC_Z_VEL_MAX" "$PX4_LNDMC_XY_VEL_MAX" "$PX4_COM_DISARM_LAND" <<'PY' || {
+import math
+import sys
+
+vertical_threshold = float(sys.argv[1])
+horizontal_text = sys.argv[2].strip()
+horizontal_threshold = (
+    float(horizontal_text) if horizontal_text else None
+)
+auto_disarm_delay = float(sys.argv[3])
+valid = (
+    math.isfinite(vertical_threshold)
+    and 0.0 < vertical_threshold < 0.25
+    and (
+        horizontal_threshold is None
+        or (
+            math.isfinite(horizontal_threshold)
+            and 0.0 < horizontal_threshold <= 10.0
+        )
+    )
+    and math.isfinite(auto_disarm_delay)
+    and auto_disarm_delay >= 2.0
+)
+raise SystemExit(0 if valid else 1)
+PY
+    echo "ERROR: invalid precision-landing PX4 runtime parameter contract." >&2
+    exit 2
+  }
+fi
+
+if [[ "$MAP" == "precision-landing" && "${DRIVE_TRAILER:-0}" != "0" ]]; then
+  echo "ERROR: DRIVE_TRAILER is forbidden in the stationary precision-landing baseline." >&2
+  exit 2
+fi
 
 PX4_DIR="$(realpath -m "${PX4_DIR:-$HOME/PX4-Autopilot}")"
 PX4_BUILD="$PX4_DIR/build/px4_sitl_default"
@@ -175,9 +233,24 @@ export PX4_SIM_MODEL="$SIM_MODEL"
 if [[ "$MAP" == "city" ]]; then
   export PX4_GZ_PLATFORM_VEL="${PX4_GZ_PLATFORM_VEL:-0}"
   export PX4_GZ_PLATFORM_HEADING_DEG="${PX4_GZ_PLATFORM_HEADING_DEG:-0}"
-  for asset in model.sdf model.config arucotag.png; do
+fi
+if [[ "$MAP" == "city" || "$MAP" == "precision-landing" || \
+      "$MAP" == "precision-landing-moving" ]]; then
+  for asset in model.sdf model.config; do
     [[ -f "$SCRIPT_DIR/models/moving_platform_aruco/$asset" ]] || {
       echo "ERROR: SEO trailer asset is missing: $SCRIPT_DIR/models/moving_platform_aruco/$asset" >&2
+      exit 3
+    }
+  done
+  [[ -f "$SCRIPT_DIR/models/aruco_marker_0/materials/textures/aruco_0.png" ]] || {
+    echo "ERROR: ArUco ID 0 texture is missing" >&2
+    exit 3
+  }
+fi
+if [[ "$MAP" == "precision-landing-moving" ]]; then
+  for asset in model.sdf model.config; do
+    [[ -f "$SCRIPT_DIR/models/moving_platform_aruco_velocity/$asset" ]] || {
+      echo "ERROR: moving trailer asset is missing: $SCRIPT_DIR/models/moving_platform_aruco_velocity/$asset" >&2
       exit 3
     }
   done
@@ -217,6 +290,7 @@ TRAILER_PID=""
 MAVROS_PID=""
 BRIDGE_PID=""
 WATCHDOG_PID=""
+SPAWN_CHECK_PID=""
 
 # PX4 SITL instance 0 owns a host-wide advisory lock.  Starting Gazebo first
 # and discovering the conflict only when PX4 launches makes the GUI appear and
@@ -258,7 +332,7 @@ fi
 # user's PX4 source/build tree.  Fail closed if a future PX4 release changes
 # the expected rcS line instead of silently filtering the wrong command.
 MAVROS_RCS=""
-if [[ "${START_XRCE:-0}" != "1" ]]; then
+if [[ "${START_XRCE:-0}" != "1" || -n "$PX4_LNDMC_Z_VEL_MAX" || -n "$PX4_LNDMC_XY_VEL_MAX" ]]; then
   PX4_STOCK_RCS="$PX4_BUILD/etc/init.d-posix/rcS"
   MAVROS_RCS="$RUNTIME_DIR/rcS.mavros_only"
   MAVROS_RCS_TMP="$MAVROS_RCS.tmp.$$"
@@ -271,14 +345,35 @@ if [[ "${START_XRCE:-0}" != "1" ]]; then
     echo "ERROR: expected exactly one uxrce_dds_client start line in $PX4_STOCK_RCS; found $DDS_START_COUNT." >&2
     exit 3
   }
-  awk '!/^[[:space:]]*uxrce_dds_client[[:space:]]+start([[:space:]]|$)/' \
-    "$PX4_STOCK_RCS" >"$MAVROS_RCS_TMP"
+  if [[ "${START_XRCE:-0}" != "1" ]]; then
+    awk '!/^[[:space:]]*uxrce_dds_client[[:space:]]+start([[:space:]]|$)/' \
+      "$PX4_STOCK_RCS" >"$MAVROS_RCS_TMP"
+  else
+    awk '{ print }' "$PX4_STOCK_RCS" >"$MAVROS_RCS_TMP"
+  fi
+  if [[ -n "$PX4_LNDMC_Z_VEL_MAX" || -n "$PX4_LNDMC_XY_VEL_MAX" ]]; then
+    printf '\n# Precision-landing SITL safety calibration (runtime only).\n' \
+      >>"$MAVROS_RCS_TMP"
+  fi
+  if [[ -n "$PX4_LNDMC_Z_VEL_MAX" ]]; then
+    printf 'param set LNDMC_Z_VEL_MAX %s\n' "$PX4_LNDMC_Z_VEL_MAX" \
+      >>"$MAVROS_RCS_TMP"
+  fi
+  if [[ -n "$PX4_LNDMC_XY_VEL_MAX" ]]; then
+    printf 'param set LNDMC_XY_VEL_MAX %s\n' "$PX4_LNDMC_XY_VEL_MAX" \
+      >>"$MAVROS_RCS_TMP"
+  fi
+  if [[ -n "$PX4_COM_DISARM_LAND" ]]; then
+    printf 'param set COM_DISARM_LAND %s\n' "$PX4_COM_DISARM_LAND" \
+      >>"$MAVROS_RCS_TMP"
+  fi
   if ! /bin/sh -n "$MAVROS_RCS_TMP"; then
     rm -f "$MAVROS_RCS_TMP"
     echo "ERROR: generated MAVROS-only PX4 startup script is invalid." >&2
     exit 3
   fi
-  if grep -Eq '^[[:space:]]*uxrce_dds_client[[:space:]]+start([[:space:]]|$)' "$MAVROS_RCS_TMP"; then
+  if [[ "${START_XRCE:-0}" != "1" ]] && \
+      grep -Eq '^[[:space:]]*uxrce_dds_client[[:space:]]+start([[:space:]]|$)' "$MAVROS_RCS_TMP"; then
     rm -f "$MAVROS_RCS_TMP"
     echo "ERROR: generated MAVROS-only PX4 startup script still starts DDS." >&2
     exit 3
@@ -289,8 +384,13 @@ fi
 collect_process_tree() {
   local parent="${1:?missing parent pid}"
   local child
-  if [[ -r "/proc/$parent/task/$parent/children" ]]; then
-    for child in $(<"/proc/$parent/task/$parent/children"); do
+  local children=""
+  local children_file="/proc/$parent/task/$parent/children"
+  # A short-lived child may disappear between the readability check and the
+  # open. Treat that normal /proc race as an empty subtree during cleanup.
+  if [[ -r "$children_file" ]]; then
+    read -r children <"$children_file" 2>/dev/null || children=""
+    for child in $children; do
       collect_process_tree "$child"
     done
   fi
@@ -401,6 +501,7 @@ cleanup() {
       fi
     fi
   fi
+  stop_process "$SPAWN_CHECK_PID"
   stop_process "$WATCHDOG_PID"
   stop_process "$BRIDGE_PID"
   stop_process "$MAVROS_PID"
@@ -435,6 +536,12 @@ if [[ "$MAP" == "city" ]]; then
   echo "SEO trailer      : moving_platform_aruco as trailer"
   echo "Trailer control  : ${PX4_GZ_PLATFORM_VEL} m/s @ ${PX4_GZ_PLATFORM_HEADING_DEG} deg"
   echo "Trailer noise    : stock SEO perturbations start after PX4 spawn"
+elif [[ "$MAP" == "precision-landing" ]]; then
+  echo "Landing trailer  : moving_platform_aruco as static entity trailer"
+  echo "Pair separation  : exactly 10 m on the northeast diagonal"
+elif [[ "$MAP" == "precision-landing-moving" ]]; then
+  echo "Landing trailer  : deterministic velocity model"
+  echo "Motion trigger   : PX4 entity confirmation, independent of mission/ArUco"
 fi
 if [[ "${HEADLESS:-0}" == "1" ]]; then
   echo "Gazebo camera    : headless"
@@ -549,8 +656,8 @@ if [[ "${START_XRCE:-0}" == "1" ]]; then
 fi
 
 if [[ "${DRIVE_TRAILER:-0}" == "1" ]]; then
-  if [[ "$MAP" == "city" ]]; then
-    echo "ERROR: the city trailer is intentionally spawn-only; leave DRIVE_TRAILER=0." >&2
+  if [[ "$MAP" == "city" || "$MAP" == "precision-landing" ]]; then
+    echo "ERROR: the $MAP trailer is intentionally stationary; leave DRIVE_TRAILER=0." >&2
     exit 6
   fi
   python3 -c 'import gz.transport13, gz.msgs10.pose_v_pb2, yaml' >/dev/null 2>&1 || {
@@ -563,27 +670,22 @@ if [[ "${DRIVE_TRAILER:-0}" == "1" ]]; then
   fi
   TRAILER_ARGS=("$TRAILER_MAP" --coordinates "$COORDINATES" \
     --loops "${TRAILER_ROUTE_LOOPS:-0}" --route "${TRAILER_ROUTE:-flat}")
+  if [[ "$MAP" == "precision-landing-moving" ]]; then
+    # The model root is already calibrated to z=0 for the 2.051 m marker
+    # surface. Do not apply the mountain driver's terrain-clearance offset.
+    TRAILER_ARGS+=(--no-terrain-follow --rate "${TRAILER_COMMAND_RATE_HZ:-50}")
+  fi
   if [[ -n "${TRAILER_ROUTE_TIMEOUT:-}" ]]; then
     TRAILER_ARGS+=(--timeout "$TRAILER_ROUTE_TIMEOUT")
   fi
-  python3 -u "$SCRIPT_DIR/trailer_waypoint_driver.py" "${TRAILER_ARGS[@]}" \
-    > >(tee "$TRAILER_LOG") 2>&1 &
-  TRAILER_PID=$!
-  sleep 1
-  if ! kill -0 "$TRAILER_PID" 2>/dev/null; then
-    set +e
-    wait "$TRAILER_PID"
-    trailer_status=$?
-    set -e
-    TRAILER_PID=""
-    echo "ERROR: trailer waypoint driver failed. Log:" >&2
-    cat "$TRAILER_LOG" >&2 || true
-    exit 6
-  fi
-  echo "Trailer route    : active (log: $TRAILER_LOG)"
+  echo "Trailer route    : waiting for PX4 entity (log: $TRAILER_LOG)"
 else
   if [[ "$MAP" == "city" ]]; then
     echo "Trailer          : SEO model at ENU ($TRAILER_SPAWN_POSE), zero mean speed by default"
+  elif [[ "$MAP" == "precision-landing" ]]; then
+    echo "Trailer          : static at ENU ($TRAILER_SPAWN_POSE)"
+  elif [[ "$MAP" == "precision-landing-moving" ]]; then
+    echo "Trailer          : stationary because DRIVE_TRAILER=0"
   else
     echo "Trailer route    : spawned, stationary (set DRIVE_TRAILER=1 to drive)"
   fi
@@ -591,43 +693,60 @@ fi
 
 if [[ "${START_MAVROS:-1}" == "1" ]]; then
   MAVROS_FCU_URL="${MAVROS_FCU_URL:-udp://:14540@127.0.0.1:14580}"
+  MAVROS_HEARTBEAT_TYPE="${MAVROS_HEARTBEAT_TYPE:-GCS}"
+  MAVROS_HEARTBEAT_RATE="${MAVROS_HEARTBEAT_RATE:-}"
   ROS_SETUP="${ROS_SETUP:-/opt/ros/${ROS_DISTRO:-humble}/setup.bash}"
+  MAVROS_LAUNCH="$SCRIPT_DIR/launch/mavros_px4_sitl.launch.py"
+  MAVROS_CONTRACT="$SCRIPT_DIR/tools/configure_mavros_sitl.py"
+  [[ -f "$MAVROS_LAUNCH" ]] || {
+    echo "ERROR: repository MAVROS SITL launch is missing: $MAVROS_LAUNCH" >&2
+    exit 3
+  }
+  [[ -f "$MAVROS_CONTRACT" ]] || {
+    echo "ERROR: MAVROS SITL contract probe is missing: $MAVROS_CONTRACT" >&2
+    exit 3
+  }
   if [[ -f "$ROS_SETUP" ]]; then
     echo "MAVROS           : $MAVROS_FCU_URL (log: $MAVROS_LOG)"
     (
       set +u
       # shellcheck disable=SC1090
       source "$ROS_SETUP"
-      exec ros2 launch mavros px4.launch "fcu_url:=$MAVROS_FCU_URL"
+      exec ros2 launch "$MAVROS_LAUNCH" "fcu_url:=$MAVROS_FCU_URL"
     ) >"$MAVROS_LOG" 2>&1 &
     MAVROS_PID=$!
     sleep 2
     if ! kill -0 "$MAVROS_PID" 2>/dev/null; then
-      echo "WARN: MAVROS failed to start; PX4 flight still works. Log:" >&2
+      echo "ERROR: requested MAVROS failed to start. Log:" >&2
       tail -30 "$MAVROS_LOG" >&2 || true
-      MAVROS_PID=""
+      exit 5
     else
-      # PX4's data-link arming check expects a GCS heartbeat. MAVROS defaults
-      # to ONBOARD_CONTROLLER, which leaves gcs_connection_lost=true even
-      # though MAVLink is connected and causes ordinary arm to be rejected.
-      if (
+      # PX4 advances on Gazebo lockstep time.  Verify the repository wildcard
+      # reached the UAS and representative data/time plugins before PX4 can
+      # emit a single state sample.  Otherwise MAVROS periodically switches
+      # its headers between Unix epoch and PX4 boot time as its filter resets.
+      contract_arguments=(
+        --timeout 30
+        --heartbeat-type "$MAVROS_HEARTBEAT_TYPE"
+      )
+      if [[ -n "$MAVROS_HEARTBEAT_RATE" ]]; then
+        contract_arguments+=(--heartbeat-rate "$MAVROS_HEARTBEAT_RATE")
+      fi
+      if ! (
         set +u
         # shellcheck disable=SC1090
         source "$ROS_SETUP"
-        for _ in {1..30}; do
-          ros2 param set /mavros/sys heartbeat_mav_type GCS >/dev/null 2>&1 && exit 0
-          sleep 0.2
-        done
-        exit 1
+        python3 "$MAVROS_CONTRACT" "${contract_arguments[@]}"
       ); then
-        echo "MAVROS heartbeat : GCS (PX4 arming data-link check enabled)"
-      else
-        echo "WARN: could not set MAVROS heartbeat type to GCS." >&2
+        echo "ERROR: MAVROS SITL clock contract failed; refusing to start PX4." >&2
+        tail -30 "$MAVROS_LOG" >&2 || true
+        exit 5
       fi
     fi
   else
-    echo "WARN: ROS 2 setup not found at $ROS_SETUP; skipping MAVROS." >&2
-    echo "      Set ROS_SETUP=/path/to/setup.bash, or START_MAVROS=0 to silence." >&2
+    echo "ERROR: requested MAVROS needs ROS 2 setup at $ROS_SETUP." >&2
+    echo "       Set ROS_SETUP=/path/to/setup.bash, or START_MAVROS=0 to skip." >&2
+    exit 3
   fi
 fi
 
@@ -651,8 +770,28 @@ if [[ "${START_BRIDGE:-1}" == "1" ]]; then
     fi
   else
     echo "WARN: ros_gz bridge skipped (need $ROS_SETUP and $BRIDGE_LAUNCH)." >&2
-    echo "      Set START_BRIDGE=0 to silence." >&2
+    echo "      Set START_BRIDGE=0 to silence (also set START_MAVROS=0)." >&2
   fi
+fi
+
+# A sim-time MAVROS must see a live Gazebo clock before the FCU connects.  The
+# sensor bridge owns that clock conversion in this checkout.  Fail closed
+# instead of allowing zero-time headers or a later epoch/boot-time rebase.
+if [[ -n "$MAVROS_PID" ]]; then
+  if [[ "${START_BRIDGE:-1}" != "1" || -z "$BRIDGE_PID" ]]; then
+    echo "ERROR: START_MAVROS=1 requires the /clock sensor bridge in SITL." >&2
+    exit 5
+  fi
+  if ! (
+    set +u
+    # shellcheck disable=SC1090
+    source "$ROS_SETUP"
+    timeout 10 ros2 topic echo --once /clock >/dev/null 2>&1
+  ); then
+    echo "ERROR: Gazebo /clock was not received; refusing to start PX4." >&2
+    exit 5
+  fi
+  echo "Gazebo clock     : live before PX4 startup"
 fi
 
 echo "Gazebo is ready. Starting the PX4 console; Ctrl-C stops this complete launch."
@@ -664,13 +803,58 @@ if [[ "${PX4_DAEMON:-0}" == "1" ]]; then
   # prompt refreshes indefinitely and consume gigabytes in a few minutes.
   PX4_ARGS+=(-d)
 fi
-if [[ "${START_XRCE:-0}" != "1" ]]; then
+if [[ -n "$MAVROS_RCS" ]]; then
   PX4_ARGS+=(-s "$MAVROS_RCS")
+fi
+if [[ "${START_XRCE:-0}" != "1" ]]; then
   echo "PX4 transport     : MAVROS/MAVLink only (DDS disabled before rcS startup)"
 else
   echo "PX4 transport     : MAVLink + Micro XRCE-DDS"
 fi
+if [[ -n "$PX4_LNDMC_Z_VEL_MAX" ]]; then
+  echo "PX4 land detector : LNDMC_Z_VEL_MAX=$PX4_LNDMC_Z_VEL_MAX m/s, LNDMC_XY_VEL_MAX=$PX4_LNDMC_XY_VEL_MAX m/s"
+  echo "PX4 auto-disarm   : COM_DISARM_LAND=$PX4_COM_DISARM_LAND s"
+fi
 LAUNCHER_PID=$$
+
+# PX4 creates the model only after it connects to the already-running world.
+# Confirm the expected entity explicitly so a failed or off-screen spawn is
+# reported as such instead of being confused with the independent GCS check.
+(
+  for _ in {1..45}; do
+    if gz model --list 2>/dev/null | grep -Fq -- "$ENTITY_NAME"; then
+      echo "PX4 spawn check  : confirmed $ENTITY_NAME"
+      exit 0
+    fi
+    sleep 1
+  done
+  echo "ERROR: PX4 did not create Gazebo entity '$ENTITY_NAME' within 45 seconds." >&2
+  echo "       Gazebo log: $GAZEBO_LOG" >&2
+  tail -80 "$GAZEBO_LOG" >&2 || true
+  kill -TERM "$LAUNCHER_PID" 2>/dev/null || true
+  exit 1
+) &
+SPAWN_CHECK_PID=$!
+
+if [[ "${DRIVE_TRAILER:-0}" == "1" ]]; then
+  # Keep the original 10 m spawn geometry until the aircraft actually exists.
+  # This remains independent of the mission and ArUco detector; it only avoids
+  # giving the 3 m/s trailer a 30--40 s head start during PX4 startup.
+  (
+    for _ in {1..45}; do
+      if gz model --list 2>/dev/null | grep -Fq -- "$ENTITY_NAME"; then
+        echo "Trailer route    : PX4 entity confirmed; starting"
+        exec python3 -u "$SCRIPT_DIR/trailer_waypoint_driver.py" \
+          "${TRAILER_ARGS[@]}"
+      fi
+      sleep 1
+    done
+    echo "ERROR: trailer route did not see PX4 entity within 45 seconds." >&2
+    exit 6
+  ) > >(tee "$TRAILER_LOG") 2>&1 &
+  TRAILER_PID=$!
+fi
+
 watch_gazebo_while_px4_runs "$LAUNCHER_PID" "$GAZEBO_PID" &
 WATCHDOG_PID=$!
 set +e

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Gazebo Harmonic (transport13 / msgs10) sensor bridge for ROS 2 Humble.
+"""
+Gazebo Harmonic (transport13 / msgs10) sensor bridge for ROS 2 Humble.
 
 Ubuntu 22.04's binary ``ros_gz_bridge`` is commonly linked against
 ignition-transport11 / ignition-msgs8 and therefore discovers, but cannot
@@ -27,6 +28,7 @@ import gz.msgs10.image_pb2 as gz_image_types
 from gz.msgs10.laserscan_pb2 import LaserScan as GzLaserScan
 from gz.msgs10.pointcloud_packed_pb2 import PointCloudPacked as GzPointCloud
 from gz.transport13 import Node as GzNode
+from gz.transport13 import SubscribeOptions
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
@@ -54,6 +56,29 @@ FRONT_DEPTH_DISPLAY_TOPIC = "/front_depth/image"
 FRONT_DEPTH_METRIC_TOPIC = "/front_depth/image_raw"
 DOWN_DEPTH_DISPLAY_TOPIC = "/down_depth/image"
 DOWN_DEPTH_METRIC_TOPIC = "/down_depth/image_raw"
+MAX_TRANSPORT_RATE_HZ = 500.0
+
+
+def _validated_transport_rate_hz(value, name: str) -> float:
+    """Validate a Gazebo transport callback rate parameter."""
+    try:
+        rate_hz = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be numeric") from exc
+    if (
+        not math.isfinite(rate_hz)
+        or rate_hz < 1.0
+        or rate_hz > MAX_TRANSPORT_RATE_HZ
+    ):
+        raise ValueError(
+            f"{name} must be in [1, {MAX_TRANSPORT_RATE_HZ:g}]"
+        )
+    return rate_hz
+
+
+def _transport_messages_per_second(rate_hz: float) -> int:
+    """Convert a validated rate to gz-transport's integer throttle limit."""
+    return max(1, int(math.floor(rate_hz)))
 
 
 def _ros_time(gz_time) -> RosTime:
@@ -93,7 +118,8 @@ def convert_depth_preview(
     near_m: float,
     far_m: float,
 ) -> Image:
-    """Convert metric ``R_FLOAT32`` depth into an rqt-safe mono8 preview.
+    """
+    Convert metric ``R_FLOAT32`` depth into an rqt-safe mono8 preview.
 
     The raw ``32FC1`` image remains the source for planning and measurement.
     This display-only image masks NaN / Inf / out-of-range samples and maps
@@ -101,7 +127,6 @@ def convert_depth_preview(
     cannot collapse the frame to black when the raw image contains ``+Inf``.
     Near pixels are bright and far pixels are dark.
     """
-
     if int(message.pixel_format_type) != gz_image_types.R_FLOAT32:
         raise ValueError(
             "depth preview requires Gazebo R_FLOAT32, got "
@@ -220,6 +245,36 @@ class NativeGazeboSensorBridge(Node):
         self.lidar_rate_hz = float(
             self.declare_parameter("lidar_rate_hz", 50.0).value
         )
+        self.clock_bridge_rate_hz = _validated_transport_rate_hz(
+            self.declare_parameter("clock_bridge_rate_hz", 50.0).value,
+            "clock_bridge_rate_hz",
+        )
+        self.image_transport_max_rate_hz = _validated_transport_rate_hz(
+            self.declare_parameter(
+                "image_transport_max_rate_hz", 20.0
+            ).value,
+            "image_transport_max_rate_hz",
+        )
+        self.camera_info_transport_max_rate_hz = (
+            _validated_transport_rate_hz(
+                self.declare_parameter(
+                    "camera_info_transport_max_rate_hz", 5.0
+                ).value,
+                "camera_info_transport_max_rate_hz",
+            )
+        )
+        self.cloud_transport_max_rate_hz = _validated_transport_rate_hz(
+            self.declare_parameter(
+                "cloud_transport_max_rate_hz", 5.0
+            ).value,
+            "cloud_transport_max_rate_hz",
+        )
+        self.lidar_transport_max_rate_hz = _validated_transport_rate_hz(
+            self.declare_parameter(
+                "lidar_transport_max_rate_hz", 25.0
+            ).value,
+            "lidar_transport_max_rate_hz",
+        )
 
         defaults = {
             "front_rgb_image_gz_topic": "/front_camera/image",
@@ -297,8 +352,34 @@ class NativeGazeboSensorBridge(Node):
         self._counts: dict[str, int] = defaultdict(int)
         self._last_received: dict[str, float] = {}
         self._last_stats_wall_s = time.monotonic()
+        self._latest_clock_ns: int | None = None
+        self._last_published_clock_ns: int | None = None
+        # Gazebo transport invokes Python callbacks on its reception thread.
+        # Keep that boundary depth-one: callbacks only replace the newest
+        # protobuf message, while the ROS timer below performs conversion and
+        # publication.  A slow ROS publish can therefore no longer turn the
+        # transport callback itself into an image FIFO consumer.
+        self._latest_images: dict[str, GzImage] = {}
+        self._image_publish_specs: dict[
+            str, tuple[str | None, float, float]
+        ] = {}
+        self._last_published_image_stamps: dict[str, tuple[int, int]] = {}
 
-        self._subscribe(GzClock, "/clock", self._clock_callback, "clock")
+        # Gazebo's world clock is the sole ROS clock authority.  Throttling is
+        # performed by gz-transport before Python callbacks are queued; this
+        # avoids the multi-second FIFO lag seen when Python consumes the raw
+        # 500 Hz stream.  Sensor headers remain payload capture timestamps and
+        # must never drive /clock.
+        self._subscribe(
+            GzClock,
+            "/clock",
+            self._clock_callback,
+            "clock",
+            maximum_messages_per_second=_transport_messages_per_second(
+                self.clock_bridge_rate_hz
+            ),
+        )
+
         self._subscribe_image(topics["front_rgb_image_gz_topic"], "front_rgb")
         self._subscribe_info(topics["front_rgb_info_gz_topic"], "front_rgb_info")
         self._subscribe_image(
@@ -329,20 +410,37 @@ class NativeGazeboSensorBridge(Node):
         self._subscribe_info(
             topics["down_depth_info_gz_topic"], "down_depth_info"
         )
-        self._register_demand_subscription(
+        # Keep the lightweight single-ray lidar active even before a ROS lidar
+        # consumer appears so touchdown sensing has no subscription warm-up.
+        self._subscribe(
             GzLaserScan,
             topics["lidar_gz_topic"],
             self._lidar_callback,
             "lidar",
-            self._sensor_publishers["lidar"],
+            maximum_messages_per_second=_transport_messages_per_second(
+                self.lidar_transport_max_rate_hz
+            ),
         )
         self._subscribe_cloud(f"{topics['lidar_gz_topic']}/points", "lidar_points")
         self.create_timer(0.25, self._refresh_demand_subscriptions)
+        self.create_timer(
+            1.0 / self.clock_bridge_rate_hz,
+            self._publish_latest_clock,
+        )
+        self.create_timer(
+            1.0 / self.image_transport_max_rate_hz,
+            self._publish_latest_images,
+        )
         self.create_timer(5.0, self._report_statistics)
         self.get_logger().info(
             "native Harmonic sensor bridge active "
             f"(world={world}, model={model}, sensor-data-on-demand="
-            f"{not self.publish_sensor_data_without_subscribers})"
+            f"{not self.publish_sensor_data_without_subscribers}, "
+            f"clock={self.clock_bridge_rate_hz:g}Hz, "
+            f"image<={self.image_transport_max_rate_hz:g}Hz, "
+            f"camera-info<={self.camera_info_transport_max_rate_hz:g}Hz, "
+            f"cloud<={self.cloud_transport_max_rate_hz:g}Hz, "
+            f"lidar<={self.lidar_transport_max_rate_hz:g}Hz)"
         )
 
     def _received(self, key: str) -> None:
@@ -356,8 +454,18 @@ class NativeGazeboSensorBridge(Node):
         topic: str,
         callback: Callable,
         key: str,
+        *,
+        maximum_messages_per_second: int | None = None,
     ) -> None:
-        if self.gz_node.subscribe(message_type, topic, callback) is False:
+        if maximum_messages_per_second is None:
+            subscribed = self.gz_node.subscribe(message_type, topic, callback)
+        else:
+            options = SubscribeOptions()
+            options.msgs_per_sec = int(maximum_messages_per_second)
+            subscribed = self.gz_node.subscribe(
+                message_type, topic, callback, options
+            )
+        if subscribed is False:
             raise RuntimeError(f"failed to subscribe to Gazebo topic {topic}")
         self._gz_topics.append(topic)
         self.get_logger().info(f"gz {topic} -> ROS sensor contract ({key})")
@@ -369,26 +477,53 @@ class NativeGazeboSensorBridge(Node):
         callback: Callable,
         key: str,
         publisher,
+        *,
+        maximum_messages_per_second: int,
     ) -> None:
         self._demand_subscriptions[topic] = (
-            message_type, callback, key, publisher
+            message_type,
+            callback,
+            key,
+            publisher,
+            maximum_messages_per_second,
         )
 
     def _refresh_demand_subscriptions(self) -> None:
         for topic, specification in self._demand_subscriptions.items():
-            message_type, callback, key, publisher = specification
+            (
+                message_type,
+                callback,
+                key,
+                publisher,
+                maximum_messages_per_second,
+            ) = specification
             desired = self._should_publish(publisher)
             active = topic in self._gz_topics
             if desired and not active:
-                self._subscribe(message_type, topic, callback, key)
+                self._subscribe(
+                    message_type,
+                    topic,
+                    callback,
+                    key,
+                    maximum_messages_per_second=(
+                        maximum_messages_per_second
+                    ),
+                )
             elif not desired and active:
                 if self.gz_node.unsubscribe(topic):
                     self._gz_topics.remove(topic)
+                    latest_images = getattr(self, "_latest_images", None)
+                    if latest_images is not None:
+                        lock = getattr(self, "_lock", None)
+                        if lock is None:
+                            latest_images.pop(key, None)
+                        else:
+                            with lock:
+                                latest_images.pop(key, None)
                     self.get_logger().info(f"gz {topic} suspended (no ROS subscriber)")
 
     def stop_transport(self) -> None:
         """Detach transport callbacks before ROS publishers are destroyed."""
-
         for topic in reversed(self._gz_topics):
             try:
                 self.gz_node.unsubscribe(topic)
@@ -405,11 +540,66 @@ class NativeGazeboSensorBridge(Node):
         preview_near_m: float = 0.0,
         preview_far_m: float = 0.0,
     ) -> None:
+        # These attributes are initialized in __init__.  The defensive lazy
+        # path also keeps the small method-level test doubles usable.
+        if not hasattr(self, "_latest_images"):
+            self._latest_images = {}
+        if not hasattr(self, "_image_publish_specs"):
+            self._image_publish_specs = {}
+        if not hasattr(self, "_last_published_image_stamps"):
+            self._last_published_image_stamps = {}
+        self._image_publish_specs[key] = (
+            preview_key,
+            float(preview_near_m),
+            float(preview_far_m),
+        )
+
         def callback(message: GzImage) -> None:
+            lock = getattr(self, "_lock", None)
+            if lock is None:
+                self._latest_images[key] = message
+            else:
+                with lock:
+                    self._latest_images[key] = message
+
+        demand_publishers = [self._sensor_publishers[key]]
+        if preview_key is not None:
+            demand_publishers.append(self._sensor_publishers[preview_key])
+        self._register_demand_subscription(
+            GzImage,
+            topic,
+            callback,
+            key,
+            tuple(demand_publishers),
+            maximum_messages_per_second=_transport_messages_per_second(
+                self.image_transport_max_rate_hz
+            ),
+        )
+
+    def _publish_latest_images(self) -> None:
+        """Convert and publish each newest image slot at most once."""
+        with self._lock:
+            pending = tuple(self._latest_images.items())
+            self._latest_images.clear()
+
+        for key, message in pending:
+            stamp = (
+                int(message.header.stamp.sec),
+                int(message.header.stamp.nsec),
+            )
+            previous_stamp = self._last_published_image_stamps.get(key)
+            if previous_stamp is not None and stamp <= previous_stamp:
+                continue
+
+            preview_key, preview_near_m, preview_far_m = (
+                self._image_publish_specs[key]
+            )
+            published = False
             try:
                 publisher = self._sensor_publishers[key]
                 if self._should_publish(publisher):
                     publisher.publish(convert_image(message))
+                    published = True
                 if preview_key is not None:
                     preview_publisher = self._sensor_publishers[preview_key]
                     if self._should_publish(preview_publisher):
@@ -420,16 +610,13 @@ class NativeGazeboSensorBridge(Node):
                                 preview_far_m,
                             )
                         )
-                self._received(key)
+                        published = True
             except ValueError as exc:
                 self.get_logger().error(str(exc))
 
-        demand_publishers = [self._sensor_publishers[key]]
-        if preview_key is not None:
-            demand_publishers.append(self._sensor_publishers[preview_key])
-        self._register_demand_subscription(
-            GzImage, topic, callback, key, tuple(demand_publishers)
-        )
+            if published:
+                self._last_published_image_stamps[key] = stamp
+                self._received(key)
 
     def _subscribe_info(self, topic: str, key: str) -> None:
         def callback(message: GzCameraInfo) -> None:
@@ -439,7 +626,14 @@ class NativeGazeboSensorBridge(Node):
             self._received(key)
 
         self._register_demand_subscription(
-            GzCameraInfo, topic, callback, key, self._sensor_publishers[key]
+            GzCameraInfo,
+            topic,
+            callback,
+            key,
+            self._sensor_publishers[key],
+            maximum_messages_per_second=_transport_messages_per_second(
+                self.camera_info_transport_max_rate_hz
+            ),
         )
 
     def _subscribe_cloud(self, topic: str, key: str) -> None:
@@ -450,7 +644,14 @@ class NativeGazeboSensorBridge(Node):
             self._received(key)
 
         self._register_demand_subscription(
-            GzPointCloud, topic, callback, key, self._sensor_publishers[key]
+            GzPointCloud,
+            topic,
+            callback,
+            key,
+            self._sensor_publishers[key],
+            maximum_messages_per_second=_transport_messages_per_second(
+                self.cloud_transport_max_rate_hz
+            ),
         )
 
     def _lidar_callback(self, message: GzLaserScan) -> None:
@@ -470,8 +671,43 @@ class NativeGazeboSensorBridge(Node):
         )
 
     def _clock_callback(self, message: GzClock) -> None:
+        """Observe the permanently authoritative Gazebo simulation clock."""
+        self._observe_clock_stamp(message.sim)
+
+    def _observe_clock_stamp(self, stamp) -> None:
+        """Store a trusted Gazebo clock stamp, including time resets."""
+        stamp_ns = int(stamp.sec) * 1_000_000_000 + int(stamp.nsec)
+        if stamp_ns <= 0:
+            return
+        with self._lock:
+            # A lower value is a simulation reset.  Because this method is
+            # called only from the trusted raw /clock subscription, accepting
+            # the regression is safe and lets ROS consumers reset promptly.
+            previous_stamp_ns = self._latest_clock_ns
+            if previous_stamp_ns is not None and stamp_ns < previous_stamp_ns:
+                # Image monotonicity is scoped to one simulation epoch.  Drop
+                # any queued pre-reset frame and allow the new epoch's lower
+                # capture stamps to publish normally.
+                self._latest_images.clear()
+                self._last_published_image_stamps.clear()
+                self._last_published_clock_ns = None
+            self._latest_clock_ns = stamp_ns
+
+    def _publish_latest_clock(self) -> None:
+        """Publish each newest Gazebo stamp at most once on the ROS timer."""
+        with self._lock:
+            stamp_ns = self._latest_clock_ns
+            publish = (
+                stamp_ns is not None
+                and stamp_ns != self._last_published_clock_ns
+            )
+            if publish:
+                self._last_published_clock_ns = stamp_ns
+        if not publish:
+            return
         output = Clock()
-        output.clock = _ros_time(message.sim)
+        output.clock.sec = stamp_ns // 1_000_000_000
+        output.clock.nanosec = stamp_ns % 1_000_000_000
         self.clock_publisher.publish(output)
         self._received("clock")
 

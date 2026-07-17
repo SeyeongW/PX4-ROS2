@@ -53,26 +53,25 @@
           <specular>0.1 0.1 0.1 1</specular>
         </material>
       </visual>
-      <!-- ArUco decal on the top face, centred, well clear of the 5x5 edges.
-           z offset = half the platform thickness (0.05) + a hair (0.001) to
-           avoid z-fighting with platform_visual. Not PX4's own arucotag model
-           (that's a separate static model, so it wouldn't move WITH the
-           platform); the same texture asset is applied as an extra visual on this
-           link instead so it rides along with MovingPlatformController. -->
+      <!-- The proven single-ID texture contains a 60 px quiet zone around a
+           400 px code.  A 1.95 m plane therefore renders a 1.50 m marker. -->
       <visual name="aruco_visual">
         <pose>0 0 0.051 0 0 0</pose>
         <geometry>
           <plane>
             <normal>0 0 1</normal>
-            <size>1.0 1.0</size>
+            <size>1.95 1.95</size>
           </plane>
         </geometry>
         <material>
+          <ambient>1 1 1 1</ambient>
           <diffuse>1 1 1 1</diffuse>
-          <specular>0.4 0.4 0.4 1</specular>
+          <specular>0 0 0 1</specular>
           <pbr>
             <metal>
-              <albedo_map>model://moving_platform_aruco/arucotag.png</albedo_map>
+              <albedo_map>model://aruco_marker_0/materials/textures/aruco_0.png</albedo_map>
+              <metalness>0.0</metalness>
+              <roughness>1.0</roughness>
             </metal>
           </pbr>
         </material>
