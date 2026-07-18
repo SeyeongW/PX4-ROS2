@@ -291,7 +291,9 @@ mpc_precision_landing:
     descent_min_lidar_distance_m: 0.02
     descent_max_lidar_distance_m: 20.0
     descent_max_relative_height_m: 20.0
-    final_approach_requires_lidar: true
+    # Production landing uses camera/trailer relative height, not lidar.
+    landing_use_lidar: false
+    final_approach_requires_lidar: false
     # One measured 102 ms worker scheduling outlier produced one true
     # deadline miss plus repeated invalid-cache ticks. Hold through a bounded
     # half-second recovery window instead of aborting on that single outlier.
@@ -325,6 +327,9 @@ mpc_precision_landing:
     # physically supported, increase only the demanded descent (the measured
     # speed remains near zero) so PX4's low-throttle land detector can latch.
     touchdown_contact_evidence_lidar_m: 0.04
+    touchdown_contact_evidence_clearance_m: 0.23
+    touchdown_contact_entry_max_relative_vertical_speed_m_s: 0.35
+    landing_height_dropout_grace_s: 0.50
     touchdown_contact_compression_speed_m_s: 0.50
     # Reach the existing land-detector compression demand progressively after
     # physical support is proven, avoiding a 0.12 -> 0.50 m/s command step.

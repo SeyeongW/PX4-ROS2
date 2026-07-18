@@ -388,8 +388,10 @@ class MpcPrecisionLandingNode(Node):
         contact_settle_timeout = self._float(
             "touchdown_contact_settle_timeout_s"
         )
-        contact_evidence_lidar = self._float(
+        contact_evidence_height = self._float(
             "touchdown_contact_evidence_lidar_m"
+            if self._bool("landing_use_lidar")
+            else "touchdown_contact_evidence_clearance_m"
         )
         contact_compression_speed = self._float(
             "touchdown_contact_compression_speed_m_s"
@@ -433,10 +435,10 @@ class MpcPrecisionLandingNode(Node):
             or contact_settle_speed
             > self._float("landing_p_vertical_velocity_limit_m_s")
             or contact_settle_speed > contact_relative_speed
-            or not math.isfinite(contact_evidence_lidar)
-            or contact_evidence_lidar
+            or not math.isfinite(contact_evidence_height)
+            or contact_evidence_height
             < self._float("descent_min_lidar_distance_m")
-            or contact_evidence_lidar > contact_deck_distance
+            or contact_evidence_height > contact_deck_distance
             or not math.isfinite(contact_compression_speed)
             or contact_compression_speed < contact_settle_speed
             or contact_compression_speed
@@ -600,6 +602,9 @@ class MpcPrecisionLandingNode(Node):
         self.last_time_reset_reason: str | None = None
         self.down_lidar_range_m: float | None = None
         self.down_lidar_stamp = 0.0
+        self.landing_height_distance_m: float | None = None
+        self.last_valid_landing_height_distance_m: float | None = None
+        self.last_valid_landing_height_stamp = 0.0
 
         self.trailer_state: TrailerKinematicState | None = None
         self.trailer_state_stamp = 0.0
@@ -833,12 +838,16 @@ class MpcPrecisionLandingNode(Node):
             self._on_timesync_status,
             qos_profile_sensor_data,
         )
-        self.create_subscription(
-            LaserScan,
-            "/down_lidar",
-            self._on_down_lidar,
-            qos_profile_sensor_data,
-        )
+        # The production profile lands from camera/trailer relative geometry.
+        # Keep the legacy input available only when it is explicitly enabled;
+        # an accidentally published scan must not influence a no-lidar run.
+        if self._bool("landing_use_lidar"):
+            self.create_subscription(
+                LaserScan,
+                "/down_lidar",
+                self._on_down_lidar,
+                qos_profile_sensor_data,
+            )
         latest_perception_qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
             depth=1,
@@ -1098,7 +1107,8 @@ class MpcPrecisionLandingNode(Node):
             "descent_min_lidar_distance_m": 0.02,
             "descent_max_lidar_distance_m": 20.0,
             "descent_max_relative_height_m": 20.0,
-            "final_approach_requires_lidar": True,
+            "landing_use_lidar": False,
+            "final_approach_requires_lidar": False,
             "max_consecutive_solver_failures": 10,
             "marker_loss_high_altitude_m": 2.0,
             "marker_loss_low_altitude_m": 0.80,
@@ -1110,6 +1120,9 @@ class MpcPrecisionLandingNode(Node):
             "touchdown_contact_clearance_m": 0.22,
             "touchdown_contact_settle_speed_m_s": 0.12,
             "touchdown_contact_evidence_lidar_m": 0.04,
+            "touchdown_contact_evidence_clearance_m": 0.23,
+            "touchdown_contact_entry_max_relative_vertical_speed_m_s": 0.35,
+            "landing_height_dropout_grace_s": 0.50,
             "touchdown_contact_compression_speed_m_s": 0.50,
             "touchdown_contact_compression_ramp_rate_m_s2": 0.25,
             "touchdown_contact_settle_timeout_s": 15.0,
@@ -2093,7 +2106,7 @@ class MpcPrecisionLandingNode(Node):
             if (
                 raw_pose is not None
                 and target_velocity is not None
-                and self._fresh_lidar(now)
+                and self._fresh_landing_height(now)
                 and self.vehicle_position_enu is not None
             ):
                 raw_position, raw_yaw = raw_pose
@@ -3610,6 +3623,72 @@ class MpcPrecisionLandingNode(Node):
             <= self._float("descent_lidar_timeout_s")
         )
 
+    def _strict_relative_deck_clearance_m(
+        self, now: float
+    ) -> float | None:
+        """Return fresh base-link height above the shared marker plane."""
+        if (
+            self.vehicle_position_enu is None
+            or self.pose_stamp <= 0.0
+            or self.velocity_stamp <= 0.0
+            or not 0.0 <= now - self.pose_stamp
+            <= self._float("pose_timeout_s")
+            or not 0.0 <= now - self.velocity_stamp
+            <= self._float("velocity_timeout_s")
+        ):
+            return None
+        trailer_pose = self._latest_trailer_marker_pose(now)
+        if trailer_pose is None:
+            return None
+        vehicle = np.asarray(self.vehicle_position_enu, dtype=float)
+        deck = np.asarray(trailer_pose[0], dtype=float)
+        if (
+            vehicle.shape != (3,)
+            or deck.shape != (3,)
+            or not np.all(np.isfinite(vehicle))
+            or not np.all(np.isfinite(deck))
+        ):
+            return None
+        clearance = float(vehicle[2] - deck[2])
+        if not math.isfinite(clearance) or clearance < 0.0:
+            return None
+        return clearance
+
+    def _fresh_landing_height(self, now: float) -> bool:
+        """Refresh the configured terminal height source fail-closed."""
+        if self._bool("landing_use_lidar"):
+            distance = (
+                float(self.down_lidar_range_m)
+                if self._fresh_lidar(now)
+                and self.down_lidar_range_m is not None
+                else None
+            )
+        else:
+            distance = self._strict_relative_deck_clearance_m(now)
+        valid = bool(
+            distance is not None
+            and math.isfinite(float(distance))
+            and 0.0 <= float(distance)
+            <= self._float("descent_max_relative_height_m")
+        )
+        self.landing_height_distance_m = (
+            float(distance) if valid and distance is not None else None
+        )
+        if valid and self.landing_height_distance_m is not None:
+            self.last_valid_landing_height_distance_m = (
+                self.landing_height_distance_m
+            )
+            self.last_valid_landing_height_stamp = float(now)
+        return valid
+
+    def _contact_evidence_height_m(self) -> float:
+        """Return the contact-evidence threshold for the active source."""
+        return self._float(
+            "touchdown_contact_evidence_lidar_m"
+            if self._bool("landing_use_lidar")
+            else "touchdown_contact_evidence_clearance_m"
+        )
+
     def _target_source_age(
         self, estimate: TargetEstimate, source: str
     ) -> float | None:
@@ -4192,10 +4271,22 @@ class MpcPrecisionLandingNode(Node):
         elapsed = float(now) - float(started)
         return elapsed if math.isfinite(elapsed) and elapsed >= 0.0 else None
 
-    def _contact_lidar_within_latch(self) -> bool:
-        """Keep contact tracking while the aircraft remains over the deck."""
-        distance = self.down_lidar_range_m
-        maximum = self._float("touchdown_max_deck_distance_m")
+    def _contact_height_within_latch(self, now: float) -> bool:
+        """Keep contact tracking while relative height stays on the deck."""
+        if self._fresh_landing_height(now):
+            distance = self.landing_height_distance_m
+        elif (
+            self.last_valid_landing_height_distance_m is not None
+            and 0.0 <= now - self.last_valid_landing_height_stamp
+            <= self._float("landing_height_dropout_grace_s")
+        ):
+            distance = self.last_valid_landing_height_distance_m
+        else:
+            return False
+        maximum = (
+            self._float("touchdown_max_deck_distance_m")
+            + self._float("touchdown_contact_lidar_rebound_tolerance_m")
+        )
         if (
             distance is None
             or not math.isfinite(float(distance))
@@ -4203,11 +4294,8 @@ class MpcPrecisionLandingNode(Node):
             or maximum <= 0.0
         ):
             return False
-        # The old running-minimum + 5 cm test aborted the first real contact
-        # approach even though the recorded range was still monotonically
-        # falling from 0.24 m to 0.10 m. The touchdown gate already requires
-        # fresh lidar, bounded vertical speed and PX4 contact/landed/at-rest;
-        # here only ensure that the vehicle has not left the deck envelope.
+        # The touchdown gate separately requires bounded vertical speed and
+        # PX4 contact/landed/at-rest; this only bounds deck geometry.
         return bool(float(distance) <= maximum + 1.0e-6)
 
     def _terminal_contact_bridge_permission(
@@ -4255,8 +4343,8 @@ class MpcPrecisionLandingNode(Node):
         floor = self._float("touchdown_contact_clearance_m")
         if not self._touchdown_contact_ready(now, estimate, floor):
             return False, "contact_conditions_invalid"
-        if not self._contact_lidar_within_latch():
-            return False, "lidar_rebound_exceeded"
+        if not self._contact_height_within_latch(now):
+            return False, "deck_height_envelope_exceeded"
         return True, "vision_occluded_at_contact"
 
     def _terminal_auto_land_mode_active(self) -> bool:
@@ -4350,8 +4438,8 @@ class MpcPrecisionLandingNode(Node):
             self._terminal_auto_land_contact_envelope_safe(now, estimate)
         ):
             return False, "auto_land_contact_conditions_invalid"
-        if not self._contact_lidar_within_latch():
-            return False, "auto_land_lidar_rebound_exceeded"
+        if not self._contact_height_within_latch(now):
+            return False, "auto_land_deck_height_envelope_exceeded"
         return True, "px4_auto_land_active"
 
     def _terminal_auto_land_kinematics_failure_persisted(
@@ -4382,7 +4470,7 @@ class MpcPrecisionLandingNode(Node):
             or not bool(getattr(estimate, "valid", False))
             or not bool(getattr(estimate, "odometry_fresh", False))
             or target_velocity is None
-            or not self._fresh_lidar(now)
+            or not self._fresh_landing_height(now)
             or not self._terminal_horizontal_kinematics_safe(estimate)
         ):
             return False
@@ -4459,8 +4547,9 @@ class MpcPrecisionLandingNode(Node):
         """Require coherent low/slow geometry before contact settling."""
         target_velocity = self._control_target_velocity_enu(estimate, now)
         floor = self._float("touchdown_contact_clearance_m")
-        maximum_deck_distance = self._float(
-            "touchdown_max_deck_distance_m"
+        maximum_deck_distance = (
+            self._float("touchdown_max_deck_distance_m")
+            + self._float("touchdown_contact_lidar_rebound_tolerance_m")
         )
         maximum_relative_speed = self._float(
             "touchdown_max_relative_vertical_speed_m_s"
@@ -4479,11 +4568,11 @@ class MpcPrecisionLandingNode(Node):
             or maximum_relative_speed <= 0.0
             or not math.isfinite(clearance)
             or not math.isfinite(measured_clearance)
-            or measured_clearance
-            > floor + maximum_deck_distance + 1.0e-6
-            or not self._fresh_lidar(now)
-            or self.down_lidar_range_m is None
-            or self.down_lidar_range_m > maximum_deck_distance
+            or measured_clearance > maximum_deck_distance + 1.0e-6
+            or not self._fresh_landing_height(now)
+            or self.landing_height_distance_m is None
+            or self.landing_height_distance_m
+            > maximum_deck_distance + 1.0e-6
             or estimate is None
             or not bool(getattr(estimate, "valid", False))
             or estimate.position_enu_m is None
@@ -4529,8 +4618,8 @@ class MpcPrecisionLandingNode(Node):
             or estimate.position_enu_m is None
             or estimate.yaw_enu_rad is None
             or self.vehicle_position_enu is None
-            or not self._fresh_lidar(now)
-            or self.down_lidar_range_m is None
+            or not self._fresh_landing_height(now)
+            or self.landing_height_distance_m is None
             or not self._terminal_horizontal_kinematics_safe(estimate)
         ):
             return False
@@ -4545,16 +4634,16 @@ class MpcPrecisionLandingNode(Node):
         ):
             return False
         floor = self._float("touchdown_contact_clearance_m")
-        maximum_deck_distance = self._float(
-            "touchdown_max_deck_distance_m"
+        maximum_deck_distance = (
+            self._float("touchdown_max_deck_distance_m")
+            + self._float("touchdown_contact_lidar_rebound_tolerance_m")
         )
         measured_clearance = self._measured_target_clearance(
             estimate, math.inf
         )
         if (
             not math.isfinite(measured_clearance)
-            or measured_clearance
-            > floor + maximum_deck_distance + 1.0e-6
+            or measured_clearance > maximum_deck_distance + 1.0e-6
         ):
             return False
 
@@ -4572,10 +4661,13 @@ class MpcPrecisionLandingNode(Node):
             vehicle_velocity[2] - target_velocity[2]
         )
         near_deck_entry = bool(
-            math.isfinite(float(self.down_lidar_range_m))
-            and float(self.down_lidar_range_m)
-            <= self._float("touchdown_contact_evidence_lidar_m")
-            and relative_vertical_velocity <= 0.05
+            math.isfinite(float(self.landing_height_distance_m))
+            and float(self.landing_height_distance_m)
+            <= self._contact_evidence_height_m()
+            and abs(relative_vertical_velocity)
+            <= self._float(
+                "touchdown_contact_entry_max_relative_vertical_speed_m_s"
+            )
         )
         return bool(slow_contact_entry or near_deck_entry)
 
@@ -4595,8 +4687,8 @@ class MpcPrecisionLandingNode(Node):
             and estimate.yaw_enu_rad is not None
             and self.vehicle_position_enu is not None
             and self._control_target_velocity_enu(estimate, now) is not None
-            and self._fresh_lidar(now)
-            and self._contact_lidar_within_latch()
+            and self._fresh_landing_height(now)
+            and self._contact_height_within_latch(now)
         )
 
     def _arm_terminal_contact_entry(self) -> None:
@@ -4644,7 +4736,7 @@ class MpcPrecisionLandingNode(Node):
             and estimate.position_enu_m is not None
             and estimate.yaw_enu_rad is not None
             and self.vehicle_position_enu is not None
-            and self._fresh_lidar(now)
+            and self._fresh_landing_height(now)
         )
         if not descent_allowed or not (
             final_contact_ready or touchdown_dwell_tracking
@@ -4663,7 +4755,7 @@ class MpcPrecisionLandingNode(Node):
             vehicle_velocity = np.asarray(
                 self.vehicle_velocity_enu, dtype=float
             )
-            lidar = self.down_lidar_range_m
+            deck_height = self.landing_height_distance_m
             relative_vertical_speed = (
                 math.inf
                 if vehicle_velocity.shape != (3,)
@@ -4671,12 +4763,15 @@ class MpcPrecisionLandingNode(Node):
                 else abs(float(vehicle_velocity[2] - target_velocity[2]))
             )
             physical_contact_evidence = bool(
-                self._fresh_lidar(now)
-                and lidar is not None
-                and math.isfinite(float(lidar))
-                and float(lidar)
-                <= self._float("touchdown_contact_evidence_lidar_m")
-                and relative_vertical_speed <= 0.05
+                self._fresh_landing_height(now)
+                and deck_height is not None
+                and math.isfinite(float(deck_height))
+                and float(deck_height)
+                <= self._contact_evidence_height_m()
+                and relative_vertical_speed
+                <= self._float(
+                    "touchdown_contact_entry_max_relative_vertical_speed_m_s"
+                )
             )
             if physical_contact_evidence:
                 if self._contact_compression_started_monotonic_s is None:
@@ -4740,14 +4835,19 @@ class MpcPrecisionLandingNode(Node):
                 self._contact_settle_started_time_reset_count = (
                     self.time_reset_count
                 )
-            lidar = self.down_lidar_range_m
-            if lidar is not None and math.isfinite(float(lidar)):
+            deck_height = self.landing_height_distance_m
+            if (
+                deck_height is not None
+                and math.isfinite(float(deck_height))
+            ):
                 if self._contact_settle_min_lidar_range_m is None:
-                    self._contact_settle_min_lidar_range_m = float(lidar)
+                    self._contact_settle_min_lidar_range_m = float(
+                        deck_height
+                    )
                 else:
                     self._contact_settle_min_lidar_range_m = min(
                         self._contact_settle_min_lidar_range_m,
-                        float(lidar),
+                        float(deck_height),
                     )
         self.descent_clearance_m = floor
         # A fresh phase-transition coast or a newly queued immutable contact
@@ -4994,9 +5094,9 @@ class MpcPrecisionLandingNode(Node):
         else:
             relative_vertical_speed = math.nan
         deck_distance = (
-            float(self.down_lidar_range_m)
-            if self._fresh_lidar(now)
-            and self.down_lidar_range_m is not None
+            float(self.landing_height_distance_m)
+            if self._fresh_landing_height(now)
+            and self.landing_height_distance_m is not None
             else math.nan
         )
         ground, landed, at_rest, sample_stamp, source = (
@@ -5502,10 +5602,13 @@ class MpcPrecisionLandingNode(Node):
                     and relative_height <= occlusion_height
                     and estimate is not None
                     and estimate.odometry_fresh
-                    and self._fresh_lidar(now)
-                    and self.down_lidar_range_m is not None
-                    and math.isfinite(float(self.down_lidar_range_m))
-                    and float(self.down_lidar_range_m) <= occlusion_lidar
+                    and self._fresh_landing_height(now)
+                    and self.landing_height_distance_m is not None
+                    and math.isfinite(
+                        float(self.landing_height_distance_m)
+                    )
+                    and float(self.landing_height_distance_m)
+                    <= occlusion_lidar
                 )
                 if terminal_recovery_envelope:
                     if self.terminal_recovery_started_mission_s is None:
@@ -5863,25 +5966,23 @@ class MpcPrecisionLandingNode(Node):
                 self.last_safety_failure_reason = None
                 return
 
-            if self._bool("final_approach_requires_lidar") and not (
-                self._fresh_lidar(now)
-            ):
+            if not self._fresh_landing_height(now):
                 if self._contact_settle_elapsed_s(now) is not None:
                     self._hold_descent_reference(now, estimate)
                     self._enter_failsafe_hold(
-                        "terminal_contact_lidar_invalid"
+                        "terminal_contact_height_invalid"
                     )
                     return
                 self._hold_descent_reference(now, estimate)
-                self.last_safety_failure_reason = "final_lidar_invalid"
+                self.last_safety_failure_reason = "final_height_invalid"
                 if mission_now - self.phase_started >= self._float(
                     "final_approach_timeout_s"
                 ):
                     self._start_abort_climb(
-                        "final approach lidar timeout", estimate
+                        "final approach height timeout", estimate
                     )
                 return
-            final_descent_speed = self._final_descent_speed_from_lidar(now)
+            final_descent_speed = self._final_descent_speed(now)
             candidate_clearance = max(
                 self._float("touchdown_contact_clearance_m"),
                 self.descent_clearance_m
@@ -5915,10 +6016,12 @@ class MpcPrecisionLandingNode(Node):
                 )
                 latched_contact_evidence = bool(
                     settle_elapsed <= settle_timeout
-                    and self._fresh_lidar(now)
-                    and self.down_lidar_range_m is not None
-                    and math.isfinite(float(self.down_lidar_range_m))
-                    and float(self.down_lidar_range_m)
+                    and self._fresh_landing_height(now)
+                    and self.landing_height_distance_m is not None
+                    and math.isfinite(
+                        float(self.landing_height_distance_m)
+                    )
+                    and float(self.landing_height_distance_m)
                     <= maximum_deck_distance
                 )
             px4_landed = False
@@ -5977,7 +6080,7 @@ class MpcPrecisionLandingNode(Node):
                 # vehicle off the moving deck.  Keep staging only the contact
                 # QP until PX4 reports ON_GROUND or the deck envelope is
                 # genuinely lost.
-                if not self._contact_lidar_within_latch():
+                if not self._contact_height_within_latch(now):
                     self._start_abort_climb(
                         "touchdown contact deck envelope lost",
                         estimate,
@@ -6089,10 +6192,12 @@ class MpcPrecisionLandingNode(Node):
                     and aruco_velocity_bounded
                     and math.isfinite(measured_clearance)
                     and measured_clearance <= occlusion_clearance
-                    and self._fresh_lidar(now)
-                    and self.down_lidar_range_m is not None
-                    and math.isfinite(float(self.down_lidar_range_m))
-                    and float(self.down_lidar_range_m)
+                    and self._fresh_landing_height(now)
+                    and self.landing_height_distance_m is not None
+                    and math.isfinite(
+                        float(self.landing_height_distance_m)
+                    )
+                    and float(self.landing_height_distance_m)
                     <= occlusion_lidar
                 )
                 # Level recentering must not require the lidar ray to already
@@ -6116,9 +6221,11 @@ class MpcPrecisionLandingNode(Node):
                     and math.isfinite(measured_clearance)
                     and measured_clearance
                     <= self._float("final_approach_height_m") + 0.50
-                    and self._fresh_lidar(now)
-                    and self.down_lidar_range_m is not None
-                    and math.isfinite(float(self.down_lidar_range_m))
+                    and self._fresh_landing_height(now)
+                    and self.landing_height_distance_m is not None
+                    and math.isfinite(
+                        float(self.landing_height_distance_m)
+                    )
                 )
                 if (
                     near_occlusion_envelope
@@ -6460,7 +6567,7 @@ class MpcPrecisionLandingNode(Node):
                 )
             elif self.phase == LandingPhase.FINAL_APPROACH:
                 relative_descent_speed_m_s = (
-                    self._final_descent_speed_from_lidar(now)
+                    self._final_descent_speed(now)
                 )
             elif self.phase == LandingPhase.TOUCHDOWN_CONFIRM:
                 relative_descent_speed_m_s = self._float(
@@ -6653,19 +6760,22 @@ class MpcPrecisionLandingNode(Node):
             return max(0.0, nominal)
         return min(max(0.0, nominal), minimum)
 
-    def _final_descent_speed_from_lidar(self, now: float) -> float:
+    def _final_descent_speed(self, now: float) -> float:
         """Taper terminal descent continuously before landing-gear contact."""
         nominal = self._float("final_descent_speed_m_s")
         settle = self._float("touchdown_contact_settle_speed_m_s")
-        if not self._fresh_lidar(now) or self.down_lidar_range_m is None:
+        if (
+            not self._fresh_landing_height(now)
+            or self.landing_height_distance_m is None
+        ):
             return nominal
-        distance = float(self.down_lidar_range_m)
-        # The live vehicle contacts the deck at roughly 0.03 m lidar range.
+        distance = float(self.landing_height_distance_m)
+        contact_clearance = self._float("touchdown_contact_clearance_m")
         # A deliberately conservative 0.03 m/s^2 braking envelope is active
         # throughout FINAL.  The previous 0.08 value still reached the 0.25 m
         # contact gate at 0.34 m/s and physical contact at 0.26 m/s, so the
         # low/slow contact controller never became eligible before rebound.
-        braking_distance = max(0.0, distance - 0.05)
+        braking_distance = max(0.0, distance - contact_clearance)
         braking_speed = math.sqrt(2.0 * 0.03 * braking_distance)
         return min(nominal, max(settle, braking_speed))
 
@@ -6686,14 +6796,13 @@ class MpcPrecisionLandingNode(Node):
             or measured_clearance > final_height + 1.0e-6
         ):
             return False
-        if not self._bool("final_approach_requires_lidar"):
-            return True
-        lidar = getattr(self, "down_lidar_range_m", None)
+        if not self._fresh_landing_height(now):
+            return False
+        height = self.landing_height_distance_m
         return bool(
-            self._fresh_lidar(now)
-            and lidar is not None
-            and math.isfinite(float(lidar))
-            and float(lidar) <= final_height + 1.0e-6
+            height is not None
+            and math.isfinite(float(height))
+            and float(height) <= final_height + 1.0e-6
         )
 
     def _snapshot_solver_deadline_s(
@@ -7354,6 +7463,7 @@ class MpcPrecisionLandingNode(Node):
     def _status_tick(self) -> None:
         now = time.monotonic()
         self.last_status_publish = now
+        landing_height_fresh = self._fresh_landing_height(now)
         state = self.mavros_state
         trailer = self.trailer_state
         target = self._current_target_estimate()
@@ -7815,6 +7925,13 @@ class MpcPrecisionLandingNode(Node):
             ),
             "marker_loss_policy": self.last_marker_loss_policy,
             "lidar_fresh": self._fresh_lidar(now),
+            "landing_height_source": (
+                "lidar"
+                if self._bool("landing_use_lidar")
+                else "trailer_relative_position"
+            ),
+            "landing_height_fresh": landing_height_fresh,
+            "landing_height_m": self.landing_height_distance_m,
             "land_detector_source": detector_source,
             "land_detector_age_s": detector_age_s,
             "px4_ground_contact": ground_contact,

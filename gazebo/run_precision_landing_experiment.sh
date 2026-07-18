@@ -232,13 +232,12 @@ wait_for_topic() {
   echo "  ready: $label"
 }
 
-echo "[2/4] PX4, MAVROS, 하방 카메라, lidar 입력을 확인합니다."
+echo "[2/4] PX4, MAVROS, 하방 카메라 입력을 확인합니다."
 wait_for_topic /clock "Gazebo clock"
 wait_for_topic /mavros/local_position/pose "PX4 local pose"
 wait_for_topic /mavros/local_position/velocity_local "PX4 local velocity"
 wait_for_topic /down_camera/image "downward RGB camera"
 wait_for_topic /down_camera/camera_info "downward camera calibration"
-wait_for_topic /down_lidar "downward lidar"
 
 MAVROS_PREFLIGHT_READY=0
 for _ in {1..30}; do
