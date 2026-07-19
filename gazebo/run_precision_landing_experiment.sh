@@ -13,6 +13,7 @@ Usage:
   Terminal 2: $(basename "$0") mission
   Moving Terminal 1: $(basename "$0") moving-environment
   Moving Terminal 2: $(basename "$0") moving-mission
+  Camera Terminal: $(basename "$0") camera-view
 
 environment starts the 200 x 200 m Gazebo GUI, PX4 SITL, MAVROS, the GCS
 heartbeat, and the camera/depth/lidar bridge. mission performs an isolated
@@ -21,6 +22,8 @@ unarmed ON_GROUND preflight contract, and issues one mission start request.
 
 The moving environment starts the trailer's circular route after PX4 spawns;
 the mission approaches from measured position and estimates speed from ArUco.
+camera-view waits for the mission's ArUco debug publisher and opens the
+downward annotated image without rebuilding either ROS package.
 EOF
 }
 
@@ -31,7 +34,7 @@ case "${1:-}" in
     ;;
 esac
 
-if [[ $# -ne 1 || ! "$1" =~ ^(environment|mission|moving-environment|moving-mission)$ ]]; then
+if [[ $# -ne 1 || ! "$1" =~ ^(environment|mission|moving-environment|moving-mission|camera-view)$ ]]; then
   echo "ERROR: invalid experiment subcommand" >&2
   usage >&2
   exit 64
@@ -58,6 +61,7 @@ if [[ "${PX4_ROS22_EXPERIMENT_CLEAN_ENV:-0}" != "1" ]]; then
     PX4_ROS22_EXPERIMENT_CLEAN_ENV=1 \
     PX4_ROS22_EXPERIMENT_HEADLESS="${PX4_ROS22_EXPERIMENT_HEADLESS:-0}" \
     PX4_ROS22_EXPERIMENT_PX4_DAEMON="${PX4_ROS22_EXPERIMENT_PX4_DAEMON:-0}" \
+    TRAILER_SPEED_M_S="${TRAILER_SPEED_M_S:-}" \
     PYTHONDONTWRITEBYTECODE=1 \
     bash "$SCRIPT_PATH" "$@"
 fi
@@ -121,7 +125,80 @@ set +u
 source "$ROS_SETUP"
 set -u
 
-for command in colcon python3 realpath ros2 setsid sha256sum timeout; do
+ros_publisher_count() {
+  local topic="${1:?missing topic}"
+  local info
+  info="$(ros2 topic info "$topic" 2>/dev/null || true)"
+  awk '$1 == "Publisher" && $2 == "count:" {print $3}' <<<"$info"
+}
+
+if [[ "$1" == "camera-view" ]]; then
+  if [[ -z "${DISPLAY:-}" && -z "${WAYLAND_DISPLAY:-}" ]]; then
+    echo "ERROR: camera-view requires a graphical desktop session." >&2
+    exit 69
+  fi
+  for command in awk ros2 sleep; do
+    command -v "$command" >/dev/null 2>&1 || {
+      echo "ERROR: required camera-view command is missing: $command" >&2
+      exit 69
+    }
+  done
+  ros2 pkg prefix rqt_image_view >/dev/null 2>&1 || {
+    echo "ERROR: ROS package rqt_image_view is not installed." >&2
+    exit 69
+  }
+
+  RAW_TOPIC="/down_camera/image"
+  DEBUG_TOPIC="/perception/down/debug"
+  echo "하방 카메라 브리지를 기다립니다: $RAW_TOPIC"
+  raw_ready=0
+  for ((attempt = 1; attempt <= 30; attempt++)); do
+    publisher_count="$(ros_publisher_count "$RAW_TOPIC")"
+    if [[ "$publisher_count" == "1" ]]; then
+      raw_ready=1
+      break
+    fi
+    if [[ "$publisher_count" =~ ^[0-9]+$ ]] && \
+        ((publisher_count > 1)); then
+      echo "ERROR: $RAW_TOPIC has $publisher_count publishers." >&2
+      echo "       Stop the stale environment; duplicate frames invalidate ArUco timestamps." >&2
+      exit 73
+    fi
+    sleep 1
+  done
+  if [[ "$raw_ready" != "1" ]]; then
+    echo "ERROR: $RAW_TOPIC publisher is absent; start environment first." >&2
+    echo "Raw viewer after recovery: ros2 run rqt_image_view rqt_image_view --force-discover $RAW_TOPIC" >&2
+    exit 75
+  fi
+
+  echo "ArUco 디버그 영상을 기다립니다: $DEBUG_TOPIC"
+  echo "mission 또는 moving-mission을 실행하면 자동으로 열립니다."
+  debug_ready=0
+  for ((attempt = 1; attempt <= 120; attempt++)); do
+    publisher_count="$(ros_publisher_count "$DEBUG_TOPIC")"
+    if [[ "$publisher_count" == "1" ]]; then
+      debug_ready=1
+      break
+    fi
+    if [[ "$publisher_count" =~ ^[0-9]+$ ]] && \
+        ((publisher_count > 1)); then
+      echo "ERROR: $DEBUG_TOPIC has $publisher_count publishers." >&2
+      echo "       Stop the duplicate precision-landing controller." >&2
+      exit 73
+    fi
+    sleep 1
+  done
+  if [[ "$debug_ready" != "1" ]]; then
+    echo "ERROR: ArUco debug publisher did not appear within 120 s." >&2
+    echo "Confirm that mission is still running; the detector exits when the mission ends." >&2
+    exit 75
+  fi
+  exec ros2 run rqt_image_view rqt_image_view \
+    --force-discover "$DEBUG_TOPIC"
+fi
+
+for command in awk colcon python3 realpath ros2 setsid sha256sum timeout; do
   command -v "$command" >/dev/null 2>&1 || {
     echo "ERROR: required command is missing: $command" >&2
     exit 69
@@ -238,6 +315,23 @@ wait_for_topic /mavros/local_position/pose "PX4 local pose"
 wait_for_topic /mavros/local_position/velocity_local "PX4 local velocity"
 wait_for_topic /down_camera/image "downward RGB camera"
 wait_for_topic /down_camera/camera_info "downward camera calibration"
+
+require_single_publisher() {
+  local topic="${1:?missing topic}"
+  local label="${2:?missing label}"
+  local count
+  count="$(ros_publisher_count "$topic")"
+  if [[ "$count" != "1" ]]; then
+    echo "ERROR: $label must have exactly one publisher; found ${count:-0}." >&2
+    echo "       Duplicate camera frames reuse timestamps and invalidate ArUco tracking." >&2
+    echo "       Stop the stale environment and start Terminal 1 only once." >&2
+    return 1
+  fi
+  echo "  ready: single $label publisher"
+}
+
+require_single_publisher /down_camera/image "downward RGB camera"
+require_single_publisher /down_camera/camera_info "downward camera calibration"
 
 MAVROS_PREFLIGHT_READY=0
 for _ in {1..30}; do

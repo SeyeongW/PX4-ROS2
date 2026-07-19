@@ -48,7 +48,9 @@ mpc_precision_landing:
     relative_landing_mpc_dt_s: 0.10
     relative_landing_mpc_max_iterations: 30
     relative_landing_mpc_deadline_ms: 40.0
-    relative_landing_mpc_max_horizontal_velocity_m_s: 5.0
+    # Proven 5 m/s moving-deck baseline: retain 1.5 m/s correction authority
+    # without the wider command envelope used by the later 9 m/s trial.
+    relative_landing_mpc_max_horizontal_velocity_m_s: 6.5
     relative_landing_mpc_max_ascent_velocity_m_s: 2.0
     relative_landing_mpc_max_descent_velocity_m_s: 0.7
     relative_landing_mpc_max_horizontal_acceleration_m_s2: 3.0
@@ -67,9 +69,8 @@ mpc_precision_landing:
     relative_landing_mpc_landing_pad_contact_margin_m: 0.75
     relative_landing_mpc_alignment_position_tolerance_m: 0.75
     relative_landing_mpc_alignment_velocity_tolerance_m_s: 0.35
-    # Differentiate only the filtered capture-time ArUco velocity. This
-    # bounded low-pass term represents the 0.18 m/s^2 centripetal motion of
-    # the 3 m/s, 50 m circle without exposing simulator trailer twist.
+    # The ArUco fit represents the 0.50 m/s^2 centripetal motion of the
+    # 5 m/s, 50 m circle without exposing simulator trailer twist.
     relative_landing_mpc_pad_acceleration_smoothing_factor: 0.20
     relative_landing_mpc_max_pad_acceleration_m_s2: 1.0
     front_marker_pose_topic: /perception/front/marker_pose_covariance
@@ -156,7 +157,10 @@ mpc_precision_landing:
     # The live 3 m/s runs show about 8 cm combined camera timestamp/extrinsic
     # scatter despite sub-pixel reprojection residuals. Do not let the PnP
     # covariance overstate confidence and reject otherwise consistent vision.
-    target_fusion_vision_position_variance_floor: 0.0064
+    # The calibrated PnP stream shows about 0.10 m short-window scatter while
+    # tracking the 3 m/s circle.  An 0.08 m floor made valid 0.2--0.35 m
+    # innovations repeatedly trip the NIS gate and reset the 1 s track dwell.
+    target_fusion_vision_position_variance_floor: 0.01
     target_fusion_vision_yaw_variance_floor: 0.0012184696791468343
     target_fusion_odometry_position_variance_floor: 0.0025
     # Trailer twist is intentionally hidden with a very large covariance.
@@ -172,6 +176,9 @@ mpc_precision_landing:
     # the vision-only Kalman state.
     vision_velocity_minimum_accepted_samples: 3
     vision_velocity_maximum_variance_m2_s2: 1.0
+    # One camera-only Kalman estimator follows the 9 m/s, R=50 m turn.  This
+    # is process noise for that existing estimator, not a second motion model.
+    vision_motion_process_acceleration_variance: 1.0
     vision_velocity_dropout_hold_s: 1.5
     # Matches the detector's continuous-track gap. A longer outage resets the
     # vision-only motion filter and again requires three accepted poses.
@@ -183,7 +190,7 @@ mpc_precision_landing:
     # within the 0.35 m/s relative-speed envelope for about 7 s. Never coast a
     # terminal optical loss beyond that ArUco-derived model horizon.
     # The single marker can leave the FOV about 1.7 m above the deck. At the
-    # configured 0.25 m/s terminal descent, contact plus the 1 s land dwell can
+    # configured terminal descent, contact plus the 0.6 s land dwell can
     # exceed seven seconds. The continuation remains ArUco-only and propagates
     # its measured turn rate; simulator/trailer twist is never consumed.
     # Once the large marker leaves the close-range FOV, retain the robust
@@ -191,13 +198,15 @@ mpc_precision_landing:
     # window. Fresh trailer position and lidar are still required; trailer
     # twist is never substituted.
     vision_velocity_terminal_hold_s: 30.0
-    # Before vision velocity is qualified, odometry supplies position only.
-    # A bounded proportional servo keeps one stable lag behind the moving
-    # trailer until ArUco captures identify velocity.  No trailer twist or
-    # differentiated odometry reaches control.
-    position_only_pursuit_max_speed_m_s: 4.2
-    position_only_pursuit_acceleration_m_s2: 2.5
-    position_only_pursuit_gain_s_inv: 3.0
+    # One bounded position-plus-ArUco-velocity controller covers the verified
+    # stationary/3/5 m/s envelope without a separate boost/coast path.
+    position_only_pursuit_max_speed_m_s: 6.5
+    position_only_pursuit_acceleration_m_s2: 6.0
+    # Before optical velocity is available, e=v/K. K=3 left a 5 m/s target
+    # 1.67 m off-centre and outside the pitched camera's reliable view; K=6
+    # halves that reacquisition error. Once ArUco velocity is valid the node
+    # still switches to the unchanged 0.8 gain plus optical feed-forward.
+    position_only_pursuit_gain_s_inv: 6.0
     target_fusion_vision_nis_gate: 18.47
     target_fusion_odometry_nis_gate: 26.12
     target_fusion_maximum_position_innovation_m: 20.0
@@ -238,8 +247,8 @@ mpc_precision_landing:
     offboard_prestream_s: 2.0
     takeoff_height_m: 6.0
     takeoff_tolerance_m: 0.4
-    # Search at 6 m above the single 1.5 m marker: large enough for stable PnP
-    # while retaining a useful lateral camera window for the optical intercept.
+    # Verified 5 m/s baseline: the 1.5 m marker stays large enough for stable
+    # pose/velocity estimation while the 6.5 m/s intercept closes the lag.
     marker_search_height_m: 6.0
     precision_align_height_m: 3.0
     # Enter the guarded terminal phase before the 1.5 m marker fills the
@@ -253,15 +262,22 @@ mpc_precision_landing:
     # motion cannot clip the board before this guarded bridge is available.
     terminal_occlusion_max_clearance_m: 3.00
     terminal_occlusion_max_lidar_m: 2.90
-    precision_descent_speed_m_s: 0.60
+    # Descend briskly while optical XY/relative-speed gates remain valid.
+    # The OSQP hard limit remains 0.70 m/s and every denied safety gate still
+    # replaces this with a level command immediately.
+    precision_descent_speed_m_s: 0.70
     final_descent_speed_m_s: 0.55
+    # FINAL uses v=sqrt(2*a*height_remaining) before the 0.12 m/s contact
+    # floor. 0.05 starts braking early enough for the live PX4 velocity loop;
+    # 0.07 reached the static deck at 0.34 m/s and caused a contact rebound.
+    final_descent_braking_acceleration_m_s2: 0.05
     # Lead the marker by 0.15 m at 3 m/s using ArUco-derived motion only.
     landing_motion_lead_time_s: 0.05
-    # Keep the descent gate consistent with the Relative-OSQP terminal
-    # polygon. A 0.75 m radius still leaves ample margin to every deck edge.
+    # This is still well inside the 5 m x 5 m deck and matches the previously
+    # successful descent envelope. The tighter 0.50 m gate repeatedly reset
+    # descent on normal camera noise at 5 m/s.
     precision_lateral_gate_m: 0.75
-    # These gates enter level ALIGN only. Actual vertical descent retains the
-    # stricter 0.35 m / 0.35 m/s safety gates below.
+    # Require stable ArUco-relative motion before entering level alignment.
     marker_track_entry_lateral_gate_m: 0.50
     marker_track_entry_relative_speed_m_s: 0.35
     # Position, camera-derived horizontal speed, and vehicle/marker yaw must
@@ -309,10 +325,10 @@ mpc_precision_landing:
     abort_climb_height_m: 3.0
     abort_climb_tolerance_m: 0.30
     abort_climb_timeout_s: 10.0
-    # The measured moving-deck terminal segment took 13.7 s.  Keep a small
-    # scheduling margin while every lidar/odometry/covariance safety gate
-    # remains active.
-    final_approach_timeout_s: 18.0
+    # Static-target contact can take about 22.4 s when covariance or an async
+    # solver handoff briefly levels the descent.  Keep enough time for that
+    # bounded recovery without relaxing any contact or descent-safety gate.
+    final_approach_timeout_s: 30.0
     # The live x500 reaches deck contact at about 0.218 m base-link-to-marker
     # separation (down lidar about 0.03 m). A 0.10 m reference was physically
     # unreachable and kept the MPC driving into the deck instead of handing
@@ -327,7 +343,11 @@ mpc_precision_landing:
     # physically supported, increase only the demanded descent (the measured
     # speed remains near zero) so PX4's low-throttle land detector can latch.
     touchdown_contact_evidence_lidar_m: 0.04
-    touchdown_contact_evidence_clearance_m: 0.23
+    # With the camera restored flush to the x500 underside, the landing gear
+    # first supports the airframe at 0.27--0.29 m above the marker plane.
+    # Latch that physical entry before collision rebound can request a climb;
+    # the independent 0.34 m deck-distance and relative-speed gates remain.
+    touchdown_contact_evidence_clearance_m: 0.30
     touchdown_contact_entry_max_relative_vertical_speed_m_s: 0.35
     landing_height_dropout_grace_s: 0.50
     touchdown_contact_compression_speed_m_s: 0.50
@@ -338,6 +358,12 @@ mpc_precision_landing:
     # Reject a terminal latch if lidar shows that the vehicle has moved away
     # from its closest near-contact range by more than this bounded amount.
     touchdown_contact_lidar_rebound_tolerance_m: 0.05
+    # Keep the strict 0.30 m contact-entry and 0.34 m disarm envelopes, but do
+    # not interpret the measured 0.45 m moving-deck collision rebound as deck
+    # separation. The contact controller must re-seat below 0.34 m before the
+    # independent touchdown gate can ever disarm.
+    touchdown_contact_latch_exit_distance_m: 0.50
+    touchdown_contact_latch_exit_dwell_s: 0.70
     # Retained only for explicit operator recovery; the production mission
     # does not hand moving-deck control to PX4 AUTO.LAND.
     touchdown_auto_land_mode: AUTO.LAND
@@ -345,9 +371,14 @@ mpc_precision_landing:
     # Normal disarm is permitted only after deck distance, relative vertical
     # speed, all three land-detector booleans, distinct samples, and dwell
     # jointly pass. No altitude-only or forced-disarm threshold is configured.
-    touchdown_max_deck_distance_m: 0.25
+    # The stationary x500 rests 0.286--0.315 m above the marker plane.  This
+    # remains below the 0.40 m contact-latch exit and still requires PX4
+    # ground/landed/at-rest, low relative-vz, distinct samples and dwell.
+    touchdown_max_deck_distance_m: 0.34
     touchdown_max_relative_vertical_speed_m_s: 0.18
-    touchdown_dwell_s: 1.0
+    # Keep the multi-signal/two-sample gate, while shortening the intentional
+    # armed-idle interval after PX4 has already confirmed landed and at-rest.
+    touchdown_dwell_s: 0.60
     touchdown_confirmation_timeout_s: 15.0
     touchdown_minimum_consecutive_samples: 2
     land_detector_sample_timeout_s: 1.50

@@ -691,6 +691,16 @@ class RelativeMpcLandingController(LandingController):
             # loop to execute the smooth vertical velocity horizon.
             disabled = np.full(3, np.nan, dtype=float)
             velocity_command = velocities[0].copy()
+            # PX4 executes velocity as a closed-loop target, not as an exact
+            # 100 ms state sample.  On the 5 m/s, R=50 m deck, publishing the
+            # first horizontal sample produced a small persistent outward
+            # radial velocity (+0.034 m/s), while the already-optimized 200 ms
+            # sample matched the inward correction measured in the successful
+            # baseline (-0.05 to -0.10 m/s).  Use that second sample only for
+            # XY; retain the first sample for Z and acceleration so vertical
+            # contact remains smooth and jerk-bounded.
+            if len(velocities) >= 2:
+                velocity_command[:2] = velocities[1, :2]
             acceleration_command = accelerations[0].copy()
             acceleration_command[2] = 0.0
             if (

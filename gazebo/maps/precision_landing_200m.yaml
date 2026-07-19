@@ -82,9 +82,6 @@ trailer:
   marker_size_m: 1.5
   aruco_dictionary: DICT_4X4_50
   aruco_marker_id: 0
-  aruco_board_layout: camera_detection/config/aruco_landing_board.yaml
-  aruco_board_markers:
-    - {id: 0, size_m: 1.5, position_m: [0.0, 0.0, 0.0]}
 
 terrain:
   type: flat_box

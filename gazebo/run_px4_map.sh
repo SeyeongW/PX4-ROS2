@@ -61,6 +61,7 @@ Environment:
   ROS_SETUP=...          ROS 2 setup.bash to source for MAVROS + bridge (default humble)
   FOLLOW_DRONE=1          Opt in to locking the gz camera to the drone (default: off)
   DRIVE_TRAILER=1         Drive mountain or moving-landing YAML waypoints
+  TRAILER_SPEED_M_S=...   Override moving-landing trailer speed for one run
   TRAILER_ROUTE_LOOPS=1   Stop the driver after one complete route (0=repeat)
   TRAILER_ROUTE=slope     Mountain-only terrain-follow safeguard test
   PX4_GZ_PLATFORM_VEL=... City SEO trailer speed (default: 0 m/s)
@@ -149,7 +150,7 @@ valid = (
         horizontal_threshold is None
         or (
             math.isfinite(horizontal_threshold)
-            and 0.0 < horizontal_threshold <= 10.0
+            and 0.0 < horizontal_threshold <= 12.0
         )
     )
     and math.isfinite(auto_disarm_delay)
@@ -430,6 +431,20 @@ stop_process() {
   wait "$pid" 2>/dev/null || true
 }
 
+stop_process_group() {
+  local pgid="${1:-}"
+  [[ -n "$pgid" ]] || return 0
+  if kill -0 -- "-$pgid" 2>/dev/null; then
+    kill -TERM -- "-$pgid" 2>/dev/null || true
+    for _ in {1..30}; do
+      kill -0 -- "-$pgid" 2>/dev/null || break
+      sleep 0.1
+    done
+    kill -KILL -- "-$pgid" 2>/dev/null || true
+  fi
+  wait "$pgid" 2>/dev/null || true
+}
+
 find_direct_px4_child() {
   local parent="${1:?missing parent pid}"
   local child
@@ -503,7 +518,9 @@ cleanup() {
   fi
   stop_process "$SPAWN_CHECK_PID"
   stop_process "$WATCHDOG_PID"
-  stop_process "$BRIDGE_PID"
+  # The bridge is a dedicated session. Killing the whole process group also
+  # catches children which ros2 launch briefly reparents while shutting down.
+  stop_process_group "$BRIDGE_PID"
   stop_process "$MAVROS_PID"
   stop_process "$XRCE_PID"
   stop_process "$GAZEBO_PID"
@@ -537,7 +554,7 @@ if [[ "$MAP" == "city" ]]; then
   echo "Trailer control  : ${PX4_GZ_PLATFORM_VEL} m/s @ ${PX4_GZ_PLATFORM_HEADING_DEG} deg"
   echo "Trailer noise    : stock SEO perturbations start after PX4 spawn"
 elif [[ "$MAP" == "precision-landing" ]]; then
-  echo "Landing trailer  : moving_platform_aruco as static entity trailer"
+  echo "Landing trailer  : measured odometry model held at 0 m/s"
   echo "Pair separation  : exactly 10 m on the northeast diagonal"
 elif [[ "$MAP" == "precision-landing-moving" ]]; then
   echo "Landing trailer  : deterministic velocity model"
@@ -674,6 +691,9 @@ if [[ "${DRIVE_TRAILER:-0}" == "1" ]]; then
     # The model root is already calibrated to z=0 for the 2.051 m marker
     # surface. Do not apply the mountain driver's terrain-clearance offset.
     TRAILER_ARGS+=(--no-terrain-follow --rate "${TRAILER_COMMAND_RATE_HZ:-50}")
+    if [[ -n "${TRAILER_SPEED_M_S:-}" ]]; then
+      TRAILER_ARGS+=(--speed "$TRAILER_SPEED_M_S")
+    fi
   fi
   if [[ -n "${TRAILER_ROUTE_TIMEOUT:-}" ]]; then
     TRAILER_ARGS+=(--timeout "$TRAILER_ROUTE_TIMEOUT")
@@ -755,12 +775,13 @@ if [[ "${START_BRIDGE:-1}" == "1" ]]; then
   BRIDGE_LAUNCH="$SCRIPT_DIR/launch/sensor_bridge.launch.py"
   if [[ -f "$ROS_SETUP" && -f "$BRIDGE_LAUNCH" ]]; then
     echo "ros_gz bridge    : world=$WORLD_NAME model=$ENTITY_NAME (log: $BRIDGE_LOG)"
-    (
+    setsid bash -c '
       set +u
       # shellcheck disable=SC1090
-      source "$ROS_SETUP"
-      exec ros2 launch "$BRIDGE_LAUNCH" "world:=$WORLD_NAME" "model:=$ENTITY_NAME"
-    ) >"$BRIDGE_LOG" 2>&1 &
+      source "$1"
+      exec ros2 launch "$2" "world:=$3" "model:=$4"
+    ' bridge "$ROS_SETUP" "$BRIDGE_LAUNCH" "$WORLD_NAME" "$ENTITY_NAME" \
+      >"$BRIDGE_LOG" 2>&1 &
     BRIDGE_PID=$!
     sleep 2
     if ! kill -0 "$BRIDGE_PID" 2>/dev/null; then

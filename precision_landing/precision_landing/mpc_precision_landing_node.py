@@ -382,6 +382,21 @@ class MpcPrecisionLandingNode(Node):
             raise ValueError(
                 "target_sensors_loss_abort_dwell_s must be within (0, 5]"
             )
+        final_descent_braking_acceleration = self._float(
+            "final_descent_braking_acceleration_m_s2"
+        )
+        if (
+            not math.isfinite(final_descent_braking_acceleration)
+            or final_descent_braking_acceleration <= 0.0
+            or final_descent_braking_acceleration
+            > self._float(
+                "relative_landing_mpc_max_vertical_acceleration_m_s2"
+            )
+        ):
+            raise ValueError(
+                "final descent braking acceleration must be finite, positive, "
+                "and within the vertical acceleration limit"
+            )
         contact_settle_speed = self._float(
             "touchdown_contact_settle_speed_m_s"
         )
@@ -401,6 +416,12 @@ class MpcPrecisionLandingNode(Node):
         )
         contact_lidar_rebound_tolerance = self._float(
             "touchdown_contact_lidar_rebound_tolerance_m"
+        )
+        contact_latch_exit_distance = self._float(
+            "touchdown_contact_latch_exit_distance_m"
+        )
+        contact_latch_exit_dwell = self._float(
+            "touchdown_contact_latch_exit_dwell_s"
         )
         auto_land_timeout = self._float("touchdown_auto_land_timeout_s")
         auto_land_mode = str(
@@ -450,6 +471,12 @@ class MpcPrecisionLandingNode(Node):
                 "relative_landing_mpc_max_vertical_acceleration_m_s2"
             )
             or contact_lidar_rebound_tolerance > contact_deck_distance
+            or not math.isfinite(contact_latch_exit_distance)
+            or contact_latch_exit_distance
+            <= contact_deck_distance + contact_lidar_rebound_tolerance
+            or contact_latch_exit_distance > 1.0
+            or not math.isfinite(contact_latch_exit_dwell)
+            or not 0.0 < contact_latch_exit_dwell <= 2.0
             or not math.isfinite(auto_land_timeout)
             or auto_land_timeout <= 0.0
             or auto_land_timeout > self._float("final_approach_timeout_s")
@@ -617,23 +644,40 @@ class MpcPrecisionLandingNode(Node):
         # twist.  The primary estimator remains responsible for fused target
         # position/yaw and covariance.
         self.vision_motion_estimator = TimestampedTargetEstimator(
-            fusion_parameters
+            replace(
+                fusion_parameters,
+                # The camera-only filter must follow the direction change of
+                # the moving target without exposing trailer twist. Keep the
+                # lower process noise on the primary position fusion filter.
+                process_acceleration_variance=self._float(
+                    "vision_motion_process_acceleration_variance"
+                ),
+            )
         )
         self.last_target_estimate: TargetEstimate | None = None
         self.last_vision_motion_estimate: TargetEstimate | None = None
         self.last_vision_velocity_enu: np.ndarray | None = None
         self.last_vision_velocity_stamp_px4_s: float | None = None
         self.last_vision_velocity_source_stamp_px4_s: float | None = None
+        self.last_vision_motion_model_stamp_px4_s: float | None = None
         self.last_vision_motion_capture_px4_time_s: float | None = None
         self.vision_velocity_history: deque[tuple[float, np.ndarray]] = (
             deque()
         )
+        self.vision_position_history: deque[tuple[float, np.ndarray]] = (
+            deque()
+        )
+        self.vision_position_candidates: deque[
+            tuple[float, np.ndarray]
+        ] = deque()
+        self.vision_position_model_qualified = False
         self.vision_motion_model_acceleration_enu = np.zeros(3, dtype=float)
+        self.vision_motion_model_turn_rate_rad_s = 0.0
+        self.vision_motion_model_tangential_acceleration_m_s2 = 0.0
         self.vision_motion_model_span_s = 0.0
         self.last_position_servo_velocity_enu = np.zeros(3, dtype=float)
         self.last_position_servo_update_monotonic_s: float | None = None
         self.marker_tracking_acquisition_since_s: float | None = None
-        self.marker_tracking_latched = False
         self.control_target_velocity_source = "unavailable"
         self.front_marker_capture_guard = CaptureStampGuard()
         self.down_marker_capture_guard = CaptureStampGuard()
@@ -758,6 +802,9 @@ class MpcPrecisionLandingNode(Node):
         self._contact_settle_min_lidar_range_m: float | None = None
         self._contact_entry_latched = False
         self._contact_compression_started_monotonic_s: float | None = None
+        self._contact_height_violation_started_monotonic_s: (
+            float | None
+        ) = None
         self._target_sensors_loss_started_monotonic_s: float | None = None
         self.terminal_contact_bridge_active = False
         self.terminal_contact_bridge_activation_count = 0
@@ -962,7 +1009,7 @@ class MpcPrecisionLandingNode(Node):
             "relative_landing_mpc_dt_s": 0.10,
             "relative_landing_mpc_max_iterations": 30,
             "relative_landing_mpc_deadline_ms": 40.0,
-            "relative_landing_mpc_max_horizontal_velocity_m_s": 5.0,
+            "relative_landing_mpc_max_horizontal_velocity_m_s": 6.5,
             "relative_landing_mpc_max_ascent_velocity_m_s": 2.0,
             "relative_landing_mpc_max_descent_velocity_m_s": 0.7,
             "relative_landing_mpc_max_horizontal_acceleration_m_s2": 3.0,
@@ -981,7 +1028,7 @@ class MpcPrecisionLandingNode(Node):
             "relative_landing_mpc_alignment_position_tolerance_m": 0.75,
             "relative_landing_mpc_alignment_velocity_tolerance_m_s": 0.35,
             "relative_landing_mpc_pad_acceleration_smoothing_factor": 0.20,
-            "relative_landing_mpc_max_pad_acceleration_m_s2": 3.0,
+            "relative_landing_mpc_max_pad_acceleration_m_s2": 1.0,
             "front_marker_pose_topic": (
                 "/perception/front/marker_pose_covariance"
             ),
@@ -1038,7 +1085,7 @@ class MpcPrecisionLandingNode(Node):
             "target_fusion_predict_only_timeout_s": 1.50,
             "target_fusion_process_acceleration_variance": 0.25,
             "target_fusion_process_yaw_acceleration_variance": 0.25,
-            "target_fusion_vision_position_variance_floor": 6.4e-3,
+            "target_fusion_vision_position_variance_floor": 1.0e-2,
             "target_fusion_vision_yaw_variance_floor": (
                 math.radians(2.0) ** 2
             ),
@@ -1054,12 +1101,13 @@ class MpcPrecisionLandingNode(Node):
             "target_fusion_initial_yaw_rate_variance": 4.0,
             "vision_velocity_minimum_accepted_samples": 3,
             "vision_velocity_maximum_variance_m2_s2": 1.0,
+            "vision_motion_process_acceleration_variance": 1.0,
             "vision_velocity_dropout_hold_s": 1.5,
             "vision_velocity_terminal_hold_s": 30.0,
             "vision_velocity_reacquisition_gap_s": 1.5,
-            "position_only_pursuit_max_speed_m_s": 4.2,
-            "position_only_pursuit_acceleration_m_s2": 2.5,
-            "position_only_pursuit_gain_s_inv": 3.0,
+            "position_only_pursuit_max_speed_m_s": 6.5,
+            "position_only_pursuit_acceleration_m_s2": 6.0,
+            "position_only_pursuit_gain_s_inv": 6.0,
             "target_fusion_vision_nis_gate": 18.47,
             "target_fusion_odometry_nis_gate": 26.12,
             "target_fusion_maximum_position_innovation_m": 20.0,
@@ -1090,8 +1138,9 @@ class MpcPrecisionLandingNode(Node):
             "final_approach_height_m": 3.1,
             "terminal_occlusion_max_clearance_m": 3.00,
             "terminal_occlusion_max_lidar_m": 2.90,
-            "precision_descent_speed_m_s": 0.60,
+            "precision_descent_speed_m_s": 0.70,
             "final_descent_speed_m_s": 0.55,
+            "final_descent_braking_acceleration_m_s2": 0.05,
             "landing_motion_lead_time_s": 0.05,
             "precision_lateral_gate_m": 0.75,
             "marker_track_entry_lateral_gate_m": 0.50,
@@ -1116,7 +1165,7 @@ class MpcPrecisionLandingNode(Node):
             "abort_climb_height_m": 3.0,
             "abort_climb_tolerance_m": 0.30,
             "abort_climb_timeout_s": 10.0,
-            "final_approach_timeout_s": 18.0,
+            "final_approach_timeout_s": 30.0,
             "touchdown_contact_clearance_m": 0.22,
             "touchdown_contact_settle_speed_m_s": 0.12,
             "touchdown_contact_evidence_lidar_m": 0.04,
@@ -1127,11 +1176,13 @@ class MpcPrecisionLandingNode(Node):
             "touchdown_contact_compression_ramp_rate_m_s2": 0.25,
             "touchdown_contact_settle_timeout_s": 15.0,
             "touchdown_contact_lidar_rebound_tolerance_m": 0.05,
+            "touchdown_contact_latch_exit_distance_m": 0.50,
+            "touchdown_contact_latch_exit_dwell_s": 0.70,
             "touchdown_auto_land_mode": "AUTO.LAND",
             "touchdown_auto_land_timeout_s": 8.0,
             "touchdown_max_deck_distance_m": 0.25,
             "touchdown_max_relative_vertical_speed_m_s": 0.18,
-            "touchdown_dwell_s": 1.0,
+            "touchdown_dwell_s": 0.60,
             "touchdown_confirmation_timeout_s": 15.0,
             "touchdown_minimum_consecutive_samples": 2,
             "land_detector_sample_timeout_s": 1.50,
@@ -1455,14 +1506,19 @@ class MpcPrecisionLandingNode(Node):
         self.last_vision_velocity_enu = None
         self.last_vision_velocity_stamp_px4_s = None
         self.last_vision_velocity_source_stamp_px4_s = None
+        self.last_vision_motion_model_stamp_px4_s = None
         self.last_vision_motion_capture_px4_time_s = None
         self.vision_velocity_history.clear()
+        self.vision_position_history.clear()
+        self.vision_position_candidates.clear()
+        self.vision_position_model_qualified = False
         self.vision_motion_model_acceleration_enu.fill(0.0)
+        self.vision_motion_model_turn_rate_rad_s = 0.0
+        self.vision_motion_model_tangential_acceleration_m_s2 = 0.0
         self.vision_motion_model_span_s = 0.0
         self.last_position_servo_velocity_enu.fill(0.0)
         self.last_position_servo_update_monotonic_s = None
         self.marker_tracking_acquisition_since_s = None
-        self.marker_tracking_latched = False
         self.control_target_velocity_source = "unavailable"
         self.trailer_state = None
         self.trailer_state_stamp = 0.0
@@ -1884,25 +1940,42 @@ class MpcPrecisionLandingNode(Node):
             return
         if camera == "down":
             previous_capture = self.last_vision_motion_capture_px4_time_s
-            if (
-                previous_capture is not None
+            last_accepted_capture = self.vision_motion_estimator.statistics[
+                "vision_down"
+            ].last_accepted_stamp_s
+            reacquisition_gap_s = self._float(
+                "vision_velocity_reacquisition_gap_s"
+            )
+            accepted_stream_lost = bool(
+                last_accepted_capture is not None
+                and capture_px4_time_s - float(last_accepted_capture)
+                > reacquisition_gap_s
+            )
+            callback_stream_lost_before_initialization = bool(
+                last_accepted_capture is None
+                and previous_capture is not None
                 and capture_px4_time_s - previous_capture
-                > self._float("vision_velocity_reacquisition_gap_s")
+                > reacquisition_gap_s
+            )
+            if (
+                accepted_stream_lost
+                or callback_stream_lost_before_initialization
             ):
-                # A new optical acquisition must prove motion again.  Do not
-                # let a cumulative accepted counter or an old velocity cache
-                # make one post-dropout pose look like a continuous track.
+                # Reset on an accepted-sample outage, not merely a callback
+                # outage.  A continuous run of NIS-rejected camera frames
+                # otherwise kept the old CV prediction alive forever and
+                # made every later valid frame fail the same innovation gate.
+                # The next queued pose initializes a fresh optical epoch and
+                # must again prove velocity before descent is authorized.
                 self.vision_motion_estimator.reset()
                 self.last_vision_motion_estimate = None
-                # A new optical epoch must identify velocity again from its
-                # own three captures. The acquisition coast keeps the UAV's
-                # current motion while that happens, so an old trajectory can
-                # neither qualify alignment nor silently resume descent.
-                self.last_vision_velocity_enu = None
-                self.last_vision_velocity_stamp_px4_s = None
-                self.last_vision_velocity_source_stamp_px4_s = None
+                # Preserve the last accepted turn model only for its existing
+                # bounded dropout window while a new optical epoch proves
+                # motion from scratch.  Descent still requires fresh vision.
                 self.vision_velocity_history.clear()
-                self.vision_motion_model_acceleration_enu.fill(0.0)
+                self.vision_position_history.clear()
+                self.vision_position_candidates.clear()
+                self.vision_position_model_qualified = False
                 self.vision_motion_model_span_s = 0.0
                 self.landing_pad_acceleration_enu.fill(0.0)
                 self._previous_landing_pad_velocity = None
@@ -1927,6 +2000,10 @@ class MpcPrecisionLandingNode(Node):
                 self.get_logger().warning(
                     "Rejecting down marker velocity input: %s"
                     % motion_submission.reason
+                )
+            else:
+                self._record_vision_position_sample(
+                    capture_px4_time_s, marker_world
                 )
         now = time.monotonic()
         capture_delay_s = (
@@ -2423,26 +2500,512 @@ class MpcPrecisionLandingNode(Node):
             <= self._float("descent_max_position_variance_m2")
         )
 
-    def _update_vision_velocity_model(
-        self,
-        capture_stamp_s: float,
-        measured_velocity_enu_m_s: np.ndarray,
+    def _record_vision_position_sample(
+        self, capture_stamp_s: float, marker_position_enu_m: np.ndarray
     ) -> None:
-        """Fit a robust local motion model from ArUco-derived velocities."""
+        """Retain a validated ArUco pose until fusion accepts or rejects it."""
         stamp = float(capture_stamp_s)
-        measured = np.asarray(measured_velocity_enu_m_s, dtype=float).copy()
+        position = np.asarray(marker_position_enu_m, dtype=float)
         if (
             not math.isfinite(stamp)
-            or measured.shape != (3,)
-            or not np.all(np.isfinite(measured))
+            or position.shape != (3,)
+            or not np.all(np.isfinite(position))
         ):
             return
-        measured[2] = 0.0
+        candidates = self.vision_position_candidates
+        if candidates and stamp <= candidates[-1][0] + 1.0e-9:
+            return
+        candidates.append((stamp, position.copy()))
+        while candidates and stamp - candidates[0][0] > 4.0:
+            candidates.popleft()
+
+    def _promote_accepted_vision_position_sample(
+        self, accepted_capture_stamp_s: float
+    ) -> bool:
+        """Move only an estimator-accepted ArUco pose into the fit history."""
+        accepted_stamp = float(accepted_capture_stamp_s)
+        if not math.isfinite(accepted_stamp):
+            return False
+        matched_position: np.ndarray | None = None
+        for stamp, position in self.vision_position_candidates:
+            if abs(stamp - accepted_stamp) <= 1.0e-6:
+                matched_position = position
+                break
+        if matched_position is None:
+            return False
+        history = self.vision_position_history
+        if history and accepted_stamp <= history[-1][0] + 1.0e-9:
+            return False
+        history.append((accepted_stamp, matched_position.copy()))
+        while history and accepted_stamp - history[0][0] > 5.2:
+            history.popleft()
+        while (
+            self.vision_position_candidates
+            and self.vision_position_candidates[0][0]
+            <= accepted_stamp + 1.0e-9
+        ):
+            self.vision_position_candidates.popleft()
+        return True
+
+    def _fit_vision_position_motion_model(
+        self, maximum_capture_stamp_s: float
+    ) -> tuple[
+        np.ndarray, np.ndarray, float, float, float, bool
+    ] | None:
+        """Fit velocity and turn rate directly from recent ArUco positions.
+
+        The trailer velocity topic is deliberately not used.  A robust local
+        quadratic p(t)=c0+c1*t+c2*t^2 yields velocity c1 and acceleration 2*c2
+        at the newest accepted camera capture.  Constant-turn rate then follows
+        from omega=(vx*ay-vy*ax)/|v|^2.
+        """
+        accepted_stamp = float(maximum_capture_stamp_s)
+        if not math.isfinite(accepted_stamp):
+            return None
+        samples = [
+            (stamp, position)
+            for stamp, position in self.vision_position_history
+            if stamp <= accepted_stamp + 1.0e-6
+            and accepted_stamp - stamp <= 5.0
+        ]
+        if len(samples) < 10:
+            return None
+        stamps = np.asarray([sample[0] for sample in samples], dtype=float)
+        positions = np.asarray(
+            [sample[1][:2] for sample in samples], dtype=float
+        )
+        span_s = float(stamps[-1] - stamps[0])
+        if span_s < 2.0:
+            return None
+        relative_times = stamps - stamps[-1]
+        design = np.column_stack(
+            (
+                np.ones(len(stamps), dtype=float),
+                relative_times,
+                relative_times * relative_times,
+            )
+        )
+        coefficients = np.linalg.lstsq(design, positions, rcond=None)[0]
+        residual_norms = np.linalg.norm(
+            positions - design @ coefficients, axis=1
+        )
+        median_residual = float(np.median(residual_norms))
+        mad = float(
+            np.median(np.abs(residual_norms - median_residual))
+        )
+        robust_scale = max(0.005, 1.4826 * mad)
+        retained = residual_norms <= median_residual + 3.0 * robust_scale
+        if int(np.count_nonzero(retained)) >= 8:
+            coefficients = np.linalg.lstsq(
+                design[retained], positions[retained], rcond=None
+            )[0]
+        else:
+            retained = np.ones(len(stamps), dtype=bool)
+
+        velocity_xy = np.asarray(coefficients[1], dtype=float)
+        acceleration_xy = np.asarray(2.0 * coefficients[2], dtype=float)
+        if (
+            velocity_xy.shape != (2,)
+            or acceleration_xy.shape != (2,)
+            or not np.all(np.isfinite(velocity_xy))
+            or not np.all(np.isfinite(acceleration_xy))
+        ):
+            return None
+        speed = float(np.linalg.norm(velocity_xy))
+        maximum_speed = self._float(
+            "relative_landing_mpc_max_horizontal_velocity_m_s"
+        )
+        if speed > maximum_speed + 0.75:
+            return None
+        # Endpoint derivatives of a quadratic are noise-sensitive on a
+        # stationary marker. Use the full-window linear slope to identify that
+        # case before accepting an apparent turn rate.
+        linear_coefficients = np.linalg.lstsq(
+            design[retained, :2], positions[retained], rcond=None
+        )[0]
+        robust_linear_speed = float(
+            np.linalg.norm(linear_coefficients[1])
+        )
+        model_observable = False
+        if robust_linear_speed < 0.25:
+            velocity_xy.fill(0.0)
+            acceleration_xy.fill(0.0)
+            turn_rate = 0.0
+            tangential = 0.0
+            model_observable = span_s >= 2.8
+        else:
+            # A quadratic endpoint derivative systematically straightens a
+            # fast circular trajectory (about 8% at 10 m/s, R=50 m over this
+            # window). Fit the circle geometry and regress its unwrapped
+            # phase instead. Straight motion or an ill-conditioned short arc
+            # falls back to the quadratic model below.
+            circle_applied = False
+            circle_positions = positions[retained]
+            circle_times = relative_times[retained]
+            if len(circle_positions) >= 8:
+                position_mean = np.mean(circle_positions, axis=0)
+                centered = circle_positions - position_mean
+                circle_design = np.column_stack(
+                    (
+                        2.0 * centered[:, 0],
+                        2.0 * centered[:, 1],
+                        np.ones(len(centered), dtype=float),
+                    )
+                )
+                circle_rhs = np.sum(centered * centered, axis=1)
+                circle_coefficients = np.linalg.lstsq(
+                    circle_design, circle_rhs, rcond=None
+                )[0]
+                center_relative = np.asarray(
+                    circle_coefficients[:2], dtype=float
+                )
+                radius_squared = float(
+                    circle_coefficients[2]
+                    + np.dot(center_relative, center_relative)
+                )
+                if radius_squared > 0.0 and math.isfinite(radius_squared):
+                    circle_center = position_mean + center_relative
+                    radial_vectors = circle_positions - circle_center
+                    radii = np.linalg.norm(radial_vectors, axis=1)
+                    radius = float(math.sqrt(radius_squared))
+                    radial_residual = float(
+                        np.sqrt(np.mean((radii - radius) ** 2))
+                    )
+                    angles = np.unwrap(
+                        np.arctan2(
+                            radial_vectors[:, 1], radial_vectors[:, 0]
+                        )
+                    )
+                    angle_design = np.column_stack(
+                        (
+                            np.ones(len(circle_times), dtype=float),
+                            circle_times,
+                        )
+                    )
+                    angle_coefficients = np.linalg.lstsq(
+                        angle_design, angles, rcond=None
+                    )[0]
+                    angular_residual = angles - (
+                        angle_design @ angle_coefficients
+                    )
+                    circle_turn_rate = float(angle_coefficients[1])
+                    circle_speed = abs(circle_turn_rate) * radius
+                    circle_time_span = float(
+                        circle_times[-1] - circle_times[0]
+                    )
+                    # Judge observability with the fitted angular rate, not
+                    # the two noisy endpoint angles.  On the 5 m/s baseline a
+                    # bad short-arc circle claimed enough endpoint coverage
+                    # while implying only 0.0815 rad/s; the real 0.1000 rad/s
+                    # deck then diverged after close-range marker occlusion.
+                    # Require nearly the full camera window as well as angular
+                    # coverage. A noisy 3.4 s arc at 3 m/s once fit the wrong
+                    # turn direction while still claiming 0.31 rad coverage;
+                    # 4.8 s makes both 3 and 5 m/s turns observable before the
+                    # model is allowed to drive close-range prediction.
+                    fitted_angular_span = (
+                        abs(circle_turn_rate) * circle_time_span
+                    )
+                    speed_consistent = abs(
+                        circle_speed - robust_linear_speed
+                    ) <= max(0.75, 0.15 * robust_linear_speed)
+                    if (
+                        np.all(np.isfinite(circle_center))
+                        and np.all(np.isfinite(angular_residual))
+                        and 5.0 <= radius <= 250.0
+                        and radial_residual <= 0.75
+                        and float(np.sqrt(np.mean(angular_residual**2)))
+                        <= 0.08
+                        and 0.02 <= abs(circle_turn_rate) <= 0.25
+                        and circle_time_span >= 4.8
+                        and fitted_angular_span >= 0.28
+                        and circle_speed <= maximum_speed + 0.75
+                        and speed_consistent
+                    ):
+                        turn_rate = float(
+                            np.clip(circle_turn_rate, -0.25, 0.25)
+                        )
+                        speed = min(maximum_speed, circle_speed)
+                        newest_angle = float(angle_coefficients[0])
+                        radial_direction = np.asarray(
+                            (math.cos(newest_angle), math.sin(newest_angle)),
+                            dtype=float,
+                        )
+                        tangent_direction = np.asarray(
+                            (-radial_direction[1], radial_direction[0]),
+                            dtype=float,
+                        )
+                        velocity_xy = (
+                            math.copysign(speed, turn_rate)
+                            * tangent_direction
+                        )
+                        acceleration_xy = (
+                            -(turn_rate * turn_rate)
+                            * radius
+                            * radial_direction
+                        )
+                        tangential = 0.0
+                        circle_applied = True
+                        model_observable = True
+
+            if not circle_applied:
+                turn_rate = float(
+                    (
+                        velocity_xy[0] * acceleration_xy[1]
+                        - velocity_xy[1] * acceleration_xy[0]
+                    )
+                    / (speed * speed)
+                )
+                turn_rate = float(np.clip(turn_rate, -0.25, 0.25))
+                tangential = float(
+                    np.dot(velocity_xy, acceleration_xy) / speed
+                )
+                if abs(tangential) < 0.15:
+                    tangential = 0.0
+                tangential = float(np.clip(tangential, -0.40, 0.40))
+                speed = min(maximum_speed, speed)
+                direction = velocity_xy / float(np.linalg.norm(velocity_xy))
+                velocity_xy = speed * direction
+                normal = np.asarray(
+                    (-direction[1], direction[0]), dtype=float
+                )
+                acceleration_xy = (
+                    tangential * direction + turn_rate * speed * normal
+                )
+                model_observable = bool(
+                    # A 3 m/s target on the 50 m route accumulates only
+                    # 0.168 rad in 2.8 s.  At that span camera noise can make
+                    # the quadratic fallback look falsely straight and lock
+                    # the wrong turn direction.  Let the circle fit observe
+                    # its 0.28 rad first; true straight motion can tolerate
+                    # this bounded extra acquisition time.
+                    span_s >= 4.8
+                    and abs(turn_rate) <= 0.02
+                    and abs(tangential) <= 0.15
+                )
+
+        maximum_acceleration = self._float(
+            "relative_landing_mpc_max_pad_acceleration_m_s2"
+        )
+        acceleration_norm = float(np.linalg.norm(acceleration_xy))
+        if acceleration_norm > maximum_acceleration:
+            acceleration_xy *= maximum_acceleration / acceleration_norm
+            speed = float(np.linalg.norm(velocity_xy))
+            if speed > 1.0e-3:
+                turn_rate = float(
+                    (
+                        velocity_xy[0] * acceleration_xy[1]
+                        - velocity_xy[1] * acceleration_xy[0]
+                    )
+                    / (speed * speed)
+                )
+                tangential = float(
+                    np.dot(velocity_xy, acceleration_xy) / speed
+                )
+
+        velocity = np.asarray(
+            (velocity_xy[0], velocity_xy[1], 0.0), dtype=float
+        )
+        acceleration = np.asarray(
+            (acceleration_xy[0], acceleration_xy[1], 0.0), dtype=float
+        )
+        return (
+            velocity,
+            acceleration,
+            turn_rate,
+            tangential,
+            float(stamps[-1]),
+            model_observable,
+        )
+
+    def _update_vision_velocity_model(
+        self,
+        model_stamp_s: float,
+        measured_velocity_enu_m_s: np.ndarray | None,
+        accepted_capture_stamp_s: float,
+        *,
+        allow_position_model: bool,
+    ) -> bool:
+        """Fit a robust planar constant-turn model from ArUco velocity."""
+        stamp = float(model_stamp_s)
+        if not math.isfinite(stamp):
+            return False
+        measured = (
+            None
+            if measured_velocity_enu_m_s is None
+            else np.asarray(measured_velocity_enu_m_s, dtype=float).copy()
+        )
+        if measured is not None and (
+            measured.shape != (3,) or not np.all(np.isfinite(measured))
+        ):
+            return False
+        if measured is not None:
+            measured[2] = 0.0
+        measured_speed = (
+            0.0 if measured is None else float(np.linalg.norm(measured[:2]))
+        )
+        position_model = (
+            self._fit_vision_position_motion_model(
+                accepted_capture_stamp_s
+            )
+            if allow_position_model
+            else None
+        )
+        if position_model is not None:
+            was_position_model_qualified = (
+                self.vision_position_model_qualified
+            )
+            (
+                fitted_velocity,
+                coherent_acceleration,
+                turn_rate,
+                tangential,
+                position_model_stamp,
+                model_observable,
+            ) = position_model
+            if self.vision_position_model_qualified and not model_observable:
+                # A short/noisy quadratic fallback must not replace the phase
+                # of a circle, straight line, or stationary model that has
+                # already passed its observability gate.  Rebase that proven
+                # CTRV analytically at the new capture time instead.  This
+                # keeps position, velocity, acceleration, and model epoch
+                # coherent without freezing the epoch or introducing RK4
+                # integration error.
+                previous_model_stamp = (
+                    self.last_vision_motion_model_stamp_px4_s
+                )
+                if (
+                    previous_model_stamp is not None
+                    and math.isfinite(float(previous_model_stamp))
+                    and position_model_stamp
+                    >= float(previous_model_stamp) - 1.0e-9
+                ):
+                    propagated_velocity = (
+                        self._predict_vision_motion_velocity(
+                            max(
+                                0.0,
+                                position_model_stamp
+                                - float(previous_model_stamp),
+                            )
+                        )
+                    )
+                    if propagated_velocity is not None:
+                        self.last_vision_velocity_enu = (
+                            propagated_velocity.copy()
+                        )
+                        self.vision_motion_model_acceleration_enu = (
+                            self.landing_pad_acceleration_enu.copy()
+                        )
+                        self.last_vision_motion_model_stamp_px4_s = (
+                            position_model_stamp
+                        )
+                        self.vision_motion_model_span_s = min(
+                            5.0,
+                            max(
+                                0.0,
+                                position_model_stamp
+                                - self.vision_position_history[0][0],
+                            ),
+                        )
+                        return True
+            if self.vision_position_model_qualified:
+                previous_speed = float(
+                    np.linalg.norm(self.last_vision_velocity_enu[:2])
+                )
+                fitted_speed = float(np.linalg.norm(fitted_velocity[:2]))
+                fitted_speed = previous_speed + float(
+                    np.clip(fitted_speed - previous_speed, -0.35, 0.35)
+                )
+                fitted_norm = float(np.linalg.norm(fitted_velocity[:2]))
+                if fitted_norm > 1.0e-6:
+                    fitted_velocity[:2] *= fitted_speed / fitted_norm
+                previous_turn_rate = float(
+                    self.vision_motion_model_turn_rate_rad_s
+                )
+                turn_rate = previous_turn_rate + float(
+                    np.clip(turn_rate - previous_turn_rate, -0.02, 0.02)
+                )
+                if fitted_speed > 1.0e-3:
+                    direction = fitted_velocity[:2] / fitted_speed
+                    normal = np.asarray(
+                        (-direction[1], direction[0]), dtype=float
+                    )
+                    coherent_acceleration[:2] = (
+                        tangential * direction
+                        + turn_rate * fitted_speed * normal
+                    )
+                else:
+                    coherent_acceleration[:2] = 0.0
+            self.last_vision_velocity_enu = fitted_velocity
+            self.vision_motion_model_acceleration_enu = coherent_acceleration
+            self.vision_motion_model_turn_rate_rad_s = turn_rate
+            self.vision_motion_model_tangential_acceleration_m_s2 = tangential
+            self.last_vision_motion_model_stamp_px4_s = position_model_stamp
+            self.vision_position_model_qualified = bool(
+                self.vision_position_model_qualified or model_observable
+            )
+            self.vision_motion_model_span_s = min(
+                5.0,
+                max(
+                    0.0,
+                    position_model_stamp
+                    - self.vision_position_history[0][0],
+                ),
+            )
+            if (
+                self.vision_position_model_qualified
+                and not was_position_model_qualified
+            ):
+                self.get_logger().info(
+                    "ArUco position CTRV qualified: "
+                    f"speed={np.linalg.norm(fitted_velocity[:2]):.3f}m/s "
+                    f"turn_rate={turn_rate:.4f}rad/s "
+                    f"span={self.vision_motion_model_span_s:.2f}s "
+                    f"samples={len(self.vision_position_history)}"
+                )
+            return True
+        if measured is None or measured_speed <= 1.0e-3:
+            return False
         history = self.vision_velocity_history
         if history and stamp <= history[-1][0] + 1.0e-9:
-            return
+            return False
+
+        # Do not let one noisy pose derivative replace an already qualified
+        # turning model.  These bounds are well outside the expected change
+        # over one camera period but reject the velocity spikes that otherwise
+        # collapse the fitted curvature immediately before marker loss.
+        if len(history) >= 4:
+            historical_speeds = np.asarray(
+                [np.linalg.norm(sample[1][:2]) for sample in history],
+                dtype=float,
+            )
+            median_speed = float(np.median(historical_speeds))
+            if abs(measured_speed - median_speed) > 0.75:
+                return False
+            previous_stamp, previous_velocity = history[-1]
+            previous_heading = math.atan2(
+                float(previous_velocity[1]), float(previous_velocity[0])
+            )
+            predicted_heading = (
+                previous_heading
+                + self.vision_motion_model_turn_rate_rad_s
+                * max(0.0, stamp - previous_stamp)
+            )
+            measured_heading = math.atan2(
+                float(measured[1]), float(measured[0])
+            )
+            heading_residual = math.atan2(
+                math.sin(measured_heading - predicted_heading),
+                math.cos(measured_heading - predicted_heading),
+            )
+            if abs(heading_residual) > 0.20:
+                return False
+
         history.append((stamp, measured))
-        window_s = 5.0
+        # A five-second Cartesian v=v0+a*t fit spans 0.5 rad on the current
+        # 5 m/s, R=50 m trajectory and progressively straightens the command.
+        # Fit speed and unwrapped heading over a short local window instead.
+        window_s = 2.0
         while history and stamp - history[0][0] > window_s:
             history.popleft()
 
@@ -2452,72 +3015,80 @@ class MpcPrecisionLandingNode(Node):
         )
         span_s = 0.0 if len(stamps) < 2 else float(stamps[-1] - stamps[0])
         self.vision_motion_model_span_s = max(0.0, span_s)
-        fitted_velocity = np.median(velocities, axis=0)
-        fitted_acceleration = np.zeros(2, dtype=float)
+        speeds = np.linalg.norm(velocities, axis=1)
+        headings = np.unwrap(np.arctan2(velocities[:, 1], velocities[:, 0]))
+        fitted_speed = float(np.median(speeds))
+        fitted_heading = float(headings[-1])
+        turn_rate = self.vision_motion_model_turn_rate_rad_s
+        tangential = self.vision_motion_model_tangential_acceleration_m_s2
         if len(stamps) >= 5 and span_s >= 0.8:
             relative_times = stamps - stamps[-1]
             design = np.column_stack(
                 (np.ones(len(relative_times), dtype=float), relative_times)
             )
-            coefficients = np.linalg.lstsq(
-                design, velocities, rcond=None
+            heading_coefficients = np.linalg.lstsq(
+                design, headings, rcond=None
             )[0]
-            residual_norm = np.linalg.norm(
-                velocities - design @ coefficients, axis=1
-            )
-            median_residual = float(np.median(residual_norm))
+            heading_residuals = headings - design @ heading_coefficients
+            absolute_residual = np.abs(heading_residuals)
+            median_residual = float(np.median(absolute_residual))
             mad = float(
-                np.median(np.abs(residual_norm - median_residual))
+                np.median(np.abs(absolute_residual - median_residual))
             )
             robust_scale = max(1.0e-3, 1.4826 * mad)
-            retained = residual_norm <= median_residual + 3.0 * robust_scale
+            retained = (
+                absolute_residual
+                <= median_residual + 3.0 * robust_scale
+            )
             if int(np.count_nonzero(retained)) >= 4:
-                coefficients = np.linalg.lstsq(
-                    design[retained], velocities[retained], rcond=None
+                heading_coefficients = np.linalg.lstsq(
+                    design[retained], headings[retained], rcond=None
                 )[0]
-            fitted_velocity = coefficients[0]
-            fitted_acceleration = coefficients[1]
+            else:
+                retained = np.ones(len(stamps), dtype=bool)
+            fitted_heading = float(heading_coefficients[0])
+            turn_rate = float(np.clip(heading_coefficients[1], -0.25, 0.25))
+
+            retained_speeds = speeds[retained]
+            fitted_speed = float(np.median(retained_speeds))
+            speed_coefficients = np.linalg.lstsq(
+                design[retained], retained_speeds, rcond=None
+            )[0]
+            tangential = float(speed_coefficients[1])
+            if abs(tangential) < 0.15:
+                tangential = 0.0
+            tangential = float(np.clip(tangential, -0.40, 0.40))
 
         maximum_speed = self._float(
             "relative_landing_mpc_max_horizontal_velocity_m_s"
         )
-        speed = float(np.linalg.norm(fitted_velocity))
-        if speed > maximum_speed:
-            fitted_velocity *= maximum_speed / speed
-            speed = maximum_speed
-
-        # Reconstruct one internally consistent planar turn model.  A raw
-        # adjacent-frame derivative had random turn-rate sign and tangential
-        # acceleration, which grew into metre-per-second errors during the
-        # expected close-marker occlusion.
-        coherent_acceleration = np.zeros(2, dtype=float)
-        if speed > 1.0e-3:
-            tangent = fitted_velocity / speed
-            normal = np.asarray((-tangent[1], tangent[0]), dtype=float)
-            turn_rate = float(
-                np.cross(
-                    np.append(fitted_velocity, 0.0),
-                    np.append(fitted_acceleration, 0.0),
-                )[2]
-                / (speed * speed)
-            )
-            turn_rate = float(np.clip(turn_rate, -0.20, 0.20))
-            tangential = float(np.dot(fitted_acceleration, tangent))
-            if abs(tangential) < 0.15:
-                tangential = 0.0
-            tangential = float(np.clip(tangential, -0.40, 0.40))
-            coherent_acceleration = (
-                tangential * tangent + turn_rate * speed * normal
-            )
-            maximum_acceleration = self._float(
-                "relative_landing_mpc_max_pad_acceleration_m_s2"
-            )
-            acceleration_norm = float(
-                np.linalg.norm(coherent_acceleration)
-            )
-            if acceleration_norm > maximum_acceleration:
-                coherent_acceleration *= (
-                    maximum_acceleration / acceleration_norm
+        fitted_speed = min(maximum_speed, max(0.0, fitted_speed))
+        direction = np.asarray(
+            (math.cos(fitted_heading), math.sin(fitted_heading)), dtype=float
+        )
+        normal = np.asarray((-direction[1], direction[0]), dtype=float)
+        fitted_velocity = fitted_speed * direction
+        coherent_acceleration = (
+            tangential * direction + turn_rate * fitted_speed * normal
+        )
+        maximum_acceleration = self._float(
+            "relative_landing_mpc_max_pad_acceleration_m_s2"
+        )
+        acceleration_norm = float(np.linalg.norm(coherent_acceleration))
+        if acceleration_norm > maximum_acceleration:
+            coherent_acceleration *= maximum_acceleration / acceleration_norm
+            # Preserve a consistent exact-turn model after clipping.
+            if fitted_speed > 1.0e-3:
+                turn_rate = float(
+                    (
+                        fitted_velocity[0] * coherent_acceleration[1]
+                        - fitted_velocity[1] * coherent_acceleration[0]
+                    )
+                    / (fitted_speed * fitted_speed)
+                )
+                tangential = float(
+                    np.dot(fitted_velocity, coherent_acceleration)
+                    / fitted_speed
                 )
 
         self.last_vision_velocity_enu = np.asarray(
@@ -2531,6 +3102,10 @@ class MpcPrecisionLandingNode(Node):
             ),
             dtype=float,
         )
+        self.vision_motion_model_turn_rate_rad_s = turn_rate
+        self.vision_motion_model_tangential_acceleration_m_s2 = tangential
+        self.last_vision_motion_model_stamp_px4_s = stamp
+        return True
 
     def _predict_vision_motion_velocity(
         self, age_s: float
@@ -2540,34 +3115,25 @@ class MpcPrecisionLandingNode(Node):
         if velocity is None:
             return None
         base_velocity = np.asarray(velocity, dtype=float)
-        base_acceleration = np.asarray(
-            self.vision_motion_model_acceleration_enu, dtype=float
+        turn_rate = float(self.vision_motion_model_turn_rate_rad_s)
+        tangential = float(
+            self.vision_motion_model_tangential_acceleration_m_s2
         )
         age = float(age_s)
         if (
             base_velocity.shape != (3,)
-            or base_acceleration.shape != (3,)
             or not np.all(np.isfinite(base_velocity))
-            or not np.all(np.isfinite(base_acceleration))
+            or not math.isfinite(turn_rate)
+            or not math.isfinite(tangential)
             or not math.isfinite(age)
             or age < 0.0
         ):
             return None
         predicted = base_velocity.copy()
-        predicted_acceleration = base_acceleration.copy()
+        predicted_acceleration = np.zeros(3, dtype=float)
         speed = float(np.linalg.norm(base_velocity[:2]))
         if speed > 1.0e-3:
             tangent = base_velocity[:2] / speed
-            turn_rate = float(
-                (
-                    base_velocity[0] * base_acceleration[1]
-                    - base_velocity[1] * base_acceleration[0]
-                )
-                / (speed * speed)
-            )
-            tangential = float(
-                np.dot(base_velocity[:2], base_acceleration[:2]) / speed
-            )
             angle = turn_rate * age
             cosine = math.cos(angle)
             sine = math.sin(angle)
@@ -2590,7 +3156,7 @@ class MpcPrecisionLandingNode(Node):
                 + turn_rate * predicted_speed * normal
             )
         else:
-            predicted[:2] += base_acceleration[:2] * age
+            predicted[:2] = 0.0
         predicted[2] = 0.0
         predicted_acceleration[2] = 0.0
         self.landing_pad_acceleration_enu = predicted_acceleration
@@ -2617,6 +3183,36 @@ class MpcPrecisionLandingNode(Node):
         statistics = self.vision_motion_estimator.statistics["vision_down"]
         accepted = int(statistics.accepted)
         accepted_stamp = statistics.last_accepted_stamp_s
+        accepted_stamp_is_new = bool(
+            accepted_stamp is not None
+            and math.isfinite(float(accepted_stamp))
+            and math.isfinite(current_px4_time_s)
+            and accepted_stamp
+            != self.last_vision_velocity_source_stamp_px4_s
+        )
+        position_model_updated = False
+        if accepted_stamp_is_new:
+            # Accepted raw ArUco positions are the primary motion source.
+            # Their history must not depend on the Kalman velocity variance;
+            # that dependency could prevent CTRV qualification forever.
+            promoted = self._promote_accepted_vision_position_sample(
+                float(accepted_stamp)
+            )
+            if promoted:
+                position_model_updated = self._update_vision_velocity_model(
+                    current_px4_time_s,
+                    None,
+                    float(accepted_stamp),
+                    allow_position_model=True,
+                )
+                if position_model_updated:
+                    self.last_vision_velocity_stamp_px4_s = float(
+                        accepted_stamp
+                    )
+                    self.control_target_velocity_source = (
+                        "aruco_position_ctrv"
+                    )
+
         fresh_velocity = False
         candidate: np.ndarray | None = None
         if (
@@ -2631,8 +3227,7 @@ class MpcPrecisionLandingNode(Node):
             and accepted_stamp is not None
             and math.isfinite(current_px4_time_s)
             and self._down_marker_detection_live(now)
-            and accepted_stamp
-            != self.last_vision_velocity_source_stamp_px4_s
+            and accepted_stamp_is_new
         ):
             candidate = np.asarray(motion.velocity_enu_m_s, dtype=float)
             covariance = np.asarray(motion.covariance, dtype=float)
@@ -2668,28 +3263,43 @@ class MpcPrecisionLandingNode(Node):
                 "relative_landing_mpc_max_horizontal_velocity_m_s"
             )
             if np.linalg.norm(candidate[:2]) <= maximum_xy_speed:
-                self._update_vision_velocity_model(
-                    float(accepted_stamp), candidate
-                )
-                # Cache age is tied to the accepted camera capture.  Repeated
-                # control ticks can no longer re-certify a stale solution by
-                # sliding this timestamp forward to "now".
-                self.last_vision_velocity_stamp_px4_s = float(accepted_stamp)
-                self.last_vision_velocity_source_stamp_px4_s = float(
-                    accepted_stamp
-                )
-                self.control_target_velocity_source = (
-                    "aruco_capture_kalman"
-                )
+                model_updated = position_model_updated
+                if not model_updated:
+                    # Kalman velocity is only the startup fallback while the
+                    # accepted raw-position window is still too short.
+                    model_updated = self._update_vision_velocity_model(
+                        current_px4_time_s,
+                        candidate,
+                        float(accepted_stamp),
+                        allow_position_model=False,
+                    )
+                if model_updated:
+                    self.last_vision_velocity_stamp_px4_s = float(
+                        accepted_stamp
+                    )
+                    if not position_model_updated:
+                        self.control_target_velocity_source = (
+                            "aruco_capture_kalman"
+                        )
+        if accepted_stamp_is_new:
+            # Consume the accepted capture once. A rejected fallback must not
+            # be retried at 50 Hz, while a successful position fit already
+            # refreshed the independent model/cache timestamps above.
+            self.last_vision_velocity_source_stamp_px4_s = float(
+                accepted_stamp
+            )
 
         cached = self.last_vision_velocity_enu
         cached_stamp = self.last_vision_velocity_stamp_px4_s
+        model_stamp = self.last_vision_motion_model_stamp_px4_s
         if (
             cached is not None
             and cached_stamp is not None
+            and model_stamp is not None
             and math.isfinite(current_px4_time_s)
         ):
             age = current_px4_time_s - cached_stamp
+            model_age = current_px4_time_s - model_stamp
             effective_age = max(
                 0.0,
                 age - self._float("target_fusion_reorder_window_s"),
@@ -2720,11 +3330,17 @@ class MpcPrecisionLandingNode(Node):
                 if terminal
                 else "vision_velocity_dropout_hold_s"
             )
-            if 0.0 <= age and effective_age <= maximum_age:
-                # Propagation uses the full capture age. The estimator reorder
-                # delay is a freshness allowance, not time that can be removed
-                # from circular-motion kinematics.
-                predicted = self._predict_vision_motion_velocity(age)
+            if (
+                0.0 <= age
+                and 0.0 <= model_age
+                and effective_age <= maximum_age
+            ):
+                # The Kalman velocity passed to the model is already predicted
+                # at current_px4_time_s.  Propagating it again from the older
+                # capture stamp double-counted camera latency and distorted
+                # the estimated turn. Camera age remains the freshness gate;
+                # the separate model age drives only CTRV propagation.
+                predicted = self._predict_vision_motion_velocity(model_age)
                 if predicted is None:
                     self.control_target_velocity_source = "unavailable"
                     return None
@@ -2754,7 +3370,6 @@ class MpcPrecisionLandingNode(Node):
         target_velocity_enu_m_s: np.ndarray | None = None,
     ) -> tuple[float, float] | None:
         """Pursue live trailer position while ArUco learns target speed."""
-        del use_down_marker
         vehicle_position = self.vehicle_position_enu
         vehicle_velocity = self.vehicle_velocity_enu
         if vehicle_position is None:
@@ -2809,7 +3424,80 @@ class MpcPrecisionLandingNode(Node):
             if optical_velocity_valid
             else "position_only_pursuit_gain_s_inv"
         )
-        desired_velocity[:2] = horizontal_gain * error_xy
+        correction_velocity = horizontal_gain * error_xy
+        cached_optical_velocity = self.last_vision_velocity_enu
+        cached_optical_speed = (
+            float(np.linalg.norm(cached_optical_velocity[:2]))
+            if cached_optical_velocity is not None
+            and np.asarray(cached_optical_velocity).shape == (3,)
+            and np.all(np.isfinite(cached_optical_velocity))
+            else 0.0
+        )
+        moving_target_reacquisition = bool(
+            not optical_velocity_valid
+            and cached_optical_speed
+            > 2.0 * self._float("marker_track_entry_relative_speed_m_s")
+        )
+        # Apply the stopping-distance envelope before the marker becomes
+        # visible.  At the 6.5 m/s interception limit the stopping envelope
+        # must start well before the detector Bool; enabling it only after
+        # detection let a stationary deck be crossed by the full braking
+        # distance.  The bound applies only to position correction, so
+        # ArUco velocity feed-forward below remains unchanged for moving decks.
+        # If a previous ArUco epoch already proved that the deck is moving,
+        # temporarily remove only this correction cap during reacquisition.
+        # Otherwise v_target=5 m/s creates the observed 3.3 m equilibrium and
+        # the camera can never see the marker again.  The cached speed came
+        # solely from ArUco; trailer odometry twist remains unavailable.
+        if not moving_target_reacquisition:
+            braking_distance = max(
+                0.0,
+                distance_xy
+                - 0.5 * self._float("marker_track_entry_lateral_gate_m"),
+            )
+            maximum_correction_speed = math.sqrt(
+                2.0
+                * self._float("position_only_pursuit_acceleration_m_s2")
+                * braking_distance
+            )
+            if (
+                not optical_velocity_valid
+                and (
+                    use_down_marker
+                    or self._down_marker_detection_live(now)
+                    or self.down_marker_sequence > 0
+                )
+            ):
+                # From the first positive detector sample, keep an unknown-
+                # motion target inside the FOV long enough to identify its
+                # velocity. Applying this cap from the SEARCH state itself
+                # limited pursuit to 2.45 m/s before any image detection and
+                # made a 5 m/s trailer impossible to catch.
+                # The previous 6.5 m/s pursuit produced a roughly four-metre
+                # minimum turn radius around a stationary marker.  This bound
+                # is the speed whose stopping distance equals the existing
+                # entry gate; a moving marker releases it as soon as ArUco
+                # supplies velocity feed-forward.
+                capture_speed = math.sqrt(
+                    2.0
+                    * self._float(
+                        "position_only_pursuit_acceleration_m_s2"
+                    )
+                    * self._float("marker_track_entry_lateral_gate_m")
+                )
+                maximum_correction_speed = min(
+                    maximum_correction_speed,
+                    capture_speed,
+                )
+            correction_speed = float(np.linalg.norm(correction_velocity))
+            if (
+                correction_speed > maximum_correction_speed
+                and correction_speed > 1.0e-9
+            ):
+                correction_velocity *= (
+                    maximum_correction_speed / correction_speed
+                )
+        desired_velocity[:2] = correction_velocity
         if optical_velocity_valid:
             assert optical_velocity is not None
             desired_velocity[:2] += np.asarray(
@@ -2870,7 +3558,7 @@ class MpcPrecisionLandingNode(Node):
             disabled,
             command_velocity,
             disabled,
-            self.vehicle_yaw_enu_rad,
+            target_yaw,
             False,
             True,
             False,
@@ -3339,29 +4027,23 @@ class MpcPrecisionLandingNode(Node):
             )
         if current is not None and current.control_input.has_landing_pad_context:
             control_input = current.control_input
+            pad_position = np.asarray(
+                control_input.landing_pad_position_enu_m,
+                dtype=float,
+            )
             pad_velocity = np.asarray(
                 control_input.landing_pad_velocity_enu_m_s,
                 dtype=float,
             )
-            previous_velocity = None
-            cached_command = self.command_cache
-            if cached_command is not None and cached_command.velocity_enabled:
-                candidate_velocity = np.asarray(
-                    cached_command.velocity_setpoint_enu_m_s,
-                    dtype=float,
-                )
-                if candidate_velocity.shape == (3,) and np.all(
-                    np.isfinite(candidate_velocity)
-                ):
-                    previous_velocity = candidate_velocity.copy()
-            if previous_velocity is None:
-                previous_velocity = np.asarray(
-                    control_input.vehicle_velocity_enu_m_s,
-                    dtype=float,
-                ).copy()
+            previous_velocity = np.asarray(
+                control_input.vehicle_velocity_enu_m_s,
+                dtype=float,
+            ).copy()
             safe_velocity = previous_velocity.copy()
             if safe_velocity.shape == (3,) and np.all(
                 np.isfinite(safe_velocity)
+            ) and pad_position.shape == (3,) and np.all(
+                np.isfinite(pad_position)
             ) and pad_velocity.shape == (3,) and np.all(
                 np.isfinite(pad_velocity)
             ):
@@ -3384,7 +4066,18 @@ class MpcPrecisionLandingNode(Node):
                         "relative_landing_mpc_max_vertical_acceleration_m_s2"
                     ),
                 )
+                # HOLD on a moving deck means preserving relative position,
+                # not merely copying deck velocity.  Pure coasting retained
+                # any offset accumulated during one rejected solve and could
+                # never re-enter the landing funnel.  Use the current
+                # immutable snapshot to add a bounded relative-position
+                # correction while vertical descent remains exactly revoked.
                 desired_velocity = pad_velocity.copy()
+                relative_position_correction = (
+                    self._float("landing_p_horizontal_gain")
+                    * (pad_position[:2] - np.asarray(position)[:2])
+                )
+                desired_velocity[:2] += relative_position_correction
                 desired_horizontal_speed = float(
                     np.linalg.norm(desired_velocity[:2])
                 )
@@ -4130,6 +4823,14 @@ class MpcPrecisionLandingNode(Node):
     ) -> None:
         """Stop relative descent while retaining moving-deck XY tracking."""
         del estimate
+        level_clearance_m = self.descent_clearance_m
+        if self.phase in {
+            LandingPhase.FINAL_APPROACH,
+            LandingPhase.TOUCHDOWN_CONFIRM,
+        }:
+            level_clearance_m = self._float(
+                "touchdown_contact_clearance_m"
+            )
         if self.phase in {
             LandingPhase.MARKER_TRACK_DOWN,
             LandingPhase.PRECISION_ALIGN,
@@ -4139,7 +4840,7 @@ class MpcPrecisionLandingNode(Node):
         }:
             staged = self._publish_trailer_relative_setpoint(
                 now,
-                self.descent_clearance_m,
+                level_clearance_m,
                 "down",
                 disable_descent=True,
                 require_solver_success=False,
@@ -4252,6 +4953,7 @@ class MpcPrecisionLandingNode(Node):
         self._contact_settle_min_lidar_range_m = None
         self._contact_entry_latched = False
         self._contact_compression_started_monotonic_s = None
+        self._contact_height_violation_started_monotonic_s = None
         self.terminal_contact_bridge_active = False
         self.last_terminal_contact_bridge_reason = None
         self._terminal_auto_land_cancel_reason = None
@@ -4283,9 +4985,8 @@ class MpcPrecisionLandingNode(Node):
             distance = self.last_valid_landing_height_distance_m
         else:
             return False
-        maximum = (
-            self._float("touchdown_max_deck_distance_m")
-            + self._float("touchdown_contact_lidar_rebound_tolerance_m")
+        maximum = self._float(
+            "touchdown_contact_latch_exit_distance_m"
         )
         if (
             distance is None
@@ -4858,9 +5559,17 @@ class MpcPrecisionLandingNode(Node):
 
     def _stage_level_recovery_reference(self, now: float) -> None:
         """Queue a level moving-pad solve without changing mission phase."""
+        level_clearance_m = self.descent_clearance_m
+        if self.phase in {
+            LandingPhase.FINAL_APPROACH,
+            LandingPhase.TOUCHDOWN_CONFIRM,
+        }:
+            level_clearance_m = self._float(
+                "touchdown_contact_clearance_m"
+            )
         self._publish_trailer_relative_setpoint(
             now,
-            self.descent_clearance_m,
+            level_clearance_m,
             "down",
             disable_descent=True,
             require_solver_success=False,
@@ -4923,16 +5632,49 @@ class MpcPrecisionLandingNode(Node):
             # motion; a phase change revokes the async command and creates a
             # 3 m/s world-frame brake/catch-up transient.
             loss_now = self._mission_time_s()
-            if self.marker_loss_started_mission_s is None:
-                self.marker_loss_started_mission_s = loss_now
+            vision_lost = "vision_stale" in failures
+            if vision_lost:
+                if self.marker_loss_started_mission_s is None:
+                    self.marker_loss_started_mission_s = loss_now
+            else:
+                # Lateral/funnel and relative-speed misses are reasons to stop
+                # vertical motion and recenter, not evidence that the optical
+                # motion model has expired.  Starting the marker-loss timer for
+                # those ordinary alignment errors revoked Relative-OSQP after
+                # 1.5 s even while ArUco frames were live, then left a 5 m/s
+                # deck faster than the position-only reacquisition controller.
+                self.marker_loss_started_mission_s = None
             if self.phase == LandingPhase.FINAL_APPROACH:
                 self.terminal_contact_bridge_active = True
                 self.last_terminal_contact_bridge_reason = (
                     "terminal_level_recenter"
                 )
+            if vision_lost:
+                assert self.marker_loss_started_mission_s is not None
+                elapsed = loss_now - self.marker_loss_started_mission_s
+                maximum_loss_s = self._float(
+                    "vision_velocity_terminal_hold_s"
+                    if self.phase == LandingPhase.FINAL_APPROACH
+                    else "vision_velocity_reacquisition_gap_s"
+                )
+                if elapsed >= maximum_loss_s:
+                    if self.phase == LandingPhase.FINAL_APPROACH:
+                        self._start_abort_climb(
+                            "terminal ArUco motion model expired", estimate
+                        )
+                    else:
+                        self._transition(
+                            LandingPhase.MARKER_TRACK_DOWN,
+                            "ArUco motion model expired during level tracking",
+                        )
+                    return
             staged = self._publish_trailer_relative_setpoint(
                 time.monotonic(),
-                self.descent_clearance_m,
+                (
+                    self._float("touchdown_contact_clearance_m")
+                    if self.phase == LandingPhase.FINAL_APPROACH
+                    else self.descent_clearance_m
+                ),
                 "down",
                 disable_descent=True,
                 require_solver_success=False,
@@ -4941,23 +5683,29 @@ class MpcPrecisionLandingNode(Node):
             self.last_marker_loss_policy = "level_track_recenter"
             if staged is not None:
                 return
-            elapsed = loss_now - self.marker_loss_started_mission_s
-            if elapsed < self._float("vision_velocity_reacquisition_gap_s"):
-                return
-            if self.phase == LandingPhase.FINAL_APPROACH:
-                self._start_abort_climb(
-                    "terminal ArUco motion model expired", estimate
-                )
-            else:
-                self._transition(
-                    LandingPhase.MARKER_TRACK_DOWN,
-                    "ArUco motion model expired during level tracking",
-                )
             return
         if "target_estimate_invalid" in failures:
-            loss_now = time.monotonic()
-            if self._target_sensors_loss_persisted(loss_now, estimate):
-                self._enter_failsafe_hold("target_sensors_timeout")
+            if self.phase != LandingPhase.FINAL_APPROACH:
+                # Keep following the live trailer position and reacquire the
+                # marker instead of freezing the last world-frame velocity.
+                self._transition(
+                    LandingPhase.MARKER_TRACK_DOWN,
+                    "ArUco motion unavailable; resume marker acquisition",
+                )
+                return
+            # The fused target can remain valid while the ArUco-derived
+            # velocity used by control is unavailable.  A shared fused-sensor
+            # timer is reset on every valid odometry update and therefore can
+            # never bound this failure.  Track the control-motion outage on
+            # the marker-loss clock instead.
+            loss_now = self._mission_time_s()
+            if self.marker_loss_started_mission_s is None:
+                self.marker_loss_started_mission_s = loss_now
+            elapsed = loss_now - self.marker_loss_started_mission_s
+            if elapsed >= self._float("vision_velocity_reacquisition_gap_s"):
+                self._start_abort_climb(
+                    "terminal ArUco motion unavailable", estimate
+                )
             else:
                 self._cache_target_sensors_loss_level_coast()
                 self.last_safety_failure_reason = (
@@ -5315,15 +6063,27 @@ class MpcPrecisionLandingNode(Node):
 
         if self.phase == LandingPhase.MARKER_TRACK_DOWN:
             estimate = self._current_target_estimate()
-            # Latch search clearance when odometry transit completes.
-            # Recomputing it from every measured vehicle pose turned any
-            # upward disturbance into a permanent reference increase and
-            # produced vertical bobbing while marker acquisition was still
-            # in progress.
+            # Keep the latched search clearance fixed while one continuous
+            # acquisition controller matches marker position, speed, and yaw.
             tracking_clearance = self.descent_clearance_m
             marker_pose = self._marker_world_enu("down", now)
             marker_velocity = self._control_target_velocity_enu(
                 estimate, now
+            )
+            if not self._trailer_fresh(now):
+                self._transition(
+                    LandingPhase.APPROACH,
+                    "down marker and trailer odometry stale",
+                )
+                return
+
+            acquisition_result = (
+                self._publish_position_only_acquisition_setpoint(
+                    now,
+                    tracking_clearance,
+                    use_down_marker=marker_pose is not None,
+                    target_velocity_enu_m_s=marker_velocity,
+                )
             )
             acquisition_sensor_ready = bool(
                 marker_pose is not None
@@ -5332,142 +6092,41 @@ class MpcPrecisionLandingNode(Node):
                 and self.control_target_velocity_source
                 in {"aruco_capture_kalman", "aruco_capture_hold"}
             )
-            if not self.marker_tracking_latched:
-                # Keep one controller active while the optical motion estimate
-                # matures.  Switching P/OSQP on every detector Bool produced a
-                # repeatable 1 m -> 8 m limit cycle before either controller
-                # could settle.  One continuous second of pose and ArUco-only
-                # velocity is required before Relative OSQP owns XY motion.
-                if not self._trailer_fresh(now):
-                    self._transition(
-                        LandingPhase.APPROACH,
-                        "down marker and trailer odometry stale",
-                    )
-                    return
-                acquisition_result = (
-                    self._publish_position_only_acquisition_setpoint(
-                        now,
-                        tracking_clearance,
-                        use_down_marker=marker_pose is not None,
-                        target_velocity_enu_m_s=marker_velocity,
-                    )
-                )
-                acquisition_ready = bool(
-                    acquisition_sensor_ready
-                    and acquisition_result is not None
-                    and self.last_landing_relative_horizontal_speed_m_s
-                    is not None
-                    and acquisition_result[0]
-                    <= self._float("marker_track_entry_lateral_gate_m")
-                    and self.last_landing_relative_horizontal_speed_m_s
-                    <= self._float(
-                        "marker_track_entry_relative_speed_m_s"
-                    )
-                    and acquisition_result[1]
-                    <= self._float("marker_track_entry_yaw_error_rad")
-                )
-                if not acquisition_ready:
-                    self.marker_tracking_acquisition_since_s = None
-                elif self.marker_tracking_acquisition_since_s is None:
-                    self.marker_tracking_acquisition_since_s = mission_now
-                elif (
-                    mission_now - self.marker_tracking_acquisition_since_s
-                    >= self._float("precision_alignment_dwell_s")
-                ):
-                    # This dwell already proves continuous ArUco pose,
-                    # camera-derived speed, lateral alignment, relative speed,
-                    # and yaw.  Enter the level ALIGN state immediately;
-                    # making MARKER_TRACK_DOWN repeat the same gate under a
-                    # second controller left the mission oscillating forever
-                    # between acquisition and OSQP despite a stable track.
-                    self.descent_clearance_m = tracking_clearance
-                    self._transition(
-                        LandingPhase.PRECISION_ALIGN,
-                        "ArUco track and deck-relative motion held",
-                    )
-                    return
-                self._gate_dwell(
-                    False,
-                    mission_now,
-                    self._float("precision_alignment_dwell_s"),
-                )
-                return
-
-            if marker_velocity is None:
-                # The bounded ArUco velocity cache expired. Revoke MPC
-                # ownership and return to live trailer-position pursuit; no
-                # simulator/trailer velocity is substituted.
-                self.marker_tracking_latched = False
-                self.marker_tracking_acquisition_since_s = None
-                self._publish_position_only_acquisition_setpoint(
-                    now,
-                    tracking_clearance,
-                    use_down_marker=False,
-                )
-                self.last_marker_loss_policy = (
-                    "marker_search_odometry_track_reacquire"
-                )
-                self._gate_dwell(
-                    False,
-                    mission_now,
-                    self._float("precision_alignment_dwell_s"),
-                )
-                return
-
-            # After the stable handoff, a short optical gap keeps level
-            # Relative OSQP tracking from the bounded ArUco velocity cache and
-            # fresh odometry position instead of toggling back to P per frame.
-            result = self._publish_trailer_relative_setpoint(
-                now,
-                tracking_clearance,
-                "down" if marker_pose is not None else None,
-                require_solver_success=False,
-            )
-            if result is None:
-                self.marker_tracking_latched = False
-                self.marker_tracking_acquisition_since_s = None
-                self._publish_position_only_acquisition_setpoint(
-                    now, tracking_clearance, use_down_marker=False
-                )
-                self._gate_dwell(
-                    False,
-                    mission_now,
-                    self._float("precision_alignment_dwell_s"),
-                )
-                return
-            alignment_vision_pose = self._fresh_down_vision_pose(now)
-            alignment_vision_ready = bool(
-                alignment_vision_pose is not None
-                and self._vision_position_covariance_safe()
-            )
-            alignment_entry_ready = bool(
-                result is not None
-                and estimate is not None
-                and self._trailer_fresh(now)
-                and alignment_vision_ready
-                and self.control_target_velocity_source
-                in {"aruco_capture_kalman", "aruco_capture_hold"}
-                and self._solver_cache_safe_for_descent(time.monotonic())
-                and result[0]
+            acquisition_ready = bool(
+                acquisition_sensor_ready
+                and acquisition_result is not None
+                and self.last_landing_relative_horizontal_speed_m_s
+                is not None
+                and acquisition_result[0]
                 <= self._float("marker_track_entry_lateral_gate_m")
-                and result[1]
-                <= self._float("marker_track_entry_relative_speed_m_s")
-                and result[2]
+                and self.last_landing_relative_horizontal_speed_m_s
+                <= self._float(
+                    "marker_track_entry_relative_speed_m_s"
+                )
+                and acquisition_result[1]
                 <= self._float("marker_track_entry_yaw_error_rad")
             )
-            if self._gate_dwell(
-                alignment_entry_ready,
-                mission_now,
-                self._float("precision_alignment_dwell_s"),
+            if not acquisition_ready:
+                self.marker_tracking_acquisition_since_s = None
+            elif self.marker_tracking_acquisition_since_s is None:
+                self.marker_tracking_acquisition_since_s = mission_now
+            elif (
+                mission_now - self.marker_tracking_acquisition_since_s
+                >= self._float("precision_alignment_dwell_s")
             ):
-                # Seed the first authorized descent from the measured level.
-                # Later recovery cycles preserve the last clearance that was
-                # commanded while every safety gate was valid.
+                # Only after the strict pose/relative-speed/yaw dwell may
+                # Relative OSQP own the precision alignment and descent path.
                 self.descent_clearance_m = tracking_clearance
                 self._transition(
                     LandingPhase.PRECISION_ALIGN,
-                    "lateral and relative-speed gates held",
+                    "ArUco track and deck-relative motion held",
                 )
+                return
+            self._gate_dwell(
+                False,
+                mission_now,
+                self._float("precision_alignment_dwell_s"),
+            )
             return
 
         if self.phase == LandingPhase.PRECISION_ALIGN:
@@ -5595,6 +6254,11 @@ class MpcPrecisionLandingNode(Node):
                 occlusion_lidar = self._float(
                     "terminal_occlusion_max_lidar_m"
                 )
+                occlusion_height_limit = (
+                    occlusion_lidar
+                    if self._bool("landing_use_lidar")
+                    else occlusion_height
+                )
                 terminal_recovery_envelope = bool(
                     relative_height is not None
                     and math.isfinite(relative_height)
@@ -5608,7 +6272,7 @@ class MpcPrecisionLandingNode(Node):
                         float(self.landing_height_distance_m)
                     )
                     and float(self.landing_height_distance_m)
-                    <= occlusion_lidar
+                    <= occlusion_height_limit
                 )
                 if terminal_recovery_envelope:
                     if self.terminal_recovery_started_mission_s is None:
@@ -5885,6 +6549,11 @@ class MpcPrecisionLandingNode(Node):
             self._publish_trailer_relative_setpoint(
                 now, mpc_clearance, "down"
             )
+            # FINAL owns the expected close-range optical gap only after both
+            # the commanded clearance ramp and measured deck clearance reach
+            # the terminal envelope.  Entering on measurement alone switches
+            # solver context while the reference is still several metres high
+            # and caused the observed moving-target divergence.
             if (
                 self.descent_clearance_m
                 <= self._float("final_approach_height_m") + 1.0e-6
@@ -5967,21 +6636,38 @@ class MpcPrecisionLandingNode(Node):
                 return
 
             if not self._fresh_landing_height(now):
-                if self._contact_settle_elapsed_s(now) is not None:
+                contact_settle_active = bool(
+                    self._contact_settle_elapsed_s(now) is not None
+                )
+                contact_height_grace = bool(
+                    contact_settle_active
+                    and self._contact_height_within_latch(now)
+                )
+                if contact_settle_active and not contact_height_grace:
                     self._hold_descent_reference(now, estimate)
                     self._enter_failsafe_hold(
                         "terminal_contact_height_invalid"
                     )
                     return
-                self._hold_descent_reference(now, estimate)
-                self.last_safety_failure_reason = "final_height_invalid"
-                if mission_now - self.phase_started >= self._float(
-                    "final_approach_timeout_s"
-                ):
-                    self._start_abort_climb(
-                        "final approach height timeout", estimate
+                if contact_height_grace:
+                    # At moving-deck contact the base-link estimate can cross
+                    # the marker plane for a few samples. Keep the already
+                    # latched level/contact controller alive for the existing
+                    # bounded dropout grace so PX4's land detector can be
+                    # consumed; never resume open-loop descent from this path.
+                    self.last_safety_failure_reason = (
+                        "terminal_contact_height_transient"
                     )
-                return
+                else:
+                    self._hold_descent_reference(now, estimate)
+                    self.last_safety_failure_reason = "final_height_invalid"
+                    if mission_now - self.phase_started >= self._float(
+                        "final_approach_timeout_s"
+                    ):
+                        self._start_abort_climb(
+                            "final approach height timeout", estimate
+                        )
+                    return
             final_descent_speed = self._final_descent_speed(now)
             candidate_clearance = max(
                 self._float("touchdown_contact_clearance_m"),
@@ -6081,11 +6767,38 @@ class MpcPrecisionLandingNode(Node):
                 # QP until PX4 reports ON_GROUND or the deck envelope is
                 # genuinely lost.
                 if not self._contact_height_within_latch(now):
+                    violation_started = (
+                        self._contact_height_violation_started_monotonic_s
+                    )
+                    if violation_started is None:
+                        self._contact_height_violation_started_monotonic_s = (
+                            float(now)
+                        )
+                        violation_started = float(now)
+                    violation_elapsed = max(
+                        0.0, float(now) - float(violation_started)
+                    )
+                    if violation_elapsed < self._float(
+                        "touchdown_contact_latch_exit_dwell_s"
+                    ):
+                        self._publish_trailer_relative_setpoint(
+                            now,
+                            self.descent_clearance_m,
+                            "down",
+                            disable_descent=True,
+                            require_solver_success=False,
+                            relative_descent_speed_m_s=0.0,
+                        )
+                        self.last_safety_failure_reason = (
+                            "touchdown_contact_height_transient"
+                        )
+                        return
                     self._start_abort_climb(
                         "touchdown contact deck envelope lost",
                         estimate,
                     )
                     return
+                self._contact_height_violation_started_monotonic_s = None
                 if contact_tracking_latched and (
                     self._stage_touchdown_contact_osqp(
                         now,
@@ -6131,7 +6844,7 @@ class MpcPrecisionLandingNode(Node):
                     # HOLD would brake immediately against the moving deck.
                     staged = self._publish_trailer_relative_setpoint(
                         now,
-                        self.descent_clearance_m,
+                        mpc_clearance,
                         "down",
                         disable_descent=True,
                         require_solver_success=False,
@@ -6151,6 +6864,11 @@ class MpcPrecisionLandingNode(Node):
                 )
                 occlusion_lidar = self._float(
                     "terminal_occlusion_max_lidar_m"
+                )
+                occlusion_height_limit = (
+                    occlusion_lidar
+                    if self._bool("landing_use_lidar")
+                    else occlusion_clearance
                 )
                 measured_clearance = self._measured_target_clearance(
                     estimate, math.inf
@@ -6198,7 +6916,7 @@ class MpcPrecisionLandingNode(Node):
                         float(self.landing_height_distance_m)
                     )
                     and float(self.landing_height_distance_m)
-                    <= occlusion_lidar
+                    <= occlusion_height_limit
                 )
                 # Level recentering must not require the lidar ray to already
                 # hit the deck.  With lateral error the ray can see the ground
@@ -6243,7 +6961,7 @@ class MpcPrecisionLandingNode(Node):
                     )
                     self._publish_trailer_relative_setpoint(
                         now,
-                        self.descent_clearance_m,
+                        mpc_clearance,
                         "down",
                         disable_descent=True,
                         require_solver_success=False,
@@ -6275,7 +6993,7 @@ class MpcPrecisionLandingNode(Node):
                         self.terminal_contact_bridge_activation_count += 1
                     self._publish_trailer_relative_setpoint(
                         now,
-                        self.descent_clearance_m,
+                        mpc_clearance,
                         "down",
                     )
                     self.last_safety_failure_reason = (
@@ -6363,7 +7081,7 @@ class MpcPrecisionLandingNode(Node):
                         self.terminal_contact_bridge_activation_count += 1
                     self._publish_trailer_relative_setpoint(
                         now,
-                        self.descent_clearance_m,
+                        mpc_clearance,
                         "down",
                         disable_descent=True,
                         require_solver_success=False,
@@ -6415,7 +7133,7 @@ class MpcPrecisionLandingNode(Node):
                         )
                         self._publish_trailer_relative_setpoint(
                             now,
-                            self.descent_clearance_m,
+                            mpc_clearance,
                             "down",
                             disable_descent=True,
                             require_solver_success=False,
@@ -6500,9 +7218,13 @@ class MpcPrecisionLandingNode(Node):
                 return
             decision = self._update_touchdown_gate(now, estimate)
             if decision.confirmed:
+                # Latch the completed touchdown authorization before the
+                # rate-limited MAVROS request.  Otherwise a duplicate land
+                # detector sample can erase the one-shot confirmation while
+                # PX4's automatic landed disarm wins the race.
+                self.touchdown_disarm_requested = True
                 if self._request_arm(False, now):
                     self.normal_disarm_request_count += 1
-                    self.touchdown_disarm_requested = True
                 return
             if decision.timed_out:
                 if self._terminal_auto_land_mode_active():
@@ -6653,6 +7375,10 @@ class MpcPrecisionLandingNode(Node):
         pad_acceleration = self._estimate_landing_pad_acceleration(
             pad_velocity
         )
+        # A level recenter is requested precisely because the vehicle can be
+        # outside the funnel. Keeping funnel/deck rows hard in that state can
+        # make the recovery horizon unreachable and drive OSQP to inaccurate
+        # or infeasible. Dynamic limits and the hard no-descent row remain.
         constraints_enabled = bool(
             not disable_descent
             and self.phase
@@ -6683,16 +7409,10 @@ class MpcPrecisionLandingNode(Node):
         # FOV polygon active makes the QP mathematically infeasible as height
         # approaches zero. Disable only that row family; funnel, deck,
         # velocity, acceleration, jerk and descent-alignment bounds remain.
-        camera_fov_constraint_enabled = not bool(
-            constraints_enabled
-            and (
-                (
-                    self.phase == LandingPhase.FINAL_APPROACH
-                    and self.terminal_contact_bridge_active
-                )
-                or self.phase == LandingPhase.TOUCHDOWN_CONFIRM
-            )
-        )
+        camera_fov_constraint_enabled = self.phase not in {
+            LandingPhase.FINAL_APPROACH,
+            LandingPhase.TOUCHDOWN_CONFIRM,
+        }
         clearance = requested_clearance
         return (
             pad_position,
@@ -6771,12 +7491,15 @@ class MpcPrecisionLandingNode(Node):
             return nominal
         distance = float(self.landing_height_distance_m)
         contact_clearance = self._float("touchdown_contact_clearance_m")
-        # A deliberately conservative 0.03 m/s^2 braking envelope is active
-        # throughout FINAL.  The previous 0.08 value still reached the 0.25 m
-        # contact gate at 0.34 m/s and physical contact at 0.26 m/s, so the
-        # low/slow contact controller never became eligible before rebound.
+        # Continue the configured terminal speed until a continuous braking
+        # envelope becomes limiting. Contact still uses the independent
+        # settle-speed and touchdown relative-vz gates below.
         braking_distance = max(0.0, distance - contact_clearance)
-        braking_speed = math.sqrt(2.0 * 0.03 * braking_distance)
+        braking_speed = math.sqrt(
+            2.0
+            * self._float("final_descent_braking_acceleration_m_s2")
+            * braking_distance
+        )
         return min(nominal, max(settle, braking_speed))
 
     def _final_approach_height_reached(
@@ -7322,10 +8045,8 @@ class MpcPrecisionLandingNode(Node):
         self.phase = phase
         if phase == LandingPhase.MARKER_TRACK_DOWN:
             self.marker_tracking_acquisition_since_s = None
-            self.marker_tracking_latched = False
         elif previous == LandingPhase.MARKER_TRACK_DOWN:
             self.marker_tracking_acquisition_since_s = None
-            self.marker_tracking_latched = False
         reset_terminal = getattr(
             self, "_reset_terminal_contact_context", None
         )
@@ -7674,6 +8395,22 @@ class MpcPrecisionLandingNode(Node):
             "trailer_velocity_available_to_controller": False,
             "control_target_velocity_source": (
                 self.control_target_velocity_source
+            ),
+            "vision_position_model_qualified": (
+                self.vision_position_model_qualified
+            ),
+            "vision_position_history_count": len(
+                self.vision_position_history
+            ),
+            "vision_position_candidate_count": len(
+                self.vision_position_candidates
+            ),
+            "vision_motion_model_span_s": self.vision_motion_model_span_s,
+            "vision_motion_model_turn_rate_rad_s": (
+                self.vision_motion_model_turn_rate_rad_s
+            ),
+            "vision_motion_model_tangential_acceleration_m_s2": (
+                self.vision_motion_model_tangential_acceleration_m_s2
             ),
             "control_target_velocity_enu_m_s": (
                 self.last_vision_velocity_enu

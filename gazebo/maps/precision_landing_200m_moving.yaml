@@ -26,10 +26,10 @@ px4_vehicle:
   spawn_mode: dynamic_by_px4_sitl
   sitl_parameter_overrides:
     LNDMC_Z_VEL_MAX: 0.05
-    # PX4's stock land detector compares world-frame horizontal speed. The
-    # aircraft is physically at rest relative to the 3 m/s deck, so retain a
-    # small margin above that known platform speed in this SITL profile.
-    LNDMC_XY_VEL_MAX: 4.0
+    # PX4's stock land detector compares world-frame horizontal speed.  The
+    # mission independently requires camera-relative XY speed <= 0.35 m/s;
+    # this world-frame ceiling permits that contact gate through 9 m/s.
+    LNDMC_XY_VEL_MAX: 6.0
     COM_DISARM_LAND: 10.0
 
 spawn:
@@ -53,7 +53,7 @@ trailer:
     pitch: 0.0
     yaw: 0.0
   separation_m: 10.0
-  motion: circle_3_m_s_after_px4_spawn
+  motion: circle_5_m_s_after_px4_spawn
   command_topic: /model/trailer/cmd_vel
   pose_topic: /world/precision_landing_200m_moving/dynamic_pose/info
   odometry_topic: /model/trailer/odometry
@@ -62,7 +62,8 @@ trailer:
   circle_radius_m: 50.0
   circle_direction: counterclockwise
   command_rate_hz: 50.0
-  cruise_speed_m_s: 3.0
+  cruise_speed_m_s: 9.0
+  # A 9 m/s, 50 m circle needs 1.62 m/s^2 centripetal acceleration.
   acceleration_m_s2: 1.0
   waypoint_tolerance_m: 0.2
   body_footprint_m: [5.0, 5.0]

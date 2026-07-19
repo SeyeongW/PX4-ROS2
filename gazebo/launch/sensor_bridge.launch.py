@@ -215,7 +215,7 @@ def generate_launch_description():
             "Gazebo /clock callback limit and ROS /clock publication rate.",
         ),
         _argument(
-            "image_transport_max_rate_hz", "20.0",
+            "image_transport_max_rate_hz", "50.0",
             "Maximum native Gazebo image callback rate per topic.",
         ),
         _argument(

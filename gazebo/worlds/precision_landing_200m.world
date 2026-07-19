@@ -111,17 +111,15 @@
     <frame name="drone_spawn"><pose>30 30 0 0 0 0</pose></frame>
     <frame name="trailer_spawn"><pose>37.071067811865476 37.071067811865476 0 0 0 0</pose></frame>
 
-    <!-- JO city trailer asset, pinned static for the baseline experiment. -->
+    <!-- Use the same measured-odometry trailer as the moving experiment, but
+         do not start its external waypoint driver.  It therefore remains at
+         zero velocity while still publishing /model/trailer/odometry at
+         50 Hz; the landing node sees a measured stationary target instead of
+         receiving a hard-coded pose. -->
     <include>
-      <uri>model://moving_platform_aruco</uri>
+      <uri>model://moving_platform_aruco_velocity</uri>
       <name>trailer</name>
-      <static>true</static>
-      <!-- MovingPlatformController copies platform_link's initial world pose
-           to the model pose. Since that link is already at z=2, an ordinary
-           z=0 include doubles the deck height to 4.05 m. The stationary
-           experiment pre-offsets the include by -2 m; plugin initialization
-           then leaves the model at z=0 and the deck at the documented 2.05 m. -->
-      <pose>37.071067811865476 37.071067811865476 -2 0 0 0</pose>
+      <pose>37.071067811865476 37.071067811865476 0 0 0 0</pose>
     </include>
 
     <!-- PX4 SITL dynamically creates x500_city_rgbd_lidar at (30,30,0). -->

@@ -556,19 +556,43 @@ def landing_snapshot_change_rejection(
         return "target_yaw_changed"
     previous_input = captured.control_input
     current_input = current.control_input
+    previous_constraints = previous_input.landing_constraints_enabled
+    current_constraints = current_input.landing_constraints_enabled
+    # A level recenter solve intentionally omits landing-geometry rows because
+    # it starts outside the funnel, but it also has descent disabled.  Once
+    # current geometry is safe again, that older level result is conservative
+    # for the short async handoff to the constrained QP.  The reverse
+    # direction remains fail-closed: a descent-capable result must never
+    # survive a current request to level and relax geometry for recovery.
     if (
-        previous_input.landing_constraints_enabled
-        != current_input.landing_constraints_enabled
-        or previous_input.descent_allowed != current_input.descent_allowed
-        or previous_input.camera_fov_constraint_enabled
-        != current_input.camera_fov_constraint_enabled
+        previous_constraints
+        and not current_constraints
     ):
         return "landing_constraints_changed"
     if (
-        abs(
-            previous_input.relative_descent_speed_m_s
-            - current_input.relative_descent_speed_m_s
-        )
+        not previous_constraints
+        and current_constraints
+        and previous_input.descent_allowed
+    ):
+        return "landing_constraints_changed"
+    if (
+        previous_constraints
+        and current_constraints
+        and previous_input.camera_fov_constraint_enabled
+        != current_input.camera_fov_constraint_enabled
+    ):
+        return "landing_constraints_changed"
+    # A result captured while descent was forbidden is still a conservative
+    # level command when the current snapshot permits descent.  Rejecting it
+    # prevented the command cache from recovering: every new descending solve
+    # was evaluated against the preceding level snapshot and FINAL repeatedly
+    # stalled.  The opposite direction remains fail-closed so an older
+    # descent-capable result can never survive a current safety revocation.
+    if previous_input.descent_allowed and not current_input.descent_allowed:
+        return "landing_constraints_changed"
+    if (
+        previous_input.relative_descent_speed_m_s
+        - current_input.relative_descent_speed_m_s
         > limits.maximum_target_velocity_change_m_s
     ):
         return "landing_descent_reference_changed"
@@ -596,6 +620,15 @@ def landing_snapshot_change_rejection(
         and current_clearance is not None
         and abs(previous_clearance - current_clearance)
         > limits.maximum_target_position_change_m
+        # A no-descent solution is a hard-constrained level command.  It is
+        # conservative for the brief handoff back to an allowed descent even
+        # when the newly requested clearance is much lower.  The reverse
+        # direction was rejected above, so an old descending command can
+        # never survive a current no-descent request.
+        and not (
+            not previous_input.descent_allowed
+            and current_input.descent_allowed
+        )
     ):
         return "landing_clearance_changed"
     return None

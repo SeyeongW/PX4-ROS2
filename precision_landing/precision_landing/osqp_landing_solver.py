@@ -177,14 +177,18 @@ class OsqpLandingSolver:
         )
         self.polygon_facets = int(polygon_facets)
 
-        self._horizontal_position_weight = 18.0
+        # The 5 m/s moving-deck baseline needs position correction to remain
+        # decisive after the close-range camera occlusion.  The lighter
+        # original weights let velocity matching dominate, so the executable
+        # command under-turned the R=50 m deck and accumulated lateral error.
+        self._horizontal_position_weight = 40.0
         self._horizontal_velocity_weight = 16.0
         self._clearance_weight = 20.0
         self._vertical_velocity_weight = 8.0
         self._acceleration_weight = 0.5
         self._jerk_weight = 0.06
         self._jerk_change_weight = 0.10
-        self._terminal_horizontal_position_weight = 55.0
+        self._terminal_horizontal_position_weight = 100.0
         self._terminal_clearance_weight = 65.0
         self._terminal_horizontal_velocity_weight = 50.0
         self._terminal_vertical_velocity_weight = 35.0
@@ -986,7 +990,10 @@ class OsqpLandingSolver:
         positions = np.empty(self.horizon_steps, dtype=float)
         velocities = np.empty(self.horizon_steps, dtype=float)
         if speed <= 1.0e-9:
-            positions.fill(position)
+            # Hold the last authorized clearance target.  Replacing it with
+            # the measured height on each level solve ratchets the reference
+            # upward whenever a descent gate briefly drops out.
+            positions.fill(floor)
             velocities.fill(0.0)
             return positions, velocities
 

@@ -79,35 +79,6 @@
       <parent>base_link</parent><child>front_depth_link</child>
     </joint>
 
-    <!-- Fast single-ray AGL / touchdown aid.  Do not set a short <topic>:
-         PX4's Gazebo bridge discovers the default world-qualified lidar path. -->
-    <link name="lidar_sensor_link">
-      <pose relative_to="base_link">0.08 0 -0.20 0 1.57079632679 0</pose>
-      <inertial>
-        <mass>0.001</mass>
-        <inertia>
-          <ixx>0.00001</ixx><iyy>0.00001</iyy><izz>0.00001</izz>
-          <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz>
-        </inertia>
-      </inertial>
-      <sensor name="lidar" type="gpu_lidar">
-        <gz_frame_id>lidar_sensor_link</gz_frame_id>
-        <update_rate>50</update_rate>
-        <ray>
-          <scan>
-            <horizontal><samples>1</samples><resolution>1</resolution><min_angle>0</min_angle><max_angle>0</max_angle></horizontal>
-            <vertical><samples>1</samples><resolution>1</resolution><min_angle>0</min_angle><max_angle>0</max_angle></vertical>
-          </scan>
-          <range><min>0.01</min><max>100.0</max><resolution>0.01</resolution></range>
-        </ray>
-        <always_on>true</always_on>
-        <visualize>false</visualize>
-      </sensor>
-    </link>
-    <joint name="down_lidar_joint" type="fixed">
-      <parent>base_link</parent><child>lidar_sensor_link</child>
-    </joint>
-
     <!-- Down RGB camera: calibrated ArUco terminal tracking.  +90 deg pitch
          rotates the camera's local +X viewing ray onto body -Z. -->
     <link name="down_rgb_link">
@@ -134,7 +105,7 @@
           <clip><near>0.10</near><far>80.0</far></clip>
         </camera>
         <always_on>true</always_on>
-        <update_rate>20</update_rate>
+        <update_rate>50</update_rate>
         <visualize>false</visualize>
       </sensor>
     </link>
