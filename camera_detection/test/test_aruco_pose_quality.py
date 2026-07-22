@@ -148,8 +148,8 @@ def test_front_and_down_configs_have_distinct_inputs_outputs_and_real_depth():
         configs.append(next(iter(data.values()))["ros__parameters"])
     front, down = configs
     assert front["image_topic"] != down["image_topic"]
-    assert front["depth_topic"] == "/front_depth/image"
-    assert down["depth_topic"] == "/down_depth/image"
+    assert front["depth_topic"] == "/front_depth/image_raw"
+    assert down["depth_topic"] == "/down_depth/image_raw"
     assert front["pose_topic"] != down["pose_topic"]
     assert front["optical_frame_id"] != down["optical_frame_id"]
     assert front["depth_required"] and down["depth_required"]

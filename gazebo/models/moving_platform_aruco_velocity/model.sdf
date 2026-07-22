@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<sdf version="1.9">
+  <model name="moving_platform_aruco_velocity">
+    <static>false</static>
+    <self_collide>false</self_collide>
+    <allow_auto_disable>false</allow_auto_disable>
+    <link name="platform_link">
+      <gravity>false</gravity>
+      <visual name="body_visual">
+        <pose>0 0 -1.0 0 0 0</pose>
+        <geometry><box><size>5 5 1.9</size></box></geometry>
+        <material>
+          <ambient>0.55 0.32 0.05 1</ambient>
+          <diffuse>0.6 0.38 0.08 1</diffuse>
+          <specular>0.2 0.2 0.2 1</specular>
+        </material>
+      </visual>
+      <collision name="body_collision">
+        <pose>0 0 -1.0 0 0 0</pose>
+        <geometry><box><size>5 5 1.9</size></box></geometry>
+      </collision>
+      <visual name="platform_visual">
+        <geometry><box><size>5 5 0.1</size></box></geometry>
+        <material>
+          <ambient>0.3 0.3 0.3 1</ambient>
+          <diffuse>0.3 0.3 0.3 1</diffuse>
+          <specular>0.1 0.1 0.1 1</specular>
+        </material>
+      </visual>
+      <collision name="platform_collision">
+        <geometry><box><size>5 5 0.1</size></box></geometry>
+      </collision>
+      <!-- Same proven single-ID target as the stationary experiment: the
+           texture's quiet zone makes its 1.95 m plane a 1.50 m black code. -->
+      <visual name="aruco_visual">
+        <pose>0 0 0.051 0 0 0</pose>
+        <geometry><plane><normal>0 0 1</normal><size>1.95 1.95</size></plane></geometry>
+        <material>
+          <ambient>1 1 1 1</ambient>
+          <diffuse>1 1 1 1</diffuse>
+          <specular>0 0 0 1</specular>
+          <pbr><metal>
+            <albedo_map>model://aruco_marker_0/materials/textures/aruco_0.png</albedo_map>
+            <metalness>0.0</metalness>
+            <roughness>1.0</roughness>
+          </metal></pbr>
+        </material>
+      </visual>
+      <pose>0 0 2 0 0 0</pose>
+      <inertial>
+        <mass>10000</mass>
+        <inertia>
+          <ixx>10000</ixx><iyy>10000</iyy><izz>10000</izz>
+        </inertia>
+      </inertial>
+    </link>
+    <plugin filename="gz-sim-velocity-control-system"
+            name="gz::sim::systems::VelocityControl">
+      <topic>/model/trailer/cmd_vel</topic>
+      <link_name>platform_link</link_name>
+    </plugin>
+    <plugin filename="gz-sim-odometry-publisher-system"
+            name="gz::sim::systems::OdometryPublisher">
+      <dimensions>3</dimensions>
+      <odom_frame>world</odom_frame>
+      <robot_base_frame>trailer/base_link</robot_base_frame>
+      <odom_publish_frequency>50</odom_publish_frequency>
+      <odom_topic>/model/trailer/odometry</odom_topic>
+    </plugin>
+  </model>
+</sdf>

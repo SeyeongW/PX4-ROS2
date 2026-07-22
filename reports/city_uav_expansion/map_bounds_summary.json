@@ -1,31 +1,56 @@
 {
+  "active_height_distribution": {
+    "count": 205,
+    "mean_m": 35.0,
+    "median_m": 35.0,
+    "q1_m": 27.5,
+    "q3_m": 42.5,
+    "unique_count": 205
+  },
+  "active_height_profile": "deterministic_active_hash_rank_20_to_50m_mean35_v1",
+  "active_height_range_m": [
+    20.0,
+    50.0
+  ],
   "anchor_enu_m": [
     0.0,
     0.0
   ],
+  "astar_geometry": {
+    "logical_xy_vertex_count": 1962,
+    "logical_xyz_vertex_count": 3924,
+    "path": "gazebo/maps/city_uav_building_vertices.csv",
+    "schema_version": 1,
+    "sha256": "a4ae9bd04c4836fce04a7cb0479a2313aaa75a577a8dd6c9977d84745b443b0a"
+  },
   "bounds_enu_m": {
     "x": [
-      -630.0,
-      630.0
+      -650.0,
+      650.0
     ],
     "y": [
-      -630.0,
-      630.0
+      -650.0,
+      650.0
     ]
   },
+  "building_gap_constraint_enforced": false,
+  "building_overlap_count": 0,
   "city_spacing_scale_xy": 2.5,
   "collision_geometry": {
-    "certified_minimum_neighbor_gap_m": 13.491759013155333,
-    "count": 1,
+    "certified_minimum_neighbor_gap_m": 0.9719424079449763,
+    "count": 205,
+    "dart_sdf_mesh_supported": false,
+    "dart_sdf_polyline_supported": true,
     "maximum_outward_error_m": 0.0,
     "maximum_undercoverage_m": 0.0,
     "mission_clearance_m": {
-      "drone_spawn": 34.626422505693604,
-      "global_goal": 15.305595880615241,
-      "trailer_spawn": 48.51700844351137
+      "drone_spawn": 28.224789458407617,
+      "global_goal": 17.608354909672848,
+      "trailer_spawn": 31.61586102045515
     },
-    "representation": "shared_exact_dae_mesh",
-    "source": "same closed triangulated DAE as visual",
+    "representation": "exact_per_building_polyline_prisms_dart",
+    "required_physics_engine": "gz-physics-dartsim-plugin",
+    "source": "one exact SDF polyline prism per YAML building",
     "source_vertex_alignment_error_m": 0.0
   },
   "fixed_coordinates_enu_m": {
@@ -35,7 +60,7 @@
     ],
     "global_goal": [
       200.0,
-      -125.0
+      -128.0
     ],
     "trailer_destination": [
       -128.0,
@@ -48,28 +73,43 @@
   },
   "generated_building_count": 205,
   "ground_size_m": [
-    1260.0,
-    1260.0
+    1300.0,
+    1300.0
   ],
   "hard_corridor_width_m": 2.9,
+  "height_transform": {
+    "active_profile": "deterministic_active_hash_rank_20_to_50m_mean35_v1",
+    "active_range_m": [
+      20.0,
+      50.0
+    ],
+    "formula": "20 + 30 * active_hash_rank / 204",
+    "foundation_and_ground_maximum_absolute_error_m": 0.0,
+    "source_profile": "deterministic_hash_rank_10_to_20m_v1",
+    "source_range_m": [
+      10.0,
+      20.0
+    ],
+    "target_mean_m": 35.0
+  },
   "mesh": {
     "path": "gazebo/worlds/applepark_city_uav/mesh/buildings_uav.dae",
-    "sha256": "4dcbaf4079bd89fb04df9e367e82086b6ad2b23116239f73fdd357a151bda298",
-    "triangles": 7048,
-    "vertices": 21144
+    "sha256": "3692d96187c9b512d2a29bb4c8bb3d3e91442819c3d88672f7c755d985d0fb7e",
+    "triangles": 7032,
+    "vertices": 21096
   },
-  "minimum_neighbor_gap_m": 13.491759013155333,
+  "minimum_neighbor_gap_m": 0.9719424079449763,
   "mission_clearance_m": {
-    "drone_spawn": 34.626422505693604,
-    "global_goal": 15.305595880615241,
-    "trailer_spawn": 48.51700844351137
+    "drone_spawn": 28.224789458407617,
+    "global_goal": 17.608354909672848,
+    "trailer_spawn": 31.61586102045515
   },
-  "neighbor_pair_count": 789,
+  "neighbor_pair_count": 790,
   "pairwise_gap_ratio": {
-    "count_excluding_original_touching_pairs": 789,
-    "median": 3.8367327427016673,
-    "minimum": 2.9224058532005173,
-    "p10": 3.3585974260061295
+    "count_excluding_original_touching_pairs": 790,
+    "median": 2.5,
+    "minimum": 2.499999999999949,
+    "p10": 2.4999999999999973
   },
   "preferred_corridor_width_m": 4.3,
   "removed_building_count": 69,
@@ -136,16 +176,16 @@
     "building_232",
     "building_237",
     "building_239",
-    "building_240",
     "building_246",
     "building_248",
     "building_261",
     "building_262",
     "building_264",
+    "building_265",
     "building_270"
   ],
-  "scale_selection_reason": "restore origin/jo building XY: 2.5x centroids and 0.9x footprints; create passages only through deterministic building removal",
-  "selected_footprint_scale_xy": 0.9,
+  "scale_selection_reason": "match origin/main initial-city proportions by scaling both building centroids and local XY footprints by 2.5; retain the deterministic 205-building selection and remap only roof heights to 20--50m with exact 35m mean",
+  "selected_footprint_scale_xy": 2.5,
   "selected_layout_feasible": true,
   "source_building_count": 274,
   "spatial_random_reduction": {
@@ -198,7 +238,7 @@
         2
       ]
     ],
-    "removed_ids_sha256": "041e0979aaad59280413eba5e758664b7b2653fe1981695633b18d51130dde6d",
+    "removed_ids_sha256": "de4469c06f387f4acc97ef29c9b9818fa08a4e831541f2f199cf62b35459c753",
     "seed": 7577,
     "source_bounds_m": [
       -250.0,
@@ -242,14 +282,10 @@
       ]
     ]
   },
-  "tight_or_invalid_corridor_count": 0,
+  "tight_or_invalid_corridor_count": 9,
   "trailer_motion": "stationary_spawn_only",
   "visual_collision_yaml_alignment": {
     "maximum_absolute_xy_error_m": 0.0,
     "tolerance_m": 0.01
-  },
-  "z_preservation": {
-    "maximum_absolute_error_m": 0.0,
-    "tolerance_m": 1e-09
   }
 }

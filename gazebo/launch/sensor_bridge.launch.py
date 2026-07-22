@@ -5,9 +5,9 @@ The Gazebo-native names are launch arguments.  ROS consumers always receive
 the stable contract below, independent of the selected world or PX4 entity:
 
 * ``/front_camera/image`` and ``/front_camera/camera_info``
-* ``/front_depth/image``, ``/front_depth/points`` and camera info
+* ``/front_depth/image`` (mono8 display), ``/front_depth/image_raw`` (32FC1 metric), points and info
 * ``/down_camera/image`` and ``/down_camera/camera_info``
-* ``/down_depth/image``, ``/down_depth/points`` and camera info
+* ``/down_depth/image`` (mono8 display), ``/down_depth/image_raw`` (32FC1 metric), points and info
 * ``/down_lidar`` and ``/down_lidar/points``
 
 Camera link frames use Gazebo's +X-forward convention.  Their optical children
@@ -44,6 +44,21 @@ def _launch_setup(context, *args, **kwargs):
     model = LaunchConfiguration("model").perform(context)
     base_frame = LaunchConfiguration("base_frame").perform(context)
     backend = LaunchConfiguration("bridge_backend").perform(context)
+    clock_bridge_rate_hz = LaunchConfiguration(
+        "clock_bridge_rate_hz"
+    ).perform(context)
+    image_transport_max_rate_hz = LaunchConfiguration(
+        "image_transport_max_rate_hz"
+    ).perform(context)
+    camera_info_transport_max_rate_hz = LaunchConfiguration(
+        "camera_info_transport_max_rate_hz"
+    ).perform(context)
+    cloud_transport_max_rate_hz = LaunchConfiguration(
+        "cloud_transport_max_rate_hz"
+    ).perform(context)
+    lidar_transport_max_rate_hz = LaunchConfiguration(
+        "lidar_transport_max_rate_hz"
+    ).perform(context)
 
     front_rgb_image = LaunchConfiguration("front_rgb_image_gz_topic").perform(context)
     front_rgb_info = LaunchConfiguration("front_rgb_info_gz_topic").perform(context)
@@ -80,12 +95,12 @@ def _launch_setup(context, *args, **kwargs):
     bridge_remappings = [
             (front_rgb_image, "/front_camera/image"),
             (front_rgb_info, "/front_camera/camera_info"),
-            (front_depth, "/front_depth/image"),
+            (front_depth, "/front_depth/image_raw"),
             (front_depth_points, "/front_depth/points"),
             (front_depth_info, "/front_depth/camera_info"),
             (down_rgb_image, "/down_camera/image"),
             (down_rgb_info, "/down_camera/camera_info"),
-            (down_depth, "/down_depth/image"),
+            (down_depth, "/down_depth/image_raw"),
             (down_depth_points, "/down_depth/points"),
             (down_depth_info, "/down_depth/camera_info"),
             (lidar_base, "/down_lidar"),
@@ -114,6 +129,23 @@ def _launch_setup(context, *args, **kwargs):
                 sys.executable, str(native_bridge), "--ros-args",
                 "-p", f"world:={world}",
                 "-p", f"model:={model}",
+                "-p", f"clock_bridge_rate_hz:={clock_bridge_rate_hz}",
+                "-p", (
+                    "image_transport_max_rate_hz:="
+                    f"{image_transport_max_rate_hz}"
+                ),
+                "-p", (
+                    "camera_info_transport_max_rate_hz:="
+                    f"{camera_info_transport_max_rate_hz}"
+                ),
+                "-p", (
+                    "cloud_transport_max_rate_hz:="
+                    f"{cloud_transport_max_rate_hz}"
+                ),
+                "-p", (
+                    "lidar_transport_max_rate_hz:="
+                    f"{lidar_transport_max_rate_hz}"
+                ),
                 "-p", f"front_rgb_image_gz_topic:={front_rgb_image}",
                 "-p", f"front_rgb_info_gz_topic:={front_rgb_info}",
                 "-p", f"front_depth_image_gz_topic:={front_depth}",
@@ -144,11 +176,11 @@ def _launch_setup(context, *args, **kwargs):
     optical_rpy = (-1.57079632679, 0.0, -1.57079632679)
     transforms = [
         _static_tf("tf_front_rgb_link", base_frame, "front_rgb_link",
-                   (0.12, 0.03, 0.242), (0.0, 0.0, 0.0)),
+                   (0.12, 0.03, 0.002), (0.0, 0.0, 0.0)),
         _static_tf("tf_front_rgb_optical", "front_rgb_link",
                    "front_camera_optical_frame", (0.0, 0.0, 0.0), optical_rpy),
         _static_tf("tf_front_depth_link", base_frame, "front_depth_link",
-                   (0.12, 0.0, 0.242), (0.0, 0.0, 0.0)),
+                   (0.12, 0.0, 0.002), (0.0, 0.0, 0.0)),
         _static_tf("tf_front_depth_optical", "front_depth_link",
                    "front_depth_optical_frame", (0.0, 0.0, 0.0), optical_rpy),
         _static_tf("tf_down_rgb_link", base_frame, "down_rgb_link",
@@ -160,7 +192,7 @@ def _launch_setup(context, *args, **kwargs):
         _static_tf("tf_down_depth_optical", "down_depth_link",
                    "down_depth_optical_frame", (0.0, 0.0, 0.0), optical_rpy),
         _static_tf("tf_down_lidar", base_frame, "lidar_sensor_link",
-                   (0.0, 0.0, -0.05), (0.0, 1.57079632679, 0.0)),
+                   (0.08, 0.0, -0.20), (0.0, 1.57079632679, 0.0)),
     ]
     return [bridge, *transforms]
 
@@ -177,6 +209,26 @@ def generate_launch_description():
         _argument(
             "bridge_backend", "native",
             "native for gz-sim8 transport13, ros_gz for ABI-compatible Garden.",
+        ),
+        _argument(
+            "clock_bridge_rate_hz", "50.0",
+            "Gazebo /clock callback limit and ROS /clock publication rate.",
+        ),
+        _argument(
+            "image_transport_max_rate_hz", "50.0",
+            "Maximum native Gazebo image callback rate per topic.",
+        ),
+        _argument(
+            "camera_info_transport_max_rate_hz", "5.0",
+            "Maximum native Gazebo camera-info callback rate per topic.",
+        ),
+        _argument(
+            "cloud_transport_max_rate_hz", "5.0",
+            "Maximum native Gazebo point-cloud callback rate per topic.",
+        ),
+        _argument(
+            "lidar_transport_max_rate_hz", "25.0",
+            "Maximum native Gazebo lidar callback rate.",
         ),
         _argument(
             "front_rgb_image_gz_topic", "/front_camera/image",

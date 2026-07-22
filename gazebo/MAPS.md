@@ -61,24 +61,41 @@ GZ_SIM_RESOURCE_PATH="$PWD/gazebo/models:$PWD/gazebo/worlds" __NV_PRIME_RENDER_O
 
 - world: `gazebo/worlds/applepark_city_uav/applepark_uav.world`
 - coordinate contract: `gazebo/maps/city_coordinates_uav.yaml`
-- flat ground: 1260 x 1260 m at exactly `z=0`
+- flat ground: 1300 x 1300 m at exactly `z=0` (`-650..650 m` ENU)
 - 205 active buildings (69 / 274 removed, the nearest integer to one quarter);
-  retained XY footprints use the rolled-back `jo` `0.9x` scale
-- building centroid XY coordinates retain the `jo` `2.5x` layout; the enlarged
-  city keeps every exact-footprint gap above `2 m`
+  retained XY footprints and centroids both use a uniform `2.5x` transform of
+  the initial `origin/main` city
+- building IDs and centroid XY coordinates remain unchanged from the preceding
+  active layout; foundations stay at `-0.05 m`, while only roof heights are
+  re-ranked in the retained source hash order into `20..50 m`, with exact
+  arithmetic mean `35 m`
 - removals use seed `7577`, 5x5 spatial Hamilton quotas and stable SHA-256
   ranking; all 25 regions contain removals, so no artificial diagonal corridor
   is baked into the map
-- every retained building uses the deterministic hash-rank `10..20 m`
-  skyline; foundations extend from `-0.05 m` to the flat `z=0` datum
-- visual and DART collision share one closed, triangulated DAE for all 205
-  buildings; the courtyard hole remains open, the physical minimum gap is also
-  `13.491759 m`, and invisible outward/undercoverage error is zero
+- every retained building uses the deterministic active hash-rank `20..50 m`
+  skyline with exact mean and median `35 m`; foundations extend from `-0.05 m`
+  to the flat `z=0` datum
+- the visual is one closed triangulated DAE; 205 exact DART polyline-prism
+  collisions use the same YAML rings, so the courtyard remains open and all footprints remain disjoint,
+  the physical minimum gap is `0.971942 m`, and invisible
+  outward/undercoverage error is zero
+- expanded building footprints cover zero strict-asphalt pixels; `2.5x` is the
+  largest reference-faithful scale before road conflicts begin
 - PX4 model-root spawn: `(587, 580, 0)` on the north-east road end
 - trailer spawn: `(-587, -512, 0)` on the opposite south-west road end;
-  separation is `1603.352737 m`, both sites are asphalt-only and at least
-  `43 m` inside the map boundary
-- the trailer is stationary in the city profile
+  separation is `1603.352737 m`, both sites are asphalt-only and retain at
+  least `63 m` center clearance from the restored map boundary
+- `(-600,-600)` has 50 m of visual and physical ground to each nearby edge;
+  the former dark affine-fill border is replaced by a smooth
+  edge-clamped fade without changing any building coordinate
+- A* polygon rings and vertical limits are exported deterministically to
+  `gazebo/maps/city_uav_building_vertices.csv`; the fixed goal is
+  `(200,-128)` and its former blocking structure (`building_265`) is removed
+- DART cannot load this city's DAE directly as collision in Gazebo Harmonic
+  8.14, so the DAE remains visual-only while exact DART-supported polyline
+  prisms provide physical buildings without destabilizing PX4 flight
+- the trailer has zero commanded mean speed in the city profile; the retained
+  SEO controller adds its stock small force/torque perturbations after PX4 spawns
 - the GUI includes `GzSceneManager`, so the checked-in custom GUI renders the
   scene instead of opening a black 3D panel
 
@@ -117,7 +134,7 @@ Foundation values are recorded in
 SHA-256-derived factor, old roof and new roof for every component are in
 `gazebo/validation/city/building_height_scaling.csv`.
 
-The visual asset is an all-255 257×257 heightmap with `<size_z>0.001` and
+The visual asset is an all-255 256×256 heightmap with `<size_z>0.001` and
 `<pos_z>-0.001`; OGRE2 therefore draws its top at exactly `z=0` while its
 otherwise-visible heightmap skirt is only 1 mm deep. The terrain visual does
 not cast a large backing-volume shadow. The committed 129×129 Bullet OBJ has
@@ -144,9 +161,14 @@ For the actual PX4-controlled x500 with downward monocular camera, run:
 
 ## Trailer waypoint control
 
-The model selectively ported from `origin/seo` is not a wheeled trailer. The
-city includes the repository `trailer_aruco` model as a stationary spawn only.
-The mountain retains its optional VelocityControl landing-platform route. The
+The city now uses `seo`'s default `moving_platform_aruco` PX4 landing-platform
+trailer (5 x 5 m deck, 2.05 m top, 1 x 1 m ArUco marker). Its original
+`MovingPlatformController` is retained, while the city launcher defaults
+`PX4_GZ_PLATFORM_VEL=0`, so its commanded mean speed is zero unless the
+operator explicitly requests motion. The stock SEO controller still adds
+small force/torque perturbations after the PX4 vehicle appears; map-only runs
+remain fixed while the controller waits for that vehicle. It is not a wheeled vehicle. The
+mountain retains its optional VelocityControl landing-platform route. The
 standalone mountain driver uses Gazebo Transport directly and does not require
 MAVROS:
 
@@ -171,6 +193,7 @@ city building polygons (including the courtyard hole), the 274-building legacy
 source, and all 288 mountain tree collision cylinders are exported to:
 
 - `gazebo/maps/city_coordinates_uav.yaml` (active UAV city, full XYZ AABBs)
+- `gazebo/maps/city_uav_building_vertices.csv` (ordered A* outer/hole vertices and vertical limits)
 - `gazebo/maps/city_coordinates.yaml`
 - `gazebo/maps/mountain_coordinates.yaml`
 
@@ -191,9 +214,11 @@ python3 gazebo/tools/validate_self_contained_maps.py
 ```
 
 The validation asserts asset hashes, local URI closure, PX4 launch contracts,
-city road alignment, the active deterministic `10..20 m` skyline, retained
+city road alignment, the active deterministic `20..50 m` skyline with exact
+`35 m` mean, retained
 historical height-factor audit data, and deterministic mountain geometry. It
-checks PX4 spawn clearance, the spatial-random reduction audit, the shared city collision DAE, every
-tree trunk disk, the absence of maze entities, both YAML files and the planning
+checks PX4 spawn clearance, the spatial-random reduction audit, all exact DART
+city collision prisms, every tree trunk disk, the absence of maze entities,
+the YAML/CSV coordinate files and the planning
 references. Generated assets are committed directly so a fresh clone needs no
 separate LFS download.

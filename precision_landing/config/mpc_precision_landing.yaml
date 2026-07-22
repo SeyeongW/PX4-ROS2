@@ -1,0 +1,394 @@
+mpc_precision_landing:
+  ros__parameters:
+    use_sim_time: true
+    control_stack_name: px4_mavros_relative_osqp
+    baseline_run_id: ""
+    vehicle_authority_id: vehicle_1
+    uses_sim_ground_truth_control_input: true
+    validation_mode: false
+    production_qualified: true
+    landing_controller_type: relative_landing_mpc
+    landing_mpc_solver: osqp
+    landing_mpc_max_iterations: 1000
+    # Fresh 200 m SITL approach snapshots intermittently exhausted 400
+    # iterations at 1e-4 and were correctly rejected as solved-inaccurate.
+    # A 2e-4 solver tolerance removed that convergence island while the
+    # independent hard post-solve constraint audit remains active.
+    # The live terminal-descent QP needed about 405 iterations.  This setting
+    # solves it in ~13 ms while the independent hard-constraint audit remains
+    # in force.
+    landing_mpc_absolute_tolerance: 0.001
+    landing_mpc_relative_tolerance: 0.001
+    landing_mpc_deadline_ms: 40.0
+    # Heartbeat/state evaluation and the latest-wins OSQP scheduler both run
+    # at 50 Hz. The single worker still prevents overlapping solves.
+    mpc_solver_rate_hz: 50.0
+    # The emitted OSQP state is the first 100 ms prediction. Expire it while it
+    # is still future-facing instead of replaying an already-passed setpoint.
+    mpc_solution_max_age_ms: 80.0
+    mpc_max_vehicle_position_change_m: 0.30
+    mpc_max_vehicle_velocity_change_m_s: 0.50
+    mpc_max_vehicle_acceleration_change_m_s2: 1.0
+    # A 3 m/s deck moves 0.30 m in 100 ms. Leave bounded scheduling margin so
+    # normal deck motion is not misclassified as a stale target jump.
+    mpc_max_target_position_change_m: 0.50
+    mpc_max_target_velocity_change_m_s: 0.50
+    mpc_max_target_acceleration_change_m_s2: 1.0
+    mpc_max_target_yaw_change_rad: 0.2617993877991494
+    mpc_failure_fallback: hold
+    landing_p_horizontal_gain: 0.8
+    landing_p_vertical_gain: 0.8
+    landing_p_horizontal_velocity_limit_m_s: 1.0
+    landing_p_vertical_velocity_limit_m_s: 0.5
+    # Shared moving-pad model/geometry. OSQP uses linear polygon/box bounds;
+    # the SLSQP reference retains the Stage-6 nonlinear constraints. The
+    # active x500 down camera is 1.396 rad HFOV / 1.1231652391 rad VFOV and
+    # the trailer deck is 5 x 5 m.
+    relative_landing_mpc_horizon_steps: 20
+    relative_landing_mpc_dt_s: 0.10
+    relative_landing_mpc_max_iterations: 30
+    relative_landing_mpc_deadline_ms: 40.0
+    # Proven 5 m/s moving-deck baseline: retain 1.5 m/s correction authority
+    # without the wider command envelope used by the later 9 m/s trial.
+    relative_landing_mpc_max_horizontal_velocity_m_s: 6.5
+    relative_landing_mpc_max_ascent_velocity_m_s: 2.0
+    relative_landing_mpc_max_descent_velocity_m_s: 0.7
+    relative_landing_mpc_max_horizontal_acceleration_m_s2: 3.0
+    relative_landing_mpc_max_vertical_acceleration_m_s2: 3.0
+    relative_landing_mpc_max_jerk_m_s3: 5.0
+    # The 5 m deck safely accommodates this terminal funnel. The live 3 m/s
+    # circle held 0.53-0.63 m error through near-contact occlusion; a 0.50 m
+    # polygon made that otherwise stable final QP infeasible at 0.26 m height.
+    relative_landing_mpc_funnel_minimum_radius_m: 0.75
+    relative_landing_mpc_funnel_slope: 0.75
+    relative_landing_mpc_camera_horizontal_fov_rad: 1.396
+    relative_landing_mpc_camera_vertical_fov_rad: 1.1231652391
+    relative_landing_mpc_camera_fov_margin: 0.85
+    relative_landing_mpc_landing_pad_length_m: 5.0
+    relative_landing_mpc_landing_pad_width_m: 5.0
+    relative_landing_mpc_landing_pad_contact_margin_m: 0.75
+    relative_landing_mpc_alignment_position_tolerance_m: 0.75
+    relative_landing_mpc_alignment_velocity_tolerance_m_s: 0.35
+    # The ArUco fit represents the 0.50 m/s^2 centripetal motion of the
+    # 5 m/s, 50 m circle without exposing simulator trailer twist.
+    relative_landing_mpc_pad_acceleration_smoothing_factor: 0.20
+    relative_landing_mpc_max_pad_acceleration_m_s2: 1.0
+    front_marker_pose_topic: /perception/front/marker_pose_covariance
+    down_marker_pose_topic: /perception/down/marker_pose_covariance
+    front_marker_quality_topic: /perception/front/quality
+    down_marker_quality_topic: /perception/down/quality
+    down_marker_detected_topic: /perception/down/aruco_detected
+    # The detector publishes one Bool for every processed camera frame. A
+    # false result stops optical alignment/descent on the next control tick;
+    # this timeout also fails closed if the detector stream itself stops.
+    marker_detection_status_timeout_s: 0.50
+    trailer_odometry_topic: /trailer/odometry
+    trailer_gz_odometry_topic: /model/trailer/odometry
+    # Terminal 1 owns trailer motion after PX4 entity confirmation. An empty
+    # command topic keeps this mission-side bridge odometry-only, preventing
+    # two Gazebo Transport publishers from fighting over the same velocity.
+    trailer_gz_command_topic: ""
+    trailer_world_origin_x_enu_m: 30.0
+    trailer_world_origin_y_enu_m: 30.0
+    trailer_world_origin_z_enu_m: 0.24
+    trailer_speed_m_s: 3.0
+    trailer_acceleration_m_s2: 1.0
+    trailer_waypoints_enu_m: [
+      37.071067811865476, 37.071067811865476,
+      137.07106781186548, 37.071067811865476,
+      137.07106781186548, 137.07106781186548,
+      37.071067811865476, 137.07106781186548
+    ]
+    trailer_waypoint_radius_m: 0.2
+    trailer_corner_radius_m: 20.0
+    # Match the trailer model's 50 Hz Gazebo odometry source.  Forwarding is
+    # synchronized with the mission node's 50 Hz control-state evaluation.
+    trailer_state_publish_rate_hz: 50.0
+    trailer_odometry_warmup_samples: 12
+    vehicle_pose_topic: /mavros/local_position/pose
+    vehicle_velocity_topic: /mavros/local_position/velocity_local
+    # Independent ATTITUDE_QUATERNION sample stream; pose.orientation is only
+    # the latest attitude cached when LOCAL_POSITION_NED arrives.
+    vehicle_attitude_topic: /mavros/imu/data
+    mavros_timesync_status_topic: /mavros/timesync_status
+    # Gazebo cameras and MAVROS state use the same lockstep /clock.
+    mavros_state_timestamp_source: ros_header
+    # Optional std_msgs/Bool inputs from a PX4 land-detector bridge. Empty
+    # values disable the subscriptions; MAVROS ExtendedState then supplies a
+    # conservative combined on-ground fallback (see the experiment guide).
+    px4_ground_contact_topic: ""
+    px4_landed_topic: ""
+    px4_at_rest_topic: ""
+    # Deliberately false: validation and environment startup never arm or fly.
+    # Start explicitly with /autonomy/start_precision_landing when ready.
+    auto_start: false
+    control_rate_hz: 50.0
+    pose_timeout_s: 1.0
+    velocity_timeout_s: 1.0
+    trailer_timeout_s: 1.5
+    # A single Gazebo-odometry scheduling gap must stop descent, not latch a
+    # permanent mission abort.  Continue only bounded level XY coast and abort
+    # when the complete target outage persists for this full interval.
+    target_sensors_loss_abort_dwell_s: 1.0
+    # Accepted-sample age includes the 0.30 s fusion reorder window.  This
+    # still fails closed, while leaving the 0.50 s alignment dwell a measured
+    # opportunity at the ~5.8 Hz accepted SITL camera rate.
+    marker_timeout_s: 1.0
+    # The landing deck is level (yaw may move freely). Reject planar PnP
+    # branches whose transformed normal violates that physical contract.
+    maximum_marker_world_tilt_rad: 0.3490658503988659
+    # Both sensors enter one timestamp-ordered 8-state marker estimator.  The
+    # holdback exceeds the nominal ~200 ms camera pipeline latency, preventing
+    # newer odometry from making every image capture look late.
+    # The live 200 m run measured 58 ms camera-to-controller delay.  A 150 ms
+    # holdback preserves timestamp ordering without making fresh vision appear
+    # stale to the descent gate.
+    target_fusion_reorder_window_s: 0.15
+    target_fusion_maximum_measurement_age_s: 0.75
+    target_fusion_future_tolerance_s: 0.05
+    target_fusion_predict_only_timeout_s: 1.50
+    # The estimator intentionally holds measurements for the 0.30 s reorder
+    # window.  q=1.0 made its white-acceleration prediction alone exceed the
+    # 0.09 m^2 descent gate after 0.646 s, before the 0.85 s vision-age gate.
+    # q=0.25 keeps that prediction bounded while the timestamped trailer
+    # position and velocity updates retain moving-target responsiveness.
+    target_fusion_process_acceleration_variance: 0.25
+    target_fusion_process_yaw_acceleration_variance: 0.25
+    # The live 3 m/s runs show about 8 cm combined camera timestamp/extrinsic
+    # scatter despite sub-pixel reprojection residuals. Do not let the PnP
+    # covariance overstate confidence and reject otherwise consistent vision.
+    # The calibrated PnP stream shows about 0.10 m short-window scatter while
+    # tracking the 3 m/s circle.  An 0.08 m floor made valid 0.2--0.35 m
+    # innovations repeatedly trip the NIS gate and reset the 1 s track dwell.
+    target_fusion_vision_position_variance_floor: 0.01
+    target_fusion_vision_yaw_variance_floor: 0.0012184696791468343
+    target_fusion_odometry_position_variance_floor: 0.0025
+    # Trailer twist is intentionally hidden with a very large covariance.
+    # This floor affects estimator numerics only; production velocity comes
+    # from successive capture-time ArUco poses.
+    target_fusion_odometry_velocity_variance_floor: 0.0004
+    target_fusion_odometry_yaw_variance_floor: 0.0027415567780803775
+    target_fusion_odometry_yaw_rate_variance_floor: 0.007615435494667714
+    target_fusion_initial_velocity_variance: 25.0
+    target_fusion_initial_yaw_rate_variance: 4.0
+    # Trailer twist is hidden from production control.  Velocity becomes
+    # valid only after consecutive capture-time ArUco world poses constrain
+    # the vision-only Kalman state.
+    vision_velocity_minimum_accepted_samples: 3
+    vision_velocity_maximum_variance_m2_s2: 1.0
+    # One camera-only Kalman estimator follows the 9 m/s, R=50 m turn.  This
+    # is process noise for that existing estimator, not a second motion model.
+    vision_motion_process_acceleration_variance: 1.0
+    vision_velocity_dropout_hold_s: 1.5
+    # Matches the detector's continuous-track gap. A longer outage resets the
+    # vision-only motion filter and again requires three accepted poses.
+    vision_velocity_reacquisition_gap_s: 1.5
+    # One large marker is optically occluded near contact. In the already
+    # gated terminal phase, continue only the bounded ArUco-derived velocity
+    # and acceleration; odometry corrects position but never supplies speed.
+    # At r=50 m and 3 m/s, a bounded constant-acceleration continuation stays
+    # within the 0.35 m/s relative-speed envelope for about 7 s. Never coast a
+    # terminal optical loss beyond that ArUco-derived model horizon.
+    # The single marker can leave the FOV about 1.7 m above the deck. At the
+    # configured terminal descent, contact plus the 0.6 s land dwell can
+    # exceed seven seconds. The continuation remains ArUco-only and propagates
+    # its measured turn rate; simulator/trailer twist is never consumed.
+    # Once the large marker leaves the close-range FOV, retain the robust
+    # ArUco-derived speed/turn model through the complete guarded contact
+    # window. Fresh trailer position and lidar are still required; trailer
+    # twist is never substituted.
+    vision_velocity_terminal_hold_s: 30.0
+    # One bounded position-plus-ArUco-velocity controller covers the verified
+    # stationary/3/5 m/s envelope without a separate boost/coast path.
+    position_only_pursuit_max_speed_m_s: 6.5
+    position_only_pursuit_acceleration_m_s2: 6.0
+    # Before optical velocity is available, e=v/K. K=3 left a 5 m/s target
+    # 1.67 m off-centre and outside the pitched camera's reliable view; K=6
+    # halves that reacquisition error. Once ArUco velocity is valid the node
+    # still switches to the unchanged 0.8 gain plus optical feed-forward.
+    position_only_pursuit_gain_s_inv: 6.0
+    target_fusion_vision_nis_gate: 18.47
+    target_fusion_odometry_nis_gate: 26.12
+    target_fusion_maximum_position_innovation_m: 20.0
+    target_fusion_maximum_velocity_innovation_m_s: 10.0
+    target_fusion_maximum_yaw_rate_rad_s: 3.0
+    # Active precision_landing_200m.world uses moving_platform_aruco: its
+    # platform_link origin is root z=2.0 and the marker plane is +0.051 m.
+    trailer_marker_offset_x_m: 0.0
+    trailer_marker_offset_y_m: 0.0
+    trailer_marker_offset_z_m: 2.051
+    # nav_msgs/Odometry twist follows child_frame_id=trailer/base_link.
+    trailer_odometry_twist_in_body_frame: true
+    state_history_duration_s: 3.0
+    state_history_max_interpolation_gap_s: 0.25
+    # Match the filter's measurement-admission ceiling instead of rejecting a
+    # capture before the timestamp-ordered filter gets its configured chance.
+    state_history_max_capture_age_s: 0.75
+    state_history_max_state_age_s: 0.50
+    # Gazebo's transport-throttled 50 Hz world clock and 10 Hz camera are
+    # delivered by independent callbacks.  A valid capture can therefore
+    # lead the most recently published /clock tick by a bounded amount.  It
+    # is never interpolated immediately: the history layer still returns
+    # capture_ahead_of_state_history and the node keeps one latest-wins
+    # deferred frame until real PX4 samples bracket it.  Larger future stamps
+    # remain fail-closed.
+    state_history_future_tolerance_s: 0.10
+    camera_time_offset_smoothing_factor: 0.10
+    camera_time_offset_minimum_samples: 5
+    # State callbacks can arrive in bursts relative to /clock. Use a robust
+    # window and require a persistent multi-second origin change for reset;
+    # actual ROS/PX4 backward jumps are still rejected immediately.
+    camera_time_offset_median_window_size: 101
+    camera_time_offset_reset_threshold_s: 2.0
+    mavros_timesync_minimum_samples: 5
+    mavros_timesync_max_round_trip_time_ms: 50.0
+    mavros_timesync_timeout_s: 0.50
+    time_reset_threshold_s: 0.50
+    offboard_prestream_s: 2.0
+    takeoff_height_m: 6.0
+    takeoff_tolerance_m: 0.4
+    # Verified 5 m/s baseline: the 1.5 m marker stays large enough for stable
+    # pose/velocity estimation while the 6.5 m/s intercept closes the lag.
+    marker_search_height_m: 6.0
+    precision_align_height_m: 3.0
+    # Enter the guarded terminal phase before the 1.5 m marker fills the
+    # camera FOV. Vision is still required at entry; lidar and odometry bridge
+    # only the expected near-contact optical occlusion afterwards.
+    # The 1.95 m quiet-zone plane begins to clip in the camera near 1.55 m.
+    # Enter the lidar/odometry terminal bridge before that optical limit.
+    final_approach_height_m: 3.1
+    # Only below the measured single-board FOV limit may FINAL continue after
+    # optical loss. Entry into FINAL happens higher so normal pitch/lateral
+    # motion cannot clip the board before this guarded bridge is available.
+    terminal_occlusion_max_clearance_m: 3.00
+    terminal_occlusion_max_lidar_m: 2.90
+    # Descend briskly while optical XY/relative-speed gates remain valid.
+    # The OSQP hard limit remains 0.70 m/s and every denied safety gate still
+    # replaces this with a level command immediately.
+    precision_descent_speed_m_s: 0.70
+    final_descent_speed_m_s: 0.55
+    # FINAL uses v=sqrt(2*a*height_remaining) before the 0.12 m/s contact
+    # floor. 0.05 starts braking early enough for the live PX4 velocity loop;
+    # 0.07 reached the static deck at 0.34 m/s and caused a contact rebound.
+    final_descent_braking_acceleration_m_s2: 0.05
+    # Lead the marker by 0.15 m at 3 m/s using ArUco-derived motion only.
+    landing_motion_lead_time_s: 0.05
+    # This is still well inside the 5 m x 5 m deck and matches the previously
+    # successful descent envelope. The tighter 0.50 m gate repeatedly reset
+    # descent on normal camera noise at 5 m/s.
+    precision_lateral_gate_m: 0.75
+    # Require stable ArUco-relative motion before entering level alignment.
+    marker_track_entry_lateral_gate_m: 0.50
+    marker_track_entry_relative_speed_m_s: 0.35
+    # Position, camera-derived horizontal speed, and vehicle/marker yaw must
+    # all remain aligned for the full one-second dwell before descent starts.
+    marker_track_entry_yaw_error_rad: 0.17453292519943295
+    # At 6 m clearance this enters coast while the complete 1.5 m tag still
+    # has vertical-FOV margin; waiting until 1.5 m left too little room for a
+    # 4.2 m/s intercept to establish its three-frame motion estimate.
+    approach_capture_radius_m: 2.5
+    relative_speed_gate_m_s: 0.35
+    # Require a full second of continuous camera-relative position and speed
+    # agreement before entering alignment.  The following short safety dwell
+    # only confirms that the already-aligned command cache is valid; it does
+    # not repeat the acquisition delay.
+    precision_alignment_dwell_s: 1.0
+    precision_descent_gate_dwell_s: 0.2
+    # Stage-9 descent is fail-closed. Every descent tick requires fresh
+    # vision and odometry, bounded fused covariance and relative XY speed,
+    # funnel alignment, a plausible height source, and a valid solver cache.
+    # Callback freshness is checked before the timestamp-reorder watermark,
+    # so one to two missing camera frames stop descent promptly. A held
+    # ArUco-derived velocity is horizontal-tracking-only and never refreshes
+    # this descent gate.
+    descent_max_vision_age_s: 1.0
+    descent_max_position_variance_m2: 0.09
+    descent_lidar_timeout_s: 0.50
+    descent_min_lidar_distance_m: 0.02
+    descent_max_lidar_distance_m: 20.0
+    descent_max_relative_height_m: 20.0
+    # Production landing uses camera/trailer relative height, not lidar.
+    landing_use_lidar: false
+    final_approach_requires_lidar: false
+    # One measured 102 ms worker scheduling outlier produced one true
+    # deadline miss plus repeated invalid-cache ticks. Hold through a bounded
+    # half-second recovery window instead of aborting on that single outlier.
+    max_consecutive_solver_failures: 10
+    # Marker-loss handling: high altitude may hold/predict, middle altitude
+    # freezes descent for reacquisition, and low altitude aborts unless
+    # touchdown is independently confirmed.
+    marker_loss_high_altitude_m: 2.0
+    marker_loss_low_altitude_m: 0.80
+    # Below the low-altitude boundary every stale vision sample freezes
+    # descent. Only a persistent two-second loss may trigger abort climb.
+    low_altitude_marker_reacquire_timeout_s: 2.0
+    abort_climb_height_m: 3.0
+    abort_climb_tolerance_m: 0.30
+    abort_climb_timeout_s: 10.0
+    # Static-target contact can take about 22.4 s when covariance or an async
+    # solver handoff briefly levels the descent.  Keep enough time for that
+    # bounded recovery without relaxing any contact or descent-safety gate.
+    final_approach_timeout_s: 30.0
+    # The live x500 reaches deck contact at about 0.218 m base-link-to-marker
+    # separation (down lidar about 0.03 m). A 0.10 m reference was physically
+    # unreachable and kept the MPC driving into the deck instead of handing
+    # off to PX4's normal land detector.
+    touchdown_contact_clearance_m: 0.22
+    # At the clearance floor, retain OFFBOARD XY deck tracking while applying
+    # a bounded relative descent until PX4 reports ON_GROUND.  The live x500
+    # needs roughly 0.20 m of travel below the 0.22 m reference, so 0.08 m/s
+    # with a 3 s timeout expired just before contact evidence became valid.
+    touchdown_contact_settle_speed_m_s: 0.12
+    # Once lidar and relative vertical speed prove that the airframe is
+    # physically supported, increase only the demanded descent (the measured
+    # speed remains near zero) so PX4's low-throttle land detector can latch.
+    touchdown_contact_evidence_lidar_m: 0.04
+    # With the camera restored flush to the x500 underside, the landing gear
+    # first supports the airframe at 0.27--0.29 m above the marker plane.
+    # Latch that physical entry before collision rebound can request a climb;
+    # the independent 0.34 m deck-distance and relative-speed gates remain.
+    touchdown_contact_evidence_clearance_m: 0.30
+    touchdown_contact_entry_max_relative_vertical_speed_m_s: 0.35
+    landing_height_dropout_grace_s: 0.50
+    touchdown_contact_compression_speed_m_s: 0.50
+    # Reach the existing land-detector compression demand progressively after
+    # physical support is proven, avoiding a 0.12 -> 0.50 m/s command step.
+    touchdown_contact_compression_ramp_rate_m_s2: 0.25
+    touchdown_contact_settle_timeout_s: 15.0
+    # Reject a terminal latch if lidar shows that the vehicle has moved away
+    # from its closest near-contact range by more than this bounded amount.
+    touchdown_contact_lidar_rebound_tolerance_m: 0.05
+    # Keep the strict 0.30 m contact-entry and 0.34 m disarm envelopes, but do
+    # not interpret the measured 0.45 m moving-deck collision rebound as deck
+    # separation. The contact controller must re-seat below 0.34 m before the
+    # independent touchdown gate can ever disarm.
+    touchdown_contact_latch_exit_distance_m: 0.50
+    touchdown_contact_latch_exit_dwell_s: 0.70
+    # Retained only for explicit operator recovery; the production mission
+    # does not hand moving-deck control to PX4 AUTO.LAND.
+    touchdown_auto_land_mode: AUTO.LAND
+    touchdown_auto_land_timeout_s: 8.0
+    # Normal disarm is permitted only after deck distance, relative vertical
+    # speed, all three land-detector booleans, distinct samples, and dwell
+    # jointly pass. No altitude-only or forced-disarm threshold is configured.
+    # The stationary x500 rests 0.286--0.315 m above the marker plane.  This
+    # remains below the 0.40 m contact-latch exit and still requires PX4
+    # ground/landed/at-rest, low relative-vz, distinct samples and dwell.
+    touchdown_max_deck_distance_m: 0.34
+    touchdown_max_relative_vertical_speed_m_s: 0.18
+    # Keep the multi-signal/two-sample gate, while shortening the intentional
+    # armed-idle interval after PX4 has already confirmed landed and at-rest.
+    touchdown_dwell_s: 0.60
+    touchdown_confirmation_timeout_s: 15.0
+    touchdown_minimum_consecutive_samples: 2
+    land_detector_sample_timeout_s: 1.50
+    land_detector_future_tolerance_s: 0.02
+    land_detector_max_sample_gap_s: 1.50
+    landing_mpc_horizon_steps: 20
+    landing_mpc_dt_s: 0.10
+    # Preserve the unchanged absolute-coordinate legacy solver numerically.
+    legacy_mpc_max_iterations: 12
+    legacy_mpc_deadline_ms: 40.0
+    max_velocity_m_s: 5.0
+    max_acceleration_m_s2: 3.0
+    max_jerk_m_s3: 5.0

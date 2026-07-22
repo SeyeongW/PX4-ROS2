@@ -1,0 +1,92 @@
+schema_version: 2
+map:
+  name: precision_landing_200m
+  gazebo_world_name: precision_landing_200m
+  world_file: gazebo/worlds/precision_landing_200m.world
+  bounds_enu_m:
+    x: [0.0, 200.0]
+    y: [0.0, 200.0]
+
+frames:
+  gazebo_world:
+    convention: ENU
+    x_axis: east
+    y_axis: north
+    z_axis: up
+    yaw: counter_clockwise_from_east_rad
+    units: m
+  px4_local:
+    convention: NED
+    origin_enu_m: [30.0, 30.0, 0.24]
+    origin_reference: PX4 x500 base_link at rest (model root + 0.24 m)
+    conversion_from_gazebo_enu:
+      x_north_m: y_enu - 30.0
+      y_east_m: x_enu - 30.0
+      z_down_m: -(z_enu - 0.24)
+      yaw_ned_rad: normalize(pi/2 - yaw_enu)
+  mavros_local:
+    convention: ENU
+    origin_enu_m: [30.0, 30.0, 0.24]
+    origin_reference: MAVROS-transformed PX4 local origin at the resting base_link
+    conversion_from_gazebo_enu:
+      x_east_m: x_enu - 30.0
+      y_north_m: y_enu - 30.0
+      z_up_m: z_enu - 0.24
+
+px4_vehicle:
+  airframe_autostart_id: 4001
+  simulation_model: gz_x500_city_rgbd_lidar
+  runtime_entity_name: x500_city_rgbd_lidar_0
+  model_source: px4_models/x500_city_rgbd_lidar/model.sdf
+  spawn_mode: dynamic_by_px4_sitl
+  # Runtime-only SITL calibration. The short OFFBOARD contact handshake
+  # exceeds 1.1 * LNDMC_Z_VEL_MAX, then PX4 AUTO.LAND owns thrust ramp-down
+  # and native land detection. A longer automatic-disarm delay lets the node
+  # finish its independent touchdown dwell and issue the normal disarm first.
+  # No PX4 source or saved airframe file is modified.
+  sitl_parameter_overrides:
+    LNDMC_Z_VEL_MAX: 0.05
+    COM_DISARM_LAND: 10.0
+
+spawn:
+  name: precision_landing_drone_spawn
+  gazebo_spawn_pose_enu:
+    x: 30.0
+    y: 30.0
+    z: 0.0
+    roll: 0.0
+    pitch: 0.0
+    yaw: 0.0
+  surface: flat_ground_z0
+
+trailer:
+  entity_name: trailer
+  model_uri: model://moving_platform_aruco
+  source_branch_model: jo:gazebo/models/moving_platform_aruco
+  spawn_pose_enu:
+    x: 37.071067811865476
+    y: 37.071067811865476
+    z: 0.0
+    roll: 0.0
+    pitch: 0.0
+    yaw: 0.0
+  displacement_from_drone_enu_m: [7.0710678118654755, 7.0710678118654755]
+  horizontal_cue_mavros_local_enu_m: [7.0710678118654755, 7.0710678118654755]
+  separation_m: 10.0
+  motion: stationary_static_baseline
+  forced_static_in_world: true
+  body_footprint_m: [5.0, 5.0]
+  deck_height_m: 2.05
+  marker_surface_height_m: 2.051
+  marker_height_above_px4_local_origin_m: 1.811
+  marker_size_m: 1.5
+  aruco_dictionary: DICT_4X4_50
+  aruco_marker_id: 0
+
+terrain:
+  type: flat_box
+  size_m: [200.0, 200.0]
+  bounds_enu_m:
+    x: [0.0, 200.0]
+    y: [0.0, 200.0]
+  ground_z_m: 0.0
