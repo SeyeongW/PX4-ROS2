@@ -9,14 +9,14 @@ REPO_DIR="$(dirname "$SCRIPT_DIR")"
 usage() {
   cat <<EOF
 Usage:
-  Terminal 1: TRAILER_SPEED_M_S=5 $(basename "$0") environment
+  Terminal 1: TRAILER_SPEED_M_S=9 $(basename "$0") environment
   Terminal 2: $(basename "$0") mission
   Camera Terminal: $(basename "$0") camera-view
 
 environment starts the 200 x 200 m Gazebo GUI, PX4 SITL, MAVROS, the GCS
 heartbeat, the camera bridge, and the down-facing ArUco detector. Set
 TRAILER_SPEED_M_S=0 for a stationary trailer or any positive speed for the
-same moving-trailer mission (default: 5 m/s). mission starts only the one
+same moving-trailer mission (default: 9 m/s). mission starts only the one
 Relative-OSQP controller and issues one mission start request.
 
 The mission approaches from measured position and estimates trailer speed from
@@ -76,7 +76,7 @@ TRAILER_SPEED_VALUE=""
 DRIVE_TRAILER_VALUE=0
 EXPERIMENT_MODE="unified"
 if [[ "$ACTION" == "environment" ]]; then
-  TRAILER_SPEED_VALUE="${TRAILER_SPEED_M_S:-5.0}"
+  TRAILER_SPEED_VALUE="${TRAILER_SPEED_M_S:-9.0}"
   if ! python3 - "$TRAILER_SPEED_VALUE" <<'PY'
 import math
 import sys

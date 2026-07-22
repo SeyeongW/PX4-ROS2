@@ -27,7 +27,10 @@ from .landing_safety import (
     evaluate_descent_permission,
 )
 from .production_runtime import PRODUCTION_CONTROLLER_TYPE
-from .runtime_types import LandingPhase
+from .runtime_types import (
+    ACQUISITION_GUIDANCE_CONTROLLER_TYPE,
+    LandingPhase,
+)
 from .target_fusion import TargetEstimate, validate_covariance
 
 
@@ -44,7 +47,7 @@ class MissionRuntimeMixin:
                 "is false"
             )
             return response
-        if self.start_requested and self.phase not in (
+        if self.phase not in (
             LandingPhase.READY,
             LandingPhase.WAITING,
         ):
@@ -1443,7 +1446,7 @@ class MissionRuntimeMixin:
                 return
 
         if self.phase == LandingPhase.TAKEOFF:
-            self._tick_takeoff(mission_now)
+            self._tick_takeoff(now, mission_now)
         elif self.phase == LandingPhase.ABORT_CLIMB:
             self._tick_abort_climb(mission_now)
         elif self.phase == LandingPhase.APPROACH:
@@ -1524,7 +1527,16 @@ class MissionRuntimeMixin:
     def _tick_ready(self) -> None:
         if not self.start_requested:
             return
-        self.takeoff_origin = self.vehicle_position_enu.copy()
+        # PRESTREAM and ARMING can take several seconds.  A vehicle resting on
+        # a moving deck must not retain this early world position as its later
+        # takeoff target; the reference is captured only after arm is confirmed.
+        self.takeoff_origin = None
+        self.takeoff_from_trailer = False
+        self.takeoff_trailer_offset_body_m.fill(0.0)
+        self.takeoff_feedforward_velocity_enu.fill(0.0)
+        self.takeoff_trailer_previous_sample_time_s = None
+        self.takeoff_trailer_previous_position_enu = None
+        self.takeoff_trailer_velocity_initialized = False
         self._transition(LandingPhase.PRESTREAM, "start request accepted")
 
     def _tick_prestream(self, mission_now: float) -> None:
@@ -1544,12 +1556,152 @@ class MissionRuntimeMixin:
         if not state.armed:
             self._request_arm(True, now)
             return
+        self._capture_takeoff_reference(now)
         self._transition(LandingPhase.TAKEOFF, "armed in OFFBOARD")
 
-    def _tick_takeoff(self, mission_now: float) -> None:
+    def _capture_takeoff_reference(self, now: float) -> None:
+        """Capture a fresh, ArUco-independent reference after arm confirmation."""
+        position = np.asarray(self.vehicle_position_enu, dtype=float).copy()
+        velocity = np.asarray(self.vehicle_velocity_enu, dtype=float).copy()
+        velocity[2] = 0.0
+        maximum_speed = self._float(
+            "relative_landing_mpc_max_horizontal_velocity_m_s"
+        )
+        horizontal_speed = float(np.linalg.norm(velocity[:2]))
+        if horizontal_speed > maximum_speed and horizontal_speed > 1.0e-9:
+            velocity[:2] *= maximum_speed / horizontal_speed
+        self.takeoff_origin = position
+        self.takeoff_feedforward_velocity_enu = velocity
+        self.takeoff_from_trailer = False
+        self.takeoff_trailer_offset_body_m.fill(0.0)
+        self.takeoff_trailer_previous_sample_time_s = None
+        self.takeoff_trailer_previous_position_enu = None
+        self.takeoff_trailer_velocity_initialized = False
+
+        trailer_pose = self._latest_trailer_marker_pose(now)
+        if trailer_pose is None:
+            return
+        trailer_position = np.asarray(trailer_pose[0], dtype=float)
+        trailer_yaw = float(trailer_pose[1])
+        offset_enu = position - trailer_position
+        cosine = math.cos(trailer_yaw)
+        sine = math.sin(trailer_yaw)
+        offset_body = np.asarray(
+            (
+                cosine * offset_enu[0] + sine * offset_enu[1],
+                -sine * offset_enu[0] + cosine * offset_enu[1],
+                offset_enu[2],
+            ),
+            dtype=float,
+        )
+        usable_half_length = max(
+            0.0,
+            0.5
+            * self._float("relative_landing_mpc_landing_pad_length_m")
+            - self._float("relative_landing_mpc_landing_pad_contact_margin_m"),
+        )
+        usable_half_width = max(
+            0.0,
+            0.5
+            * self._float("relative_landing_mpc_landing_pad_width_m")
+            - self._float("relative_landing_mpc_landing_pad_contact_margin_m"),
+        )
+        maximum_vertical_gap = (
+            self._float("touchdown_max_deck_distance_m")
+            + self._float("takeoff_tolerance_m")
+        )
+        ground_contact, landed, at_rest, _, _ = (
+            self._px4_land_detector_signals(now)
+        )
+        self.takeoff_from_trailer = bool(
+            ground_contact
+            and landed
+            and at_rest
+            and abs(float(offset_body[0])) <= usable_half_length
+            and abs(float(offset_body[1])) <= usable_half_width
+            and abs(float(offset_body[2])) <= maximum_vertical_gap
+        )
+        if self.takeoff_from_trailer:
+            self.takeoff_trailer_offset_body_m = offset_body
+            trailer_state = self.trailer_state
+            if trailer_state is not None:
+                self.takeoff_trailer_previous_sample_time_s = float(
+                    trailer_state.sample_time_s
+                )
+                self.takeoff_trailer_previous_position_enu = (
+                    trailer_position.copy()
+                )
+            self.get_logger().info(
+                "moving-deck takeoff latched; ArUco excluded until TAKEOFF ends"
+            )
+        else:
+            self.takeoff_feedforward_velocity_enu.fill(0.0)
+
+    def _takeoff_trailer_reference(
+        self, now: float
+    ) -> tuple[np.ndarray, np.ndarray] | None:
+        """Track the deck during takeoff using shared position, never ArUco."""
+        trailer_pose = self._latest_trailer_marker_pose(now)
+        trailer_state = self.trailer_state
+        if trailer_pose is None or trailer_state is None:
+            return None
+        trailer_position = np.asarray(trailer_pose[0], dtype=float)
+        trailer_yaw = float(trailer_pose[1])
+        sample_time_s = float(trailer_state.sample_time_s)
+        previous_time_s = self.takeoff_trailer_previous_sample_time_s
+        previous_position = self.takeoff_trailer_previous_position_enu
+        if previous_time_s is None or previous_position is None:
+            self.takeoff_trailer_previous_sample_time_s = sample_time_s
+            self.takeoff_trailer_previous_position_enu = trailer_position.copy()
+        elif sample_time_s > previous_time_s + 1.0e-6:
+            dt = sample_time_s - previous_time_s
+            measured_velocity = (trailer_position - previous_position) / dt
+            maximum_speed = self._float(
+                "relative_landing_mpc_max_horizontal_velocity_m_s"
+            )
+            horizontal_speed = float(np.linalg.norm(measured_velocity[:2]))
+            if (
+                0.005 <= dt <= self._float("trailer_timeout_s")
+                and np.all(np.isfinite(measured_velocity))
+                and horizontal_speed <= 1.25 * maximum_speed
+            ):
+                if not self.takeoff_trailer_velocity_initialized:
+                    self.takeoff_feedforward_velocity_enu[:2] = (
+                        measured_velocity[:2]
+                    )
+                    self.takeoff_trailer_velocity_initialized = True
+                else:
+                    # A short timestamp-based low-pass removes pose quantization
+                    # while retaining the curvature of the 9 m/s trailer path.
+                    alpha = min(1.0, dt / (0.10 + dt))
+                    self.takeoff_feedforward_velocity_enu[:2] += alpha * (
+                        measured_velocity[:2]
+                        - self.takeoff_feedforward_velocity_enu[:2]
+                    )
+            self.takeoff_trailer_previous_sample_time_s = sample_time_s
+            self.takeoff_trailer_previous_position_enu = trailer_position.copy()
+
+        cosine = math.cos(trailer_yaw)
+        sine = math.sin(trailer_yaw)
+        offset = self.takeoff_trailer_offset_body_m
+        rotated_offset = np.asarray(
+            (
+                cosine * offset[0] - sine * offset[1],
+                sine * offset[0] + cosine * offset[1],
+                offset[2],
+            ),
+            dtype=float,
+        )
+        return (
+            trailer_position + rotated_offset,
+            self.takeoff_feedforward_velocity_enu.copy(),
+        )
+
+    def _tick_takeoff(self, now: float, mission_now: float) -> None:
         if self.phase == LandingPhase.TAKEOFF:
             if self.takeoff_origin is None:
-                self.takeoff_origin = self.vehicle_position_enu.copy()
+                self._capture_takeoff_reference(now)
+            assert self.takeoff_origin is not None
             target = self.takeoff_origin.copy()
             takeoff_height = self._float("takeoff_height_m")
             takeoff_elapsed_s = max(0.0, mission_now - self.phase_started)
@@ -1561,15 +1713,39 @@ class MissionRuntimeMixin:
                 takeoff_reference_rate_m_s * takeoff_elapsed_s,
             )
             target[2] = self.takeoff_origin[2] + commanded_height
+            reference_velocity = np.zeros(3, dtype=float)
+            takeoff_horizontal_limit: float | None = None
+            if self.takeoff_from_trailer:
+                # Vertical means deck-relative here.  Ignore ArUco completely
+                # during TAKEOFF and use only timestamped shared trailer
+                # positions to follow its curve.
+                trailer_reference = self._takeoff_trailer_reference(now)
+                if trailer_reference is not None:
+                    deck_position, deck_velocity = trailer_reference
+                    target = deck_position
+                    target[2] += commanded_height
+                    reference_velocity[:2] = deck_velocity[:2]
+                else:
+                    target[:2] = (
+                        self.takeoff_origin[:2]
+                        + self.takeoff_feedforward_velocity_enu[:2]
+                        * takeoff_elapsed_s
+                    )
+                    reference_velocity[:2] = (
+                        self.takeoff_feedforward_velocity_enu[:2]
+                    )
+                takeoff_horizontal_limit = self._float(
+                    "relative_landing_mpc_max_horizontal_velocity_m_s"
+                )
             self._stage_control_command(
-                target, np.zeros(3), self.vehicle_yaw_enu_rad
+                target,
+                reference_velocity,
+                self.vehicle_yaw_enu_rad,
+                horizontal_velocity_limit_m_s=takeoff_horizontal_limit,
             )
             takeoff_settled = bool(
                 commanded_height >= takeoff_height - 1.0e-6
-                and abs(
-                    self.vehicle_position_enu[2]
-                    - (self.takeoff_origin[2] + takeoff_height)
-                )
+                and abs(self.vehicle_position_enu[2] - target[2])
                 <= self._float("takeoff_tolerance_m")
                 and abs(float(self.vehicle_velocity_enu[2])) <= 0.10
             )
@@ -2913,6 +3089,28 @@ class MissionRuntimeMixin:
                     self._float("touchdown_contact_clearance_m"),
                     min(self.descent_clearance_m, measured),
                 )
+        # APPROACH and MARKER_TRACK_DOWN use the same acquisition guidance.
+        # Replacing that already slew-limited command with measured velocity
+        # on the first visible ArUco frame produced a 3.33 m/s setpoint step in
+        # 0.2 s.  Preserve the command across this bookkeeping-only phase
+        # boundary; the next control tick continues from the same servo state.
+        previous_command = self.command_cache
+        preserve_acquisition_command = bool(
+            previous == LandingPhase.APPROACH
+            and phase == LandingPhase.MARKER_TRACK_DOWN
+            and previous_command is not None
+            and previous_command.valid
+            and previous_command.controller_type
+            == ACQUISITION_GUIDANCE_CONTROLLER_TYPE
+            and not previous_command.position_enabled
+            and previous_command.velocity_enabled
+            and not previous_command.acceleration_enabled
+            and previous_command.acceleration_enabled_axes
+            == (False, False, False)
+            and np.all(
+                np.isfinite(previous_command.velocity_setpoint_enu_m_s)
+            )
+        )
         self.phase = phase
         if phase == LandingPhase.MARKER_TRACK_DOWN:
             self.marker_tracking_acquisition_since_s = None
@@ -2941,8 +3139,18 @@ class MissionRuntimeMixin:
             LandingPhase.TOUCHDOWN_CONFIRM,
         }
         coast_transition = bool(
-            phase in tracking_phases
-            and previous in tracking_phases | {LandingPhase.TAKEOFF}
+            (
+                (
+                    phase in tracking_phases
+                    and previous
+                    in tracking_phases | {LandingPhase.TAKEOFF}
+                )
+                or (
+                    phase == LandingPhase.TAKEOFF
+                    and previous == LandingPhase.ARMING
+                    and self.takeoff_from_trailer
+                )
+            )
             and velocity is not None
             and np.asarray(velocity).shape == (3,)
             and np.all(np.isfinite(velocity))
@@ -2951,6 +3159,11 @@ class MissionRuntimeMixin:
             # LANDED is terminal: no hold or stale MPC command may remain in
             # the cache even though the heartbeat phase gate also blocks it.
             self.command_cache = None
+        elif preserve_acquisition_command and previous_command is not None:
+            self._cache_command(previous_command)
+            self._acquisition_command_monotonic_s = time.monotonic()
+            self._acquisition_command_phase = self.phase.value
+            self._acquisition_command_time_reset_count = self.time_reset_count
         elif (
             position is not None
             and np.asarray(position).shape == (3,)

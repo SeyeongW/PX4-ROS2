@@ -853,10 +853,23 @@ class CommandRuntimeMixin:
         relative_descent_speed_m_s: float | None = None,
     ) -> tuple[float, float, float] | None:
         self.last_requested_clearance_m = float(clearance_m)
-        estimate = self._landing_target_enu(now, camera)
+        try:
+            control_px4_time_s = self._control_epoch_px4_time_s()
+        except ValueError:
+            return None
+        estimate = self._landing_target_enu(
+            now,
+            camera,
+            control_px4_time_s=control_px4_time_s,
+        )
         if estimate is None:
             return None
-        deck, trailer_velocity, trailer_yaw = estimate
+        (
+            deck,
+            trailer_velocity,
+            trailer_yaw,
+            target_estimate_snapshot,
+        ) = estimate
         target = deck.copy()
         target[2] = deck[2] + max(0.0, float(clearance_m))
         # Record geometry from this control tick's prediction, independently
@@ -904,6 +917,8 @@ class CommandRuntimeMixin:
             trailer_yaw,
             disable_descent=disable_descent,
             relative_descent_speed_m_s=relative_descent_speed_m_s,
+            control_px4_time_s=control_px4_time_s,
+            target_estimate_snapshot=target_estimate_snapshot,
         )
         if not success and require_solver_success:
             return None
@@ -929,6 +944,7 @@ class CommandRuntimeMixin:
         pad_position_enu_m: np.ndarray,
         pad_velocity_enu_m_s: np.ndarray,
         pad_acceleration_enu_m_s2: np.ndarray,
+        target_estimate_snapshot: TargetEstimate | None = None,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
         """Build one same-epoch ArUco-derived RK4 pad horizon.
 
@@ -941,7 +957,11 @@ class CommandRuntimeMixin:
         position = np.asarray(pad_position_enu_m, dtype=float)
         velocity = np.asarray(pad_velocity_enu_m_s, dtype=float)
         acceleration = np.asarray(pad_acceleration_enu_m_s2, dtype=float)
-        estimate = self.last_target_estimate
+        estimate = (
+            target_estimate_snapshot
+            if target_estimate_snapshot is not None
+            else self.last_target_estimate
+        )
         cached_motion_state = self._trailer_prediction_cache
         if (
             position.shape != (3,)
@@ -1310,8 +1330,26 @@ class CommandRuntimeMixin:
     ) -> LandingCommandLimits:
         """Capture fixed OSQP bounds for post-solve revalidation."""
         return self.production_stack.command_limits(control_input)
+    def _control_epoch_px4_time_s(self) -> float:
+        """Return one PX4-domain epoch shared by target and vehicle state."""
+        try:
+            ros_now_s = self.get_clock().now().nanoseconds * 1.0e-9
+            epoch_s = self._ros_time_to_px4_sample_time(ros_now_s)
+        except StateInterpolationError:
+            epoch_s = self._current_px4_sample_time()
+        estimator_state = self.vehicle_response_estimator.state
+        if estimator_state is not None:
+            epoch_s = max(float(epoch_s), estimator_state.sample_time_s)
+        epoch_s = float(epoch_s)
+        if not math.isfinite(epoch_s) or epoch_s <= 0.0:
+            raise ValueError("invalid control epoch")
+        return epoch_s
+
     def _vehicle_state_for_control(
-        self, *, require_fresh_prediction: bool
+        self,
+        *,
+        require_fresh_prediction: bool,
+        solve_px4_time_s: float | None = None,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Return one timestamp-aligned vehicle snapshot for a solve.
 
@@ -1344,16 +1382,18 @@ class CommandRuntimeMixin:
             if require_fresh_prediction:
                 raise ValueError("vehicle response estimator uninitialized")
             return callback_latest
-        try:
-            ros_now_s = self.get_clock().now().nanoseconds * 1.0e-9
-            solve_px4_time_s = self._ros_time_to_px4_sample_time(ros_now_s)
-        except StateInterpolationError:
-            solve_px4_time_s = self._current_px4_sample_time()
+        if solve_px4_time_s is None:
+            solve_px4_time_s = self._control_epoch_px4_time_s()
+        else:
+            solve_px4_time_s = float(solve_px4_time_s)
+            if not math.isfinite(solve_px4_time_s) or solve_px4_time_s <= 0.0:
+                raise ValueError("invalid vehicle control epoch")
         estimator_state = self.vehicle_response_estimator.state
-        if estimator_state is not None:
-            solve_px4_time_s = max(
-                float(solve_px4_time_s), estimator_state.sample_time_s
-            )
+        if (
+            estimator_state is not None
+            and solve_px4_time_s < estimator_state.sample_time_s - 1.0e-9
+        ):
+            raise ValueError("vehicle control epoch is behind estimator")
         applied_acceleration = self.last_command_acceleration_enu
         if applied_acceleration is not None:
             applied_array = np.asarray(applied_acceleration, dtype=float)
@@ -1548,6 +1588,9 @@ class CommandRuntimeMixin:
         *,
         disable_descent: bool = False,
         relative_descent_speed_m_s: float = 0.0,
+        horizontal_velocity_limit_m_s: float | None = None,
+        control_px4_time_s: float | None = None,
+        target_estimate_snapshot: TargetEstimate | None = None,
     ) -> bool:
         if self.vehicle_position_enu is None:
             return False
@@ -1569,7 +1612,8 @@ class CommandRuntimeMixin:
                 control_vehicle_velocity,
                 control_vehicle_acceleration,
             ) = self._vehicle_state_for_control(
-                require_fresh_prediction=not synchronous_p_path
+                require_fresh_prediction=not synchronous_p_path,
+                solve_px4_time_s=control_px4_time_s,
             )
         except Exception as exc:
             self._invalidate_solver_context(clear_cached=True)
@@ -1602,6 +1646,7 @@ class CommandRuntimeMixin:
                 pad_position,
                 pad_velocity,
                 pad_acceleration,
+                target_estimate_snapshot,
             )
             precision_horizon_required = self.phase in {
                 LandingPhase.PRECISION_ALIGN,
@@ -1649,15 +1694,19 @@ class CommandRuntimeMixin:
                     control_vehicle_velocity, dtype=float
                 ).copy()
                 control_vehicle_velocity[2] = float(pad_velocity[2])
-            # Retain the RK4 estimate as the current pad velocity,
-            # acceleration, and marker-dropout predictor.  The production
-            # solver uses the previously flight-verified scalar pad-state
-            # contract; the explicit RK4 arrays remain available for later
-            # retuning but are not injected into the active QP horizon.
+            # Keep the flight-verified scalar pad-state solver contract.  The
+            # RK4 result above is a bounded validity check for the accepted
+            # ArUco motion model; timestamp lead is handled by projecting the
+            # current target and vehicle to one shared control epoch.
         try:
-            horizontal_velocity_limit_m_s = self._float(
-                "landing_p_horizontal_velocity_limit_m_s"
-            )
+            if horizontal_velocity_limit_m_s is None:
+                horizontal_velocity_limit_m_s = self._float(
+                    "landing_p_horizontal_velocity_limit_m_s"
+                )
+            else:
+                horizontal_velocity_limit_m_s = float(
+                    horizontal_velocity_limit_m_s
+                )
             if relative_context is not None:
                 # The solver-failure moving-deck HOLD consumes this shared
                 # limit.  Feeding it the 1 m/s P-controller cap forced a

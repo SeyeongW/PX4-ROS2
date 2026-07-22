@@ -193,7 +193,7 @@ def test_production_stack_is_fixed_relative_osqp_hold():
 
 def test_one_runner_varies_only_environment_trailer_speed():
     source = _source(RUNNER)
-    assert 'TRAILER_SPEED_VALUE="${TRAILER_SPEED_M_S:-5.0}"' in source
+    assert 'TRAILER_SPEED_VALUE="${TRAILER_SPEED_M_S:-9.0}"' in source
     assert 'if [[ "$ACTION" == "environment" ]]' in source
     assert 'CONTROLLER_RUNNER="$SCRIPT_DIR/run_px4_precision_landing.sh"' in source
     assert "TRAILER_SPEED_M_S" not in _source(MAIN)

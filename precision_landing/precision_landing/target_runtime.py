@@ -313,6 +313,10 @@ class TargetRuntimeMixin:
         self.control_target_velocity_source = "unavailable"
         self.trailer_state = None
         self.trailer_state_stamp = 0.0
+        self.takeoff_feedforward_velocity_enu.fill(0.0)
+        self.takeoff_trailer_previous_sample_time_s = None
+        self.takeoff_trailer_previous_position_enu = None
+        self.takeoff_trailer_velocity_initialized = False
         self.down_marker_capture_guard = CaptureStampGuard()
         self._pending_marker_messages.clear()
         self._pending_vehicle_response_sample = None
@@ -775,10 +779,20 @@ class TargetRuntimeMixin:
             and math.isfinite(age)
             and 0.0 <= age <= self._float("trailer_timeout_s")
         )
-    def _current_target_estimate(self) -> TargetEstimate | None:
+    def _current_target_estimate(
+        self, current_px4_time_s: float | None = None
+    ) -> TargetEstimate | None:
         try:
-            current_px4_time_s = self._current_px4_sample_time()
-            estimate = self.target_estimator.estimate(current_px4_time_s)
+            if current_px4_time_s is None:
+                estimate_time_s = self._current_px4_sample_time()
+            else:
+                estimate_time_s = float(current_px4_time_s)
+                if (
+                    not math.isfinite(estimate_time_s)
+                    or estimate_time_s <= 0.0
+                ):
+                    raise ValueError("invalid target estimate time")
+            estimate = self.target_estimator.estimate(estimate_time_s)
         except (StateInterpolationError, ValueError):
             return None
         self.last_target_estimate = estimate
@@ -849,12 +863,25 @@ class TargetRuntimeMixin:
             return None
         return position, yaw
     def _landing_target_enu(
-        self, now: float, preferred_camera: str | None
-    ) -> tuple[np.ndarray, np.ndarray, float] | None:
+        self,
+        now: float,
+        preferred_camera: str | None,
+        *,
+        control_px4_time_s: float | None = None,
+    ) -> tuple[
+        np.ndarray,
+        np.ndarray,
+        float,
+        TargetEstimate | None,
+    ] | None:
         if preferred_camera not in {None, "down"}:
             raise ValueError("production supports only the down camera")
-        estimate = self._current_target_estimate()
-        target_velocity = self._control_target_velocity_enu(estimate, now)
+        estimate = self._current_target_estimate(control_px4_time_s)
+        target_velocity = self._control_target_velocity_enu(
+            estimate,
+            now,
+            current_px4_time_s=control_px4_time_s,
+        )
         if target_velocity is None:
             return None
         precision_phases = {
@@ -886,6 +913,7 @@ class TargetRuntimeMixin:
             target_position,
             target_velocity,
             target_yaw,
+            estimate,
         )
     def _fresh_down_vision_pose(
         self, now: float
@@ -1820,10 +1848,20 @@ class TargetRuntimeMixin:
         self,
         estimate: TargetEstimate | None,
         now: float,
+        *,
+        current_px4_time_s: float | None = None,
     ) -> np.ndarray | None:
         """Return the ArUco-observed velocity used by MPC and safety gates."""
         try:
-            current_px4_time_s = self._current_px4_sample_time()
+            if current_px4_time_s is None:
+                current_px4_time_s = self._current_px4_sample_time()
+            else:
+                current_px4_time_s = float(current_px4_time_s)
+                if (
+                    not math.isfinite(current_px4_time_s)
+                    or current_px4_time_s <= 0.0
+                ):
+                    raise ValueError("invalid target velocity time")
             motion = self.vision_motion_estimator.estimate(
                 current_px4_time_s
             )

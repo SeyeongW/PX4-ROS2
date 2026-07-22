@@ -474,6 +474,12 @@ class MpcPrecisionLandingNode(
                 "auto_start rejected: production controller is not qualified"
             )
         self.takeoff_origin: np.ndarray | None = None
+        self.takeoff_from_trailer = False
+        self.takeoff_trailer_offset_body_m = np.zeros(3, dtype=float)
+        self.takeoff_feedforward_velocity_enu = np.zeros(3, dtype=float)
+        self.takeoff_trailer_previous_sample_time_s: float | None = None
+        self.takeoff_trailer_previous_position_enu: np.ndarray | None = None
+        self.takeoff_trailer_velocity_initialized = False
         self.descent_clearance_m = self._float("precision_align_height_m")
         self.failsafe_hold_position_enu: np.ndarray | None = None
         self.abort_climb_target_enu: np.ndarray | None = None
