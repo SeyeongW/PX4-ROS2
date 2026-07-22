@@ -46,8 +46,6 @@ class DescentPermissionLimits:
     maximum_odometry_age_s: float
     maximum_position_variance_m2: float
     maximum_relative_horizontal_speed_m_s: float
-    maximum_lidar_age_s: float
-    maximum_lidar_distance_m: float
     maximum_relative_height_m: float
 
     def __post_init__(self) -> None:
@@ -57,8 +55,6 @@ class DescentPermissionLimits:
             "maximum_odometry_age_s",
             "maximum_position_variance_m2",
             "maximum_relative_horizontal_speed_m_s",
-            "maximum_lidar_age_s",
-            "maximum_lidar_distance_m",
             "maximum_relative_height_m",
         ):
             value = _finite_float(getattr(self, name))
@@ -78,8 +74,6 @@ class DescentPermissionInput:
     horizontal_error_m: float
     funnel_radius_m: float
     relative_horizontal_speed_m_s: float
-    lidar_distance_m: float | None
-    lidar_age_s: float | None
     relative_height_m: float | None
     solver_command_valid: bool
 
@@ -144,10 +138,9 @@ def evaluate_descent_permission(
 ) -> DescentPermissionDecision:
     """Evaluate every descent gate and return all failures in fixed order.
 
-    Both vision and trailer odometry must be fresh while descending.  A valid
-    height source can be either a fresh, plausible lidar range or a finite,
-    plausible target-relative height.  This permits sensor redundancy without
-    accepting a stale or nonsensical value from either source.
+    Both vision and trailer odometry must be fresh while descending.  The
+    production profile has no lidar input, so height must be a finite,
+    plausible vehicle-to-fused-target relative height.
     """
     if not isinstance(snapshot, DescentPermissionInput):
         raise TypeError("snapshot must be DescentPermissionInput")
@@ -203,20 +196,12 @@ def evaluate_descent_permission(
     ):
         failures.append("relative_horizontal_speed_exceeded")
 
-    lidar_distance = _finite_float(snapshot.lidar_distance_m)
-    lidar_age = _finite_float(snapshot.lidar_age_s)
-    lidar_valid = bool(
-        lidar_distance is not None
-        and 0.0 <= lidar_distance <= limits.maximum_lidar_distance_m
-        and lidar_age is not None
-        and 0.0 <= lidar_age <= limits.maximum_lidar_age_s
-    )
     relative_height = _finite_float(snapshot.relative_height_m)
     relative_height_valid = bool(
         relative_height is not None
         and 0.0 <= relative_height <= limits.maximum_relative_height_m
     )
-    if not (lidar_valid or relative_height_valid):
+    if not relative_height_valid:
         failures.append("height_source_invalid")
 
     solver_valid = _strict_bool(snapshot.solver_command_valid)

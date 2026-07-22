@@ -20,6 +20,7 @@ setup(
         ]),
         (os.path.join('share', package_name, 'config'), [
             'config/mpc_precision_landing.yaml',
+            'config/mpc_precision_landing_real.yaml',
         ]),
     ],
     install_requires=[

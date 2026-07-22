@@ -29,7 +29,7 @@ echo "  - /mavros/set_mode"
 echo "  - /mavros/cmd/arming"
 echo "CONFIG FILE          : $CONFIG_FILE"
 echo "TRAILER STATE        : measured Gazebo odometry"
-echo "PRODUCTION QUALIFIED : true"
+echo "VALIDATION ACTIVATION: true (SITL experiment only)"
 echo "VEHICLE AUTHORITY ID : $VEHICLE_AUTHORITY_ID"
 echo "CONTROL LOCK FILE    : $CONTROL_LOCK_FILE"
 echo "BASELINE RUN ID      : ${BASELINE_RUN_ID:-<empty>}"
@@ -56,4 +56,4 @@ echo "BLAS THREADS         : $PRECISION_LANDING_BLAS_THREADS"
 
 exec ros2 launch precision_landing mpc_precision_landing.launch.py \
   "baseline_run_id:=$BASELINE_RUN_ID" \
-  "vehicle_authority_id:=$VEHICLE_AUTHORITY_ID"
+  "validation_mode:=true"

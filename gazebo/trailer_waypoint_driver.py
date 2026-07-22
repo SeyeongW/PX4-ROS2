@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""Drive the seo-branch moving platform along a map-defined ENU route.
+"""Drive a Gazebo trailer and publish its measured position to ROS.
 
-This talks directly to Gazebo Transport, so it needs neither MAVROS nor a ROS
-workspace build.  The platform is kinematic rather than a wheeled vehicle.
-The mountain route is therefore kept on the exact-flat central corridor; a
-heightmap safeguard raises the horizontal body before any off-route terrain
-can penetrate its 5x5 m footprint.
+Gazebo motion commands and the simulation-only Gazebo-to-ROS odometry bridge
+live in this one environment support process.  The flight controller therefore
+depends only on the normal ``/trailer/odometry`` ROS interface and never imports
+Gazebo Python modules.  For non-ROS map tools the odometry topic may be omitted.
 """
 
 from __future__ import annotations
@@ -24,6 +23,7 @@ from PIL import Image
 import yaml
 
 from gz.msgs10.pose_v_pb2 import Pose_V
+from gz.msgs10.odometry_pb2 import Odometry as GzOdometry
 from gz.msgs10.twist_pb2 import Twist
 from gz.transport13 import Node
 
@@ -31,6 +31,15 @@ from gz.transport13 import Node
 GAZEBO = Path(__file__).resolve().parent
 REPO = GAZEBO.parent
 STOP = threading.Event()
+
+
+@dataclass(frozen=True)
+class TrailerPoseSample:
+    stamp_sec: int
+    stamp_nanosec: int
+    position: tuple[float, float, float]
+    orientation: tuple[float, float, float, float]
+    rpy: tuple[float, float, float]
 
 
 def quaternion_rpy(x: float, y: float, z: float, w: float) -> tuple[float, float, float]:
@@ -48,7 +57,7 @@ class PoseReceiver:
     def __init__(self, entity_name: str):
         self.entity_name = entity_name
         self.lock = threading.Lock()
-        self.value: tuple[float, float, float, float, float, float] | None = None
+        self.value: TrailerPoseSample | None = None
 
     def callback(self, message: Pose_V) -> None:
         for pose in message.pose:
@@ -59,15 +68,127 @@ class PoseReceiver:
                 orientation.x, orientation.y, orientation.z, orientation.w
             )
             with self.lock:
-                self.value = (
-                    pose.position.x, pose.position.y, pose.position.z,
-                    roll, pitch, yaw,
+                self.value = TrailerPoseSample(
+                    stamp_sec=int(message.header.stamp.sec),
+                    stamp_nanosec=int(message.header.stamp.nsec),
+                    position=(
+                        float(pose.position.x),
+                        float(pose.position.y),
+                        float(pose.position.z),
+                    ),
+                    orientation=(
+                        float(orientation.x),
+                        float(orientation.y),
+                        float(orientation.z),
+                        float(orientation.w),
+                    ),
+                    rpy=(roll, pitch, yaw),
                 )
             return
 
-    def get(self) -> tuple[float, float, float, float, float, float] | None:
+    def get(self) -> TrailerPoseSample | None:
         with self.lock:
             return self.value
+
+
+class OdometryReceiver:
+    """Receive the model's timestamped odometry sensor sample.
+
+    The dynamic-pose stream is retained for route feedback, but it is a
+    world-state publication rather than the timestamped sensor stream used by
+    the camera.  Forwarding this odometry sample to ROS keeps trailer and
+    ArUco measurements in the same Gazebo sensor-time convention.
+    """
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.value: TrailerPoseSample | None = None
+
+    def callback(self, message: GzOdometry) -> None:
+        pose = message.pose
+        orientation = pose.orientation
+        roll, pitch, yaw = quaternion_rpy(
+            orientation.x,
+            orientation.y,
+            orientation.z,
+            orientation.w,
+        )
+        sample = TrailerPoseSample(
+            stamp_sec=int(message.header.stamp.sec),
+            stamp_nanosec=int(message.header.stamp.nsec),
+            position=(
+                float(pose.position.x),
+                float(pose.position.y),
+                float(pose.position.z),
+            ),
+            orientation=(
+                float(orientation.x),
+                float(orientation.y),
+                float(orientation.z),
+                float(orientation.w),
+            ),
+            rpy=(roll, pitch, yaw),
+        )
+        with self.lock:
+            self.value = sample
+
+    def get(self) -> TrailerPoseSample | None:
+        with self.lock:
+            return self.value
+
+
+class RosOdometryPublisher:
+    """Publish position-only trailer odometry without exposing Gazebo speed."""
+
+    def __init__(
+        self,
+        topic: str,
+        origin_enu_m: tuple[float, float, float],
+    ) -> None:
+        import rclpy
+        from nav_msgs.msg import Odometry
+        from rclpy.qos import QoSProfile, ReliabilityPolicy
+
+        rclpy.init(args=[])
+        self._rclpy = rclpy
+        self._odometry_type = Odometry
+        self._node = rclpy.create_node("trailer_sim_support")
+        qos = QoSProfile(depth=1)
+        # RELIABLE publisher interoperates with both the production RELIABLE
+        # subscriber and diagnostic BEST_EFFORT subscribers.
+        qos.reliability = ReliabilityPolicy.RELIABLE
+        self._publisher = self._node.create_publisher(Odometry, topic, qos)
+        self._origin = origin_enu_m
+        self._last_stamp: tuple[int, int] | None = None
+
+    def publish(self, sample: TrailerPoseSample) -> None:
+        stamp = (sample.stamp_sec, sample.stamp_nanosec)
+        if stamp <= (0, 0) or stamp == self._last_stamp:
+            return
+        self._last_stamp = stamp
+        message = self._odometry_type()
+        message.header.stamp.sec = sample.stamp_sec
+        message.header.stamp.nanosec = sample.stamp_nanosec
+        message.header.frame_id = "map"
+        message.child_frame_id = "trailer/base_link"
+        message.pose.pose.position.x = sample.position[0] - self._origin[0]
+        message.pose.pose.position.y = sample.position[1] - self._origin[1]
+        message.pose.pose.position.z = sample.position[2] - self._origin[2]
+        orientation = message.pose.pose.orientation
+        orientation.x, orientation.y, orientation.z, orientation.w = (
+            sample.orientation
+        )
+        # The mission may use position for interception, but simulator twist is
+        # intentionally unavailable. Target velocity remains camera-derived.
+        for index in (0, 7, 14, 35):
+            message.pose.covariance[index] = 1.0e-6
+        for index in (0, 7, 14, 21, 28, 35):
+            message.twist.covariance[index] = 1.0e6
+        self._publisher.publish(message)
+
+    def close(self) -> None:
+        self._node.destroy_node()
+        self._rclpy.shutdown()
 
 
 @dataclass(frozen=True)
@@ -354,6 +475,18 @@ def main() -> int:
     )
     parser.add_argument("--speed", type=float, default=0.0,
                         help="override the YAML cruise speed; 0 uses YAML")
+    parser.add_argument(
+        "--stationary", action="store_true",
+        help="publish measured odometry while commanding zero trailer speed",
+    )
+    parser.add_argument(
+        "--ros-odometry-topic", default="",
+        help="optional ROS position-only odometry output (simulation support)",
+    )
+    parser.add_argument(
+        "--gz-odometry-topic", default="",
+        help="Gazebo model odometry used as the ROS measurement source",
+    )
     parser.add_argument("--start-index", type=int, default=0,
                         help="resume a validation route at this waypoint index")
     parser.add_argument("--route", choices=("flat", "slope"), default="flat",
@@ -442,10 +575,31 @@ def main() -> int:
             parser.error(str(exc))
     terrain = Terrain(document)
 
+    ros_odometry = None
+    if args.ros_odometry_topic:
+        try:
+            origin_values = document["frames"]["mavros_local"]["origin_enu_m"]
+            origin = tuple(float(origin_values[index]) for index in range(3))
+            ros_odometry = RosOdometryPublisher(args.ros_odometry_topic, origin)
+        except (ImportError, KeyError, TypeError, ValueError) as exc:
+            parser.error(f"cannot start ROS trailer odometry publisher: {exc}")
+
     node = Node()
     publisher = node.advertise(topic, Twist)
     receiver = PoseReceiver(entity)
     node.subscribe(Pose_V, pose_topic, receiver.callback)
+    odometry_receiver = None
+    if ros_odometry is not None:
+        if not args.gz_odometry_topic:
+            parser.error(
+                "--gz-odometry-topic is required with --ros-odometry-topic"
+            )
+        odometry_receiver = OdometryReceiver()
+        node.subscribe(
+            GzOdometry,
+            args.gz_odometry_topic,
+            odometry_receiver.callback,
+        )
     for handled in (signal.SIGINT, signal.SIGTERM):
         signal.signal(handled, lambda *_: STOP.set())
 
@@ -461,8 +615,14 @@ def main() -> int:
         )
     print(
         f"command_topic={topic} pose_topic={pose_topic} "
-        f"command_rate_hz={command_rate_hz:.3f}"
+        f"command_rate_hz={command_rate_hz:.3f} "
+        f"requested_speed_m_s={0.0 if args.stationary else speed:.3f}"
     )
+    if ros_odometry is not None:
+        print(
+            f"ros_odometry_topic={args.ros_odometry_topic} "
+            f"gz_odometry_topic={args.gz_odometry_topic} twist=withheld"
+        )
     start = time.monotonic()
     while receiver.get() is None and not STOP.is_set():
         if time.monotonic() - start > 15.0:
@@ -493,8 +653,15 @@ def main() -> int:
             if pose is None:
                 time.sleep(period)
                 continue
-            x, y, z, roll, pitch, _yaw = pose
-            if circle_route is not None:
+            x, y, z = pose.position
+            roll, pitch, _yaw = pose.rpy
+            if ros_odometry is not None and odometry_receiver is not None:
+                odometry = odometry_receiver.get()
+                if odometry is not None:
+                    ros_odometry.publish(odometry)
+            if args.stationary:
+                desired_vx = desired_vy = 0.0
+            elif circle_route is not None:
                 direction_x, direction_y = circle_route.direction(x, y)
                 completed_loops = circle_route.completed_loops
                 if args.loops > 0 and completed_loops >= args.loops:
@@ -565,6 +732,8 @@ def main() -> int:
         for _ in range(5):
             publish_velocity(publisher, 0.0, 0.0, 0.0)
             time.sleep(0.02)
+        if ros_odometry is not None:
+            ros_odometry.close()
 
     route_complete = args.loops > 0 and completed_loops >= args.loops
     if STOP.is_set() and not route_complete:

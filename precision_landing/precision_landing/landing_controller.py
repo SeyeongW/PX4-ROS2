@@ -1,10 +1,9 @@
 """ROS-independent landing-controller interfaces and implementations.
 
 The estimator and mission state machine produce one common reference.  This
-module turns that reference into a transport-neutral command, allowing the
-active MAVROS node to select the legacy absolute-coordinate MPC, a dedicated
-relative-coordinate landing MPC, or a simple P-plus-target-velocity controller
-without knowing their implementations.
+module turns that reference into a transport-neutral command.  Production uses
+the relative-coordinate OSQP landing controller, with the small
+P-plus-target-velocity controller retained only for the transit phase.
 """
 
 from __future__ import annotations
@@ -18,15 +17,20 @@ from typing import Protocol, Sequence
 import numpy as np
 
 
-LEGACY_MPC_CONTROLLER_TYPE = "legacy_mpc"
 RELATIVE_LANDING_MPC_CONTROLLER_TYPE = "relative_landing_mpc"
-# Compatibility name for code which imports the Stage-5 constant.  Its value
-# intentionally follows the Stage-6 selector spelling; literal ``mpc`` is no
-# longer an accepted configuration value.
-MPC_CONTROLLER_TYPE = LEGACY_MPC_CONTROLLER_TYPE
 P_FEEDFORWARD_CONTROLLER_TYPE = "p_feedforward"
 HOLD_FALLBACK = "hold"
-P_FEEDFORWARD_FALLBACK = "p_feedforward"
+
+# Use one immutable future state for all commanded axes and feed-forward
+# terms.  The 200 ms extraction remains the measured stable policy for the
+# current PX4 velocity-loop latency; a direct 100 ms trial increased the
+# 9 m/s catch-up excursion from about 1 m to more than 4 m.
+RELATIVE_MPC_COMMAND_HORIZON_INDEX = 1
+RELATIVE_MPC_COMMAND_LEAD_MS = 200
+RELATIVE_MPC_ACCELERATION_HORIZON_INDEX = (
+    RELATIVE_MPC_COMMAND_HORIZON_INDEX
+)
+RELATIVE_MPC_ACCELERATION_LEAD_MS = RELATIVE_MPC_COMMAND_LEAD_MS
 
 
 def _three_vector(value: Sequence[float], description: str) -> np.ndarray:
@@ -54,6 +58,16 @@ def _reference_array(
     return result
 
 
+def _horizon_array(value: np.ndarray, description: str) -> np.ndarray:
+    """Return a defensive copy of one nonempty finite xyz horizon."""
+    array = np.asarray(value, dtype=float)
+    if array.ndim != 2 or array.shape[1] != 3 or len(array) < 1:
+        raise ValueError(f"{description} must have nonempty shape (N,3)")
+    if not np.all(np.isfinite(array)):
+        raise ValueError(f"{description} must be finite")
+    return array.copy()
+
+
 def _first_reference(reference: np.ndarray) -> np.ndarray:
     return reference.copy() if reference.ndim == 1 else reference[0].copy()
 
@@ -74,6 +88,9 @@ class LandingControlInput:
     landing_pad_position_enu_m: np.ndarray | None = None
     landing_pad_velocity_enu_m_s: np.ndarray | None = None
     landing_pad_acceleration_enu_m_s2: np.ndarray | None = None
+    landing_pad_positions_horizon_enu_m: np.ndarray | None = None
+    landing_pad_velocities_horizon_enu_m_s: np.ndarray | None = None
+    landing_pad_accelerations_horizon_enu_m_s2: np.ndarray | None = None
     target_clearance_m: float | None = None
     landing_constraints_enabled: bool = False
     descent_allowed: bool = False
@@ -162,6 +179,35 @@ class LandingControlInput:
             raise ValueError(
                 "target clearance cannot be set without landing-pad state"
             )
+        horizon_names = (
+            "landing_pad_positions_horizon_enu_m",
+            "landing_pad_velocities_horizon_enu_m_s",
+            "landing_pad_accelerations_horizon_enu_m_s2",
+        )
+        horizon_provided = [
+            getattr(self, name) is not None for name in horizon_names
+        ]
+        if any(horizon_provided) and not all(horizon_provided):
+            raise ValueError(
+                "landing-pad position, velocity, and acceleration horizons "
+                "must be provided together"
+            )
+        if all(horizon_provided):
+            if not all(provided):
+                raise ValueError(
+                    "landing-pad horizons require current landing-pad state"
+                )
+            horizon_lengths: set[int] = set()
+            for name in horizon_names:
+                horizon = _horizon_array(
+                    getattr(self, name), name.replace("_", " ")
+                )
+                object.__setattr__(self, name, horizon)
+                horizon_lengths.add(len(horizon))
+            if len(horizon_lengths) != 1:
+                raise ValueError(
+                    "landing-pad horizons must have the same length"
+                )
         constraints_enabled = bool(self.landing_constraints_enabled)
         if constraints_enabled and not all(provided):
             raise ValueError(
@@ -197,7 +243,6 @@ class LandingControlInput:
         """Return whether the complete relative-landing state is present."""
         return self.landing_pad_position_enu_m is not None
 
-
 @dataclass(frozen=True)
 class LandingControlCommand:
     """Transport-neutral setpoints, control mode, and solver diagnostics."""
@@ -220,6 +265,8 @@ class LandingControlCommand:
     mpc_attempted: bool = False
     mpc_success: bool | None = None
     fallback_used: str | None = None
+    acceleration_enabled_axes: tuple[bool, bool, bool] | None = None
+    extraction_policy: str = "direct"
 
     def __post_init__(self) -> None:
         """Allow NaN only in fields disabled by the cached control mode."""
@@ -234,11 +281,6 @@ class LandingControlCommand:
                 self.velocity_setpoint_enu_m_s,
                 self.velocity_enabled,
             ),
-            (
-                "acceleration_setpoint_enu_m_s2",
-                self.acceleration_setpoint_enu_m_s2,
-                self.acceleration_enabled,
-            ),
         )
         for name, value, enabled in fields:
             vector = np.asarray(value, dtype=float)
@@ -249,6 +291,36 @@ class LandingControlCommand:
             if not enabled and not np.all(np.isnan(vector)):
                 raise ValueError(f"disabled {name} must contain only NaN")
             object.__setattr__(self, name, vector.copy())
+        acceleration = np.asarray(
+            self.acceleration_setpoint_enu_m_s2, dtype=float
+        )
+        if acceleration.shape != (3,):
+            raise ValueError(
+                "acceleration_setpoint_enu_m_s2 must be a three-vector"
+            )
+        axes = self.acceleration_enabled_axes
+        if axes is None:
+            axes = (bool(self.acceleration_enabled),) * 3
+        if len(axes) != 3:
+            raise ValueError("acceleration_enabled_axes must have three axes")
+        axes = tuple(bool(enabled) for enabled in axes)
+        if bool(self.acceleration_enabled) != any(axes):
+            raise ValueError(
+                "acceleration_enabled must match the per-axis enable mask"
+            )
+        for index, enabled in enumerate(axes):
+            if enabled and not math.isfinite(float(acceleration[index])):
+                raise ValueError(
+                    "enabled acceleration axes must contain finite values"
+                )
+            if not enabled and not math.isnan(float(acceleration[index])):
+                raise ValueError(
+                    "disabled acceleration axes must contain NaN"
+                )
+        object.__setattr__(
+            self, "acceleration_setpoint_enu_m_s2", acceleration.copy()
+        )
+        object.__setattr__(self, "acceleration_enabled_axes", axes)
         yaw = float(self.yaw_enu_rad)
         solve_time = float(self.solve_time_s)
         if not math.isfinite(yaw):
@@ -265,6 +337,8 @@ class LandingControlCommand:
             self.primary_controller_type
         ):
             raise ValueError("command controller type must be nonempty")
+        if not str(self.extraction_policy):
+            raise ValueError("command extraction policy must be nonempty")
         if self.mpc_success is not None and not self.mpc_attempted:
             raise ValueError(
                 "MPC success cannot be set without an MPC attempt"
@@ -393,18 +467,6 @@ class PFeedforwardLandingController(LandingController):
         )
 
 
-class _MpcSolver(Protocol):
-    def solve(
-        self,
-        position_m: Sequence[float],
-        velocity_m_s: Sequence[float],
-        acceleration_m_s2: Sequence[float],
-        reference_positions_m: Sequence[float] | np.ndarray,
-        reference_velocities_m_s: Sequence[float] | np.ndarray,
-    ) -> object:
-        """Return the existing JerkMPCResult-compatible object."""
-
-
 class _RelativeMpcSolver(Protocol):
     def solve(
         self,
@@ -421,121 +483,11 @@ class _RelativeMpcSolver(Protocol):
         descent_allowed: bool,
         camera_fov_constraint_enabled: bool = True,
         relative_descent_speed_m_s: float = 0.0,
+        landing_pad_positions_horizon_enu_m: np.ndarray | None = None,
+        landing_pad_velocities_horizon_enu_m_s: np.ndarray | None = None,
+        landing_pad_accelerations_horizon_enu_m_s2: np.ndarray | None = None,
     ) -> object:
         """Return a RelativeLandingMPCResult-compatible object."""
-
-
-class MpcLandingController(LandingController):
-    """Transparent wrapper around the unchanged legacy absolute MPC."""
-
-    def __init__(
-        self,
-        solver: _MpcSolver,
-        *,
-        failure_fallback: str = HOLD_FALLBACK,
-        p_fallback_controller: PFeedforwardLandingController | None = None,
-    ) -> None:
-        """Configure strict HOLD or P-feed-forward MPC failure handling."""
-        if failure_fallback not in (
-            HOLD_FALLBACK,
-            P_FEEDFORWARD_FALLBACK,
-        ):
-            raise ValueError(
-                "mpc_failure_fallback must be hold or p_feedforward"
-            )
-        if (
-            failure_fallback == P_FEEDFORWARD_FALLBACK
-            and p_fallback_controller is None
-        ):
-            raise ValueError("p_feedforward fallback requires a P controller")
-        self.solver = solver
-        self.failure_fallback = failure_fallback
-        self.p_fallback_controller = p_fallback_controller
-
-    def compute(
-        self, control_input: LandingControlInput
-    ) -> LandingControlCommand:
-        """Call the existing solver once and select its first setpoint."""
-        result = self.solver.solve(
-            control_input.vehicle_position_enu_m,
-            control_input.vehicle_velocity_enu_m_s,
-            control_input.vehicle_acceleration_enu_m_s2,
-            control_input.reference_positions_enu_m,
-            control_input.reference_velocities_enu_m_s,
-        )
-        solve_time = float(getattr(result, "solve_time_s"))
-        iterations = int(getattr(result, "iterations"))
-        deadline_missed = bool(getattr(result, "deadline_missed"))
-        message = str(getattr(result, "message"))
-        success = bool(getattr(result, "success"))
-        if success:
-            positions = np.asarray(getattr(result, "positions_m"), dtype=float)
-            velocities = np.asarray(
-                getattr(result, "velocities_m_s"), dtype=float
-            )
-            accelerations = np.asarray(
-                getattr(result, "accelerations_m_s2"), dtype=float
-            )
-            horizons = (positions, velocities, accelerations)
-            if any(
-                array.ndim != 2
-                or array.shape[1] != 3
-                or len(array) < 1
-                or not np.all(np.isfinite(array))
-                for array in horizons
-            ):
-                raise ValueError("solver returned invalid command horizons")
-            return LandingControlCommand(
-                positions[0].copy(),
-                velocities[0].copy(),
-                np.full(3, np.nan, dtype=float),
-                control_input.target_yaw_enu_rad,
-                True,
-                True,
-                False,
-                True,
-                False,
-                message,
-                solve_time,
-                MPC_CONTROLLER_TYPE,
-                MPC_CONTROLLER_TYPE,
-                iterations,
-                deadline_missed,
-                True,
-                True,
-            )
-
-        if self.failure_fallback == P_FEEDFORWARD_FALLBACK:
-            if self.p_fallback_controller is None:
-                raise RuntimeError("P fallback controller is unavailable")
-            fallback = self.p_fallback_controller.compute(control_input)
-            return replace(
-                fallback,
-                degraded=True,
-                status=f"mpc_failed_p_feedforward: {message}",
-                solve_time_s=solve_time,
-                primary_controller_type=MPC_CONTROLLER_TYPE,
-                iterations=iterations,
-                deadline_missed=deadline_missed,
-                mpc_attempted=True,
-                mpc_success=False,
-                fallback_used=P_FEEDFORWARD_FALLBACK,
-            )
-
-        return LandingControlCommand.hold(
-            control_input.vehicle_position_enu_m,
-            control_input.vehicle_yaw_enu_rad,
-            valid=False,
-            degraded=True,
-            status=f"mpc_failed_hold: {message}",
-            solve_time_s=solve_time,
-            primary_controller_type=MPC_CONTROLLER_TYPE,
-            iterations=iterations,
-            deadline_missed=deadline_missed,
-            mpc_attempted=True,
-            mpc_success=False,
-            fallback_used=HOLD_FALLBACK,
-        )
 
 
 class RelativeMpcLandingController(LandingController):
@@ -547,25 +499,12 @@ class RelativeMpcLandingController(LandingController):
         transit_controller: PFeedforwardLandingController,
         *,
         failure_fallback: str = HOLD_FALLBACK,
-        p_fallback_controller: PFeedforwardLandingController | None = None,
     ) -> None:
-        """Configure relative solver, P transit controller, and fallback."""
-        if failure_fallback not in (
-            HOLD_FALLBACK,
-            P_FEEDFORWARD_FALLBACK,
-        ):
-            raise ValueError(
-                "mpc_failure_fallback must be hold or p_feedforward"
-            )
-        if (
-            failure_fallback == P_FEEDFORWARD_FALLBACK
-            and p_fallback_controller is None
-        ):
-            raise ValueError("p_feedforward fallback requires a P controller")
+        """Configure the relative solver and fixed HOLD failure policy."""
+        if failure_fallback != HOLD_FALLBACK:
+            raise ValueError("production MPC failure fallback must be hold")
         self.solver = solver
         self.transit_controller = transit_controller
-        self.failure_fallback = failure_fallback
-        self.p_fallback_controller = p_fallback_controller
 
     def compute(
         self, control_input: LandingControlInput
@@ -606,6 +545,15 @@ class RelativeMpcLandingController(LandingController):
                 ),
                 relative_descent_speed_m_s=(
                     control_input.relative_descent_speed_m_s
+                ),
+                landing_pad_positions_horizon_enu_m=(
+                    control_input.landing_pad_positions_horizon_enu_m
+                ),
+                landing_pad_velocities_horizon_enu_m_s=(
+                    control_input.landing_pad_velocities_horizon_enu_m_s
+                ),
+                landing_pad_accelerations_horizon_enu_m_s2=(
+                    control_input.landing_pad_accelerations_horizon_enu_m_s2
                 ),
             )
             solve_time = float(getattr(result, "solve_time_s"))
@@ -684,25 +632,51 @@ class RelativeMpcLandingController(LandingController):
                 )
                 success = False
         if success:
-            # Preserve horizontal acceleration feed-forward for the 3 m/s
-            # circle, but never send the 100 ms future vertical acceleration
-            # into PX4's 20 ms loop. That vertical phase lead caused the
-            # measured climb/descent oscillation; zero Z leaves PX4's velocity
-            # loop to execute the smooth vertical velocity horizon.
             disabled = np.full(3, np.nan, dtype=float)
-            velocity_command = velocities[0].copy()
-            # PX4 executes velocity as a closed-loop target, not as an exact
-            # 100 ms state sample.  On the 5 m/s, R=50 m deck, publishing the
-            # first horizontal sample produced a small persistent outward
-            # radial velocity (+0.034 m/s), while the already-optimized 200 ms
-            # sample matched the inward correction measured in the successful
-            # baseline (-0.05 to -0.10 m/s).  Use that second sample only for
-            # XY; retain the first sample for Z and acceleration so vertical
-            # contact remains smooth and jerk-bounded.
-            if len(velocities) >= 2:
-                velocity_command[:2] = velocities[1, :2]
-            acceleration_command = accelerations[0].copy()
-            acceleration_command[2] = 0.0
+            # Extract velocity and horizontal acceleration from the same
+            # future state. Mixing t+200 ms velocity with t+100 ms
+            # acceleration applies mutually inconsistent turn geometry at
+            # the PX4 boundary and caused the high-speed lateral oscillation.
+            command_index = min(
+                RELATIVE_MPC_COMMAND_HORIZON_INDEX,
+                len(velocities) - 1,
+            )
+            velocity_command = velocities[command_index].copy()
+            # The no-descent viability row intentionally admits
+            # a few cm/s beyond the nominal bound while arresting an already
+            # measured descent.  Clamp only that numerical recovery tail at the
+            # transport boundary so a safe OSQP result is not discarded for a
+            # sub-sample vertical overshoot.
+            velocity_command[2] = float(
+                np.clip(
+                    velocity_command[2],
+                    -float(
+                        getattr(
+                            self.solver,
+                            "max_descent_velocity_m_s",
+                            control_input.vertical_velocity_limit_m_s,
+                        )
+                    ),
+                    float(
+                        getattr(
+                            self.solver,
+                            "max_ascent_velocity_m_s",
+                            control_input.vertical_velocity_limit_m_s,
+                        )
+                    ),
+                )
+            )
+            acceleration_index = min(
+                RELATIVE_MPC_ACCELERATION_HORIZON_INDEX,
+                len(accelerations) - 1,
+            )
+            acceleration_command = accelerations[
+                acceleration_index
+            ].copy()
+            acceleration_command[2] = np.nan
+            extraction_policy = (
+                f"mpc_horizon_lead_{RELATIVE_MPC_COMMAND_LEAD_MS}ms"
+            )
             if (
                 float(clearance) <= 1.0e-6
                 and control_input.descent_allowed
@@ -713,8 +687,8 @@ class RelativeMpcLandingController(LandingController):
                 # Re-solving from that same blocked state therefore kept
                 # publishing only a few cm/s of descent and left PX4 at hover
                 # thrust indefinitely.  The zero-clearance context is used
-                # only by the guarded terminal-contact path (fresh close
-                # lidar, low relative vertical speed, bounded XY tracking).
+                # only by the guarded terminal-contact path (fresh relative
+                # height, low relative vertical speed, bounded XY tracking).
                 # Keep the OSQP horizontal command and request its already
                 # bounded terminal relative descent directly so PX4 unloads
                 # the motors and its normal land detector can assert contact.
@@ -722,6 +696,27 @@ class RelativeMpcLandingController(LandingController):
                     pad_velocity[2]
                     - control_input.relative_descent_speed_m_s
                 )
+                pad_velocity_horizon = (
+                    control_input.landing_pad_velocities_horizon_enu_m_s
+                )
+                if pad_velocity_horizon is not None:
+                    # The selected MPC sample is 200 ms in the future.  Its
+                    # absolute XY velocity therefore contains a future
+                    # tangent on a turning deck (0.324 m/s different from
+                    # now at 9 m/s on the 50 m circle).  At contact, apply
+                    # only the optimizer's relative-velocity correction at
+                    # the current measured pad velocity.  Static and linear
+                    # motion are unchanged because both pad velocities are
+                    # identical in those cases.
+                    future_pad_velocity = np.asarray(
+                        pad_velocity_horizon[command_index], dtype=float
+                    )
+                    velocity_command[:2] = (
+                        pad_velocity[:2]
+                        + velocity_command[:2]
+                        - future_pad_velocity[:2]
+                    )
+                extraction_policy = "contact_settle_vertical_override"
             return LandingControlCommand(
                 disabled,
                 velocity_command,
@@ -732,7 +727,7 @@ class RelativeMpcLandingController(LandingController):
                 True,
                 True,
                 False,
-                f"relative_landing_mpc: {message}",
+                f"relative_landing_mpc[{extraction_policy}]: {message}",
                 solve_time,
                 RELATIVE_LANDING_MPC_CONTROLLER_TYPE,
                 RELATIVE_LANDING_MPC_CONTROLLER_TYPE,
@@ -740,82 +735,8 @@ class RelativeMpcLandingController(LandingController):
                 deadline_missed,
                 True,
                 True,
-            )
-
-        if self.failure_fallback == P_FEEDFORWARD_FALLBACK:
-            if self.p_fallback_controller is None:
-                raise RuntimeError("P fallback controller is unavailable")
-            # A plain P command cannot prove the relative MPC's funnel, FOV,
-            # and deck-contact constraints.  Once those constraints are
-            # active, an MPC failure must therefore remain fail-closed even
-            # when the operator selected the P fallback.
-            if control_input.landing_constraints_enabled:
-                return LandingControlCommand.hold(
-                    control_input.vehicle_position_enu_m,
-                    control_input.vehicle_yaw_enu_rad,
-                    valid=False,
-                    degraded=True,
-                    status=f"relative_landing_mpc_failed_hold: {message}",
-                    solve_time_s=solve_time,
-                    primary_controller_type=(
-                        RELATIVE_LANDING_MPC_CONTROLLER_TYPE
-                    ),
-                    iterations=iterations,
-                    deadline_missed=deadline_missed,
-                    mpc_attempted=True,
-                    mpc_success=False,
-                    fallback_used=HOLD_FALLBACK,
-                )
-            fallback = self.p_fallback_controller.compute(control_input)
-            if not control_input.descent_allowed:
-                pad_vertical_velocity = float(pad_velocity[2])
-                if (
-                    pad_vertical_velocity
-                    > control_input.vertical_velocity_limit_m_s
-                ):
-                    return LandingControlCommand.hold(
-                        control_input.vehicle_position_enu_m,
-                        control_input.vehicle_yaw_enu_rad,
-                        valid=False,
-                        degraded=True,
-                        status=(
-                            "relative_landing_mpc_failed_no_descent_hold: "
-                            f"{message}"
-                        ),
-                        solve_time_s=solve_time,
-                        primary_controller_type=(
-                            RELATIVE_LANDING_MPC_CONTROLLER_TYPE
-                        ),
-                        iterations=iterations,
-                        deadline_missed=deadline_missed,
-                        mpc_attempted=True,
-                        mpc_success=False,
-                        fallback_used=HOLD_FALLBACK,
-                    )
-                safe_velocity = fallback.velocity_setpoint_enu_m_s.copy()
-                safe_velocity[2] = max(
-                    safe_velocity[2], pad_vertical_velocity
-                )
-                fallback = replace(
-                    fallback,
-                    velocity_setpoint_enu_m_s=safe_velocity,
-                )
-            return replace(
-                fallback,
-                degraded=True,
-                status=(
-                    "relative_landing_mpc_failed_p_feedforward: "
-                    f"{message}"
-                ),
-                solve_time_s=solve_time,
-                primary_controller_type=(
-                    RELATIVE_LANDING_MPC_CONTROLLER_TYPE
-                ),
-                iterations=iterations,
-                deadline_missed=deadline_missed,
-                mpc_attempted=True,
-                mpc_success=False,
-                fallback_used=P_FEEDFORWARD_FALLBACK,
+                acceleration_enabled_axes=(True, True, False),
+                extraction_policy=extraction_policy,
             )
 
         return LandingControlCommand.hold(
@@ -832,48 +753,3 @@ class RelativeMpcLandingController(LandingController):
             mpc_success=False,
             fallback_used=HOLD_FALLBACK,
         )
-
-
-def create_landing_controller(
-    controller_type: str,
-    *,
-    mpc_solver: _MpcSolver,
-    mpc_failure_fallback: str,
-    p_horizontal_gain: float,
-    p_vertical_gain: float,
-    relative_mpc_solver: _RelativeMpcSolver | None = None,
-) -> LandingController:
-    """Create an exact, fail-closed controller selection from configuration."""
-    if mpc_failure_fallback not in (
-        HOLD_FALLBACK,
-        P_FEEDFORWARD_FALLBACK,
-    ):
-        raise ValueError(
-            "mpc_failure_fallback must be hold or p_feedforward"
-        )
-    p_controller = PFeedforwardLandingController(
-        p_horizontal_gain, p_vertical_gain
-    )
-    if controller_type == P_FEEDFORWARD_CONTROLLER_TYPE:
-        return p_controller
-    if controller_type == LEGACY_MPC_CONTROLLER_TYPE:
-        return MpcLandingController(
-            mpc_solver,
-            failure_fallback=mpc_failure_fallback,
-            p_fallback_controller=p_controller,
-        )
-    if controller_type == RELATIVE_LANDING_MPC_CONTROLLER_TYPE:
-        if relative_mpc_solver is None:
-            raise ValueError(
-                "relative_landing_mpc requires a relative MPC solver"
-            )
-        return RelativeMpcLandingController(
-            relative_mpc_solver,
-            p_controller,
-            failure_fallback=mpc_failure_fallback,
-            p_fallback_controller=p_controller,
-        )
-    raise ValueError(
-        "landing_controller_type must be legacy_mpc, "
-        "relative_landing_mpc, or p_feedforward"
-    )

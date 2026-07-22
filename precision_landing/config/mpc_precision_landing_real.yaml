@@ -1,0 +1,13 @@
+# Hardware-only overrides layered on top of mpc_precision_landing.yaml.
+#
+# Do not name simulator topics here. MAVROS ExtendedState is treated as one
+# composite PX4 landed verdict unless a hardware adapter explicitly supplies
+# all three independent Bool topics.
+mpc_precision_landing:
+  ros__parameters:
+    use_sim_time: false
+    uses_sim_ground_truth_control_input: false
+    mavros_state_timestamp_source: timesync_status
+    # Hardware covariance must be established by camera/extrinsic calibration;
+    # do not inherit the larger Gazebo transport-scatter floor.
+    target_fusion_vision_position_variance_floor: 0.01

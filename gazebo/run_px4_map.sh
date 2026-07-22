@@ -58,6 +58,8 @@ Environment:
   MAVROS_HEARTBEAT_TYPE=GCS  MAVROS identity used for PX4 data-link health
   MAVROS_HEARTBEAT_RATE=10.0 Optional MAVROS heartbeat rate override in Hz
   START_BRIDGE=0         Do not start the sensor bridge (requires START_MAVROS=0)
+  START_ARUCO_DETECTOR=1 Keep the down ArUco detector with the environment
+  PRECISION_LANDING_OVERLAY_SETUP=...  Overlay containing camera_detection
   ROS_SETUP=...          ROS 2 setup.bash to source for MAVROS + bridge (default humble)
   FOLLOW_DRONE=1          Opt in to locking the gz camera to the drone (default: off)
   DRIVE_TRAILER=1         Drive mountain or moving-landing YAML waypoints
@@ -115,9 +117,14 @@ overrides = document["px4_vehicle"].get("sitl_parameter_overrides", {})
 print(overrides.get("LNDMC_Z_VEL_MAX", ""))
 print(overrides.get("LNDMC_XY_VEL_MAX", ""))
 print(overrides.get("COM_DISARM_LAND", ""))
+print(overrides.get("MPC_XY_VEL_MAX", ""))
+print(overrides.get("MPC_ACC_HOR", ""))
+print(overrides.get("MPC_ACC_HOR_MAX", ""))
+print(overrides.get("MPC_JERK_AUTO", ""))
+print(overrides.get("MPC_JERK_MAX", ""))
 PY
 )
-[[ ${#MAP_CONFIG[@]} -eq 10 ]] || {
+[[ ${#MAP_CONFIG[@]} -eq 15 ]] || {
   echo "ERROR: failed to read launch values from $COORDINATES" >&2
   exit 2
 }
@@ -131,9 +138,36 @@ TRAILER_SPAWN_POSE="${MAP_CONFIG[6]}"
 PX4_LNDMC_Z_VEL_MAX="${MAP_CONFIG[7]}"
 PX4_LNDMC_XY_VEL_MAX="${MAP_CONFIG[8]}"
 PX4_COM_DISARM_LAND="${MAP_CONFIG[9]}"
+PX4_MPC_XY_VEL_MAX="${MAP_CONFIG[10]}"
+PX4_MPC_ACC_HOR="${MAP_CONFIG[11]}"
+PX4_MPC_ACC_HOR_MAX="${MAP_CONFIG[12]}"
+PX4_MPC_JERK_AUTO="${MAP_CONFIG[13]}"
+PX4_MPC_JERK_MAX="${MAP_CONFIG[14]}"
+PX4_HAS_RUNTIME_OVERRIDES=0
+for value in \
+  "$PX4_LNDMC_Z_VEL_MAX" \
+  "$PX4_LNDMC_XY_VEL_MAX" \
+  "$PX4_COM_DISARM_LAND" \
+  "$PX4_MPC_XY_VEL_MAX" \
+  "$PX4_MPC_ACC_HOR" \
+  "$PX4_MPC_ACC_HOR_MAX" \
+  "$PX4_MPC_JERK_AUTO" \
+  "$PX4_MPC_JERK_MAX"; do
+  if [[ -n "$value" ]]; then
+    PX4_HAS_RUNTIME_OVERRIDES=1
+  fi
+done
 
-if [[ -n "$PX4_LNDMC_Z_VEL_MAX" || -n "$PX4_LNDMC_XY_VEL_MAX" || -n "$PX4_COM_DISARM_LAND" ]]; then
-  python3 - "$PX4_LNDMC_Z_VEL_MAX" "$PX4_LNDMC_XY_VEL_MAX" "$PX4_COM_DISARM_LAND" <<'PY' || {
+if [[ "$PX4_HAS_RUNTIME_OVERRIDES" == "1" ]]; then
+  python3 - \
+    "$PX4_LNDMC_Z_VEL_MAX" \
+    "$PX4_LNDMC_XY_VEL_MAX" \
+    "$PX4_COM_DISARM_LAND" \
+    "$PX4_MPC_XY_VEL_MAX" \
+    "$PX4_MPC_ACC_HOR" \
+    "$PX4_MPC_ACC_HOR_MAX" \
+    "$PX4_MPC_JERK_AUTO" \
+    "$PX4_MPC_JERK_MAX" <<'PY' || {
 import math
 import sys
 
@@ -143,9 +177,24 @@ horizontal_threshold = (
     float(horizontal_text) if horizontal_text else None
 )
 auto_disarm_delay = float(sys.argv[3])
+dynamics = [
+    float(value) if value.strip() else None for value in sys.argv[4:9]
+]
+dynamics_absent = all(value is None for value in dynamics)
+dynamics_complete = all(value is not None for value in dynamics)
+dynamics_valid = dynamics_absent or (
+    dynamics_complete
+    and all(
+        math.isfinite(value) and value > 0.0
+        for value in dynamics
+    )
+    and dynamics[0] <= 12.0
+    and dynamics[1] <= dynamics[2] <= 8.0
+    and dynamics[3] <= dynamics[4] <= 20.0
+)
 valid = (
     math.isfinite(vertical_threshold)
-    and 0.0 < vertical_threshold < 0.25
+    and 0.0 < vertical_threshold <= 0.25
     and (
         horizontal_threshold is None
         or (
@@ -155,6 +204,7 @@ valid = (
     )
     and math.isfinite(auto_disarm_delay)
     and auto_disarm_delay >= 2.0
+    and dynamics_valid
 )
 raise SystemExit(0 if valid else 1)
 PY
@@ -280,16 +330,27 @@ fi
 
 RUNTIME_DIR="${PX4_MAP_RUNTIME_DIR:-/tmp/px4_ros2_map_${USER:-user}}"
 mkdir -p "$RUNTIME_DIR"
+PX4_WORK_DIR="$RUNTIME_DIR/px4_runtime"
+# Never inherit calibrations or estimator state saved by an earlier SITL run
+# in PX4's build-tree rootfs.  A fresh runtime directory keeps each experiment
+# reproducible and leaves the reference PX4 checkout read-only.
+if [[ -d "$PX4_WORK_DIR" ]]; then
+  find "$PX4_WORK_DIR" -mindepth 1 -delete
+fi
+mkdir -p "$PX4_WORK_DIR"
 GAZEBO_LOG="$RUNTIME_DIR/${MAP}_gazebo.log"
 XRCE_LOG="$RUNTIME_DIR/${MAP}_xrce.log"
 TRAILER_LOG="$RUNTIME_DIR/${MAP}_trailer.log"
 MAVROS_LOG="$RUNTIME_DIR/${MAP}_mavros.log"
 BRIDGE_LOG="$RUNTIME_DIR/${MAP}_sensor_bridge.log"
+ARUCO_LOG="$RUNTIME_DIR/${MAP}_down_aruco.log"
 GAZEBO_PID=""
 XRCE_PID=""
 TRAILER_PID=""
+TRAILER_SUPPORT_ENABLED=0
 MAVROS_PID=""
 BRIDGE_PID=""
+ARUCO_PID=""
 WATCHDOG_PID=""
 SPAWN_CHECK_PID=""
 
@@ -298,9 +359,15 @@ SPAWN_CHECK_PID=""
 # then disappear, which looks like a spawn or physics crash.  Fail before any
 # child process is created and print the actual conflicting process instead.
 PX4_LOCK_PATH="/tmp/px4_lock-0"
-if pgrep -f "$PX4_BIN" >/dev/null 2>&1; then
+PX4_INSTANCE_ZERO_PROCESSES="$(
+  pgrep -af "$PX4_BIN" 2>/dev/null | awk '
+    /(^|[[:space:]])-i[[:space:]]+[1-9][0-9]*([[:space:]]|$)/ { next }
+    { print }
+  ' || true
+)"
+if [[ -n "$PX4_INSTANCE_ZERO_PROCESSES" ]]; then
   echo "ERROR: PX4 SITL instance 0 is already running; refusing to start a second world." >&2
-  pgrep -af "$PX4_BIN" >&2 || true
+  echo "$PX4_INSTANCE_ZERO_PROCESSES" >&2
   echo "       Stop the existing PX4/run_px4_map.sh process, then retry." >&2
   exit 4
 fi
@@ -317,7 +384,8 @@ if command -v flock >/dev/null 2>&1; then
   exec {PX4_LOCK_FD}>"$PX4_LOCK_PATH"
   if ! flock -n "$PX4_LOCK_FD"; then
     echo "ERROR: PX4 SITL instance 0 is already running; refusing to start a second world." >&2
-    pgrep -af "$PX4_BIN" >&2 || true
+    [[ -z "$PX4_INSTANCE_ZERO_PROCESSES" ]] || \
+      echo "$PX4_INSTANCE_ZERO_PROCESSES" >&2
     echo "       Stop the existing PX4/run_px4_map.sh process, then retry." >&2
     exec {PX4_LOCK_FD}>&-
     exit 4
@@ -333,7 +401,7 @@ fi
 # user's PX4 source/build tree.  Fail closed if a future PX4 release changes
 # the expected rcS line instead of silently filtering the wrong command.
 MAVROS_RCS=""
-if [[ "${START_XRCE:-0}" != "1" || -n "$PX4_LNDMC_Z_VEL_MAX" || -n "$PX4_LNDMC_XY_VEL_MAX" ]]; then
+if [[ "${START_XRCE:-0}" != "1" || "$PX4_HAS_RUNTIME_OVERRIDES" == "1" ]]; then
   PX4_STOCK_RCS="$PX4_BUILD/etc/init.d-posix/rcS"
   MAVROS_RCS="$RUNTIME_DIR/rcS.mavros_only"
   MAVROS_RCS_TMP="$MAVROS_RCS.tmp.$$"
@@ -352,8 +420,8 @@ if [[ "${START_XRCE:-0}" != "1" || -n "$PX4_LNDMC_Z_VEL_MAX" || -n "$PX4_LNDMC_X
   else
     awk '{ print }' "$PX4_STOCK_RCS" >"$MAVROS_RCS_TMP"
   fi
-  if [[ -n "$PX4_LNDMC_Z_VEL_MAX" || -n "$PX4_LNDMC_XY_VEL_MAX" ]]; then
-    printf '\n# Precision-landing SITL safety calibration (runtime only).\n' \
+  if [[ "$PX4_HAS_RUNTIME_OVERRIDES" == "1" ]]; then
+    printf '\n# Precision-landing SITL control calibration (runtime only).\n' \
       >>"$MAVROS_RCS_TMP"
   fi
   if [[ -n "$PX4_LNDMC_Z_VEL_MAX" ]]; then
@@ -366,6 +434,26 @@ if [[ "${START_XRCE:-0}" != "1" || -n "$PX4_LNDMC_Z_VEL_MAX" || -n "$PX4_LNDMC_X
   fi
   if [[ -n "$PX4_COM_DISARM_LAND" ]]; then
     printf 'param set COM_DISARM_LAND %s\n' "$PX4_COM_DISARM_LAND" \
+      >>"$MAVROS_RCS_TMP"
+  fi
+  if [[ -n "$PX4_MPC_XY_VEL_MAX" ]]; then
+    printf 'param set MPC_XY_VEL_MAX %s\n' "$PX4_MPC_XY_VEL_MAX" \
+      >>"$MAVROS_RCS_TMP"
+  fi
+  if [[ -n "$PX4_MPC_ACC_HOR" ]]; then
+    printf 'param set MPC_ACC_HOR %s\n' "$PX4_MPC_ACC_HOR" \
+      >>"$MAVROS_RCS_TMP"
+  fi
+  if [[ -n "$PX4_MPC_ACC_HOR_MAX" ]]; then
+    printf 'param set MPC_ACC_HOR_MAX %s\n' "$PX4_MPC_ACC_HOR_MAX" \
+      >>"$MAVROS_RCS_TMP"
+  fi
+  if [[ -n "$PX4_MPC_JERK_AUTO" ]]; then
+    printf 'param set MPC_JERK_AUTO %s\n' "$PX4_MPC_JERK_AUTO" \
+      >>"$MAVROS_RCS_TMP"
+  fi
+  if [[ -n "$PX4_MPC_JERK_MAX" ]]; then
+    printf 'param set MPC_JERK_MAX %s\n' "$PX4_MPC_JERK_MAX" \
       >>"$MAVROS_RCS_TMP"
   fi
   if ! /bin/sh -n "$MAVROS_RCS_TMP"; then
@@ -520,6 +608,7 @@ cleanup() {
   stop_process "$WATCHDOG_PID"
   # The bridge is a dedicated session. Killing the whole process group also
   # catches children which ros2 launch briefly reparents while shutting down.
+  stop_process_group "$ARUCO_PID"
   stop_process_group "$BRIDGE_PID"
   stop_process "$MAVROS_PID"
   stop_process "$XRCE_PID"
@@ -672,7 +761,8 @@ if [[ "${START_XRCE:-0}" == "1" ]]; then
   fi
 fi
 
-if [[ "${DRIVE_TRAILER:-0}" == "1" ]]; then
+if [[ "${DRIVE_TRAILER:-0}" == "1" || "$MAP" == "precision-landing-moving" ]]; then
+  TRAILER_SUPPORT_ENABLED=1
   if [[ "$MAP" == "city" || "$MAP" == "precision-landing" ]]; then
     echo "ERROR: the $MAP trailer is intentionally stationary; leave DRIVE_TRAILER=0." >&2
     exit 6
@@ -691,14 +781,18 @@ if [[ "${DRIVE_TRAILER:-0}" == "1" ]]; then
     # The model root is already calibrated to z=0 for the 2.051 m marker
     # surface. Do not apply the mountain driver's terrain-clearance offset.
     TRAILER_ARGS+=(--no-terrain-follow --rate "${TRAILER_COMMAND_RATE_HZ:-50}")
-    if [[ -n "${TRAILER_SPEED_M_S:-}" ]]; then
+    TRAILER_ARGS+=(--ros-odometry-topic /trailer/odometry)
+    TRAILER_ARGS+=(--gz-odometry-topic /model/trailer/odometry)
+    if [[ "${DRIVE_TRAILER:-0}" != "1" ]]; then
+      TRAILER_ARGS+=(--stationary)
+    elif [[ -n "${TRAILER_SPEED_M_S:-}" ]]; then
       TRAILER_ARGS+=(--speed "$TRAILER_SPEED_M_S")
     fi
   fi
   if [[ -n "${TRAILER_ROUTE_TIMEOUT:-}" ]]; then
     TRAILER_ARGS+=(--timeout "$TRAILER_ROUTE_TIMEOUT")
   fi
-  echo "Trailer route    : waiting for PX4 entity (log: $TRAILER_LOG)"
+  echo "Trailer support  : waiting for PX4 entity (log: $TRAILER_LOG)"
 else
   if [[ "$MAP" == "city" ]]; then
     echo "Trailer          : SEO model at ENU ($TRAILER_SPAWN_POSE), zero mean speed by default"
@@ -795,6 +889,35 @@ if [[ "${START_BRIDGE:-1}" == "1" ]]; then
   fi
 fi
 
+if [[ "${START_ARUCO_DETECTOR:-0}" == "1" ]]; then
+  ROS_SETUP="${ROS_SETUP:-/opt/ros/${ROS_DISTRO:-humble}/setup.bash}"
+  PRECISION_LANDING_OVERLAY_SETUP="${PRECISION_LANDING_OVERLAY_SETUP:-}"
+  if [[ ! -f "$PRECISION_LANDING_OVERLAY_SETUP" ]]; then
+    echo "ERROR: START_ARUCO_DETECTOR=1 requires a valid PRECISION_LANDING_OVERLAY_SETUP." >&2
+    exit 5
+  fi
+  echo "Down ArUco       : environment-owned (log: $ARUCO_LOG)"
+  setsid bash -c '
+    set -Eeuo pipefail
+    set +u
+    # shellcheck disable=SC1090
+    source "$1"
+    # shellcheck disable=SC1090
+    source "$2"
+    set -u
+    exec ros2 launch camera_detection aruco_trailer.launch.py enable_front:=false
+  ' aruco "$ROS_SETUP" "$PRECISION_LANDING_OVERLAY_SETUP" \
+    >"$ARUCO_LOG" 2>&1 &
+  ARUCO_PID=$!
+  sleep 2
+  if ! kill -0 -- "-$ARUCO_PID" 2>/dev/null; then
+    echo "ERROR: down ArUco detector failed to start. Log:" >&2
+    tail -40 "$ARUCO_LOG" >&2 || true
+    ARUCO_PID=""
+    exit 5
+  fi
+fi
+
 # A sim-time MAVROS must see a live Gazebo clock before the FCU connects.  The
 # sensor bridge owns that clock conversion in this checkout.  Fail closed
 # instead of allowing zero-time headers or a later epoch/boot-time rebase.
@@ -816,7 +939,6 @@ if [[ -n "$MAVROS_PID" ]]; then
 fi
 
 echo "Gazebo is ready. Starting the PX4 console; Ctrl-C stops this complete launch."
-cd "$PX4_ROOTFS"
 PX4_ARGS=()
 if [[ "${PX4_DAEMON:-0}" == "1" ]]; then
   # `px4 -d` keeps the SITL server in the foreground but omits the pxh shell.
@@ -835,6 +957,9 @@ fi
 if [[ -n "$PX4_LNDMC_Z_VEL_MAX" ]]; then
   echo "PX4 land detector : LNDMC_Z_VEL_MAX=$PX4_LNDMC_Z_VEL_MAX m/s, LNDMC_XY_VEL_MAX=$PX4_LNDMC_XY_VEL_MAX m/s"
   echo "PX4 auto-disarm   : COM_DISARM_LAND=$PX4_COM_DISARM_LAND s"
+fi
+if [[ -n "$PX4_MPC_XY_VEL_MAX" ]]; then
+  echo "PX4 XY dynamics   : velocity=$PX4_MPC_XY_VEL_MAX m/s acceleration=$PX4_MPC_ACC_HOR_MAX m/s^2 jerk=$PX4_MPC_JERK_MAX m/s^3"
 fi
 LAUNCHER_PID=$$
 
@@ -857,14 +982,15 @@ LAUNCHER_PID=$$
 ) &
 SPAWN_CHECK_PID=$!
 
-if [[ "${DRIVE_TRAILER:-0}" == "1" ]]; then
+if [[ "$TRAILER_SUPPORT_ENABLED" == "1" ]]; then
   # Keep the original 10 m spawn geometry until the aircraft actually exists.
-  # This remains independent of the mission and ArUco detector; it only avoids
-  # giving the 3 m/s trailer a 30--40 s head start during PX4 startup.
+  # One environment process then owns both measured odometry publication and,
+  # when enabled, motion commands. It is independent of mission/controller
+  # lifetime and never exposes simulator velocity to the flight node.
   (
     for _ in {1..45}; do
       if gz model --list 2>/dev/null | grep -Fq -- "$ENTITY_NAME"; then
-        echo "Trailer route    : PX4 entity confirmed; starting"
+        echo "Trailer support  : PX4 entity confirmed; starting"
         exec python3 -u "$SCRIPT_DIR/trailer_waypoint_driver.py" \
           "${TRAILER_ARGS[@]}"
       fi
@@ -884,7 +1010,7 @@ PX4_GZ_WORLD="$WORLD_NAME" \
 PX4_GZ_MODEL_POSE="$SPAWN_POSE" \
 PX4_SYS_AUTOSTART="$AUTOSTART_ID" \
 PX4_SIM_MODEL="$SIM_MODEL" \
-"$PX4_BIN" "${PX4_ARGS[@]}"
+"$PX4_BIN" "${PX4_ARGS[@]}" -w "$PX4_WORK_DIR" "$PX4_BUILD/etc"
 PX4_STATUS=$?
 wait "$WATCHDOG_PID"
 WATCHDOG_STATUS=$?

@@ -9,21 +9,19 @@ REPO_DIR="$(dirname "$SCRIPT_DIR")"
 usage() {
   cat <<EOF
 Usage:
-  Terminal 1: $(basename "$0") environment
+  Terminal 1: TRAILER_SPEED_M_S=5 $(basename "$0") environment
   Terminal 2: $(basename "$0") mission
-  Moving Terminal 1: $(basename "$0") moving-environment
-  Moving Terminal 2: $(basename "$0") moving-mission
   Camera Terminal: $(basename "$0") camera-view
 
 environment starts the 200 x 200 m Gazebo GUI, PX4 SITL, MAVROS, the GCS
-heartbeat, and the camera/depth/lidar bridge. mission performs an isolated
-/tmp build, starts only the Relative-OSQP controller, verifies the
-unarmed ON_GROUND preflight contract, and issues one mission start request.
+heartbeat, the camera bridge, and the down-facing ArUco detector. Set
+TRAILER_SPEED_M_S=0 for a stationary trailer or any positive speed for the
+same moving-trailer mission (default: 5 m/s). mission starts only the one
+Relative-OSQP controller and issues one mission start request.
 
-The moving environment starts the trailer's circular route after PX4 spawns;
-the mission approaches from measured position and estimates speed from ArUco.
-camera-view waits for the mission's ArUco debug publisher and opens the
-downward annotated image without rebuilding either ROS package.
+The mission approaches from measured position and estimates trailer speed from
+ArUco; it does not select a controller based on the configured trailer speed.
+camera-view opens the environment-owned downward annotated image.
 EOF
 }
 
@@ -34,7 +32,7 @@ case "${1:-}" in
     ;;
 esac
 
-if [[ $# -ne 1 || ! "$1" =~ ^(environment|mission|moving-environment|moving-mission|camera-view)$ ]]; then
+if [[ $# -ne 1 || ! "$1" =~ ^(environment|mission|camera-view)$ ]]; then
   echo "ERROR: invalid experiment subcommand" >&2
   usage >&2
   exit 64
@@ -43,7 +41,7 @@ fi
 # Start from a clean process environment so a shell which previously sourced
 # another checkout cannot redirect ROS package or Python resolution. Preserve
 # only the desktop/session values required by the Gazebo GUI.
-if [[ "${PX4_ROS22_EXPERIMENT_CLEAN_ENV:-0}" != "1" ]]; then
+if [[ "${PX4_ROS2_EXPERIMENT_CLEAN_ENV:-0}" != "1" ]]; then
   exec env -i \
     HOME="$HOME" \
     USER="${USER:-$(id -un)}" \
@@ -58,9 +56,9 @@ if [[ "${PX4_ROS22_EXPERIMENT_CLEAN_ENV:-0}" != "1" ]]; then
     XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-}" \
     DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-}" \
     XAUTHORITY="${XAUTHORITY:-}" \
-    PX4_ROS22_EXPERIMENT_CLEAN_ENV=1 \
-    PX4_ROS22_EXPERIMENT_HEADLESS="${PX4_ROS22_EXPERIMENT_HEADLESS:-0}" \
-    PX4_ROS22_EXPERIMENT_PX4_DAEMON="${PX4_ROS22_EXPERIMENT_PX4_DAEMON:-0}" \
+    PX4_ROS2_EXPERIMENT_CLEAN_ENV=1 \
+    PX4_ROS2_EXPERIMENT_HEADLESS="${PX4_ROS2_EXPERIMENT_HEADLESS:-0}" \
+    PX4_ROS2_EXPERIMENT_PX4_DAEMON="${PX4_ROS2_EXPERIMENT_PX4_DAEMON:-0}" \
     TRAILER_SPEED_M_S="${TRAILER_SPEED_M_S:-}" \
     PYTHONDONTWRITEBYTECODE=1 \
     bash "$SCRIPT_PATH" "$@"
@@ -69,53 +67,63 @@ fi
 ROS_SETUP="/opt/ros/humble/setup.bash"
 ROS_DOMAIN_ID_VALUE=42
 ROS_LOCALHOST_ONLY_VALUE=1
-GZ_PARTITION_VALUE="px4_ros22_precision_landing_${USER:-user}"
+GZ_PARTITION_VALUE="px4_ros2_precision_landing_${USER:-user}"
 PX4_DIR_VALUE="$HOME/PX4-Autopilot"
-if [[ "$1" == moving-* ]]; then
-  EXPERIMENT_MODE="moving"
-  ENVIRONMENT_RUNNER="$SCRIPT_DIR/run_precision_landing_200m_moving.sh"
-  CONTROLLER_RUNNER="$SCRIPT_DIR/run_px4_mpc_precision_landing_moving.sh"
-else
-  EXPERIMENT_MODE="stationary"
-  ENVIRONMENT_RUNNER="$SCRIPT_DIR/run_precision_landing_200m.sh"
-  CONTROLLER_RUNNER="$SCRIPT_DIR/run_px4_mpc_precision_landing.sh"
+ENVIRONMENT_RUNTIME_DIR="/tmp/px4_ros2_precland_env_${USER:-user}"
+ENVIRONMENT_MANIFEST="$ENVIRONMENT_RUNTIME_DIR/experiment.json"
+ACTION="$1"
+TRAILER_SPEED_VALUE=""
+DRIVE_TRAILER_VALUE=0
+EXPERIMENT_MODE="unified"
+if [[ "$ACTION" == "environment" ]]; then
+  TRAILER_SPEED_VALUE="${TRAILER_SPEED_M_S:-5.0}"
+  if ! python3 - "$TRAILER_SPEED_VALUE" <<'PY'
+import math
+import sys
+
+speed = float(sys.argv[1])
+raise SystemExit(0 if math.isfinite(speed) and speed >= 0.0 else 1)
+PY
+  then
+    echo "ERROR: TRAILER_SPEED_M_S must be finite and non-negative." >&2
+    exit 64
+  fi
+  if python3 - "$TRAILER_SPEED_VALUE" <<'PY'
+import sys
+raise SystemExit(0 if float(sys.argv[1]) > 0.0 else 1)
+PY
+  then
+    DRIVE_TRAILER_VALUE=1
+    EXPERIMENT_MODE="moving-${TRAILER_SPEED_VALUE}mps"
+  else
+    EXPERIMENT_MODE="stationary"
+  fi
+  mkdir -p "$ENVIRONMENT_RUNTIME_DIR"
+  python3 - "$ENVIRONMENT_MANIFEST" "$TRAILER_SPEED_VALUE" <<'PY'
+import json
+import os
+import pathlib
+import sys
+import time
+
+path = pathlib.Path(sys.argv[1])
+temporary = path.with_suffix(f".tmp.{os.getpid()}")
+temporary.write_text(json.dumps({
+    "trailer_speed_m_s": float(sys.argv[2]),
+    "trailer_position_nominal_rate_hz": 50.0,
+    "started_wall_time_s": time.time(),
+}, sort_keys=True) + "\n", encoding="utf-8")
+temporary.replace(path)
+PY
 fi
+ENVIRONMENT_RUNNER="$SCRIPT_DIR/run_precision_landing_200m_moving.sh"
+CONTROLLER_RUNNER="$SCRIPT_DIR/run_px4_precision_landing.sh"
 SUPERVISOR="$SCRIPT_DIR/tools/run_precision_landing_once.py"
 
 [[ -f "$ROS_SETUP" ]] || {
   echo "ERROR: ROS 2 Humble setup is missing: $ROS_SETUP" >&2
   exit 69
 }
-
-if [[ "$1" == "environment" || "$1" == "moving-environment" ]]; then
-  if [[ "$EXPERIMENT_MODE" == "moving" ]]; then
-    DRIVE_TRAILER_VALUE=1
-  else
-    DRIVE_TRAILER_VALUE=0
-  fi
-  echo "$EXPERIMENT_MODE 트레일러 SITL 환경을 시작합니다. 이 터미널은 계속 유지하세요."
-  echo "ROS_DOMAIN_ID    : $ROS_DOMAIN_ID_VALUE"
-  echo "Gazebo partition : $GZ_PARTITION_VALUE"
-  exec env \
-    ROS_DOMAIN_ID="$ROS_DOMAIN_ID_VALUE" \
-    ROS_LOCALHOST_ONLY="$ROS_LOCALHOST_ONLY_VALUE" \
-    ROS_SETUP="$ROS_SETUP" \
-    PX4_DIR="$PX4_DIR_VALUE" \
-    GZ_PARTITION="$GZ_PARTITION_VALUE" \
-    PX4_MAP_RUNTIME_DIR="/tmp/px4_ros22_precland_env_${USER:-user}" \
-    HEADLESS="$PX4_ROS22_EXPERIMENT_HEADLESS" \
-    PX4_DAEMON="$PX4_ROS22_EXPERIMENT_PX4_DAEMON" \
-    START_MAVROS=1 \
-    START_BRIDGE=1 \
-    START_XRCE=0 \
-    DRIVE_TRAILER="$DRIVE_TRAILER_VALUE" \
-    FOLLOW_DRONE=0 \
-    PHYSICS_ENGINE=gz-physics-dartsim-plugin \
-    MAVROS_FCU_URL=udp://:14540@127.0.0.1:14580 \
-    MAVROS_HEARTBEAT_TYPE=GCS \
-    MAVROS_HEARTBEAT_RATE=10.0 \
-    "$ENVIRONMENT_RUNNER"
-fi
 
 export ROS_DOMAIN_ID="$ROS_DOMAIN_ID_VALUE"
 export ROS_LOCALHOST_ONLY="$ROS_LOCALHOST_ONLY_VALUE"
@@ -173,7 +181,7 @@ if [[ "$1" == "camera-view" ]]; then
   fi
 
   echo "ArUco 디버그 영상을 기다립니다: $DEBUG_TOPIC"
-  echo "mission 또는 moving-mission을 실행하면 자동으로 열립니다."
+  echo "detector는 environment와 함께 유지되므로 mission 전후에도 볼 수 있습니다."
   debug_ready=0
   for ((attempt = 1; attempt <= 120; attempt++)); do
     publisher_count="$(ros_publisher_count "$DEBUG_TOPIC")"
@@ -191,7 +199,7 @@ if [[ "$1" == "camera-view" ]]; then
   done
   if [[ "$debug_ready" != "1" ]]; then
     echo "ERROR: ArUco debug publisher did not appear within 120 s." >&2
-    echo "Confirm that mission is still running; the detector exits when the mission ends." >&2
+    echo "환경 로그에서 down ArUco detector 시작 오류를 확인하세요." >&2
     exit 75
   fi
   exec ros2 run rqt_image_view rqt_image_view \
@@ -213,13 +221,13 @@ done
 
 # Never consume the checkout's contaminated build/install/log directories.
 # Both packages are rebuilt from this checkout into one isolated /tmp overlay.
-COLCON_ROOT="/tmp/px4_ros22_precision_landing_colcon_${USER:-user}"
+COLCON_ROOT="/tmp/px4_ros2_precision_landing_colcon_${USER:-user}"
 BUILD_BASE="$COLCON_ROOT/build"
 INSTALL_BASE="$COLCON_ROOT/install"
 LOG_BASE="$COLCON_ROOT/log"
 for candidate in "$BUILD_BASE" "$INSTALL_BASE" "$LOG_BASE"; do
   case "$(realpath -m -- "$candidate")" in
-    /tmp/px4_ros22_precision_landing_colcon_*) ;;
+    /tmp/px4_ros2_precision_landing_colcon_*) ;;
     *)
       echo "ERROR: refusing non-isolated colcon path: $candidate" >&2
       exit 73
@@ -280,7 +288,7 @@ actual_precision_prefix="$(realpath -m "$(ros2 pkg prefix precision_landing)")"
 actual_camera_prefix="$(realpath -m "$(ros2 pkg prefix camera_detection)")"
 if [[ "$actual_precision_prefix" != "$expected_precision_prefix" || \
       "$actual_camera_prefix" != "$expected_camera_prefix" ]]; then
-  echo "ERROR: ROS package provenance is not the isolated PX4-ROS22 build." >&2
+  echo "ERROR: ROS package provenance is not the isolated PX4-ROS2 build." >&2
   echo "  precision_landing: $actual_precision_prefix" >&2
   echo "  camera_detection : $actual_camera_prefix" >&2
   exit 73
@@ -289,6 +297,35 @@ if ! ros2 pkg executables precision_landing | \
     grep -Fxq 'precision_landing mpc_precision_landing_node'; then
   echo "ERROR: isolated build lacks mpc_precision_landing_node." >&2
   exit 69
+fi
+
+if [[ "$ACTION" == "environment" ]]; then
+  echo "$EXPERIMENT_MODE 트레일러 SITL 환경을 시작합니다. 이 터미널은 계속 유지하세요."
+  echo "Trailer speed    : $TRAILER_SPEED_VALUE m/s"
+  echo "ROS_DOMAIN_ID    : $ROS_DOMAIN_ID_VALUE"
+  echo "Gazebo partition : $GZ_PARTITION_VALUE"
+  exec env \
+    ROS_DOMAIN_ID="$ROS_DOMAIN_ID_VALUE" \
+    ROS_LOCALHOST_ONLY="$ROS_LOCALHOST_ONLY_VALUE" \
+    ROS_SETUP="$ROS_SETUP" \
+    PRECISION_LANDING_OVERLAY_SETUP="$INSTALL_BASE/setup.bash" \
+    PX4_DIR="$PX4_DIR_VALUE" \
+    GZ_PARTITION="$GZ_PARTITION_VALUE" \
+    PX4_MAP_RUNTIME_DIR="$ENVIRONMENT_RUNTIME_DIR" \
+    HEADLESS="$PX4_ROS2_EXPERIMENT_HEADLESS" \
+    PX4_DAEMON="$PX4_ROS2_EXPERIMENT_PX4_DAEMON" \
+    START_MAVROS=1 \
+    START_BRIDGE=1 \
+    START_ARUCO_DETECTOR=1 \
+    START_XRCE=0 \
+    DRIVE_TRAILER="$DRIVE_TRAILER_VALUE" \
+    TRAILER_SPEED_M_S="$TRAILER_SPEED_VALUE" \
+    FOLLOW_DRONE=0 \
+    PHYSICS_ENGINE=gz-physics-dartsim-plugin \
+    MAVROS_FCU_URL=udp://:14540@127.0.0.1:14580 \
+    MAVROS_HEARTBEAT_TYPE=GCS \
+    MAVROS_HEARTBEAT_RATE=10.0 \
+    "$ENVIRONMENT_RUNNER"
 fi
 
 if timeout 3 ros2 service type /autonomy/start_precision_landing \
@@ -353,9 +390,24 @@ if [[ "$MAVROS_PREFLIGHT_READY" != "1" ]]; then
 fi
 echo "  ready: PX4 connected, disarmed, ON_GROUND"
 
+if [[ -f "$ENVIRONMENT_MANIFEST" ]]; then
+  TRAILER_SPEED_VALUE="$(python3 - "$ENVIRONMENT_MANIFEST" <<'PY'
+import json
+import pathlib
+import sys
+value = float(json.loads(pathlib.Path(sys.argv[1]).read_text())["trailer_speed_m_s"])
+print(f"{value:g}")
+PY
+)"
+  EXPERIMENT_MODE="speed-${TRAILER_SPEED_VALUE}mps"
+else
+  echo "ERROR: environment manifest is missing; restart Terminal 1." >&2
+  exit 75
+fi
 RUN_ID="$EXPERIMENT_MODE-osqp-$(date -u '+%Y%m%dT%H%M%SZ')-$$"
-RUN_DIR="/tmp/px4_ros22_precision_landing_runs/$RUN_ID"
+RUN_DIR="/tmp/px4_ros2_precision_landing_runs/$RUN_ID"
 mkdir -p "$RUN_DIR/ros_log"
+cp "$ENVIRONMENT_MANIFEST" "$RUN_DIR/environment.json"
 CONTROLLER_LOG="$RUN_DIR/controller.log"
 SUPERVISOR_LOG="$RUN_DIR/mission.log"
 HOLD_LOG="$RUN_DIR/hold_service.log"

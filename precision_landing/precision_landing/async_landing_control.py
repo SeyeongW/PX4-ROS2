@@ -19,7 +19,6 @@ from typing import Callable
 import numpy as np
 
 from .landing_controller import (
-    LEGACY_MPC_CONTROLLER_TYPE,
     P_FEEDFORWARD_CONTROLLER_TYPE,
     RELATIVE_LANDING_MPC_CONTROLLER_TYPE,
     LandingControlCommand,
@@ -29,6 +28,14 @@ from .landing_controller import (
 
 
 _COMMAND_TOLERANCE = 1.0e-6
+# OSQP uses eps_abs=eps_rel=1e-3.  At the 11 m/s command scale its accepted
+# unscaled primal tolerance is about 0.012 m/s.  Keep the independent command
+# audit marginally above that numerical envelope; otherwise a solver-valid
+# 11.002--11.010 m/s recovery sample is rejected and replaced by HOLD even
+# though PX4 enforces the same 11 m/s physical limit.  This is not additional
+# flight authority: commands outside the solver's own audited QP remain
+# invalid and PX4 retains its configured bound.
+_VELOCITY_COMMAND_TOLERANCE_M_S = 2.0e-2
 _READ_ONLY_ZERO = np.zeros(3, dtype=float)
 _READ_ONLY_ZERO.setflags(write=False)
 
@@ -65,6 +72,15 @@ def _freeze_control_input(value: LandingControlInput) -> LandingControlInput:
         landing_pad_acceleration_enu_m_s2=(
             value.landing_pad_acceleration_enu_m_s2
         ),
+        landing_pad_positions_horizon_enu_m=(
+            value.landing_pad_positions_horizon_enu_m
+        ),
+        landing_pad_velocities_horizon_enu_m_s=(
+            value.landing_pad_velocities_horizon_enu_m_s
+        ),
+        landing_pad_accelerations_horizon_enu_m_s2=(
+            value.landing_pad_accelerations_horizon_enu_m_s2
+        ),
         target_clearance_m=value.target_clearance_m,
         landing_constraints_enabled=value.landing_constraints_enabled,
         descent_allowed=value.descent_allowed,
@@ -82,6 +98,9 @@ def _freeze_control_input(value: LandingControlInput) -> LandingControlInput:
         "landing_pad_position_enu_m",
         "landing_pad_velocity_enu_m_s",
         "landing_pad_acceleration_enu_m_s2",
+        "landing_pad_positions_horizon_enu_m",
+        "landing_pad_velocities_horizon_enu_m_s",
+        "landing_pad_accelerations_horizon_enu_m_s2",
     ):
         array = getattr(frozen, name)
         if array is not None:
@@ -426,7 +445,6 @@ def _command_constraint_rejection(
     fields = (
         (command.position_setpoint_enu_m, command.position_enabled),
         (command.velocity_setpoint_enu_m_s, command.velocity_enabled),
-        (command.acceleration_setpoint_enu_m_s2, command.acceleration_enabled),
     )
     for vector, enabled in fields:
         if np.asarray(vector).shape != (3,):
@@ -435,27 +453,34 @@ def _command_constraint_rejection(
             return "nonfinite_enabled_command"
         if not enabled and not np.all(np.isnan(vector)):
             return "non_nan_disabled_command"
+    acceleration = np.asarray(command.acceleration_setpoint_enu_m_s2)
+    axes = command.acceleration_enabled_axes
+    if acceleration.shape != (3,) or axes is None or len(axes) != 3:
+        return "invalid_acceleration_axis_mask"
+    if bool(command.acceleration_enabled) != any(axes):
+        return "invalid_acceleration_axis_mask"
+    for index, enabled in enumerate(axes):
+        value = float(acceleration[index])
+        if enabled and not math.isfinite(value):
+            return "nonfinite_enabled_command"
+        if not enabled and not math.isnan(value):
+            return "non_nan_disabled_command"
     primary = command.primary_controller_type
-    if primary in (LEGACY_MPC_CONTROLLER_TYPE, RELATIVE_LANDING_MPC_CONTROLLER_TYPE):
+    if primary == RELATIVE_LANDING_MPC_CONTROLLER_TYPE:
         if not command.mpc_attempted or command.mpc_success is not True:
             return "solver_failed"
-        if primary == RELATIVE_LANDING_MPC_CONTROLLER_TYPE:
-            if (
-                command.position_enabled
-                or not command.velocity_enabled
-                or not command.acceleration_enabled
-            ):
-                return "invalid_mpc_control_mode"
-        elif (
-            not command.position_enabled
+        if (
+            command.position_enabled
             or not command.velocity_enabled
-            or command.acceleration_enabled
+            or not command.acceleration_enabled
+            or command.acceleration_enabled_axes != (True, True, False)
         ):
             return "invalid_mpc_control_mode"
     if command.controller_type == P_FEEDFORWARD_CONTROLLER_TYPE and not (
         not command.position_enabled
         and command.velocity_enabled
         and not command.acceleration_enabled
+        and command.acceleration_enabled_axes == (False, False, False)
     ):
         return "invalid_p_control_mode"
     if not command.velocity_enabled:
@@ -464,17 +489,27 @@ def _command_constraint_rejection(
     limits = snapshot.constraint_limits
     if (
         float(np.linalg.norm(velocity[:2]))
-        > limits.max_horizontal_velocity_m_s + _COMMAND_TOLERANCE
+        > limits.max_horizontal_velocity_m_s
+        + _VELOCITY_COMMAND_TOLERANCE_M_S
     ):
         return "horizontal_velocity_constraint"
-    if velocity[2] > limits.max_ascent_velocity_m_s + _COMMAND_TOLERANCE:
+    if (
+        velocity[2]
+        > limits.max_ascent_velocity_m_s
+        + _VELOCITY_COMMAND_TOLERANCE_M_S
+    ):
         return "ascent_velocity_constraint"
-    if velocity[2] < -limits.max_descent_velocity_m_s - _COMMAND_TOLERANCE:
+    if (
+        velocity[2]
+        < -limits.max_descent_velocity_m_s
+        - _VELOCITY_COMMAND_TOLERANCE_M_S
+    ):
         return "descent_velocity_constraint"
     total_limit = limits.max_total_velocity_m_s
     if (
         total_limit is not None
-        and float(np.linalg.norm(velocity)) > total_limit + _COMMAND_TOLERANCE
+        and float(np.linalg.norm(velocity))
+        > total_limit + _VELOCITY_COMMAND_TOLERANCE_M_S
     ):
         return "total_velocity_constraint"
     if not math.isfinite(command.yaw_enu_rad):
@@ -558,16 +593,13 @@ def landing_snapshot_change_rejection(
     current_input = current.control_input
     previous_constraints = previous_input.landing_constraints_enabled
     current_constraints = current_input.landing_constraints_enabled
-    # A level recenter solve intentionally omits landing-geometry rows because
-    # it starts outside the funnel, but it also has descent disabled.  Once
-    # current geometry is safe again, that older level result is conservative
-    # for the short async handoff to the constrained QP.  The reverse
-    # direction remains fail-closed: a descent-capable result must never
-    # survive a current request to level and relax geometry for recovery.
-    if (
-        previous_constraints
-        and not current_constraints
-    ):
+    # A level/recentering result is conservative while a newer snapshot
+    # re-enables landing geometry or descent.  Accept that one-way handoff so
+    # the 50 Hz worker does not alternate between a valid level solution and
+    # ``landing_constraints_changed``.  The reverse direction stays
+    # fail-closed: an older descent-capable command must never survive a
+    # current request to level or relax recovery geometry.
+    if previous_constraints and not current_constraints:
         return "landing_constraints_changed"
     if (
         not previous_constraints
@@ -582,12 +614,6 @@ def landing_snapshot_change_rejection(
         != current_input.camera_fov_constraint_enabled
     ):
         return "landing_constraints_changed"
-    # A result captured while descent was forbidden is still a conservative
-    # level command when the current snapshot permits descent.  Rejecting it
-    # prevented the command cache from recovering: every new descending solve
-    # was evaluated against the preceding level snapshot and FINAL repeatedly
-    # stalled.  The opposite direction remains fail-closed so an older
-    # descent-capable result can never survive a current safety revocation.
     if previous_input.descent_allowed and not current_input.descent_allowed:
         return "landing_constraints_changed"
     if (

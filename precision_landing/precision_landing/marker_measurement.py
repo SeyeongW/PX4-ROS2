@@ -1,8 +1,7 @@
 """ROS-independent helpers for timestamped ArUco pose measurements.
 
-The helpers deliberately keep capture time separate from estimator time.  The
-capture stamp is used only to reject duplicate camera frames and for status;
-the estimator continues to use ``time.monotonic()`` in the ROS node.
+The capture stamp rejects duplicate frames and is mapped into the PX4 sample
+time domain before the timestamp-ordered estimator update.
 """
 
 from __future__ import annotations

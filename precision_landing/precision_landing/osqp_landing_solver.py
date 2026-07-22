@@ -1,13 +1,12 @@
 """Sparse OSQP solver for relative-coordinate moving-pad landing MPC.
 
-The solver has the same ``solve`` contract as :class:`RelativeLandingMPC`,
-but condenses the linear jerk dynamics into one quadratic program.  Its
+The solver condenses the linear jerk dynamics into one quadratic program.  Its
 Hessian and constraint matrix are created once.  A control cycle updates only
 the linear cost and constraint bounds before warm-starting the existing OSQP
 workspace.
 
-Nonlinear circular limits from the SLSQP reference are represented by fixed,
-inscribed regular polygons.  The terminal deck polygon is itself contained in
+Nonlinear circular limits are represented by fixed, inscribed regular
+polygons.  The terminal deck polygon is itself contained in
 the usable rectangle for every deck yaw, which lets the OSQP constraint matrix
 remain immutable while retaining fail-closed geometry.
 """
@@ -27,7 +26,6 @@ except ImportError:  # pragma: no cover - exercised on systems without OSQP.
     osqp = None
 
 from .relative_landing_mpc import (
-    RelativeLandingMPC,
     RelativeLandingMPCResult,
     _finite_three_vector,
     _recoverable_no_descent_velocity_floor,
@@ -35,10 +33,22 @@ from .relative_landing_mpc import (
 
 
 _BASE_CONSTRAINT_TOLERANCE = 1.0e-5
+_HORIZONTAL_COMMAND_HEADROOM_M_S = 0.30
 
 
-class SlsqpReferenceSolver(RelativeLandingMPC):
-    """Offline SLSQP reference with the common landing-solver contract."""
+def _finite_pad_horizon(
+    value: Sequence[Sequence[float]] | np.ndarray,
+    horizon_steps: int,
+    description: str,
+) -> np.ndarray:
+    """Return one finite pad horizon aligned with the solver grid."""
+    array = np.asarray(value, dtype=float)
+    expected_shape = (int(horizon_steps), 3)
+    if array.shape != expected_shape or not np.all(np.isfinite(array)):
+        raise ValueError(
+            f"{description} must be finite with shape {expected_shape}"
+        )
+    return array.copy()
 
 
 class OsqpLandingSolver:
@@ -146,6 +156,15 @@ class OsqpLandingSolver:
         self.max_horizontal_velocity_m_s = float(
             max_horizontal_velocity_m_s
         )
+        self._optimized_horizontal_velocity_limit_m_s = (
+            self.max_horizontal_velocity_m_s
+            - _HORIZONTAL_COMMAND_HEADROOM_M_S
+        )
+        if self._optimized_horizontal_velocity_limit_m_s <= 0.0:
+            raise ValueError(
+                "horizontal velocity limit is smaller than numerical "
+                "command headroom"
+            )
         self.max_ascent_velocity_m_s = float(max_ascent_velocity_m_s)
         self.max_descent_velocity_m_s = float(max_descent_velocity_m_s)
         self.max_horizontal_acceleration_m_s2 = float(
@@ -217,27 +236,12 @@ class OsqpLandingSolver:
         """Return the number of successful in-place q/l/u updates."""
         return self._workspace_update_count
 
-    @property
-    def workspace_solve_count(self) -> int:
-        """Return the number of calls made to the persistent workspace."""
-        return self._workspace_solve_count
-
     def clear_warm_start(self) -> None:
         """Clear all primal, dual, and jerk-history state after rejection."""
         self._workspace.warm_start(
             x=self._zero_primal, y=self._zero_dual
         )
         self._previous_jerk.fill(0.0)
-
-    @property
-    def constraint_matrix(self) -> sparse.csc_matrix:
-        """Return the immutable sparse constraint matrix."""
-        return self._constraint_matrix
-
-    @property
-    def hessian_matrix(self) -> sparse.csc_matrix:
-        """Return the immutable upper-triangular QP Hessian."""
-        return self._hessian
 
     def _build_condensed_dynamics(self) -> None:
         """Build exact zero-order-held jerk maps for the horizon."""
@@ -404,6 +408,20 @@ class OsqpLandingSolver:
         row_offset = self._append_rows(
             "velocity", self._velocity_flat_map, matrices, row_offset
         )
+        # PX4 and the asynchronous command audit both limit the Euclidean XY
+        # speed.  The former per-axis box could produce a solved command whose
+        # vector norm was rejected immediately after the solve.  Use one
+        # inscribed polygon at every horizon step so the optimized and applied
+        # command contracts agree.
+        self._horizontal_velocity_matrix = self._polygon_matrix(
+            self._velocity_flat_map
+        )
+        row_offset = self._append_rows(
+            "horizontal_speed",
+            self._horizontal_velocity_matrix,
+            matrices,
+            row_offset,
+        )
         row_offset = self._append_rows(
             "acceleration",
             self._acceleration_flat_map,
@@ -534,6 +552,15 @@ class OsqpLandingSolver:
         descent_allowed: bool,
         camera_fov_constraint_enabled: bool = True,
         relative_descent_speed_m_s: float = 0.0,
+        landing_pad_positions_horizon_enu_m: (
+            Sequence[Sequence[float]] | np.ndarray | None
+        ) = None,
+        landing_pad_velocities_horizon_enu_m_s: (
+            Sequence[Sequence[float]] | np.ndarray | None
+        ) = None,
+        landing_pad_accelerations_horizon_enu_m_s2: (
+            Sequence[Sequence[float]] | np.ndarray | None
+        ) = None,
     ) -> RelativeLandingMPCResult:
         """Update and solve one QP, returning only a fresh verified result."""
         try:
@@ -577,9 +604,57 @@ class OsqpLandingSolver:
             pad_velocity,
             pad_acceleration,
         )
+        horizon_values = (
+            landing_pad_positions_horizon_enu_m,
+            landing_pad_velocities_horizon_enu_m_s,
+            landing_pad_accelerations_horizon_enu_m_s2,
+        )
+        horizon_provided = [value is not None for value in horizon_values]
+        if any(horizon_provided) and not all(horizon_provided):
+            self.clear_warm_start()
+            raise ValueError(
+                "landing-pad position, velocity, and acceleration horizons "
+                "must be provided together"
+            )
+        if all(horizon_provided):
+            try:
+                pad_positions = _finite_pad_horizon(
+                    landing_pad_positions_horizon_enu_m,
+                    self.horizon_steps,
+                    "landing-pad position horizon",
+                )
+                pad_velocities = _finite_pad_horizon(
+                    landing_pad_velocities_horizon_enu_m_s,
+                    self.horizon_steps,
+                    "landing-pad velocity horizon",
+                )
+                pad_accelerations = _finite_pad_horizon(
+                    landing_pad_accelerations_horizon_enu_m_s2,
+                    self.horizon_steps,
+                    "landing-pad acceleration horizon",
+                )
+            except ValueError:
+                self.clear_warm_start()
+                raise
+        else:
+            pad_positions = None
+            pad_velocities = None
+            pad_accelerations = None
         if (
             clearance > 1.0e6
-            or any(np.max(np.abs(value)) > 1.0e6 for value in numerical_inputs)
+            or any(
+                np.max(np.abs(value)) > 1.0e6
+                for value in numerical_inputs
+            )
+            or any(
+                value is not None
+                and np.max(np.abs(value)) > 1.0e6
+                for value in (
+                    pad_positions,
+                    pad_velocities,
+                    pad_accelerations,
+                )
+            )
         ):
             self.clear_warm_start()
             raise ValueError("landing MPC input exceeds numerical range")
@@ -625,33 +700,57 @@ class OsqpLandingSolver:
             1, self.horizon_steps + 1, dtype=float
         )[:, None]
         times = steps * self.dt_s
-        pad_positions = (
-            pad_position
-            + times * pad_velocity
-            + 0.5 * times**2 * pad_acceleration
-        )
-        pad_velocities = pad_velocity + times * pad_acceleration
-        pad_accelerations = np.repeat(
-            pad_acceleration[None, :], self.horizon_steps, axis=0
-        )
-        free_relative_positions = (
-            relative_position
-            + times * relative_velocity
-            + 0.5 * times**2 * relative_acceleration
-        )
-        free_relative_velocities = (
-            relative_velocity + times * relative_acceleration
-        )
-        free_relative_accelerations = np.repeat(
-            relative_acceleration[None, :],
-            self.horizon_steps,
-            axis=0,
-        )
-        free_positions = free_relative_positions + pad_positions
-        free_velocities = free_relative_velocities + pad_velocities
-        free_accelerations = (
-            free_relative_accelerations + pad_accelerations
-        )
+        if pad_positions is None:
+            # Backward-compatible scalar state: the historic solver path
+            # assumes one constant pad acceleration across the horizon.
+            pad_positions = (
+                pad_position
+                + times * pad_velocity
+                + 0.5 * times**2 * pad_acceleration
+            )
+            pad_velocities = pad_velocity + times * pad_acceleration
+            pad_accelerations = np.repeat(
+                pad_acceleration[None, :], self.horizon_steps, axis=0
+            )
+            free_relative_positions = (
+                relative_position
+                + times * relative_velocity
+                + 0.5 * times**2 * relative_acceleration
+            )
+            free_relative_velocities = (
+                relative_velocity + times * relative_acceleration
+            )
+            free_relative_accelerations = np.repeat(
+                relative_acceleration[None, :],
+                self.horizon_steps,
+                axis=0,
+            )
+            free_positions = free_relative_positions + pad_positions
+            free_velocities = free_relative_velocities + pad_velocities
+            free_accelerations = (
+                free_relative_accelerations + pad_accelerations
+            )
+        else:
+            # The UAV remains the exact ZOH triple integrator.  Subtract the
+            # externally predicted nonlinear pad trajectory from that absolute
+            # free rollout; the fixed jerk maps, Hessian, constraints, and
+            # persistent OSQP workspace therefore remain unchanged.
+            free_positions = (
+                vehicle_position
+                + times * vehicle_velocity
+                + 0.5 * times**2 * vehicle_acceleration
+            )
+            free_velocities = vehicle_velocity + times * vehicle_acceleration
+            free_accelerations = np.repeat(
+                vehicle_acceleration[None, :],
+                self.horizon_steps,
+                axis=0,
+            )
+            free_relative_positions = free_positions - pad_positions
+            free_relative_velocities = free_velocities - pad_velocities
+            free_relative_accelerations = (
+                free_accelerations - pad_accelerations
+            )
 
         # The current state can be inside the alignment polygon while the
         # first predicted sample is already outside and cannot be brought
@@ -1057,6 +1156,76 @@ class OsqpLandingSolver:
             )
         return bounds
 
+    def _axis_velocity_recovery_effects(
+        self,
+        current_acceleration_m_s2: float,
+        acceleration_limit_m_s2: float,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Return velocity effects of the fastest feasible axis recovery.
+
+        The free rollout already contains the measured acceleration.  These
+        two jerk sequences drive that acceleration toward the negative and
+        positive limits without crossing either the acceleration or jerk
+        bound.  Mapping the sequences through the exact ZOH velocity model
+        gives the tight transient relaxation that an already-moving vehicle
+        can actually achieve; unlike a constant maximum-jerk estimate it
+        never assumes acceleration can grow beyond its configured limit.
+        """
+        initial_acceleration = float(current_acceleration_m_s2)
+        acceleration_limit = float(acceleration_limit_m_s2)
+        if not math.isfinite(initial_acceleration):
+            raise ValueError("current acceleration must be finite")
+
+        def recovery_effect(target_acceleration: float) -> np.ndarray:
+            acceleration = initial_acceleration
+            jerks = np.empty(self.horizon_steps, dtype=float)
+            for step in range(self.horizon_steps):
+                jerk = float(
+                    np.clip(
+                        (target_acceleration - acceleration) / self.dt_s,
+                        -self.max_jerk_m_s3,
+                        self.max_jerk_m_s3,
+                    )
+                )
+                jerks[step] = jerk
+                acceleration += jerk * self.dt_s
+            return self._velocity_map @ jerks
+
+        return (
+            recovery_effect(-acceleration_limit),
+            recovery_effect(acceleration_limit),
+        )
+
+    def _minimum_horizontal_velocity_recovery_effect(
+        self,
+        current_acceleration_xy_m_s2: np.ndarray,
+    ) -> np.ndarray:
+        """Return each speed-polygon row's feasible recovery envelope."""
+        acceleration_xy = np.asarray(
+            current_acceleration_xy_m_s2, dtype=float
+        )
+        if acceleration_xy.shape != (2,) or not np.all(
+            np.isfinite(acceleration_xy)
+        ):
+            raise ValueError("horizontal acceleration must be finite xy")
+
+        minimum_x, maximum_x = self._axis_velocity_recovery_effects(
+            acceleration_xy[0], self.max_horizontal_acceleration_m_s2
+        )
+        minimum_y, maximum_y = self._axis_velocity_recovery_effects(
+            acceleration_xy[1], self.max_horizontal_acceleration_m_s2
+        )
+        effects = np.empty(
+            (self.horizon_steps, self.polygon_facets), dtype=float
+        )
+        for facet, direction in enumerate(self._facet_directions):
+            x_effect = minimum_x if direction[0] >= 0.0 else maximum_x
+            y_effect = minimum_y if direction[1] >= 0.0 else maximum_y
+            effects[:, facet] = (
+                direction[0] * x_effect + direction[1] * y_effect
+            )
+        return effects.reshape(-1)
+
     def _update_constraint_bounds(
         self,
         free_relative_positions: np.ndarray,
@@ -1076,28 +1245,73 @@ class OsqpLandingSolver:
         self._lower.fill(-np.inf)
         self._upper.fill(np.inf)
 
+        current_acceleration = np.asarray(
+            free_accelerations[0], dtype=float
+        )
+        vertical_minimum_effect, vertical_maximum_effect = (
+            self._axis_velocity_recovery_effects(
+                current_acceleration[2],
+                self.max_vertical_acceleration_m_s2,
+            )
+        )
+
         velocity_slice = self._row_slices["velocity"]
         velocity_limits = np.tile(
             (
-                self.max_horizontal_velocity_m_s,
-                self.max_horizontal_velocity_m_s,
+                np.inf,
+                np.inf,
                 self.max_ascent_velocity_m_s,
             ),
             self.horizon_steps,
         )
         velocity_lower_limits = np.tile(
             (
-                -self.max_horizontal_velocity_m_s,
-                -self.max_horizontal_velocity_m_s,
+                -np.inf,
+                -np.inf,
                 -self.max_descent_velocity_m_s,
             ),
             self.horizon_steps,
         )
-        self._lower[velocity_slice] = (
+        velocity_lower_bounds = (
             velocity_lower_limits - free_velocities.reshape(-1)
         )
-        self._upper[velocity_slice] = (
+        velocity_upper_bounds = (
             velocity_limits - free_velocities.reshape(-1)
+        )
+        # Apply the same fastest-recovery rule to vertical velocity. A live
+        # descent sample can be a few mm/s outside the nominal boundary while
+        # its measured acceleration still points outward; demanding nominal
+        # compliance at the very first prediction sample is then impossible.
+        # Only the tightest jerk-reachable transient is admitted.
+        velocity_lower_bounds[2::3] = np.minimum(
+            velocity_lower_bounds[2::3],
+            vertical_maximum_effect,
+        )
+        velocity_upper_bounds[2::3] = np.maximum(
+            velocity_upper_bounds[2::3],
+            vertical_minimum_effect,
+        )
+        self._lower[velocity_slice] = velocity_lower_bounds
+        self._upper[velocity_slice] = velocity_upper_bounds
+
+        horizontal_speed_slice = self._row_slices["horizontal_speed"]
+        nominal_horizontal_upper = self._polygon_upper_bounds(
+            free_velocities,
+            # OSQP solves to a finite tolerance while the asynchronous PX4
+            # command audit is intentionally strict. Keep a small internal
+            # margin so a solved polygon vertex remains inside the public
+            # vector-speed limit after extraction.
+            radius=self._optimized_horizontal_velocity_limit_m_s,
+        )
+        # A measured initial state is not a decision variable. If its current
+        # momentum makes the nominal polygon unreachable at an early sample,
+        # require the strongest jerk-reachable recovery and restore the
+        # nominal speed boundary as soon as it becomes reachable.
+        self._upper[horizontal_speed_slice] = np.maximum(
+            nominal_horizontal_upper,
+            self._minimum_horizontal_velocity_recovery_effect(
+                current_acceleration[:2]
+            ),
         )
 
         acceleration_slice = self._row_slices["acceleration"]
@@ -1108,12 +1322,34 @@ class OsqpLandingSolver:
                 self.max_vertical_acceleration_m_s2,
             ),
             self.horizon_steps,
+        ).reshape(self.horizon_steps, 3)
+        # The measured initial acceleration is not a decision variable.  If
+        # it is just outside the nominal box, demanding that step 1 is already
+        # inside can be mathematically impossible under the jerk bound (for
+        # example 3.535 - 5*0.1 = 3.035 > 3.0).  Admit only the tightest
+        # jerk-reachable recovery envelope, then return to the nominal box as
+        # soon as it is reachable.  This preserves the hard steady-state
+        # acceleration limit without clipping or hiding the measured state.
+        recovery_times = (
+            np.arange(1, self.horizon_steps + 1, dtype=float)[:, None]
+            * self.dt_s
+        )
+        current_acceleration = current_acceleration[None, :]
+        acceleration_upper_limits = np.maximum(
+            acceleration_limits,
+            current_acceleration - self.max_jerk_m_s3 * recovery_times,
+        )
+        acceleration_lower_limits = np.minimum(
+            -acceleration_limits,
+            current_acceleration + self.max_jerk_m_s3 * recovery_times,
         )
         self._lower[acceleration_slice] = (
-            -acceleration_limits - free_accelerations.reshape(-1)
+            acceleration_lower_limits.reshape(-1)
+            - free_accelerations.reshape(-1)
         )
         self._upper[acceleration_slice] = (
-            acceleration_limits - free_accelerations.reshape(-1)
+            acceleration_upper_limits.reshape(-1)
+            - free_accelerations.reshape(-1)
         )
 
         jerk_slice = self._row_slices["jerk"]
@@ -1143,12 +1379,19 @@ class OsqpLandingSolver:
                     altitude_slope=fov_slope,
                 )
 
-            deck_slice = self._row_slices["landing_pad_contact"]
-            terminal_horizontal = free_relative_positions[-1, :2]
-            self._upper[deck_slice] = (
-                self._polygon_apothem_scale * self._deck_radius
-                - self._facet_directions @ terminal_horizontal
-            )
+            # Do not force a high-altitude level-alignment solve to place its
+            # two-second horizon endpoint on the deck.  At 9 m/s a recoverable
+            # outward relative velocity can make that artificial endpoint
+            # unreachable even though FOV/funnel tracking is feasible.  The
+            # contact polygon becomes hard only after the independent
+            # position/relative-speed gate has authorized descent.
+            if effective_descent_allowed:
+                deck_slice = self._row_slices["landing_pad_contact"]
+                terminal_horizontal = free_relative_positions[-1, :2]
+                self._upper[deck_slice] = (
+                    self._polygon_apothem_scale * self._deck_radius
+                    - self._facet_directions @ terminal_horizontal
+                )
 
         if effective_descent_allowed:
             position_slice = self._row_slices[
@@ -1336,7 +1579,7 @@ class OsqpLandingSolver:
         summary = {
             "horizontal_velocity": float(
                 self.max_horizontal_velocity_m_s
-                - np.max(np.abs(velocities[:, :2]))
+                - np.max(np.linalg.norm(velocities[:, :2], axis=1))
             ),
             "ascent_velocity": float(
                 self.max_ascent_velocity_m_s
@@ -1365,14 +1608,22 @@ class OsqpLandingSolver:
         values = np.asarray(
             self._constraint_matrix @ jerk.reshape(-1)
         )
+        horizontal_speed_rows = self._row_slices["horizontal_speed"]
+        summary["horizontal_speed_polygon"] = float(
+            np.min(
+                self._upper[horizontal_speed_rows]
+                - values[horizontal_speed_rows]
+            )
+        )
         if constraints_enforced:
             active_geometry_constraints = [
                 "relative_altitude",
                 "landing_funnel",
-                "landing_pad_contact",
             ]
             if camera_fov_constraint_enabled:
                 active_geometry_constraints.insert(2, "camera_fov")
+            if effective_descent_allowed:
+                active_geometry_constraints.append("landing_pad_contact")
             for name in active_geometry_constraints:
                 rows = self._row_slices[name]
                 lower_margin = values[rows] - self._lower[rows]
@@ -1389,7 +1640,7 @@ class OsqpLandingSolver:
                 "descent_alignment_position",
                 "descent_alignment_velocity",
             )
-        elif constraints_enforced:
+        elif not effective_descent_allowed:
             names = ("no_descent",)
         else:
             names = ()

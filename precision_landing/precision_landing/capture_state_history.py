@@ -421,18 +421,6 @@ class VehicleStateHistory:
         self._attitudes: list[_AttitudeSample] = []
 
     @property
-    def position_sample_count(self) -> int:
-        return len(self._positions)
-
-    @property
-    def velocity_sample_count(self) -> int:
-        return len(self._velocities)
-
-    @property
-    def attitude_sample_count(self) -> int:
-        return len(self._attitudes)
-
-    @property
     def latest_common_time_s(self) -> float | None:
         if not self._positions or not self._velocities or not self._attitudes:
             return None
@@ -441,6 +429,13 @@ class VehicleStateHistory:
             self._velocities[-1].sample_time_s,
             self._attitudes[-1].sample_time_s,
         )
+
+    @property
+    def latest_position_time_s(self) -> float | None:
+        """Return the newest position sample stamp without exposing storage."""
+        if not self._positions:
+            return None
+        return float(self._positions[-1].sample_time_s)
 
     def add_position(
         self,
@@ -486,6 +481,37 @@ class VehicleStateHistory:
         if accepted:
             self._prune(self._attitudes, stamp)
         return accepted
+
+    def interpolate_position(
+        self,
+        sample_time_s: float,
+        *,
+        maximum_gap_s: float,
+    ) -> np.ndarray:
+        """Return position at one PX4 sample stamp.
+
+        MAVROS pose and velocity callbacks for the same PX4 sample can be
+        delivered in either order.  The vehicle-response observer only needs
+        a time-aligned position/velocity pair, so it must not fall back to the
+        callback-time ``latest`` position and it must not be blocked on an
+        unrelated attitude sample.
+        """
+        target = self._valid_stamp(sample_time_s)
+        maximum_gap = float(maximum_gap_s)
+        if not math.isfinite(maximum_gap) or maximum_gap <= 0.0:
+            raise ValueError("maximum interpolation gap must be positive")
+        if not self._positions:
+            raise StateInterpolationError("state_history_uninitialized")
+        first, second, fraction = self._bracket(
+            self._positions,
+            target,
+            maximum_gap,
+        )
+        position = (
+            first.position_enu_m
+            + fraction * (second.position_enu_m - first.position_enu_m)
+        )
+        return position.copy()
 
     @staticmethod
     def _valid_stamp(sample_time_s: float) -> float:

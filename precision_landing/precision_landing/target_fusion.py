@@ -13,7 +13,7 @@ from collections import deque
 from dataclasses import dataclass, field
 import heapq
 import math
-from typing import Mapping, Sequence
+from typing import Sequence
 
 import numpy as np
 
@@ -327,7 +327,7 @@ class _QueuedMeasurement:
 class TimestampedTargetEstimator:
     """Eight-state CV Kalman filter with timestamp-ordered sensor updates."""
 
-    VISION_SOURCES = ("vision_front", "vision_down")
+    VISION_SOURCES = ("vision_down",)
     ODOMETRY_SOURCE = "odometry"
 
     def __init__(self, parameters: FusionParameters | None = None) -> None:
@@ -357,11 +357,6 @@ class TimestampedTargetEstimator:
             self.statistics[source] = SensorStatistics()
 
     @property
-    def pending_count(self) -> int:
-        """Return the number of measurements awaiting the watermark."""
-        return len(self._queue) + int(self._initial_candidate is not None)
-
-    @property
     def initialized(self) -> bool:
         """Return whether at least one measurement initialized the state."""
         return self.filter_stamp_s is not None
@@ -376,11 +371,9 @@ class TimestampedTargetEstimator:
         covariance_4x4: Sequence[Sequence[float]] | Sequence[float],
         received_px4_time_s: float,
     ) -> SubmissionResult:
-        """Validate and enqueue one front/down ArUco pose measurement."""
+        """Validate and enqueue one downward ArUco pose measurement."""
         if source not in self.VISION_SOURCES:
-            raise ValueError(
-                "vision source must be vision_front or vision_down"
-            )
+            raise ValueError("vision source must be vision_down")
         statistics = self.statistics[source]
         statistics.received += 1
         timestamp_result = self._register_timestamp(
@@ -521,7 +514,6 @@ class TimestampedTargetEstimator:
         statistics.last_received_stamp_s = stamp
         if key in self._seen_keys[source]:
             return self._reject(source, "duplicate", "duplicate timestamp")
-        self._remember_stamp(source, key)
         age = received - stamp
         if age > self.parameters.maximum_measurement_age_s:
             return self._reject(source, "stale", "stale timestamp")
@@ -537,6 +529,10 @@ class TimestampedTargetEstimator:
             and stamp < self._initial_candidate.stamp_s - 1.0e-9
         ):
             return self._reject(source, "late", "late timestamp")
+        # A callback may arrive just before the PX4 state watermark that
+        # brackets the same sample.  Temporal rejections are retryable, so do
+        # not consume their deduplication key until the stamp is admissible.
+        self._remember_stamp(source, key)
         return None
 
     def _remember_stamp(self, source: str, key: int) -> None:
@@ -1007,7 +1003,3 @@ class TimestampedTargetEstimator:
             odometry_fresh,
             last_age,
         )
-
-    def statistics_snapshot(self) -> Mapping[str, SensorStatistics]:
-        """Expose read-only-by-convention statistics for ROS status output."""
-        return dict(self.statistics)

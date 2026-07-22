@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Process-scoped flight-control authority lock for PX4-ROS22 launchers.
+# Process-scoped flight-control authority lock for PX4-ROS2 launchers.
 #
 # Source this library from a launcher, then call acquire_control_authority.
 # The library deliberately installs no signal/EXIT traps.  The caller keeps the
@@ -7,9 +7,9 @@
 # launcher (or the process it execs) exits.  This makes it compatible with an
 # existing launcher cleanup trap.
 
-if [[ -z "${_PX4_ROS22_INVOKED_COMMAND+x}" ]]; then
-  printf -v _PX4_ROS22_INVOKED_COMMAND '%q ' "$0" "$@"
-  _PX4_ROS22_INVOKED_COMMAND="${_PX4_ROS22_INVOKED_COMMAND% }"
+if [[ -z "${_PX4_ROS2_INVOKED_COMMAND+x}" ]]; then
+  printf -v _PX4_ROS2_INVOKED_COMMAND '%q ' "$0" "$@"
+  _PX4_ROS2_INVOKED_COMMAND="${_PX4_ROS2_INVOKED_COMMAND% }"
 fi
 
 # Print the lock path used by one vehicle authority domain.
@@ -19,10 +19,10 @@ resolve_control_authority_lock_file() {
     return 64
   fi
 
-  if [[ -n "${PX4_ROS22_CONTROL_LOCK_FILE:-}" ]]; then
-    printf '%s\n' "$PX4_ROS22_CONTROL_LOCK_FILE"
+  if [[ -n "${PX4_ROS2_CONTROL_LOCK_FILE:-}" ]]; then
+    printf '%s\n' "$PX4_ROS2_CONTROL_LOCK_FILE"
   else
-    printf '/tmp/px4_ros22_%s.control.lock\n' "$1"
+    printf '/tmp/px4_ros2_%s.control.lock\n' "$1"
   fi
 }
 
@@ -32,7 +32,7 @@ resolve_control_authority_lock_file() {
 #   acquire_control_authority <stack_name> <vehicle_authority_id>
 #
 # A conflicting owner is reported immediately with exit status 73.  On
-# success, PX4_ROS22_CONTROL_LOCK_FD remains open for the process lifetime.
+# success, PX4_ROS2_CONTROL_LOCK_FD remains open for the process lifetime.
 acquire_control_authority() {
   if [[ $# -ne 2 || -z "${1:-}" || -z "${2:-}" ]]; then
     echo "ERROR: acquire_control_authority requires <stack_name> <vehicle_authority_id>." >&2
@@ -42,7 +42,7 @@ acquire_control_authority() {
     echo "ERROR: flock is required to acquire flight-control authority." >&2
     return 69
   fi
-  if [[ -n "${PX4_ROS22_CONTROL_LOCK_FD:-}" ]]; then
+  if [[ -n "${PX4_ROS2_CONTROL_LOCK_FD:-}" ]]; then
     echo "ERROR: this process already holds a control-authority lock." >&2
     return 70
   fi
@@ -79,7 +79,7 @@ acquire_control_authority() {
   lock_user="$(id -un 2>/dev/null || printf '%s' "${USER:-unknown}")"
   lock_hostname="$(hostname 2>/dev/null || printf 'unknown')"
   start_time_utc="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-  invoked_command="${PX4_ROS22_INVOKED_COMMAND:-$_PX4_ROS22_INVOKED_COMMAND}"
+  invoked_command="${PX4_ROS2_INVOKED_COMMAND:-$_PX4_ROS2_INVOKED_COMMAND}"
 
   # Only the successful owner replaces the human-readable metadata.
   if ! : >"$lock_file" || ! {
@@ -96,9 +96,9 @@ acquire_control_authority() {
     return 74
   fi
 
-  PX4_ROS22_CONTROL_LOCK_FD="$lock_fd"
-  PX4_ROS22_CONTROL_LOCK_FILE_RESOLVED="$lock_file"
-  PX4_ROS22_CONTROL_STACK_NAME="$stack_name"
-  PX4_ROS22_VEHICLE_AUTHORITY_ID="$vehicle_authority_id"
+  PX4_ROS2_CONTROL_LOCK_FD="$lock_fd"
+  PX4_ROS2_CONTROL_LOCK_FILE_RESOLVED="$lock_file"
+  PX4_ROS2_CONTROL_STACK_NAME="$stack_name"
+  PX4_ROS2_VEHICLE_AUTHORITY_ID="$vehicle_authority_id"
   return 0
 }
