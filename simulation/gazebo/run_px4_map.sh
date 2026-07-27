@@ -97,8 +97,13 @@ python3 -c 'import yaml' >/dev/null 2>&1 || {
   exit 2
 }
 
+# The map YAMLs spell their asset paths as `gazebo/worlds/...`, i.e. relative to
+# whatever directory holds `gazebo/`.  That used to be the repo root; since the
+# regroup it is `simulation/`.  Rebasing here keeps every YAML untouched and
+# keeps them honest: they describe simulation assets, so being relative to
+# simulation/ is what they actually mean.
 mapfile -t MAP_CONFIG < <(
-  python3 - "$COORDINATES" "$REPO_DIR" <<'PY'
+  python3 - "$COORDINATES" "$REPO_DIR/simulation" <<'PY'
 import pathlib
 import sys
 import yaml
