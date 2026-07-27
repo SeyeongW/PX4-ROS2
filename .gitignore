@@ -1,4 +1,6 @@
 # --- ROS 2 기본 무시 파일 ---
+# log/ is colcon's build log; it is recreated on every build and is NOT the
+# same thing as flight_logs/, which holds ArduPilot dataflash .BIN files.
 build/
 install/
 log/
@@ -12,7 +14,7 @@ __pycache__/
 .vscode/
 
 # --- 시뮬레이션/비행 산출물 (커밋 금지) ---
-logs/
+flight_logs/
 gazebo/backups/
 gazebo/validation/repository_runtime/
 *.BIN
