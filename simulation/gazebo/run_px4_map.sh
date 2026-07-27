@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 MAP="${1:-}"
 if [[ $# -gt 0 ]]; then
   shift
@@ -206,11 +206,11 @@ fi
 CUSTOM_MODEL="${SIM_MODEL#gz_}"
 # The vehicle is whatever the coordinate contract names, but it must be one
 # this checkout owns — that is what makes the symlink check below meaningful.
-if [[ ! -f "$REPO_DIR/px4_models/$CUSTOM_MODEL/model.sdf" ]]; then
-  echo "ERROR: coordinate contract selects '$CUSTOM_MODEL', which is not a repository model under $REPO_DIR/px4_models." >&2
+if [[ ! -f "$REPO_DIR/simulation/px4_models/$CUSTOM_MODEL/model.sdf" ]]; then
+  echo "ERROR: coordinate contract selects '$CUSTOM_MODEL', which is not a repository model under $REPO_DIR/simulation/px4_models." >&2
   exit 3
 fi
-CUSTOM_MODEL_SOURCE="$(realpath -m "$REPO_DIR/px4_models/$CUSTOM_MODEL")"
+CUSTOM_MODEL_SOURCE="$(realpath -m "$REPO_DIR/simulation/px4_models/$CUSTOM_MODEL")"
 CUSTOM_MODEL_TARGET="$PX4_DIR/Tools/simulation/gz/models/$CUSTOM_MODEL"
 if [[ ! -L "$CUSTOM_MODEL_TARGET" || "$(realpath -m "$CUSTOM_MODEL_TARGET")" != "$CUSTOM_MODEL_SOURCE" ]]; then
   echo "ERROR: PX4 custom model must link to this checkout: $CUSTOM_MODEL_TARGET -> $CUSTOM_MODEL_SOURCE" >&2

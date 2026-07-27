@@ -4,7 +4,7 @@ set -Eeuo pipefail
 
 SCRIPT_PATH="$(realpath -e "${BASH_SOURCE[0]}")"
 SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
-REPO_DIR="$(dirname "$SCRIPT_DIR")"
+REPO_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")"
 
 usage() {
   cat <<EOF
@@ -231,17 +231,17 @@ mkdir -p "$BUILD_BASE" "$INSTALL_BASE" "$LOG_BASE"
 BUILD_STAMP="$COLCON_ROOT/package-layout.sha256"
 BUILD_SIGNATURE="$({
   sha256sum \
-    "$REPO_DIR/camera_detection/setup.py" \
-    "$REPO_DIR/camera_detection/setup.cfg" \
-    "$REPO_DIR/camera_detection/package.xml" \
-    "$REPO_DIR/precision_landing/setup.py" \
-    "$REPO_DIR/precision_landing/setup.cfg" \
-    "$REPO_DIR/precision_landing/package.xml"
+    "$REPO_DIR/camera/camera_detection/setup.py" \
+    "$REPO_DIR/camera/camera_detection/setup.cfg" \
+    "$REPO_DIR/camera/camera_detection/package.xml" \
+    "$REPO_DIR/flight/precision_landing/setup.py" \
+    "$REPO_DIR/flight/precision_landing/setup.cfg" \
+    "$REPO_DIR/flight/precision_landing/package.xml"
   find \
-    "$REPO_DIR/camera_detection/config" \
-    "$REPO_DIR/camera_detection/launch" \
-    "$REPO_DIR/precision_landing/config" \
-    "$REPO_DIR/precision_landing/launch" \
+    "$REPO_DIR/camera/camera_detection/config" \
+    "$REPO_DIR/camera/camera_detection/launch" \
+    "$REPO_DIR/flight/precision_landing/config" \
+    "$REPO_DIR/flight/precision_landing/launch" \
     -maxdepth 1 -type f -printf '%p\n' 2>/dev/null | sort
 } | sha256sum | cut -d' ' -f1)"
 OVERLAY_READY=0
@@ -260,7 +260,7 @@ if [[ "$OVERLAY_READY" == "1" ]]; then
 else
   echo "[1/4] 최초 1회 /tmp 격리 overlay를 빌드합니다."
   colcon --log-base "$LOG_BASE" build \
-    --base-paths "$REPO_DIR/camera_detection" "$REPO_DIR/precision_landing" \
+    --base-paths "$REPO_DIR/camera/camera_detection" "$REPO_DIR/flight/precision_landing" \
     --packages-select camera_detection precision_landing \
     --build-base "$BUILD_BASE" \
     --install-base "$INSTALL_BASE" \

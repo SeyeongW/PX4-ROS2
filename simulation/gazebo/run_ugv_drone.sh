@@ -3,7 +3,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 AP_GAZEBO="${AP_GAZEBO:-$HOME/ardupilot_gazebo}"
 WORLD="${WORLD:-$SCRIPT_DIR/worlds/ugv_drone.world}"
 GZ_BIN="${GZ_BIN:-gz}"

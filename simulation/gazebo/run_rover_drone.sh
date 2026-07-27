@@ -20,7 +20,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 AP_GAZEBO="${AP_GAZEBO:-$HOME/ardupilot_gazebo}"
 
 if [[ ! -d "$AP_GAZEBO/build" ]]; then
@@ -54,7 +54,7 @@ GZ_SIM_SYSTEM_PLUGIN_PATH=$GZ_SIM_SYSTEM_PLUGIN_PATH
 Start the two SITL instances in separate terminals:
   Drone:  sim_vehicle.py -v ArduCopter -f JSON -I0 --console --map
   Rover:  sim_vehicle.py -v Rover --model JSON -I1 -w --console --map \\
-            --add-param-file="$REPO_DIR/gazebo/config/rover_skid.parm"
+            --add-param-file="$REPO_DIR/simulation/gazebo/config/rover_skid.parm"
 
 Launching world: rover_drone_runway.sdf
 EOF

@@ -4,7 +4,7 @@
 set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 PX4_DIR="$(realpath -m "${PX4_DIR:-$HOME/PX4-Autopilot}")"
 PX4_VERSION="${PX4_VERSION:-v1.17.0}"
 PX4_INSTALL_PREREQS="${PX4_INSTALL_PREREQS:-1}"
@@ -22,7 +22,7 @@ else
 fi
 
 CUSTOM_MODEL_NAME="x500_city_rgbd_lidar"
-CUSTOM_MODEL_SOURCE="$REPO_DIR/px4_models/$CUSTOM_MODEL_NAME"
+CUSTOM_MODEL_SOURCE="$REPO_DIR/simulation/px4_models/$CUSTOM_MODEL_NAME"
 CUSTOM_MODEL_TARGET="$PX4_DIR/Tools/simulation/gz/models/$CUSTOM_MODEL_NAME"
 "$SCRIPT_DIR/link_px4_model.sh" "$PX4_DIR"
 

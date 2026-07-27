@@ -1,0 +1,75 @@
+<?xml version='1.0'?>
+<!-- Gazebo Classic world for the gimbal camera.
+
+     Deliberately shorter than worlds/gimbal.sdf: every `gz-sim-*-system`
+     plugin in that file (Physics, UserCommands, SceneBroadcaster, Sensors,
+     Contact) is a gz-sim *system* that has to be opted into.  Classic has all
+     of those built in, so they simply have no counterpart here — the only
+     plugin Classic needs is gazebo_ros_init, which publishes /clock and hosts
+     the ROS node the sensor plugins attach to.
+
+     Scene, light, ground plane and the 0.6 m mount height are carried over
+     unchanged so the two worlds look and behave the same. -->
+<sdf version="1.7">
+  <world name="gimbal_world">
+
+    <physics name="1ms" type="ode">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+
+    <!-- Publishes /clock and owns the ROS node the gazebo_ros sensor plugins
+         (camera, imu, joint_state_publisher) register themselves with.  Without
+         it those plugins load but never reach ROS. -->
+    <plugin name="gazebo_ros_init" filename="libgazebo_ros_init.so"/>
+
+    <gravity>0 0 -9.8</gravity>
+
+    <scene>
+      <ambient>0.6 0.6 0.6 1</ambient>
+      <background>0.68 0.83 1.0 1</background>
+      <shadows>true</shadows>
+    </scene>
+
+    <light type="directional" name="sun">
+      <cast_shadows>true</cast_shadows>
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>0.9 0.9 0.9 1</diffuse>
+      <specular>0.3 0.3 0.3 1</specular>
+      <direction>-0.4 0.2 -0.9</direction>
+    </light>
+
+    <model name="ground_plane">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <plane><normal>0 0 1</normal><size>50 50</size></plane>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <plane><normal>0 0 1</normal><size>50 50</size></plane>
+          </geometry>
+          <material>
+            <ambient>0.13 0.38 0.08 1</ambient>
+            <diffuse>0.17 0.44 0.10 1</diffuse>
+            <specular>0.01 0.01 0.01 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Included at load time, NOT spawned later: the model's `world_fix` joint
+         has <parent>world</parent>, which only resolves while the model is part
+         of the world being built.  Resolved via GAZEBO_MODEL_PATH, which the
+         launch file points at .../models.
+         Mounted at 0.6 m so the camera (which hangs below the mount) clears the
+         ground through its full pitch range. -->
+    <include>
+      <uri>model://gimbal_classic</uri>
+      <pose>0 0 0.6 0 0 0</pose>
+    </include>
+
+  </world>
+</sdf>

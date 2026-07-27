@@ -4,7 +4,7 @@
 set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 PX4_DIR="$(realpath -m "${1:-${PX4_DIR:-$HOME/PX4-Autopilot}}")"
 MODEL_ROOT="$PX4_DIR/Tools/simulation/gz/models"
 
@@ -19,7 +19,7 @@ die() {
 link_model() {
   local model_name="$1"
   local source target current temp_dir
-  source="$(realpath -m "$REPO_DIR/px4_models/$model_name")"
+  source="$(realpath -m "$REPO_DIR/simulation/px4_models/$model_name")"
   target="$MODEL_ROOT/$model_name"
 
   [[ -d "$source" && -f "$source/model.sdf" && -f "$source/model.config" ]] || \
@@ -78,9 +78,9 @@ EOF
 # gimbal_down) resolves without a second install step.
 shopt -s nullglob
 installed=0
-for model_dir in "$REPO_DIR"/px4_models/*/; do
+for model_dir in "$REPO_DIR"/simulation/px4_models/*/; do
   [[ -f "$model_dir/model.sdf" ]] || continue
   link_model "$(basename "${model_dir%/}")"
   installed=$((installed + 1))
 done
-[[ "$installed" -gt 0 ]] || die "no models found under $REPO_DIR/px4_models"
+[[ "$installed" -gt 0 ]] || die "no models found under $REPO_DIR/simulation/px4_models"

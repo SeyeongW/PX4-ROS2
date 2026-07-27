@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 if [[ $# -ne 0 ]]; then
   echo "Usage: $(basename "$0")" >&2
   exit 64
@@ -12,7 +12,7 @@ fi
 VEHICLE_AUTHORITY_ID="${VEHICLE_AUTHORITY_ID:-vehicle_1}"
 BASELINE_RUN_ID="${BASELINE_RUN_ID:-}"
 CONTROL_STACK_NAME="px4_mavros_relative_osqp"
-CONFIG_FILE="$REPO_DIR/precision_landing/config/mpc_precision_landing.yaml"
+CONFIG_FILE="$REPO_DIR/flight/precision_landing/config/mpc_precision_landing.yaml"
 
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/lib/control_authority.sh"
