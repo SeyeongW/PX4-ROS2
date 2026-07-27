@@ -1,8 +1,16 @@
 """precland_hw_node — gated hardware precision landing over MAVROS.
 
 The mission is deliberately small: take off to 5 m, look for the marker, and
-descend onto it under MPC. What is NOT small is the permission model — every
-irreversible step stops and waits for a human:
+descend onto it under MPC. Two things are NOT small.
+
+First, the MPC is `simulation/landing_mpc`'s, imported rather than reimplemented.
+The point of this node is to fly the controller that was validated in SITL; a
+lookalike written here would only ever validate the lookalike. The weights are
+the SITL values unchanged and the limits are lowered for a real airframe over a
+stationary marker (see `_declare`).
+
+Second, the permission model — every irreversible step stops and waits for a
+human:
 
     preflight PASS ─approve─► ARM ─approve─► TAKEOFF ─approve─► SEARCH
                                                                   │
@@ -64,7 +72,10 @@ from std_srvs.srv import Trigger
 from mavros_msgs.msg import ExtendedState, PositionTarget, State
 from mavros_msgs.srv import CommandBool, CommandTOL, SetMode
 
-from .descent_mpc import DescentMPC
+from landing_mpc.mpc import LandingMPC
+from landing_mpc.predictor import predict_const_vel
+from landing_mpc.reference import HorizonReference
+
 from .mission import CheckResult, GateState, Phase
 
 
@@ -82,10 +93,21 @@ class PreclandHwNode(Node):
         self._read_params()
 
         self.gate = GateState()
-        self.mpc = DescentMPC(
-            dt=self.mpc_dt, horizon=self.mpc_horizon, v_max=self.mpc_v_max,
-            a_max=self.mpc_a_max, j_max=self.mpc_j_max, w_p=self.mpc_w_p,
-            w_v=self.mpc_w_v, w_a=self.mpc_w_a, w_j=self.mpc_w_j)
+        # THE controller under test — imported, not reimplemented.  This node
+        # exists to fly the MPC that simulation/landing_mpc validated in SITL;
+        # a lookalike written here would only ever validate the lookalike.
+        # Limits are re-tuned for a real airframe (see _declare), but the law,
+        # the cone and the QP are byte-for-byte the SITL ones.
+        self.mpc = LandingMPC(
+            dt_s=self.mpc_dt, horizon=self.mpc_horizon,
+            w_xy=self.mpc_w_xy, w_z=self.mpc_w_z,
+            w_vxy=self.mpc_w_vxy, w_vz=self.mpc_w_vz,
+            w_a=self.mpc_w_a, w_terminal=self.mpc_w_terminal,
+            v_max=self.mpc_v_max, a_max=self.mpc_a_max, vz_max=self.mpc_vz_max,
+            cone_k=self.mpc_cone_k, w_jerk=self.mpc_w_jerk, j_max=self.mpc_j_max)
+        self._ref = HorizonReference(lead_s=self.mpc_dt)
+        self._t_solve = None
+        self._solve_k = 0
 
         # --- telemetry state
         self.state: State | None = None
@@ -144,8 +166,11 @@ class PreclandHwNode(Node):
         # --- mission geometry
         p('takeoff_alt_m', 5.0)             # target altitude above takeoff point
         p('alt_tolerance_m', 0.3)           # counts as "reached" within this
-        p('descent_speed_m_s', 0.35)        # vertical rate during the descent
-        p('align_radius_m', 0.35)           # descend only while centred to this
+        p('climb_speed_m_s', 0.7)           # TAKEOFF climb cap; the descent
+                                            # rate is the MPC's mpc_vz_max_m_s
+        # Touchdown gate ONLY. Descent is gated by the MPC's own corridor
+        # (mpc_cone_k); this is how close counts as 'on the marker'.
+        p('touchdown_xy_m', 0.35)
         p('touchdown_alt_m', 0.25)          # below this, hand over to LAND
         p('touchdown_dwell_s', 1.5)         # ...held for this long
         # --- marker input
@@ -162,23 +187,38 @@ class PreclandHwNode(Node):
         p('offboard_mode', 'GUIDED')        # ArduPilot; use 'OFFBOARD' for PX4
         p('rate_hz', 20.0)
         p('service_timeout_s', 5.0)
-        # --- descent MPC (horizontal plane only; see descent_mpc.py)
+        # --- descent MPC: landing_mpc.LandingMPC, the SITL-validated one.
+        # WEIGHTS are the SITL values unchanged — they are what was validated,
+        # and retuning them here would mean this flight tests something else.
+        # LIMITS are lowered, because a real airframe is the one thing SITL did
+        # not have: the SITL descent ran v_max up to 3.5 m/s chasing a 3 m/s
+        # deck, and this first flight is over a STATIONARY marker where nothing
+        # needs to be chased at all.
         p('mpc_dt_s', 0.1)
-        p('mpc_horizon', 15)
-        p('mpc_v_max_m_s', 0.8)             # gentle: this is a real airframe
-        p('mpc_a_max_m_s2', 0.6)
-        p('mpc_j_max_m_s3', 1.5)
-        p('mpc_w_p', 6.0)
-        p('mpc_w_v', 2.0)
-        p('mpc_w_a', 0.05)
-        p('mpc_w_j', 0.5)
+        p('mpc_horizon', 20)                # SITL value
+        p('mpc_w_xy', 6.0)                  # SITL value
+        p('mpc_w_z', 3.0)                   # SITL value
+        p('mpc_w_vxy', 1.5)                 # SITL value
+        p('mpc_w_vz', 1.5)                  # SITL value
+        p('mpc_w_a', 0.05)                  # SITL value
+        p('mpc_w_terminal', 40.0)           # SITL value
+        p('mpc_w_jerk', 0.5)                # SITL value
+        p('mpc_v_max_m_s', 0.8)             # LOWERED: stationary target
+        p('mpc_a_max_m_s2', 0.6)            # LOWERED: ~3.5 deg of tilt
+        p('mpc_vz_max_m_s', 0.35)           # LOWERED: the actual descent rate
+        p('mpc_j_max_m_s3', 1.5)            # LOWERED from 2.0
+        # Descent corridor: |p_xy| <= h/cone_k, i.e. the MPC will not come down
+        # while off-centre.  1/tan(vfov/2) for the down camera; raise it to
+        # descend more conservatively, lower it only with a wider lens.
+        p('mpc_cone_k', 1.6)
+        p('mpc_solve_every', 5)             # re-plan at rate_hz/this
 
     def _read_params(self) -> None:
         g = self.get_parameter
         self.takeoff_alt = float(g('takeoff_alt_m').value)
         self.alt_tol = float(g('alt_tolerance_m').value)
-        self.descent_speed = float(g('descent_speed_m_s').value)
-        self.align_radius = float(g('align_radius_m').value)
+        self.climb_speed = float(g('climb_speed_m_s').value)
+        self.touch_xy = float(g('touchdown_xy_m').value)
         self.touch_alt = float(g('touchdown_alt_m').value)
         self.touch_dwell = float(g('touchdown_dwell_s').value)
         self.marker_pose_topic = str(g('marker_pose_topic').value)
@@ -194,13 +234,19 @@ class PreclandHwNode(Node):
         self.svc_timeout = float(g('service_timeout_s').value)
         self.mpc_dt = float(g('mpc_dt_s').value)
         self.mpc_horizon = int(g('mpc_horizon').value)
+        self.mpc_w_xy = float(g('mpc_w_xy').value)
+        self.mpc_w_z = float(g('mpc_w_z').value)
+        self.mpc_w_vxy = float(g('mpc_w_vxy').value)
+        self.mpc_w_vz = float(g('mpc_w_vz').value)
+        self.mpc_w_a = float(g('mpc_w_a').value)
+        self.mpc_w_terminal = float(g('mpc_w_terminal').value)
+        self.mpc_w_jerk = float(g('mpc_w_jerk').value)
         self.mpc_v_max = float(g('mpc_v_max_m_s').value)
         self.mpc_a_max = float(g('mpc_a_max_m_s2').value)
+        self.mpc_vz_max = float(g('mpc_vz_max_m_s').value)
         self.mpc_j_max = float(g('mpc_j_max_m_s3').value)
-        self.mpc_w_p = float(g('mpc_w_p').value)
-        self.mpc_w_v = float(g('mpc_w_v').value)
-        self.mpc_w_a = float(g('mpc_w_a').value)
-        self.mpc_w_j = float(g('mpc_w_j').value)
+        self.mpc_cone_k = float(g('mpc_cone_k').value)
+        self.mpc_solve_every = int(g('mpc_solve_every').value)
 
     # -------------------------------------------------------------- callbacks
     def _now(self) -> float:
@@ -392,15 +438,15 @@ class PreclandHwNode(Node):
                 return
             # Climb at a capped rate, easing off near the target so the vehicle
             # settles instead of overshooting into the gate.
-            vz = float(np.clip(err, -self.descent_speed * 2.0,
-                               self.descent_speed * 2.0))
+            vz = float(np.clip(err, -self.climb_speed, self.climb_speed))
             self._send(0.0, 0.0, vz)
             return
 
         if ph is Phase.SEARCH:
             self._send(0.0, 0.0, 0.0)
             if self._fresh_marker():
-                self.mpc.reset()
+                self._t_solve = None
+                self._ref = HorizonReference(lead_s=self.mpc_dt)
                 self.gate.marker_acquired()
                 self.get_logger().info(
                     'marker acquired — descending automatically from here')
@@ -428,40 +474,76 @@ class PreclandHwNode(Node):
             return
 
     def _descend(self) -> None:
+        """Fly the SITL-validated MPC, in the frame it was written for.
+
+        `LandingMPC` works in RELATIVE coordinates (vehicle minus target) and
+        solves all three axes: the horizontal pair, then the vertical one
+        against a corridor `z_ref = cone_k*|p_xy|`, which is what stops it
+        descending while off-centre.  That corridor is the reason not to
+        hand-roll a vertical rule here — it is the part of the controller this
+        flight is meant to check.
+
+        The target is treated as STATIONARY: this first flight is over a fixed
+        marker, so the const-velocity prediction is fed zero velocity.  The same
+        call takes a real velocity the day the marker moves, which is the point
+        of reusing this MPC rather than a simplified stand-in.
+        """
         gone = self._now() - self.marker_t
         if not self._fresh_marker() and gone > self.marker_lost_abort:
             self.gate.abort(f'marker lost for {gone:.1f} s during descent')
             return
-        if self.pose is None:
+        if self.pose is None or self.marker is None:
             return
 
-        p_rel, v_rel = self._rel_to_marker()
-        a_cmd = self.mpc.step(p_rel, v_rel)
-        # The MPC returns an acceleration; MAVROS is being streamed velocity, so
-        # integrate one step. Keeping the QP in acceleration is what lets the
-        # jerk limit mean anything.
-        v_xy = np.clip(v_rel + a_cmd * self.mpc_dt, -self.mpc_v_max,
-                       self.mpc_v_max)
+        # Absolute ENU state, and the target we are closing on.  MAVROS local
+        # position is already ENU, so no NED conversion belongs here.
+        p_d = np.array([self.pose.pose.position.x, self.pose.pose.position.y,
+                        self._alt()])
+        v_d = (np.array([self.vel.twist.linear.x, self.vel.twist.linear.y,
+                         self.vel.twist.linear.z]) if self.vel else np.zeros(3))
+        tgt = np.array([self.marker[0], self.marker[1], self.marker[2]])
+        tgt_v = np.zeros(3)                     # stationary marker, for now
 
-        # Align before descending — the one rule that decides whether the marker
-        # is still in frame when it matters.
-        radius = float(np.linalg.norm(p_rel))
-        vz = -self.descent_speed if radius <= self.align_radius else 0.0
-        self._send(-v_xy[0], -v_xy[1], vz)
+        self._solve_k += 1
+        if self._t_solve is None or self._solve_k % self.mpc_solve_every == 0:
+            p_rel0 = p_d - tgt
+            v_rel0 = v_d - tgt_v
+            P, V, A = predict_const_vel(tgt, tgt_v, self.mpc_dt, self.mpc_horizon)
+            res = self.mpc.solve(p_rel0, v_rel0, P, V, A)
+            self._ref.set_plan(p_rel0, v_rel0, res.pred_rel_pos,
+                               res.pred_rel_vel, res.pred_rel_acc,
+                               self.mpc_dt, tgt, tgt_v, np.zeros(3))
+            self._t_solve = self._now()
+            if not res.success:
+                self.get_logger().warn('MPC solve failed — flying the fallback',
+                                       throttle_duration_sec=2.0)
 
+        if not self._ref.ready():
+            self._send(0.0, 0.0, 0.0)
+            return
+
+        # The MPC plans at 10 Hz; `HorizonReference` interpolates it up to the
+        # setpoint rate so the vehicle is never handed a stale knot.
+        _pos, vel, _acc = self._ref.sample(self._now() - self._t_solve)
+        vel = np.clip(vel, [-self.mpc_v_max, -self.mpc_v_max, -self.mpc_vz_max],
+                      [self.mpc_v_max, self.mpc_v_max, self.mpc_vz_max])
+        self._send(vel[0], vel[1], vel[2])
+
+        radius = float(np.linalg.norm(p_d[:2] - tgt[:2]))
         alt = self._alt()
-        if alt <= self.touch_alt and radius <= self.align_radius:
+        if alt <= self.touch_alt and radius <= self.touch_xy:
             self._t_touch = self._t_touch or self._now()
             if self._now() - self._t_touch >= self.touch_dwell:
                 self.gate.touched_down()
         else:
             self._t_touch = None
 
-        if int(self._now() * self.rate_hz) % int(self.rate_hz * 2) == 0:
+        if self._solve_k % int(self.rate_hz * 2) == 0:
+            corridor = self.mpc_cone_k * radius
             self.get_logger().info(
-                f'[DESCEND] alt={alt:.2f} m  xy_err={radius:.2f}/'
-                f'{self.align_radius:.2f} m  vz={vz:+.2f}  '
-                f'{"descending" if vz else "HOLDING to centre"}')
+                f'[DESCEND] alt={alt:.2f} m  xy_err={radius:.2f} m  '
+                f'corridor needs h>={corridor:.2f} m  vz={vel[2]:+.2f} m/s  '
+                f'{"descending" if vel[2] < -0.02 else "HOLDING to centre"}')
 
     # ------------------------------------------------------------------ output
     def _announce(self) -> None:
