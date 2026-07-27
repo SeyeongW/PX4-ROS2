@@ -1,0 +1,377 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<sdf version='1.9'>
+  <model name='gimbal_down'>
+    <self_collide>false</self_collide>
+    <static>false</static>
+
+    <!-- Gimbal mount point -->
+    <link name="cgo3_mount_link">
+      <inertial>
+        <pose>-0.02552 0 -0.08136 0 0 0</pose>
+        <mass>0.05</mass>
+        <inertia>
+          <ixx>0.001</ixx>
+          <ixy>0</ixy>
+          <ixz>0</ixz>
+          <iyy>0.001</iyy>
+          <iyz>0</iyz>
+          <izz>0.001</izz>
+        </inertia>
+      </inertial>
+      <visual name="cgo3_mount_visual">
+        <geometry>
+          <mesh>
+            <scale>0.001 0.001 0.001</scale>
+            <uri>model://gimbal/meshes/cgo3_mount_remeshed_v1.stl</uri>
+          </mesh>
+        </geometry>
+        <material>
+          <ambient>.175 .175 .175 1.0</ambient>
+          <diffuse>.175 .175 .175 1.0</diffuse>
+          <specular>.175 .175 .175 1.0</specular>
+        </material>
+      </visual>
+    </link>
+
+    <!-- Gimbal vertical arm -->
+    <link name="cgo3_vertical_arm_link">
+      <inertial>
+        <pose>0 0 -0.1283 0 0 0</pose>
+        <mass>0.05</mass>
+        <inertia>
+          <ixx>0.001</ixx>
+          <ixy>0</ixy>
+          <ixz>0</ixz>
+          <iyy>0.001</iyy>
+          <iyz>0</iyz>
+          <izz>0.001</izz>
+        </inertia>
+      </inertial>
+      <visual name='cgo3_vertical_arm_visual'>
+        <geometry>
+          <mesh>
+            <scale>0.001 0.001 0.001</scale>
+            <uri>model://gimbal/meshes/cgo3_vertical_arm_remeshed_v1.stl</uri>
+          </mesh>
+        </geometry>
+        <material>
+          <ambient>.175 .175 .175 1.0</ambient>
+          <diffuse>.175 .175 .175 1.0</diffuse>
+          <specular>.175 .175 .175 1.0</specular>
+        </material>
+      </visual>
+    </link>
+
+    <!-- Yaw joint -->
+    <joint name='cgo3_vertical_arm_joint' type='revolute'>
+      <child>cgo3_vertical_arm_link</child>
+      <parent>cgo3_mount_link</parent>
+      <pose>-0.02552 0 0 0 0 0</pose>
+      <axis>
+        <xyz>0 0 -1</xyz>
+        <limit>
+          <lower>-1e+16</lower>
+          <upper>1e+16</upper>
+          <effort>100</effort>
+          <velocity>-1</velocity>
+        </limit>
+        <dynamics>
+          <damping>0.1</damping>
+        </dynamics>
+      </axis>
+      <physics>
+        <ode>
+          <implicit_spring_damper>1</implicit_spring_damper>
+          <limit>
+            <cfm>0.1</cfm>
+            <erp>0.2</erp>
+          </limit>
+        </ode>
+      </physics>
+    </joint>
+
+    <!-- Gimbal horizontal arm -->
+    <link name="cgo3_horizontal_arm_link">
+      <inertial>
+        <pose>-0.0213 0 -0.162 0 0 0</pose>
+        <mass>0.05</mass>
+        <inertia>
+          <ixx>0.001</ixx>
+          <ixy>0</ixy>
+          <ixz>0</ixz>
+          <iyy>0.001</iyy>
+          <iyz>0</iyz>
+          <izz>0.001</izz>
+        </inertia>
+      </inertial>
+      <visual name='cgo3_horizontal_arm_visual'>
+        <geometry>
+          <mesh>
+            <scale>0.001 0.001 0.001</scale>
+            <uri>model://gimbal/meshes/cgo3_horizontal_arm_remeshed_v1.stl</uri>
+          </mesh>
+        </geometry>
+        <material>
+          <ambient>.175 .175 .175 1.0</ambient>
+          <diffuse>.175 .175 .175 1.0</diffuse>
+          <specular>.175 .175 .175 1.0</specular>
+        </material>
+      </visual>
+    </link>
+
+    <!-- Roll joint -->
+    <joint name='cgo3_horizontal_arm_joint' type='revolute'>
+      <child>cgo3_horizontal_arm_link</child>
+      <parent>cgo3_vertical_arm_link</parent>
+      <pose>0 0 -0.1619 0 0 0</pose>
+      <axis>
+        <xyz>-1 0 0</xyz>
+        <limit>
+          <lower>-0.785398</lower>
+          <upper>0.785398</upper>
+          <effort>100</effort>
+          <velocity>-1</velocity>
+        </limit>
+        <dynamics>
+          <damping>0.1</damping>
+        </dynamics>
+      </axis>
+      <physics>
+        <ode>
+          <implicit_spring_damper>1</implicit_spring_damper>
+          <limit>
+            <cfm>0.1</cfm>
+            <erp>0.2</erp>
+          </limit>
+        </ode>
+      </physics>
+    </joint>
+
+    <!-- Camera -->
+    <link name="camera_link">
+      <inertial>
+        <pose>-0.0412 0 -0.162 0 0 0</pose>
+        <mass>0.05</mass>
+        <inertia>
+          <ixx>0.001</ixx>
+          <ixy>0</ixy>
+          <ixz>0</ixz>
+          <iyy>0.001</iyy>
+          <iyz>0</iyz>
+          <izz>0.001</izz>
+        </inertia>
+      </inertial>
+      <!-- Upstream gives the camera ball a collision sphere.  This gimbal
+           hangs BELOW the airframe, so that sphere would be the first thing
+           to touch the deck on a precision landing.  A camera is not a
+           landing leg: the collision is deliberately dropped and the x500's
+           own legs remain the only contact geometry. -->
+      <visual name='cgo3_camera_visual'>
+        <geometry>
+          <mesh>
+          <scale>0.001 0.001 0.001</scale>
+            <uri>model://gimbal/meshes/cgo3_camera_remeshed_v1.stl</uri>
+          </mesh>
+        </geometry>
+        <material>
+          <ambient>.175 .175 .175 1.0</ambient>
+          <diffuse>.175 .175 .175 1.0</diffuse>
+          <specular>.175 .175 .175 1.0</specular>
+        </material>
+      </visual>
+
+      <sensor name="camera_imu" type="imu">
+        <gz_frame_id>camera_link</gz_frame_id>
+        <always_on>1</always_on>
+        <update_rate>250</update_rate>
+        <pose>-0.0412 0 -0.162 0 0 3.141592653589793</pose>
+        <imu>
+          <angular_velocity>
+            <x>
+              <noise type="gaussian">
+                <mean>0</mean>
+                <stddev>0.00018665</stddev>
+                <dynamic_bias_stddev>3.8785e-05</dynamic_bias_stddev>
+                <dynamic_bias_correlation_time>1000</dynamic_bias_correlation_time>
+              </noise>
+            </x>
+            <y>
+              <noise type="gaussian">
+                <mean>0</mean>
+                <stddev>0.00018665</stddev>
+                <dynamic_bias_stddev>3.8785e-05</dynamic_bias_stddev>
+                <dynamic_bias_correlation_time>1000</dynamic_bias_correlation_time>
+              </noise>
+            </y>
+            <z>
+              <noise type="gaussian">
+                <mean>0</mean>
+                <stddev>0.00018665</stddev>
+                <dynamic_bias_stddev>3.8785e-05</dynamic_bias_stddev>
+                <dynamic_bias_correlation_time>1000</dynamic_bias_correlation_time>
+              </noise>
+            </z>
+          </angular_velocity>
+          <linear_acceleration>
+            <x>
+              <noise type="gaussian">
+                <mean>0</mean>
+                <stddev>0.00186</stddev>
+                <dynamic_bias_stddev>0.006</dynamic_bias_stddev>
+                <dynamic_bias_correlation_time>300</dynamic_bias_correlation_time>
+              </noise>
+            </x>
+            <y>
+              <noise type="gaussian">
+                <mean>0</mean>
+                <stddev>0.00186</stddev>
+                <dynamic_bias_stddev>0.006</dynamic_bias_stddev>
+                <dynamic_bias_correlation_time>300</dynamic_bias_correlation_time>
+              </noise>
+            </y>
+            <z>
+              <noise type="gaussian">
+                <mean>0</mean>
+                <stddev>0.00186</stddev>
+                <dynamic_bias_stddev>0.006</dynamic_bias_stddev>
+                <dynamic_bias_correlation_time>300</dynamic_bias_correlation_time>
+              </noise>
+            </z>
+          </linear_acceleration>
+        </imu>
+      </sensor>
+
+      <!-- Payload camera.  Upstream ships a 114 deg / 1280x720 / 15 km-clip
+           scene camera; this one is sized for the ArUco job instead:
+
+           * hfov 1.6 rad (92 deg) with 800x600 gives 500 px/rad, so the 1.5 m
+             marker still spans ~37 px (6 px per ArUco cell) at 20 m slant
+             range, while the cone half-angle is wide enough that the gimbal
+             rarely has to slew hard.  A wider fov would start to show the
+             x500's own landing legs in the corners.
+           * 4:3 keeps vfov = 2*atan(0.75*tan(hfov/2)) = 1.32 rad, i.e. the
+             visible ground radius r(h) = 0.772*h - s_m/2.
+           * The pose's pi yaw cancels the mount yaw, so at zero joint angles
+             the camera looks along body +X.  Upstream rounds it to 3.14; it
+             is written out in full here because `frame.gimbal_camera_rotation`
+             models this rotation analytically, and the 0.0016 rad difference
+             was measurable as a 0.091 deg systematic aim bias against Gazebo
+             ground truth. -->
+      <sensor name="camera" type="camera">
+        <gz_frame_id>camera_link</gz_frame_id>
+        <pose>-0.0412 0 -0.162 0 0 3.141592653589793</pose>
+        <topic>gimbal_camera/image</topic>
+        <camera>
+          <camera_info_topic>gimbal_camera/camera_info</camera_info_topic>
+          <optical_frame_id>gimbal_camera_optical_frame</optical_frame_id>
+          <horizontal_fov>1.6</horizontal_fov>
+          <image>
+            <format>R8G8B8</format>
+            <width>800</width>
+            <height>600</height>
+          </image>
+          <clip>
+            <near>0.05</near>
+            <far>200.0</far>
+          </clip>
+        </camera>
+        <always_on>1</always_on>
+        <update_rate>25</update_rate>
+        <visualize>false</visualize>
+      </sensor>
+    </link>
+
+    <!-- Pitch joint -->
+    <joint name='cgo3_camera_joint' type='revolute'>
+      <child>camera_link</child>
+      <parent>cgo3_horizontal_arm_link</parent>
+      <pose>-0.0412 0 -0.162 0 0 0</pose>
+      <axis>
+        <xyz>0 1 0</xyz>
+        <limit>
+          <lower>-2.35619</lower>
+          <upper>0.7854</upper>
+          <effort>100</effort>
+          <velocity>-1</velocity>
+        </limit>
+        <dynamics>
+          <damping>0.1</damping>
+        </dynamics>
+      </axis>
+      <physics>
+        <ode>
+          <implicit_spring_damper>1</implicit_spring_damper>
+          <limit>
+            <cfm>0.1</cfm>
+            <erp>0.2</erp>
+          </limit>
+        </ode>
+      </physics>
+    </joint>
+
+    <!-- Joint servos.  Upstream tunes these for a hand-flown camera; this
+         gimbal has to REJECT airframe motion, so the loops are stiffened:
+         p_gain 0.8 -> 2.0 drops the first-order response time constant
+         (damping/p_gain) from 0.125 s to 0.05 s, and cmd_max 0.3 -> 1.0 N.m
+         leaves headroom above the ~0.11 N.m a 1 rad/s counter-slew costs.
+         Lower p_gain first if a joint ever buzzes. -->
+    <plugin
+      filename="gz-sim-joint-position-controller-system"
+      name="gz::sim::systems::JointPositionController">
+      <joint_name>cgo3_horizontal_arm_joint</joint_name>
+      <sub_topic>command/gimbal_roll</sub_topic>
+      <p_gain>2.0</p_gain>
+      <i_gain>0.035</i_gain>
+      <d_gain>0.02</d_gain>
+      <i_max>0</i_max>
+      <i_min>0</i_min>
+      <cmd_max>1.0</cmd_max>
+      <cmd_min>-1.0</cmd_min>
+    </plugin>
+
+    <plugin
+      filename="gz-sim-joint-position-controller-system"
+      name="gz::sim::systems::JointPositionController">
+      <joint_name>cgo3_camera_joint</joint_name>
+      <sub_topic>command/gimbal_pitch</sub_topic>
+      <p_gain>2.0</p_gain>
+      <i_gain>0.01245</i_gain>
+      <d_gain>0.015</d_gain>
+      <i_max>0</i_max>
+      <i_min>0</i_min>
+      <cmd_max>1.0</cmd_max>
+      <cmd_min>-1.0</cmd_min>
+    </plugin>
+
+    <!-- Joint encoders.  Not upstream, and load-bearing rather than nice to
+         have: the camera IMU reports attitude in the GAZEBO world frame, but
+         the whole landing stack lives in PX4's local frame, and the two are
+         not aligned (the world's magnetic_field encodes a declination that
+         PX4's EKF then applies again, measured 27.3 deg apart).  Joint angles
+         are BODY-relative, so composing them with PX4's own attitude keeps
+         the perception chain inside a single frame and immune to that offset
+         — which is also exactly what real gimbal encoders give you. -->
+    <plugin
+      filename="gz-sim-joint-state-publisher-system"
+      name="gz::sim::systems::JointStatePublisher">
+      <joint_name>cgo3_vertical_arm_joint</joint_name>
+      <joint_name>cgo3_horizontal_arm_joint</joint_name>
+      <joint_name>cgo3_camera_joint</joint_name>
+    </plugin>
+
+    <plugin
+      filename="gz-sim-joint-position-controller-system"
+      name="gz::sim::systems::JointPositionController">
+      <joint_name>cgo3_vertical_arm_joint</joint_name>
+      <sub_topic>command/gimbal_yaw</sub_topic>
+      <p_gain>1.5</p_gain>
+      <i_gain>0.01245</i_gain>
+      <d_gain>0.015</d_gain>
+      <i_max>0</i_max>
+      <i_min>0</i_min>
+      <cmd_max>1.0</cmd_max>
+      <cmd_min>-1.0</cmd_min>
+    </plugin>
+
+  </model>
+</sdf>

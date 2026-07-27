@@ -30,17 +30,71 @@
       <collision name="platform_collision">
         <geometry><box><size>5 5 0.1</size></box></geometry>
       </collision>
-      <!-- Same proven single-ID target as the stationary experiment: the
-           texture's quiet zone makes its 1.95 m plane a 1.50 m black code. -->
+      <!-- TWO markers, because one size cannot cover the whole descent.
+           A marker is fully in frame only above h = s/(2 tan(vfov/2)), which
+           for the 1.5 m code in the gimbal camera is 0.97 m — ABOVE the 0.25 m
+           touchdown height, so the last 0.72 m used to be flown blind and the
+           vehicle landed on whatever drift it had accumulated (~36 cm at
+           |v_rel| 0.3 m/s).
+
+           The small marker must hold the CENTRE — at h = 0.3 m the camera sees
+           only a 0.23 m radius, so anything offset is already gone.  It cannot
+           literally sit INSIDE a big marker: DICT_4X4_50 is 4x4 data plus a
+           1-cell border = 6 cells, so over a 1.5 m code each cell is 0.25 m and
+           a 0.39 m inner plane wipes the middle 2x2 — data bits — and the big
+           marker stops decoding.  So the big markers are placed SYMMETRICALLY
+           about the small one instead: the pattern as a whole is concentric
+           with the landing point, nothing is lopsided, and when both big
+           markers are in view their errors sit on opposite sides.
+
+           The landing point is the deck centre (0,0) for all three — each
+           marker's offset to it is declared in the detector
+           (`marker_offsets_m`), which cross-checks them whenever it sees more
+           than one at once.
+
+           Texture quiet zone: plane = code * 520/400.
+             big   id0 1.30 m code -> 1.69 m plane at (-1.10, 0)
+             big   id2 1.30 m code -> 1.69 m plane at (+1.10, 0)
+             small id1 0.30 m code -> 0.39 m plane at the deck origin
+           Coverage: big usable above 2.73 m, small below 3.88 m (1.15 m of
+           overlap), small blind only below 0.19 m vs a 0.25 m touchdown. -->
       <visual name="aruco_visual">
-        <pose>0 0 0.051 0 0 0</pose>
-        <geometry><plane><normal>0 0 1</normal><size>1.95 1.95</size></plane></geometry>
+        <pose>-1.1 0 0.051 0 0 0</pose>
+        <geometry><plane><normal>0 0 1</normal><size>1.69 1.69</size></plane></geometry>
         <material>
           <ambient>1 1 1 1</ambient>
           <diffuse>1 1 1 1</diffuse>
           <specular>0 0 0 1</specular>
           <pbr><metal>
             <albedo_map>model://aruco_marker_0/materials/textures/aruco_0.png</albedo_map>
+            <metalness>0.0</metalness>
+            <roughness>1.0</roughness>
+          </metal></pbr>
+        </material>
+      </visual>
+      <visual name="aruco_visual_2">
+        <pose>1.1 0 0.051 0 0 0</pose>
+        <geometry><plane><normal>0 0 1</normal><size>1.69 1.69</size></plane></geometry>
+        <material>
+          <ambient>1 1 1 1</ambient>
+          <diffuse>1 1 1 1</diffuse>
+          <specular>0 0 0 1</specular>
+          <pbr><metal>
+            <albedo_map>model://aruco_marker_2/materials/textures/aruco_2.png</albedo_map>
+            <metalness>0.0</metalness>
+            <roughness>1.0</roughness>
+          </metal></pbr>
+        </material>
+      </visual>
+      <visual name="aruco_small_visual">
+        <pose>0 0 0.0511 0 0 0</pose>
+        <geometry><plane><normal>0 0 1</normal><size>0.39 0.39</size></plane></geometry>
+        <material>
+          <ambient>1 1 1 1</ambient>
+          <diffuse>1 1 1 1</diffuse>
+          <specular>0 0 0 1</specular>
+          <pbr><metal>
+            <albedo_map>model://aruco_marker_1/materials/textures/aruco_1.png</albedo_map>
             <metalness>0.0</metalness>
             <roughness>1.0</roughness>
           </metal></pbr>

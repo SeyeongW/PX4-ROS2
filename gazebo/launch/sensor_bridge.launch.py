@@ -9,6 +9,8 @@ the stable contract below, independent of the selected world or PX4 entity:
 * ``/down_camera/image`` and ``/down_camera/camera_info``
 * ``/down_depth/image`` (mono8 display), ``/down_depth/image_raw`` (32FC1 metric), points and info
 * ``/down_lidar`` and ``/down_lidar/points``
+* ``/gimbal_camera/image``, ``/gimbal_camera/camera_info`` and
+  ``/gimbal_camera/imu`` (gimbal vehicle only; silent on every other vehicle)
 
 Camera link frames use Gazebo's +X-forward convention.  Their optical children
 use REP-103 camera axes (+X right, +Y down, +Z forward).
@@ -44,6 +46,16 @@ def _launch_setup(context, *args, **kwargs):
     model = LaunchConfiguration("model").perform(context)
     base_frame = LaunchConfiguration("base_frame").perform(context)
     backend = LaunchConfiguration("bridge_backend").perform(context)
+    # Normalise to a bool LITERAL: the native bridge declares gimbal_only as a
+    # BOOL parameter, so "-p gimbal_only:=1" is parsed as INTEGER and crashes
+    # the node (which takes /clock and the mission down with it).  Accept the
+    # usual truthy spellings from any caller and always emit true/false.
+    gimbal_only = (
+        "true"
+        if LaunchConfiguration("gimbal_only").perform(context).strip().lower()
+        in ("1", "true", "yes", "on")
+        else "false"
+    )
     clock_bridge_rate_hz = LaunchConfiguration(
         "clock_bridge_rate_hz"
     ).perform(context)
@@ -70,6 +82,11 @@ def _launch_setup(context, *args, **kwargs):
     down_depth = LaunchConfiguration("down_depth_gz_topic").perform(context)
     down_depth_points = f"{down_depth}/points"
     down_depth_info = LaunchConfiguration("down_depth_info_gz_topic").perform(context)
+    gimbal_rgb_image = LaunchConfiguration("gimbal_rgb_image_gz_topic").perform(context)
+    gimbal_rgb_info = LaunchConfiguration("gimbal_rgb_info_gz_topic").perform(context)
+    gimbal_imu = (
+        f"/world/{world}/model/{model}/link/camera_link/sensor/camera_imu/imu"
+    )
 
     lidar_base = (
         f"/world/{world}/model/{model}/link/lidar_sensor_link/"
@@ -89,6 +106,9 @@ def _launch_setup(context, *args, **kwargs):
             f"{down_depth}@sensor_msgs/msg/Image[gz.msgs.Image",
             f"{down_depth_points}@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked",
             f"{down_depth_info}@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo",
+            f"{gimbal_rgb_image}@sensor_msgs/msg/Image[gz.msgs.Image",
+            f"{gimbal_rgb_info}@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo",
+            f"{gimbal_imu}@sensor_msgs/msg/Imu[gz.msgs.IMU",
             f"{lidar_base}@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan",
             f"{lidar_points}@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked",
     ]
@@ -103,6 +123,9 @@ def _launch_setup(context, *args, **kwargs):
             (down_depth, "/down_depth/image_raw"),
             (down_depth_points, "/down_depth/points"),
             (down_depth_info, "/down_depth/camera_info"),
+            (gimbal_rgb_image, "/gimbal_camera/image"),
+            (gimbal_rgb_info, "/gimbal_camera/camera_info"),
+            (gimbal_imu, "/gimbal_camera/imu"),
             (lidar_base, "/down_lidar"),
             (lidar_points, "/down_lidar/points"),
     ]
@@ -156,12 +179,22 @@ def _launch_setup(context, *args, **kwargs):
                 "-p", f"down_depth_image_gz_topic:={down_depth}",
                 "-p", f"down_depth_points_gz_topic:={down_depth_points}",
                 "-p", f"down_depth_info_gz_topic:={down_depth_info}",
+                "-p", f"gimbal_rgb_image_gz_topic:={gimbal_rgb_image}",
+                "-p", f"gimbal_rgb_info_gz_topic:={gimbal_rgb_info}",
+                "-p", f"gimbal_imu_gz_topic:={gimbal_imu}",
                 "-p", f"lidar_gz_topic:={lidar_base}",
+                "-p", f"gimbal_only:={gimbal_only}",
             ],
             name="native_gz_sensor_bridge",
             output="screen",
         )
     elif backend == "ros_gz":
+        if gimbal_only.lower() in ("1", "true", "yes"):
+            # keep only clock + the gimbal payload
+            keep = ("/clock", gimbal_rgb_image, gimbal_rgb_info, gimbal_imu)
+            bridge_arguments = [a for a in bridge_arguments
+                                if a.split("@", 1)[0] in keep]
+            bridge_remappings = [r for r in bridge_remappings if r[0] in keep]
         bridge = Node(
             package="ros_gz_bridge",
             executable="parameter_bridge",
@@ -211,6 +244,11 @@ def generate_launch_description():
             "native for gz-sim8 transport13, ros_gz for ABI-compatible Garden.",
         ),
         _argument(
+            "gimbal_only", "false",
+            "Bridge only the gimbal camera (+clock); skip front/down RGB, "
+            "depth, clouds and lidar. Cuts bridge load on the gimbal run.",
+        ),
+        _argument(
             "clock_bridge_rate_hz", "50.0",
             "Gazebo /clock callback limit and ROS /clock publication rate.",
         ),
@@ -258,6 +296,14 @@ def generate_launch_description():
         _argument(
             "down_depth_info_gz_topic", "/down_depth/camera_info",
             "Down depth Gazebo CameraInfo topic.",
+        ),
+        _argument(
+            "gimbal_rgb_image_gz_topic", "/gimbal_camera/image",
+            "Gimbal RGB Gazebo image topic (gimbal vehicle only).",
+        ),
+        _argument(
+            "gimbal_rgb_info_gz_topic", "/gimbal_camera/camera_info",
+            "Gimbal RGB Gazebo CameraInfo topic (gimbal vehicle only).",
         ),
         OpaqueFunction(function=_launch_setup),
     ])

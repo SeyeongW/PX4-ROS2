@@ -60,6 +60,9 @@ Environment:
   START_BRIDGE=0         Do not start the sensor bridge (requires START_MAVROS=0)
   ROS_SETUP=...          ROS 2 setup.bash to source for MAVROS + bridge (default humble)
   FOLLOW_DRONE=1          Opt in to locking the gz camera to the drone (default: off)
+  GIMBAL=1                Fly the map's gimbal_variant vehicle instead of the
+                          baseline one (moving-landing map only): identical
+                          sensors plus a slung, tilt-decoupled camera
   DRIVE_TRAILER=1         Drive mountain or moving-landing YAML waypoints
   TRAILER_SPEED_M_S=...   Override moving-landing trailer speed for one run
   TRAILER_ROUTE_LOOPS=1   Stop the driver after one complete route (0=repeat)
@@ -115,9 +118,12 @@ overrides = document["px4_vehicle"].get("sitl_parameter_overrides", {})
 print(overrides.get("LNDMC_Z_VEL_MAX", ""))
 print(overrides.get("LNDMC_XY_VEL_MAX", ""))
 print(overrides.get("COM_DISARM_LAND", ""))
+gimbal = document["px4_vehicle"].get("gimbal_variant") or {}
+print(gimbal.get("simulation_model", ""))
+print(gimbal.get("runtime_entity_name", ""))
 PY
 )
-[[ ${#MAP_CONFIG[@]} -eq 10 ]] || {
+[[ ${#MAP_CONFIG[@]} -eq 12 ]] || {
   echo "ERROR: failed to read launch values from $COORDINATES" >&2
   exit 2
 }
@@ -131,6 +137,17 @@ TRAILER_SPAWN_POSE="${MAP_CONFIG[6]}"
 PX4_LNDMC_Z_VEL_MAX="${MAP_CONFIG[7]}"
 PX4_LNDMC_XY_VEL_MAX="${MAP_CONFIG[8]}"
 PX4_COM_DISARM_LAND="${MAP_CONFIG[9]}"
+GIMBAL_SIM_MODEL="${MAP_CONFIG[10]}"
+GIMBAL_ENTITY_NAME="${MAP_CONFIG[11]}"
+
+if [[ "${GIMBAL:-0}" == "1" ]]; then
+  [[ -n "$GIMBAL_SIM_MODEL" && -n "$GIMBAL_ENTITY_NAME" ]] || {
+    echo "ERROR: GIMBAL=1 but $COORDINATES declares no px4_vehicle.gimbal_variant." >&2
+    exit 2
+  }
+  SIM_MODEL="$GIMBAL_SIM_MODEL"
+  ENTITY_NAME="$GIMBAL_ENTITY_NAME"
+fi
 
 if [[ -n "$PX4_LNDMC_Z_VEL_MAX" || -n "$PX4_LNDMC_XY_VEL_MAX" || -n "$PX4_COM_DISARM_LAND" ]]; then
   python3 - "$PX4_LNDMC_Z_VEL_MAX" "$PX4_LNDMC_XY_VEL_MAX" "$PX4_COM_DISARM_LAND" <<'PY' || {
@@ -187,9 +204,10 @@ EOF
 fi
 "$SCRIPT_DIR/link_px4_model.sh" "$PX4_DIR"
 CUSTOM_MODEL="${SIM_MODEL#gz_}"
-EXPECTED_CUSTOM_MODEL="x500_city_rgbd_lidar"
-if [[ "$CUSTOM_MODEL" != "$EXPECTED_CUSTOM_MODEL" ]]; then
-  echo "ERROR: coordinate contract selects '$CUSTOM_MODEL'; expected repository model '$EXPECTED_CUSTOM_MODEL'." >&2
+# The vehicle is whatever the coordinate contract names, but it must be one
+# this checkout owns — that is what makes the symlink check below meaningful.
+if [[ ! -f "$REPO_DIR/px4_models/$CUSTOM_MODEL/model.sdf" ]]; then
+  echo "ERROR: coordinate contract selects '$CUSTOM_MODEL', which is not a repository model under $REPO_DIR/px4_models." >&2
   exit 3
 fi
 CUSTOM_MODEL_SOURCE="$(realpath -m "$REPO_DIR/px4_models/$CUSTOM_MODEL")"
@@ -544,7 +562,7 @@ GZ_ARGS+=("$@" "$WORLD_FILE")
 
 echo "Map              : $MAP ($WORLD_NAME)"
 echo "Coordinate YAML  : $COORDINATES"
-echo "PX4 vehicle      : $SIM_MODEL / autostart $AUTOSTART_ID"
+echo "PX4 vehicle      : $SIM_MODEL / autostart $AUTOSTART_ID${GIMBAL:+ (GIMBAL=$GIMBAL)}"
 echo "Gazebo spawn ENU : $SPAWN_POSE"
 echo "Expected entity  : $ENTITY_NAME"
 echo "GZ_PARTITION     : $GZ_PARTITION"
@@ -774,14 +792,24 @@ if [[ "${START_BRIDGE:-1}" == "1" ]]; then
   ROS_SETUP="${ROS_SETUP:-/opt/ros/${ROS_DISTRO:-humble}/setup.bash}"
   BRIDGE_LAUNCH="$SCRIPT_DIR/launch/sensor_bridge.launch.py"
   if [[ -f "$ROS_SETUP" && -f "$BRIDGE_LAUNCH" ]]; then
-    echo "ros_gz bridge    : world=$WORLD_NAME model=$ENTITY_NAME (log: $BRIDGE_LOG)"
+    # On a gimbal run nothing consumes the front/down/depth/lidar streams, so
+    # bridge only the gimbal camera — that is the traffic that was lagging the
+    # debug image.  Override with BRIDGE_GIMBAL_ONLY=0 to bridge everything.
+    # MUST be a bool literal (true/false): the bridge declares gimbal_only as
+    # BOOL, and `-p gimbal_only:=1` is parsed as INTEGER and kills the node on
+    # startup — which takes /clock and the whole mission down with it.
+    case "${BRIDGE_GIMBAL_ONLY:-${GIMBAL:-0}}" in
+      1|true|yes|on) BRIDGE_GIMBAL_ONLY=true ;;
+      *)             BRIDGE_GIMBAL_ONLY=false ;;
+    esac
+    echo "ros_gz bridge    : world=$WORLD_NAME model=$ENTITY_NAME gimbal_only=$BRIDGE_GIMBAL_ONLY (log: $BRIDGE_LOG)"
     setsid bash -c '
       set +u
       # shellcheck disable=SC1090
       source "$1"
-      exec ros2 launch "$2" "world:=$3" "model:=$4"
+      exec ros2 launch "$2" "world:=$3" "model:=$4" "gimbal_only:=$5"
     ' bridge "$ROS_SETUP" "$BRIDGE_LAUNCH" "$WORLD_NAME" "$ENTITY_NAME" \
-      >"$BRIDGE_LOG" 2>&1 &
+      "$BRIDGE_GIMBAL_ONLY" >"$BRIDGE_LOG" 2>&1 &
     BRIDGE_PID=$!
     sleep 2
     if ! kill -0 "$BRIDGE_PID" 2>/dev/null; then

@@ -7,6 +7,11 @@ ignition-transport11 / ignition-msgs8 and therefore discovers, but cannot
 receive, gz-sim8 transport13 / msgs10 data.  This narrow bridge copies only
 the payload contract used by this repository.  It performs no coordinate
 reinterpretation and preserves every Gazebo timestamp and optical frame ID.
+
+The gimbal payload (``/gimbal_camera/image``, ``/camera_info`` and ``/imu``)
+exists only on the ``x500_gimbal_rgbd_lidar`` vehicle.  Its subscriptions are
+registered unconditionally because they are on-demand: with no ROS subscriber
+the bridge never subscribes in Gazebo either, so a baseline run pays nothing.
 """
 
 from __future__ import annotations
@@ -25,6 +30,7 @@ from gz.msgs10.camera_info_pb2 import CameraInfo as GzCameraInfo
 from gz.msgs10.clock_pb2 import Clock as GzClock
 from gz.msgs10.image_pb2 import Image as GzImage
 import gz.msgs10.image_pb2 as gz_image_types
+from gz.msgs10.imu_pb2 import IMU as GzIMU
 from gz.msgs10.laserscan_pb2 import LaserScan as GzLaserScan
 from gz.msgs10.pointcloud_packed_pb2 import PointCloudPacked as GzPointCloud
 from gz.transport13 import Node as GzNode
@@ -34,7 +40,8 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from rclpy.signals import SignalHandlerOptions
 from rosgraph_msgs.msg import Clock
-from sensor_msgs.msg import CameraInfo, Image, LaserScan, PointCloud2, PointField
+from sensor_msgs.msg import (CameraInfo, Image, Imu, LaserScan, PointCloud2,
+                             PointField)
 
 
 PIXEL_ENCODINGS = {
@@ -190,6 +197,40 @@ def convert_camera_info(message: GzCameraInfo) -> CameraInfo:
     return output
 
 
+def convert_imu(message: GzIMU) -> Imu:
+    """Copy a Gazebo IMU sample.
+
+    Gazebo reports ``orientation`` against the world (ENU) frame, so for the
+    gimbal's camera-mounted IMU this quaternion IS the camera link's world
+    attitude — the same thing a real gimbal reports, and what the perception
+    chain needs instead of the airframe attitude.
+    """
+    output = Imu()
+    output.header.stamp = _ros_time(message.header.stamp)
+    output.header.frame_id = _frame_id(message.header, str(message.entity_name))
+    output.orientation.x = float(message.orientation.x)
+    output.orientation.y = float(message.orientation.y)
+    output.orientation.z = float(message.orientation.z)
+    output.orientation.w = float(message.orientation.w)
+    output.angular_velocity.x = float(message.angular_velocity.x)
+    output.angular_velocity.y = float(message.angular_velocity.y)
+    output.angular_velocity.z = float(message.angular_velocity.z)
+    output.linear_acceleration.x = float(message.linear_acceleration.x)
+    output.linear_acceleration.y = float(message.linear_acceleration.y)
+    output.linear_acceleration.z = float(message.linear_acceleration.z)
+    for source, destination in (
+        (message.orientation_covariance, output.orientation_covariance),
+        (message.angular_velocity_covariance, output.angular_velocity_covariance),
+        (
+            message.linear_acceleration_covariance,
+            output.linear_acceleration_covariance,
+        ),
+    ):
+        if len(source.data) == 9:
+            destination[:] = list(source.data)
+    return output
+
+
 def convert_point_cloud(message: GzPointCloud) -> PointCloud2:
     output = PointCloud2()
     output.header.stamp = _ros_time(message.header.stamp)
@@ -242,6 +283,16 @@ class NativeGazeboSensorBridge(Node):
                 "publish_sensor_data_without_subscribers", False
             ).value
         )
+        # Bridge ONLY the gimbal payload (+ clock).  On the gimbal landing run
+        # nothing consumes the front/down RGB, the depth images and clouds, or
+        # the lidar, yet all of them are still converted and published — which
+        # is the load that shows up as debug-image lag.  With this set, those
+        # subscriptions are never created, so gz-transport never even delivers
+        # their frames to this process.  Clock stays (it is the sim time
+        # authority) and so does the gimbal IMU (perception input).
+        self.gimbal_only = bool(
+            self.declare_parameter("gimbal_only", False).value
+        )
         self.lidar_rate_hz = float(
             self.declare_parameter("lidar_rate_hz", 50.0).value
         )
@@ -287,6 +338,17 @@ class NativeGazeboSensorBridge(Node):
             "down_depth_image_gz_topic": "/down_depth/image",
             "down_depth_points_gz_topic": "/down_depth/image/points",
             "down_depth_info_gz_topic": "/down_depth/camera_info",
+            # Gimbal payload.  Present only on the x500_gimbal_rgbd_lidar
+            # vehicle; on every other vehicle these topics simply never
+            # publish, and the on-demand subscription keeps them free.
+            "gimbal_rgb_image_gz_topic": "/gimbal_camera/image",
+            "gimbal_rgb_info_gz_topic": "/gimbal_camera/camera_info",
+            # The gimbal's camera-mounted IMU keeps its default world-scoped
+            # topic so PX4's own gimbal driver stays usable against the model.
+            "gimbal_imu_gz_topic": (
+                f"/world/{world}/model/{model}/link/camera_link/"
+                "sensor/camera_imu/imu"
+            ),
             "lidar_gz_topic": (
                 f"/world/{world}/model/{model}/link/lidar_sensor_link/"
                 "sensor/lidar/scan"
@@ -334,6 +396,15 @@ class NativeGazeboSensorBridge(Node):
             "down_depth_info": self.create_publisher(
                 CameraInfo, "/down_depth/camera_info", qos_profile_sensor_data
             ),
+            "gimbal_rgb": self.create_publisher(
+                Image, "/gimbal_camera/image", qos_profile_sensor_data
+            ),
+            "gimbal_rgb_info": self.create_publisher(
+                CameraInfo, "/gimbal_camera/camera_info", qos_profile_sensor_data
+            ),
+            "gimbal_imu": self.create_publisher(
+                Imu, "/gimbal_camera/imu", qos_profile_sensor_data
+            ),
             "lidar": self.create_publisher(
                 LaserScan, "/down_lidar", qos_profile_sensor_data
             ),
@@ -380,48 +451,63 @@ class NativeGazeboSensorBridge(Node):
             ),
         )
 
-        self._subscribe_image(topics["front_rgb_image_gz_topic"], "front_rgb")
-        self._subscribe_info(topics["front_rgb_info_gz_topic"], "front_rgb_info")
-        self._subscribe_image(
-            topics["front_depth_image_gz_topic"],
-            "front_depth",
-            preview_key="front_depth_preview",
-            preview_near_m=0.20,
-            preview_far_m=30.0,
-        )
-        self._subscribe_cloud(
-            topics["front_depth_points_gz_topic"], "front_depth_points"
-        )
+        if not self.gimbal_only:
+            self._subscribe_image(
+                topics["front_rgb_image_gz_topic"], "front_rgb")
+            self._subscribe_info(
+                topics["front_rgb_info_gz_topic"], "front_rgb_info")
+            self._subscribe_image(
+                topics["front_depth_image_gz_topic"],
+                "front_depth",
+                preview_key="front_depth_preview",
+                preview_near_m=0.20,
+                preview_far_m=30.0,
+            )
+            self._subscribe_cloud(
+                topics["front_depth_points_gz_topic"], "front_depth_points"
+            )
+            self._subscribe_info(
+                topics["front_depth_info_gz_topic"], "front_depth_info"
+            )
+            self._subscribe_image(topics["down_rgb_image_gz_topic"], "down_rgb")
+            self._subscribe_info(
+                topics["down_rgb_info_gz_topic"], "down_rgb_info")
+            self._subscribe_image(
+                topics["down_depth_image_gz_topic"],
+                "down_depth",
+                preview_key="down_depth_preview",
+                preview_near_m=0.15,
+                preview_far_m=80.0,
+            )
+            self._subscribe_cloud(
+                topics["down_depth_points_gz_topic"], "down_depth_points"
+            )
+            self._subscribe_info(
+                topics["down_depth_info_gz_topic"], "down_depth_info"
+            )
+        self._subscribe_image(topics["gimbal_rgb_image_gz_topic"], "gimbal_rgb")
         self._subscribe_info(
-            topics["front_depth_info_gz_topic"], "front_depth_info"
+            topics["gimbal_rgb_info_gz_topic"], "gimbal_rgb_info"
         )
-        self._subscribe_image(topics["down_rgb_image_gz_topic"], "down_rgb")
-        self._subscribe_info(topics["down_rgb_info_gz_topic"], "down_rgb_info")
-        self._subscribe_image(
-            topics["down_depth_image_gz_topic"],
-            "down_depth",
-            preview_key="down_depth_preview",
-            preview_near_m=0.15,
-            preview_far_m=80.0,
-        )
-        self._subscribe_cloud(
-            topics["down_depth_points_gz_topic"], "down_depth_points"
-        )
-        self._subscribe_info(
-            topics["down_depth_info_gz_topic"], "down_depth_info"
-        )
+        # The gimbal IMU is the camera's world attitude, i.e. perception input,
+        # so it is rate-limited like a camera rather than like the 250 Hz raw
+        # sensor it is.
+        self._subscribe_imu(topics["gimbal_imu_gz_topic"], "gimbal_imu")
         # Keep the lightweight single-ray lidar active even before a ROS lidar
         # consumer appears so touchdown sensing has no subscription warm-up.
-        self._subscribe(
-            GzLaserScan,
-            topics["lidar_gz_topic"],
-            self._lidar_callback,
-            "lidar",
-            maximum_messages_per_second=_transport_messages_per_second(
-                self.lidar_transport_max_rate_hz
-            ),
-        )
-        self._subscribe_cloud(f"{topics['lidar_gz_topic']}/points", "lidar_points")
+        # (The gimbal landing run uses vision for touchdown, not the lidar.)
+        if not self.gimbal_only:
+            self._subscribe(
+                GzLaserScan,
+                topics["lidar_gz_topic"],
+                self._lidar_callback,
+                "lidar",
+                maximum_messages_per_second=_transport_messages_per_second(
+                    self.lidar_transport_max_rate_hz
+                ),
+            )
+            self._subscribe_cloud(
+                f"{topics['lidar_gz_topic']}/points", "lidar_points")
         self.create_timer(0.25, self._refresh_demand_subscriptions)
         self.create_timer(
             1.0 / self.clock_bridge_rate_hz,
@@ -432,6 +518,10 @@ class NativeGazeboSensorBridge(Node):
             self._publish_latest_images,
         )
         self.create_timer(5.0, self._report_statistics)
+        if self.gimbal_only:
+            self.get_logger().info(
+                "gimbal_only=true — front/down RGB, depth, clouds and lidar "
+                "are NOT bridged; only /gimbal_camera/* (+clock) is live")
         self.get_logger().info(
             "native Harmonic sensor bridge active "
             f"(world={world}, model={model}, sensor-data-on-demand="
@@ -636,6 +726,24 @@ class NativeGazeboSensorBridge(Node):
             ),
         )
 
+    def _subscribe_imu(self, topic: str, key: str) -> None:
+        def callback(message: GzIMU) -> None:
+            publisher = self._sensor_publishers[key]
+            if self._should_publish(publisher):
+                publisher.publish(convert_imu(message))
+            self._received(key)
+
+        self._register_demand_subscription(
+            GzIMU,
+            topic,
+            callback,
+            key,
+            self._sensor_publishers[key],
+            maximum_messages_per_second=_transport_messages_per_second(
+                self.image_transport_max_rate_hz
+            ),
+        )
+
     def _subscribe_cloud(self, topic: str, key: str) -> None:
         def callback(message: GzPointCloud) -> None:
             publisher = self._sensor_publishers[key]
@@ -721,7 +829,10 @@ class NativeGazeboSensorBridge(Node):
             }
             self._counts.clear()
             self._last_stats_wall_s = now
-        keys = ("front_rgb", "front_depth", "down_rgb", "down_depth", "lidar")
+        keys = ["front_rgb", "front_depth", "down_rgb", "down_depth", "lidar"]
+        # Only the gimbal vehicle has these, so report them only once they have
+        # actually been seen instead of printing a permanent 0 Hz on every run.
+        keys.extend(key for key in ("gimbal_rgb", "gimbal_imu") if key in ages)
         summary = " ".join(
             f"{key}={counts.get(key, 0) / elapsed:.1f}Hz/"
             f"{ages.get(key, math.inf):.3f}s"

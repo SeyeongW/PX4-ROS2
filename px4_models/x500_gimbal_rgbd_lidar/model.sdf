@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<sdf version="1.9">
+  <!-- Baseline perception vehicle + a slung 3-axis camera gimbal.
+
+       Why this model exists: the body-fixed down camera loses the marker
+       whenever the airframe tilts to chase a moving target.  At 10 m the
+       visible ground radius is only ~5.5 m, so 10-15 deg of chase tilt walks
+       the line of sight 1.8-2.7 m and the marker leaves frame within seconds.
+       Decoupling the camera from airframe attitude is exactly what a gimbal
+       is for; `gimbal_control_node` closes that loop.
+
+       This is a strict SUPERSET of x500_city_rgbd_lidar - every baseline
+       sensor and topic is still present - so a run can be flown body-fixed
+       vs gimbal-stabilised by changing only the vehicle. -->
+  <model name="x500_gimbal_rgbd_lidar">
+    <include merge="true">
+      <uri>x500_city_rgbd_lidar</uri>
+    </include>
+
+    <!-- Mount pose, in MODEL coordinates - not base_link.  x500_base offsets
+         its merged frame by +0.24 m so the airframe rests on the ground, so
+         a mount z of 0.272 puts the mount 0.032 m above base_link, exactly
+         the convention PX4's own x500_gimbal uses with 0.26.
+
+         All gimbal links share the gimbal model origin and the camera sensor
+         sits at (-0.0412, 0, -0.162) inside it, so after the pi mount yaw
+         the lens lands at mount + (+0.0412, 0, -0.162) = model
+         (0, 0, 0.11), i.e. 0.13 m below base_link.  That height is chosen
+         geometrically: the battery plate is 0.13 m above the lens so it
+         never occludes nadir, and the landing feet (model z 0.0205, 0.132 m
+         out) subtend 56 deg from the optical axis - just outside the 54 deg
+         diagonal half-angle - so the gear stays out of the picture while the
+         lens still sits 0.09 m above the feet and never touches the deck. -->
+    <include merge="true">
+      <uri>gimbal_down</uri>
+      <pose>-0.0412 0 0.272 0 0 3.141592653589793</pose>
+    </include>
+
+    <joint name="GimbalAttachJoint" type="fixed">
+      <parent>base_link</parent>
+      <child>cgo3_mount_link</child>
+    </joint>
+  </model>
+</sdf>
