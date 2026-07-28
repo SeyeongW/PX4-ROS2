@@ -96,19 +96,29 @@ def generate_launch_description():
                 # fraction of the raw 2.7 MB/frame — this is the picture you
                 # watch, not the one the detector measures from.
                 'image_raw.compressed.jpeg_quality': 30,
+                # image_transport loads EVERY transport plugin it can find, so
+                # by default this camera also advertises /compressedDepth and
+                # /theora. Both are dead weight here: compressedDepth is a depth
+                # codec pointed at a colour camera, and nothing in this stack
+                # speaks theora. Each one still costs a publisher, a discovery
+                # entry and a line in `ros2 topic list` while the vehicle is in
+                # the air. Two image streams leave this Jetson and that is all:
+                #   /down_camera/image             raw, for the detector
+                #   /down_camera/image/compressed  30% JPEG, for the PC
+                'image_raw.disable_pub_plugins': [
+                    'image_transport/compressedDepth',
+                    'image_transport/theora',
+                ],
             }],
             remappings=[
                 ('image_raw', '/down_camera/image'),
                 ('camera_info', '/down_camera/camera_info'),
                 # image_transport's sub-topics do NOT follow the base remap —
                 # they are separate publishers created under the ORIGINAL name.
-                # Without these three the compressed stream lands on
+                # Without this the compressed stream lands on
                 # /image_raw/compressed, which is both confusing and impossible
                 # to find when you are outside looking for the camera view.
                 ('image_raw/compressed', '/down_camera/image/compressed'),
-                ('image_raw/compressedDepth',
-                 '/down_camera/image/compressedDepth'),
-                ('image_raw/theora', '/down_camera/image/theora'),
             ],
         ),
 
