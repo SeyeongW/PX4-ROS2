@@ -180,3 +180,33 @@ def test_perception_node_never_imports_gazebo_ground_truth():
     source = (ROOT / "aruco_landing/aruco_landing/aruco_pose_node.py").read_text()
     forbidden = ("dynamic_pose", "gz.transport", "/trailer/pose", "ground_truth")
     assert not any(token in source for token in forbidden)
+
+
+def test_node_defaults_are_self_consistent_for_a_real_vehicle():
+    """The NODE's own defaults, not just the config files.
+
+    The existing pairing test read the YAMLs, so it never looked at
+    `_declare_parameters`. That gap let the node ship with
+    depth_topic='/down_depth/image_raw' and depth_required=True — simulator
+    assumptions on a package whose whole point is the real airframe, which has
+    no depth stream. The result is not an error: every detection is rejected for
+    missing depth, and it looks exactly like the marker not being seen.
+    """
+    import re
+    source = (ROOT / "aruco_landing/aruco_landing/aruco_pose_node.py").read_text()
+    block = source[source.index("_declare_parameters"):]
+
+    def default(key):
+        m = re.search(rf'"{key}":\s*([^,\n]+)', block)
+        assert m, f'{key} has no declared default'
+        return m.group(1).strip()
+
+    depth_topic = default("depth_topic").strip('"\'')
+    depth_required = default("depth_required")
+    assert bool(depth_topic) == (depth_required == "True"), (
+        f'depth_topic={depth_topic!r} and depth_required={depth_required} '
+        f'disagree — requiring depth with no topic rejects every detection')
+
+    # and the image topics must be the ones the flight launch actually feeds
+    assert default("image_topic").strip('"\'') == "/down_camera/image"
+    assert default("camera_info_topic").strip('"\'') == "/down_camera/camera_info"

@@ -19,6 +19,10 @@
   <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>mavros_msgs</exec_depend>
   <exec_depend>python3-numpy</exec_depend>
+  <!-- started by fixed_marker_landing.launch.py -->
+  <exec_depend>usb_cam</exec_depend>
+  <exec_depend>aruco_landing</exec_depend>
+  <exec_depend>siyi_gimbal</exec_depend>
   <!-- The MPC itself is NOT reimplemented here. This node exists to fly the
        controller that simulation/landing_mpc already validated in SITL, so it
        imports it: landing_mpc.mpc / .predictor / .reference. Flying a

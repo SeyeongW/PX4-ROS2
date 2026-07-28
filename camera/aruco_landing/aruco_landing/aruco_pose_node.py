@@ -772,7 +772,13 @@ class ArucoPoseNode(Node):
         defaults = {
             "image_topic": "/down_camera/image",
             "camera_info_topic": "/down_camera/camera_info",
-            "depth_topic": "/down_depth/image_raw",
+            # NO DEPTH by default. This package is the REAL-VEHICLE detector
+            # (the simulator has its own in landing_mpc), and the airframe's
+            # down camera is a plain USB camera with no depth stream. Pointing
+            # at a topic nobody publishes, with depth_required below, rejects
+            # every detection and looks exactly like "the marker is not being
+            # seen". Set both together if a registered depth source is added.
+            "depth_topic": "",
             "aruco_dictionary": "DICT_4X4_50",
             "marker_size_m": 1.0,
             "marker_id": 0,
@@ -782,7 +788,7 @@ class ArucoPoseNode(Node):
             "calibration_file": "",
             "publish_debug": False,
             "subpixel_window_px": 5,
-            "depth_required": True,
+            "depth_required": False,
             "depth_scale": 0.001,
             "depth_min_m": 0.15,
             "depth_max_m": 80.0,
