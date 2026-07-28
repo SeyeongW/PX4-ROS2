@@ -22,9 +22,22 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # ships a jsoncpp config with a modern minimum.
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5 CACHE STRING "" FORCE)
 
-find_package(gazebo REQUIRED)     # libgazebo-dev
+# Gazebo Classic is OPTIONAL here, and that is deliberate. This package is
+# simulator-only, but it sits in a workspace that also gets built on the flight
+# computer — where there is no simulator and no reason to install one. A hard
+# REQUIRED turns "the Jetson has no Gazebo" into "the whole workspace fails to
+# build", which is a bad trade for a plugin that machine will never load.
+find_package(gazebo QUIET)
 find_package(rclcpp REQUIRED)     # source /opt/ros/humble/setup.bash first
 find_package(std_msgs REQUIRED)
+
+if(NOT gazebo_FOUND)
+  message(STATUS
+    "gimbal_camera_plugins: Gazebo Classic not found — skipping the gimbal "
+    "joint controller. This is expected on a flight computer; install "
+    "libgazebo-dev only where you intend to RUN the Classic simulation.")
+  return()
+endif()
 
 add_library(gimbal_joint_position_controller SHARED
   gimbal_joint_position_controller.cpp)
