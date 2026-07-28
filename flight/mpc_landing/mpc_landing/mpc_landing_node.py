@@ -140,10 +140,16 @@ class MpcLandingNode(Node):
                                  self._on_ext, _sensor_qos())
         self.create_subscription(BatteryState, '/mavros/battery',
                                  self._on_batt, _sensor_qos())
+        # BEST_EFFORT to match the detector. aruco_pose_node publishes its
+        # perception topics BEST_EFFORT (sensor-style), and a RELIABLE
+        # subscriber is INCOMPATIBLE with a BEST_EFFORT publisher — DDS
+        # silently delivers nothing. Measured: `ros2 topic hz` showed 29 Hz
+        # while this node saw zero, and preflight reported the pipeline
+        # "silent" with the camera and detector both plainly running.
         self.create_subscription(PoseStamped, self.marker_pose_topic,
-                                 self._on_marker, 10)
+                                 self._on_marker, _sensor_qos())
         self.create_subscription(Bool, self.marker_detected_topic,
-                                 self._on_detected, 10)
+                                 self._on_detected, _sensor_qos())
 
         self.sp_pub = self.create_publisher(PositionTarget,
                                             '/mavros/setpoint_raw/local', 10)
