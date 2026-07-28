@@ -9,17 +9,20 @@ Starts, in this order:
     siyi_gimbal_node   points the camera down the moment the vehicle arms
     mpc_landing_node   the gated mission
 
-BEFORE ANYTHING ELSE: `source flight_env.sh`
---------------------------------------------
-Every terminal on this Jetson is put on a FastDDS Discovery Server by .bashrc.
-In that mode the nodes still talk to each other, but `ros2 topic list`, `ros2
-service list` and therefore `ros2 run mpc_landing approve` see NOTHING — the
-graph is invisible, so the mission cannot be watched or approved. Measured: 2
-topics visible with the server, 177 without.
+WATCHING THIS FROM THE GROUND STATION PC
+----------------------------------------
+Nothing to do on this Jetson — .bashrc sources `~/dds_fastdds.sh`, which puts
+every terminal on the local FastDDS Discovery Server with the right transport.
+On the PC, `source ~/dds_fastdds.sh` and the whole graph appears.
 
-The whole stack runs on this one machine, so the discovery server buys nothing
-here. `flight_env.sh` turns it off and sources the workspace. Source it in every
-terminal you use for a flight — the one that launches, and the one that approves.
+The one thing that makes or breaks the remote view is the DDS profile, in
+config/jetson_dds_fastdds.sh: the interface whitelist (so the Jetson advertises
+its tailscale address rather than its wifi LAN address, which the PC cannot
+reach) and maxMessageSize 1200 (tailscale's MTU is 1280; at the default 65500 a
+compressed frame is IP-fragmented ~50 ways and one lost fragment discards the
+whole frame). Measured with both in place: the PC sees 18.4 Hz on
+/down_camera/image/compressed, which is exactly the rate the Jetson itself
+sees — no loss over the link.
 
 MAVROS is NOT started here. Its fcu_url depends on how the companion is wired,
 and guessing it would be a parameter in a launch file by another name:
