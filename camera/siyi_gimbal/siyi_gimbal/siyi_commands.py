@@ -141,7 +141,7 @@ FUNCTION_FEEDBACK_INFO = Command(
 SET_IMAGE_TYPE = Command(
     0x11, 'SET_IMAGE_TYPE', '<B', '',
     'Which video stream the RTSP feed carries (RGB / thermal / split view). '
-    'Affects the picture the RTSP bridge receives, NOT the control link.')
+    'Affects the video stream, NOT the control link.')
 
 # ===========================================================================
 # RANGEFINDER AND THERMAL — present on ZT30-class units, not on the A8 mini
@@ -329,8 +329,8 @@ class CameraImageType:
     """Payload byte of SET_IMAGE_TYPE (0x11) — which lens feeds the RTSP stream.
 
     Only meaningful on multi-sensor units. On an A8 mini there is one lens, so
-    this does nothing. Changing it changes the picture `rtsp_bridge` receives,
-    NOT the control link.
+    this does nothing. Changing it changes the picture the video
+    stream carries, NOT the control link.
     """
 
     PIP_ZOOM_MAIN_WIDE_SUB = 0

@@ -26,7 +26,6 @@ simulation/   시뮬레이터 전용
 
 | 패키지 | 역할 |
 |---|---|
-| **`rtsp_bridge`** | **A8 mini RTSP → ROS Image + CameraInfo** (GStreamer). 실비행 인식의 입력 |
 | **`siyi_gimbal`** | SIYI A8 mini 제어 — 시동 걸리면 직하방 조준, 유지. 프로토콜 표는 `siyi_commands.py` |
 | **`aruco_landing`** | 실기체 ArUco 인식 (보정 solvePnP, 품질 게이트) |
 | `gimbal_camera` | 짐벌 카메라 시뮬 모델 — gz-sim + Gazebo Classic 양쪽 |
@@ -57,18 +56,19 @@ ros2 service call /mpc_landing_node/abort   std_srvs/srv/Trigger # 중단·착�
 카메라 체인은 별도로 띄웁니다:
 
 ```bash
-ros2 launch rtsp_bridge rtsp_bridge.launch.py        # RTSP → /gimbal_camera/image
 ros2 run aruco_landing aruco_pose_node               # → /perception/down/marker_pose
 ```
 
-> ### ⚠️ 카메라 캘리브레이션이 필요합니다
-> `rtsp_bridge`는 `camera_info_file`이 비어 있으면 **PLACEHOLDER intrinsic**을
-> 발행하고 경고를 반복합니다. solvePnP는 그래도 "그럴듯한" 자세를 내놓지만
-> **거리 스케일이 틀립니다** — 실기체 A8 mini로 체커보드 캘리브레이션을 한 뒤
-> 그 파일을 지정하세요.
+> ### ⚠️ 카메라 소스가 아직 없습니다
+> A8 mini의 영상을 ROS 이미지 토픽으로 가져오는 노드가 없습니다. RTSP 브리지는
+> 만들었다가 뺐습니다 — 되살리려면 `git show 82854a2 -- camera/rtsp_bridge`.
 >
-> 짐벌 IP `192.168.144.25`는 **제어(UDP 37260)** 와 **영상(RTSP 8554)** 에 모두
-> 쓰이지만 서로 다른 채널입니다.
+> 그 상태에서 `mpc_landing_node`는 프리체크의 **marker pipeline 항목만 FAIL**
+> 하고 시동을 거부합니다. 볼 수 없는 채로 이륙하지 않는다는 뜻이라 의도한
+> 동작입니다.
+>
+> 짐벌 IP `192.168.144.25`는 **제어용 UDP 37260**에 쓰입니다. 영상(RTSP 8554)은
+> 별개 채널입니다.
 
 ---
 

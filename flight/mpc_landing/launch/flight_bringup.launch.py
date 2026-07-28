@@ -19,13 +19,13 @@ another name. Start it yourself first:
 
     ros2 launch mavros apm.launch fcu_url:=/dev/ttyTHS1:921600
 
-**The camera and the marker detector.** There is no camera driver in this repo
-yet — nothing converts the A8 mini's RTSP stream (rtsp://192.168.144.25:8554/
-video1) into a ROS image topic, and `camera/aruco_landing`'s `aruco_pose_node`
-still defaults to the SIMULATOR's `/down_camera/image`. Until that gap is
-closed, `mpc_landing_node` will pass every preflight check except the marker
-pipeline one, which is exactly the behaviour you want: it refuses to arm rather
-than taking off with no way to see the marker.
+**The camera and the marker detector.** Nothing in this repo turns the A8 mini's
+video into a ROS image topic — an RTSP bridge existed briefly and was taken back
+out (`git show 82854a2 -- camera/rtsp_bridge` to recover it). `aruco_landing`'s
+`aruco_pose_node` also still defaults to the SIMULATOR's `/down_camera/image`.
+Until that gap is closed `mpc_landing_node` passes every preflight check except
+the marker pipeline one, which is exactly the behaviour you want: it refuses to
+arm rather than taking off with no way to see the marker.
 
 So the full real-flight chain is currently:
 
