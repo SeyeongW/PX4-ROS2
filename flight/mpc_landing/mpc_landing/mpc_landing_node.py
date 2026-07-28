@@ -58,6 +58,8 @@ Services (called)
 from __future__ import annotations
 
 import math
+import sys
+import threading
 
 import numpy as np
 import rclpy
@@ -154,17 +156,30 @@ class MpcLandingNode(Node):
         self.create_service(Trigger, '~/approve', self._on_approve)
         self.create_service(Trigger, '~/abort', self._on_abort)
 
+        # Terminal approval. A daemon thread blocks on stdin so the control
+        # loop never does — a mission node that stops publishing setpoints
+        # because it is waiting for a keystroke would drop out of offboard.
+        self._stdin_ok = self.interactive and sys.stdin is not None \
+            and sys.stdin.isatty()
+        self._prompted = ''
+        if self._stdin_ok:
+            threading.Thread(target=self._stdin_loop, daemon=True).start()
+
         self.create_timer(1.0 / self.rate_hz, self._tick)
-        # Say the autopilot and mode FIRST. It decides the whole arming
-        # sequence, and it is the one thing you want confirmed before a real
-        # vehicle is armed in front of you.
+        # Say the mode FIRST — it is the one thing you want confirmed before a
+        # real vehicle is armed in front of you.
         self.get_logger().info(
-            f'mpc_landing_node: autopilot={self.autopilot.upper()} '
-            f'mode={self.mode_name} | takeoff {self.takeoff_alt:.1f} m | '
+            f'mpc_landing_node: PX4 mode={self.mode_name} | '
+            f'takeoff {self.takeoff_alt:.1f} m | '
             f'descend on {self.marker_pose_topic}')
-        self.get_logger().info(
-            f'every step before the descent waits for you: '
-            f'ros2 service call /{self.get_name()}/approve std_srvs/srv/Trigger')
+        if self._stdin_ok:
+            self.get_logger().info(
+                'each step will ask on this terminal — ENTER approves, n aborts')
+        else:
+            self.get_logger().info(
+                f'stdin is not a terminal, so approvals must come from the '
+                f'service: ros2 service call /{self.get_name()}/approve '
+                f'std_srvs/srv/Trigger')
 
     # ------------------------------------------------------------- parameters
     def _declare(self) -> None:
@@ -190,18 +205,17 @@ class MpcLandingNode(Node):
         p('min_battery_v', 14.0)            # 4S nominal; raise for 6S
         p('require_battery', True)          # false only for bench tests
         p('max_start_alt_m', 1.0)           # must start near the ground
-        # --- flight controller
-        # WHICH AUTOPILOT. This is not just a mode name: PX4 refuses to ENTER
-        # offboard until setpoints are already streaming, and drops out again if
-        # the stream lapses for ~0.5 s, so the arming SEQUENCE differs too.
-        # 'px4'       -> mode OFFBOARD, pre-stream setpoints, then mode, then arm
-        # 'ardupilot' -> mode GUIDED, mode then arm (it does not require a stream)
-        p('autopilot', 'px4')
-        p('offboard_mode', '')              # blank = derive from `autopilot`
+        # --- flight controller. PX4 ONLY — see the module docstring.
+        p('offboard_mode', 'OFFBOARD')
         # How long to stream setpoints before asking PX4 for offboard. PX4 wants
         # a steady stream, not a single message; 1 s at rate_hz is ~20 of them.
         p('offboard_prestream_s', 1.0)
         p('rate_hz', 20.0)
+        # Prompt on the terminal at each gate and take Enter as approval. Falls
+        # back to the service alone when stdin is not a terminal (e.g. under
+        # `ros2 launch`), because a prompt nobody can answer would hang the
+        # mission at its first gate.
+        p('interactive_approval', True)
         p('service_timeout_s', 5.0)
         # --- descent MPC: landing_mpc.LandingMPC, the SITL-validated one.
         # WEIGHTS are the SITL values unchanged — they are what was validated,
@@ -245,13 +259,9 @@ class MpcLandingNode(Node):
         self.min_batt = float(g('min_battery_v').value)
         self.require_batt = bool(g('require_battery').value)
         self.max_start_alt = float(g('max_start_alt_m').value)
-        self.autopilot = str(g('autopilot').value).lower()
-        if self.autopilot not in ('px4', 'ardupilot'):
-            raise ValueError(f"autopilot must be 'px4' or 'ardupilot', "
-                             f"got '{self.autopilot}'")
-        self.mode_name = (str(g('offboard_mode').value)
-                          or ('OFFBOARD' if self.autopilot == 'px4' else 'GUIDED'))
+        self.mode_name = str(g('offboard_mode').value)
         self.prestream_s = float(g('offboard_prestream_s').value)
+        self.interactive = bool(g('interactive_approval').value)
         self.rate_hz = float(g('rate_hz').value)
         self.svc_timeout = float(g('service_timeout_s').value)
         self.mpc_dt = float(g('mpc_dt_s').value)
@@ -293,6 +303,44 @@ class MpcLandingNode(Node):
                                 m.pose.position.z])
         self.marker_t = self._now()
 
+    # ------------------------------------------------------------ terminal UI
+    def _stdin_loop(self) -> None:
+        """Read approvals from the terminal. ENTER = yes.
+
+        Anything typed is judged on its first character, so `y`, `yes` and a
+        bare ENTER all approve and `n` aborts. Deliberately forgiving in the
+        approve direction and strict in the abort one: the operator is standing
+        next to a vehicle, not filling in a form.
+        """
+        for line in sys.stdin:
+            answer = line.strip().lower()
+            if not self.gate.waiting:
+                self.get_logger().warn(
+                    f'ignored "{answer or "ENTER"}" — nothing is waiting for '
+                    f'approval right now (phase {self.gate.phase.value})')
+                continue
+            if answer.startswith('n'):
+                self.gate.abort('operator declined at the prompt')
+                print('\n  ABORTING — landing and disarming.\n', flush=True)
+                continue
+            ok, msg = self.gate.approve()
+            print(f'\n  {"OK" if ok else "REFUSED"}: {msg}\n', flush=True)
+
+    def _prompt(self) -> None:
+        """Ask, once per gate, on the terminal."""
+        if not self._stdin_ok or not self.gate.waiting:
+            return
+        key = self.gate.phase.value
+        if key == self._prompted:
+            return
+        self._prompted = key
+        # Printed rather than logged: the logger prefixes and timestamps every
+        # line, which is exactly wrong for something the operator has to read
+        # and answer under time pressure.
+        print(f'\n{"=" * 72}\n  {self.gate.prompt}\n'
+              f'{"=" * 72}\n  proceed?  [ENTER = yes / n = abort]  ',
+              end='', flush=True)
+
     # ---------------------------------------------------------------- services
     def _on_approve(self, _req, res):
         ok, msg = self.gate.approve()
@@ -315,7 +363,13 @@ class MpcLandingNode(Node):
         offboard control — which the flight controller reads as loss of link.
         """
         if not client.service_is_ready():
-            self.get_logger().error(f"service '{name}' not available")
+            # Throttled hard. This is checked at rate_hz, so an unthrottled
+            # message floods 20 lines a second and buries the approval prompt
+            # the operator is supposed to be reading — the one thing on screen
+            # that must stay visible.
+            self.get_logger().error(
+                f"service '{name}' not available — is MAVROS running?",
+                throttle_duration_sec=5.0)
             return False
         future = client.call_async(request)
         future.add_done_callback(
@@ -600,11 +654,18 @@ class MpcLandingNode(Node):
         """Say once, loudly, what the operator is being asked to authorise."""
         if not self.gate.waiting:
             self._announced = ''
+            self._prompted = ''
             return
+        self._prompt()
         key = self.gate.phase.value
         if key == self._announced:
             return
         self._announced = key
+        if self._stdin_ok:
+            # The prompt already asked, on its own clean lines. Logging the
+            # same thing again here would print a timestamped duplicate right
+            # across the line the operator is typing into.
+            return
         self.get_logger().warn(
             f'>>> WAITING FOR APPROVAL — {self.gate.prompt}\n'
             f'    ros2 service call /{self.get_name()}/approve '
