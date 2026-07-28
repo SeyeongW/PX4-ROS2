@@ -26,6 +26,7 @@ setup(
         'console_scripts': [
             'siyi_gimbal_node = siyi_gimbal.siyi_gimbal_node:main',
             'gimbal_monitor = siyi_gimbal.gimbal_monitor:main',
+            'gimbal_teleop = siyi_gimbal.gimbal_teleop:main',
         ],
     },
 )
