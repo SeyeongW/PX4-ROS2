@@ -120,5 +120,5 @@ HEADLESS=1 ./simulation/gazebo/run_gimbal.sh mission
 
 `trailer_cue_node`가 gz에서 표적 위치를 읽고, `mission_manager_node`가 PX4
 uXRCE 토픽으로 직접 setpoint를 씁니다. **실기체 비행은
-`flight/precland_hw`** 를 쓰세요 — MAVROS 기반이고, 단계마다 조종자 승인을
+`flight/mpc_landing`** 를 쓰세요 — MAVROS 기반이고, 단계마다 조종자 승인을
 받습니다.

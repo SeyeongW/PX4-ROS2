@@ -2,7 +2,7 @@
 <sdf version="1.9">
   <!-- ================================================================== -->
   <!-- Phase 1 combined world: ArduPilot skid_rover (ground) + iris drone   -->
-  <!-- (air), on the SAME 400 m painted track as the precision-landing demo. -->
+  <!-- (air), on the SAME 400 m painted track as the mpc-landing demo. -->
   <!--                                                                      -->
   <!-- Two SITL instances drive the two vehicles through their own           -->
   <!-- ArduPilotPlugin FDM ports (drone 9002 / rover 9012):                  -->
@@ -66,7 +66,7 @@
     </light>
 
     <!-- Black ground plate (visual only) + the 400 m track, identical to the
-         precision-landing world so the rover drives on the same painted lane. -->
+         mpc-landing world so the rover drives on the same painted lane. -->
     <model name="black_ground">
       <static>true</static>
       <pose>0 36.8 -0.001 0 0 0</pose>
@@ -84,7 +84,7 @@
     </model>
 
     <!-- Collision ground so the rover wheels have something to roll on (the
-         precision-landing world omits this because its platform is kinematic;
+         mpc-landing world omits this because its platform is kinematic;
          here the rover is a real dynamic vehicle and needs ground contact).
          Visual-only black plate above stays on top for the camera look. -->
     <model name="collision_ground">

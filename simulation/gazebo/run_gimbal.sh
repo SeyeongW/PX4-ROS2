@@ -38,7 +38,7 @@ PIDS=()
 # So sweep by pattern, TERM first, then KILL what refuses.  MicroXRCEAgent is
 # deliberately left alone: it is cheap and shared, and killing it slows restart.
 STACK_PATTERNS=(
-  'run_px4_map.sh precision-landing-moving'
+  'run_px4_map.sh mpc-landing-moving'
   'px4_sitl_default/bin/px4'
   'gz sim'
   'native_gz_sensor_bridge'
@@ -84,7 +84,7 @@ pgrep -f 'MicroXRCEAgent.*8888' >/dev/null 2>&1 || {
 echo "=== Gazebo + PX4 (GIMBAL=$GIMBAL) — log: /tmp/gimbal_sim.log ==="
 GIMBAL="$GIMBAL" FOLLOW_DRONE=1 START_XRCE=1 START_MAVROS=0 PX4_DAEMON=1 \
 DRIVE_TRAILER=1 TRAILER_SPEED_M_S="${TRAILER_SPEED_M_S:-3.0}" \
-  "$SCRIPT_DIR/run_px4_map.sh" precision-landing-moving >/tmp/gimbal_sim.log 2>&1 &
+  "$SCRIPT_DIR/run_px4_map.sh" mpc-landing-moving >/tmp/gimbal_sim.log 2>&1 &
 PIDS+=($!)
 
 echo -n "waiting for the vehicle to spawn"

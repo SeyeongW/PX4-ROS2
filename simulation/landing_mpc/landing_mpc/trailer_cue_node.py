@@ -35,7 +35,7 @@ class TrailerCueNode(Node):
     def __init__(self):
         super().__init__('trailer_cue_node')
         p = self.declare_parameter
-        self.world = str(p('world', 'precision_landing_200m_moving').value)
+        self.world = str(p('world', 'mpc_landing_200m_moving').value)
         self.entity = str(p('trailer_entity', 'trailer').value)
         self.spawn = np.array(p('spawn_enu', [30.0, 30.0]).value, float)
         self.deck_z = float(p('deck_z', 1.811).value)

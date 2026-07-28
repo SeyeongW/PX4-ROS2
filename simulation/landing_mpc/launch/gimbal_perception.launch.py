@@ -20,7 +20,7 @@ Two settings are load-bearing and are set here rather than left to defaults:
 * ``use_sim_time`` — image stamps are sim time, and the whole chain
   interpolates vehicle state to them.
 
-Run the vehicle with ``GIMBAL=1 ./gazebo/run_px4_map.sh precision_landing_200m_moving``.
+Run the vehicle with ``GIMBAL=1 ./gazebo/run_px4_map.sh mpc_landing_200m_moving``.
 The mission itself (trailer_cue_node, mission_manager_node, px4_node) is
 unchanged and launched separately: the gimbal is a sensor-pointing concern, and
 keeping it out of the mission state machine is what makes a body-fixed vs
@@ -65,7 +65,7 @@ def generate_launch_description():
             'model_name', default_value='x500_gimbal_rgbd_lidar_0',
             description='gz entity name — PX4 suffixes the SDF model with _0.'),
         DeclareLaunchArgument(
-            'world', default_value='precision_landing_200m_moving',
+            'world', default_value='mpc_landing_200m_moving',
             description='gz world name; the joint_state topic is scoped to it.'),
         DeclareLaunchArgument(
             'marker_size_m', default_value='1.5',

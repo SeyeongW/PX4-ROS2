@@ -10,16 +10,16 @@ if [[ $# -gt 0 ]]; then
 fi
 
 case "$MAP" in
-  precision-landing)
+  mpc-landing)
     # Bounded flat baseline for downward-camera ArUco precision landing.
-    COORDINATES="$SCRIPT_DIR/maps/precision_landing_200m.yaml"
+    COORDINATES="$SCRIPT_DIR/maps/mpc_landing_200m.yaml"
     # DART is the qualified engine for the fixed-joint RGB-D X500 payload.
     # Bullet Featherstone can trap the vehicle in the ground contact and then
     # eject it when takeoff thrust rises (see the Stage-10 SITL evidence).
     DEFAULT_PHYSICS_ENGINE="gz-physics-dartsim-plugin"
     ;;
-  precision-landing-moving)
-    COORDINATES="$SCRIPT_DIR/maps/precision_landing_200m_moving.yaml"
+  mpc-landing-moving)
+    COORDINATES="$SCRIPT_DIR/maps/mpc_landing_200m_moving.yaml"
     DEFAULT_PHYSICS_ENGINE="gz-physics-dartsim-plugin"
     ;;
   city)
@@ -40,13 +40,13 @@ case "$MAP" in
     ;;
   -h|--help|help|"")
     cat <<EOF
-Usage: $(basename "$0") <precision-landing|precision-landing-moving|city|city-legacy|mountain> [additional gz sim options]
+Usage: $(basename "$0") <mpc-landing|mpc-landing-moving|city|city-legacy|mountain> [additional gz sim options]
 
 Starts Gazebo Harmonic, waits for the selected world, then starts PX4 SITL.
 PX4 itself creates the dynamic x500_city_rgbd_lidar vehicle (default x500 quad
 with forward RGB/depth plus downward RGB/depth/lidar sensors).
 A repository-owned trailer model is included in each map. The stationary
-precision-landing baseline cannot be driven; the moving profile follows its
+mpc-landing baseline cannot be driven; the moving profile follows its
 map-defined circular route with DRIVE_TRAILER=1.
 
 Environment:
@@ -71,7 +71,7 @@ Environment:
   PX4_GZ_PLATFORM_HEADING_DEG=...  City SEO trailer heading (default: 0 deg/east)
   USE_NVIDIA=0            Disable NVIDIA PRIME render variables
   GZ_PARTITION=...        Gazebo transport partition (shared with PX4)
-  PHYSICS_ENGINE=...      Override physics engine (precision/city default: DART)
+  PHYSICS_ENGINE=...      Override physics engine (mpc-landing/city default: DART)
   PX4_DAEMON=1            Disable the interactive PX4 shell (for log/CI runs)
 EOF
     exit 0
@@ -180,13 +180,13 @@ valid = (
 )
 raise SystemExit(0 if valid else 1)
 PY
-    echo "ERROR: invalid precision-landing PX4 runtime parameter contract." >&2
+    echo "ERROR: invalid mpc-landing PX4 runtime parameter contract." >&2
     exit 2
   }
 fi
 
-if [[ "$MAP" == "precision-landing" && "${DRIVE_TRAILER:-0}" != "0" ]]; then
-  echo "ERROR: DRIVE_TRAILER is forbidden in the stationary precision-landing baseline." >&2
+if [[ "$MAP" == "mpc-landing" && "${DRIVE_TRAILER:-0}" != "0" ]]; then
+  echo "ERROR: DRIVE_TRAILER is forbidden in the stationary mpc-landing baseline." >&2
   exit 2
 fi
 
@@ -258,8 +258,8 @@ if [[ "$MAP" == "city" ]]; then
   export PX4_GZ_PLATFORM_VEL="${PX4_GZ_PLATFORM_VEL:-0}"
   export PX4_GZ_PLATFORM_HEADING_DEG="${PX4_GZ_PLATFORM_HEADING_DEG:-0}"
 fi
-if [[ "$MAP" == "city" || "$MAP" == "precision-landing" || \
-      "$MAP" == "precision-landing-moving" ]]; then
+if [[ "$MAP" == "city" || "$MAP" == "mpc-landing" || \
+      "$MAP" == "mpc-landing-moving" ]]; then
   for asset in model.sdf model.config; do
     [[ -f "$SCRIPT_DIR/models/moving_platform_aruco/$asset" ]] || {
       echo "ERROR: SEO trailer asset is missing: $SCRIPT_DIR/models/moving_platform_aruco/$asset" >&2
@@ -271,7 +271,7 @@ if [[ "$MAP" == "city" || "$MAP" == "precision-landing" || \
     exit 3
   }
 fi
-if [[ "$MAP" == "precision-landing-moving" ]]; then
+if [[ "$MAP" == "mpc-landing-moving" ]]; then
   for asset in model.sdf model.config; do
     [[ -f "$SCRIPT_DIR/models/moving_platform_aruco_velocity/$asset" ]] || {
       echo "ERROR: moving trailer asset is missing: $SCRIPT_DIR/models/moving_platform_aruco_velocity/$asset" >&2
@@ -576,10 +576,10 @@ if [[ "$MAP" == "city" ]]; then
   echo "SEO trailer      : moving_platform_aruco as trailer"
   echo "Trailer control  : ${PX4_GZ_PLATFORM_VEL} m/s @ ${PX4_GZ_PLATFORM_HEADING_DEG} deg"
   echo "Trailer noise    : stock SEO perturbations start after PX4 spawn"
-elif [[ "$MAP" == "precision-landing" ]]; then
+elif [[ "$MAP" == "mpc-landing" ]]; then
   echo "Landing trailer  : measured odometry model held at 0 m/s"
   echo "Pair separation  : exactly 10 m on the northeast diagonal"
-elif [[ "$MAP" == "precision-landing-moving" ]]; then
+elif [[ "$MAP" == "mpc-landing-moving" ]]; then
   echo "Landing trailer  : deterministic velocity model"
   echo "Motion trigger   : PX4 entity confirmation, independent of mission/ArUco"
 fi
@@ -696,7 +696,7 @@ if [[ "${START_XRCE:-0}" == "1" ]]; then
 fi
 
 if [[ "${DRIVE_TRAILER:-0}" == "1" ]]; then
-  if [[ "$MAP" == "city" || "$MAP" == "precision-landing" ]]; then
+  if [[ "$MAP" == "city" || "$MAP" == "mpc-landing" ]]; then
     echo "ERROR: the $MAP trailer is intentionally stationary; leave DRIVE_TRAILER=0." >&2
     exit 6
   fi
@@ -710,7 +710,7 @@ if [[ "${DRIVE_TRAILER:-0}" == "1" ]]; then
   fi
   TRAILER_ARGS=("$TRAILER_MAP" --coordinates "$COORDINATES" \
     --loops "${TRAILER_ROUTE_LOOPS:-0}" --route "${TRAILER_ROUTE:-flat}")
-  if [[ "$MAP" == "precision-landing-moving" ]]; then
+  if [[ "$MAP" == "mpc-landing-moving" ]]; then
     # The model root is already calibrated to z=0 for the 2.051 m marker
     # surface. Do not apply the mountain driver's terrain-clearance offset.
     TRAILER_ARGS+=(--no-terrain-follow --rate "${TRAILER_COMMAND_RATE_HZ:-50}")
@@ -725,9 +725,9 @@ if [[ "${DRIVE_TRAILER:-0}" == "1" ]]; then
 else
   if [[ "$MAP" == "city" ]]; then
     echo "Trailer          : SEO model at ENU ($TRAILER_SPAWN_POSE), zero mean speed by default"
-  elif [[ "$MAP" == "precision-landing" ]]; then
+  elif [[ "$MAP" == "mpc-landing" ]]; then
     echo "Trailer          : static at ENU ($TRAILER_SPAWN_POSE)"
-  elif [[ "$MAP" == "precision-landing-moving" ]]; then
+  elif [[ "$MAP" == "mpc-landing-moving" ]]; then
     echo "Trailer          : stationary because DRIVE_TRAILER=0"
   else
     echo "Trailer route    : spawned, stationary (set DRIVE_TRAILER=1 to drive)"

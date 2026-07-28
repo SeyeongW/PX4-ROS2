@@ -337,7 +337,7 @@ def publish_velocity(publisher: object, vx: float, vy: float, vz: float) -> None
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "map", choices=("city", "mountain", "precision-landing-moving")
+        "map", choices=("city", "mountain", "mpc-landing-moving")
     )
     parser.add_argument(
         "--coordinates",

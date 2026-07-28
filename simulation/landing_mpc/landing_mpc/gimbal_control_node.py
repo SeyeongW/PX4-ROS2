@@ -112,7 +112,7 @@ class GimbalControlNode(Node):
         p = self.declare_parameter
         # The gz entity, not the SDF model name: PX4 spawns it with a _0 suffix.
         self.model = str(p('model_name', 'x500_gimbal_rgbd_lidar_0').value)
-        self.world = str(p('world', 'precision_landing_200m_moving').value)
+        self.world = str(p('world', 'mpc_landing_200m_moving').value)
         self.rate_hz = float(p('rate_hz', 50.0).value)
         # Slew limit, per [[feedback_gentle_control]]: a gimbal that snaps
         # smears the image and shakes the airframe through the joint reaction.

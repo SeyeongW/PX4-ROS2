@@ -49,11 +49,11 @@ suffixed, so subscribe to `/fmu/out/vehicle_local_position_v1` NOT
 Lightest boot: `cd ~/PX4-Autopilot && HEADLESS=1 make px4_sitl gz_x500` (origin
 spawn, avoids city world/local-frame offset).
 
-precision_landing_200m WORLD LANDING CONFIRMED (2026-07-22): pulled origin/jo
+mpc_landing_200m WORLD LANDING CONFIRMED (2026-07-22): pulled origin/jo
 (merge; it also added a separate precision_landing MPC stack — mpc_core.py etc. —
 which the USER SAID TO IGNORE, keep landing_mpc). Kept only the new world files.
 Ran landing_mpc over XRCE (no code changes) via `START_XRCE=1 START_MAVROS=0
-START_BRIDGE=0 HEADLESS=1 PX4_DAEMON=1 ./gazebo/run_precision_landing_200m.sh` +
+START_BRIDGE=0 HEADLESS=1 PX4_DAEMON=1 ./gazebo/run_mpc_landing_200m.sh` +
 `ros2 run landing_mpc landing_mpc_sitl_demo`. Drone spawns world (30,30), ArUco
 trailer at world (37.07,37.07) = LOCAL ENU (7.07,7.07), deck marker z=1.811 local.
 Result: takeoff 8 m -> landed ON the 2 m deck, 0.27 m from marker, |v_rel| 0.8 m/s.
@@ -205,7 +205,7 @@ running. Jerk limit: `j_max*dt` = accel change per step; measured knee is
 **0.2 m/s²** (0.1 costs 4x tracking error + corridor dips, 0.05 fails to land,
 0.8 caused the airframe to lurch).
 
-MOVING platform CONFIRMED too (2026-07-22): `run_precision_landing_200m_moving.sh`
+MOVING platform CONFIRMED too (2026-07-22): `run_mpc_landing_200m_moving.sh`
 drives the trailer in a circle (center world (72.43,72.43), r=50 m, default 9 m/s;
 override with TRAILER_SPEED_M_S). Added `landing_mpc_sitl_demo_moving`
 (sitl_demo_moving.py) which reads the live trailer pose via gz.transport13
@@ -216,6 +216,6 @@ intercepted the trailer ~90 m away and landed on the 2 m deck within 0.24 m at
 beyond this simple demo. GUI+camera run: FOLLOW_DRONE=1 START_BRIDGE=1 (cameras
 /down_camera/image ~15Hz, /front_camera/image ~13Hz); drone spawns at world
 (30,30) in a 200 m world so it looks empty unless FOLLOW_DRONE or Entity Tree
-->Move to. Two scripts: precision_landing_200m (static) vs _200m_moving (circle).
+->Move to. Two scripts: mpc_landing_200m (static) vs _200m_moving (circle).
 Sibling of [[project_path_plan]].
 Env: ROS humble, px4_msgs at ~/install, PX4-Autopilot + Micro-XRCE agent present.

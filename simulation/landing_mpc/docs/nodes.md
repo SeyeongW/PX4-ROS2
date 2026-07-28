@@ -613,7 +613,7 @@ raw position setpoint 를 던지고 가속을 만드는 것은 **PX4 자신의 �
 몸체고정 vs 짐벌을 **통제된 비교**로 돌릴 수 있다.
 
 ```
-GIMBAL=1 ./gazebo/run_px4_map.sh precision-landing-moving
+GIMBAL=1 ./gazebo/run_px4_map.sh mpc-landing-moving
 ros2 launch landing_mpc gimbal_perception.launch.py
 ```
 

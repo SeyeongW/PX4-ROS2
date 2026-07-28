@@ -5,8 +5,9 @@
 > **이 코드가 진짜 기체에서 도는가?**
 
 ```
-flight/       실기체에서 도는 것
-simulation/   시뮬레이터에서만 도는 것
+flight/       비행 임무·제어 (실기체)
+camera/       카메라·짐벌·인식 전부
+simulation/   시뮬레이터 전용
 ```
 
 경계에 걸치는 패키지는 두지 않습니다. 갈라지면 쪼갭니다.
@@ -17,18 +18,24 @@ simulation/   시뮬레이터에서만 도는 것
 
 | 패키지 | 역할 |
 |---|---|
-| **`precland_hw`** | **게이트형 MPC 정밀착륙 미션.** 5 m 이륙 → 마커 탐색 → MPC 하강. 단계마다 조종자 승인 |
-| **`aruco_landing`** | 실기체 ArUco 인식 (보정 solvePnP, 품질 게이트). 시뮬 진실값은 입력으로 쓰지 않음 |
-| **`siyi_gimbal`** | SIYI A8 mini — 시동 걸리면 직하방 조준, 유지 |
-| `precision_landing` | 구세대 MAVROS ArUco 착륙 (MPC 이전) |
+| **`mpc_landing`** | **게이트형 MPC 정밀착륙 미션.** 5 m 이륙 → 마커 탐색 → MPC 하강. 단계마다 조종자 승인 |
 | `path_plan` | A*/SFC/B-spline 전역 + MPC 지역 경로 |
 | `offboard` | C++ MAVROS offboard 제어 모음 |
+
+## camera/ — 카메라·짐벌·인식
+
+| 패키지 | 역할 |
+|---|---|
+| **`rtsp_bridge`** | **A8 mini RTSP → ROS Image + CameraInfo** (GStreamer). 실비행 인식의 입력 |
+| **`siyi_gimbal`** | SIYI A8 mini 제어 — 시동 걸리면 직하방 조준, 유지. 프로토콜 표는 `siyi_commands.py` |
+| **`aruco_landing`** | 실기체 ArUco 인식 (보정 solvePnP, 품질 게이트) |
+| `gimbal_camera` | 짐벌 카메라 시뮬 모델 — gz-sim + Gazebo Classic 양쪽 |
 
 ### 실비행 실행
 
 ```bash
 ros2 launch mavros apm.launch fcu_url:=/dev/ttyTHS1:921600   # 별도로 먼저
-ros2 launch precland_hw flight_bringup.launch.py             # 짐벌 + 미션
+ros2 launch mpc_landing flight_bringup.launch.py             # 짐벌 + 미션
 ```
 
 미션은 **단계마다 멈춰서 승인을 기다립니다.**
@@ -41,18 +48,26 @@ ros2 launch precland_hw flight_bringup.launch.py             # 짐벌 + 미션
 ```
 
 ```bash
-ros2 topic echo /precland_hw_node/state                          # 지금 뭘 기다리는지
-ros2 service call /precland_hw_node/approve std_srvs/srv/Trigger # 게이트 해제
-ros2 service call /precland_hw_node/abort   std_srvs/srv/Trigger # 중단·착륙
+ros2 topic echo /mpc_landing_node/state                          # 지금 뭘 기다리는지
+ros2 service call /mpc_landing_node/approve std_srvs/srv/Trigger # 게이트 해제
+ros2 service call /mpc_landing_node/abort   std_srvs/srv/Trigger # 중단·착륙
 ```
 
-> ### ⚠️ 아직 빠진 것: 카메라 소스
-> A8 mini의 RTSP(`rtsp://192.168.144.25:8554/video1`)를 ROS 이미지 토픽으로
-> 바꾸는 코드가 저장소에 없습니다. 그 상태에서 `precland_hw_node`는 프리체크의
-> **marker pipeline 항목만 FAIL**하고 시동을 거부합니다 — 볼 수 없는 채로
-> 이륙하지 않는다는 뜻이므로 동작 자체는 의도한 대로입니다.
+카메라 체인은 별도로 띄웁니다:
+
+```bash
+ros2 launch rtsp_bridge rtsp_bridge.launch.py        # RTSP → /gimbal_camera/image
+ros2 run aruco_landing aruco_pose_node               # → /perception/down/marker_pose
+```
+
+> ### ⚠️ 카메라 캘리브레이션이 필요합니다
+> `rtsp_bridge`는 `camera_info_file`이 비어 있으면 **PLACEHOLDER intrinsic**을
+> 발행하고 경고를 반복합니다. solvePnP는 그래도 "그럴듯한" 자세를 내놓지만
+> **거리 스케일이 틀립니다** — 실기체 A8 mini로 체커보드 캘리브레이션을 한 뒤
+> 그 파일을 지정하세요.
 >
-> 짐벌 IP(`192.168.144.25`)는 **제어용 UDP 37260**에 쓰이며 RTSP와 무관합니다.
+> 짐벌 IP `192.168.144.25`는 **제어(UDP 37260)** 와 **영상(RTSP 8554)** 에 모두
+> 쓰이지만 서로 다른 채널입니다.
 
 ---
 
@@ -63,7 +78,6 @@ ros2 service call /precland_hw_node/abort   std_srvs/srv/Trigger # 중단·착�
 | **`landing_mpc`** | **MPC 착륙 스택 본체.** 인식 체인 + 짐벌 조준 + 미션 상태기계 → [`docs/ROLES.md`](simulation/landing_mpc/docs/ROLES.md) |
 | `gazebo` | 월드·모델·실행 스크립트 → [`MAPS.md`](simulation/gazebo/MAPS.md) |
 | `px4_models` | PX4 SITL 기체 (`link_px4_model.sh`가 PX4 트리에 심링크) |
-| `gimbal_camera` | 독립 짐벌 카메라 — gz-sim + Gazebo Classic 양쪽 |
 | `gz_bridge` | gz-transport → ROS 2 센서/clock 브리지 |
 
 ```bash
@@ -79,7 +93,7 @@ HEADLESS=1 ./simulation/gazebo/run_gimbal.sh mission
 
 ### 1. MPC는 한 벌만 존재합니다
 
-`precland_hw`는 자체 MPC를 갖지 않고 `landing_mpc.mpc.LandingMPC`를 **그대로
+`mpc_landing`는 자체 MPC를 갖지 않고 `landing_mpc.mpc.LandingMPC`를 **그대로
 import**합니다. 실비행의 목적이 MPC 검증인데, 비슷하게 다시 짠 것을 날리면
 그 사본이 검증될 뿐이기 때문입니다.
 
@@ -94,7 +108,7 @@ import**합니다. 실비행의 목적이 MPC 검증인데, 비슷하게 다시 
 
 일회성 실험은 편집 없이:
 ```bash
-ros2 run precland_hw precland_hw_node --ros-args -p takeoff_alt_m:=3.0
+ros2 run mpc_landing mpc_landing_node --ros-args -p takeoff_alt_m:=3.0
 ```
 
 ---
@@ -104,9 +118,9 @@ ros2 run precland_hw precland_hw_node --ros-args -p takeoff_alt_m:=3.0
 ```bash
 colcon build && source install/setup.bash
 
-PYTHONPATH="$PWD/flight/siyi_gimbal:$PWD/flight/precland_hw:$PYTHONPATH" \
+PYTHONPATH="$PWD/camera/siyi_gimbal:$PWD/flight/mpc_landing:$PYTHONPATH" \
   PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
-  python3 -m pytest flight/*/test simulation/*/test -q
+  python3 -m pytest flight/*/test camera/*/test simulation/*/test -q
 ```
 
 `flight_logs/`는 ArduPilot dataflash `.BIN`입니다. colcon이 만드는 `log/`와는
@@ -146,8 +160,8 @@ python3 simulation/gazebo/gen_aruco_model.py      # 마커 텍스처 생성
 
 ```bash
 sudo apt install gazebo11 ros-humble-gazebo-ros-pkgs
-cmake -S simulation/gimbal_camera/plugins -B simulation/gimbal_camera/plugins/build
-cmake --build simulation/gimbal_camera/plugins/build
+cmake -S camera/gimbal_camera/plugins -B camera/gimbal_camera/plugins/build
+cmake --build camera/gimbal_camera/plugins/build
 ```
 </details>
 
@@ -168,7 +182,7 @@ export CYCLONEDDS_URI=$PWD/config/cyclonedds_pc.xml     # 필요할 때만
 
 | 증상 | 원인 / 해결 |
 |---|---|
-| `precland_hw`가 시동을 거부 | 프리체크 로그를 보세요. 어떤 항목이 왜 FAIL인지 한 줄씩 찍습니다 |
+| `mpc_landing`가 시동을 거부 | 프리체크 로그를 보세요. 어떤 항목이 왜 FAIL인지 한 줄씩 찍습니다 |
 | `approve` 호출이 거부됨 | 게이트가 아닌 단계입니다. 조기 승인은 삼키지 않고 거부합니다 |
 | 짐벌이 안 움직임 | `/siyi_gimbal_node/status`의 `bad_rx`와 자세 피드백 확인. IP·기체 네트워크 |
 | MAVROS 연결 실패 | `fcu_url` 확인, 시리얼 권한 `sudo usermod -aG dialout $USER` |

@@ -53,7 +53,7 @@
 
       <!-- ArUco marker on the flatbed top (z=0.28, marker just above to avoid
            z-fighting). Same non-metallic albedo trick as aruco_marker_0 so the
-           PNG shows. This is the drone's precision-landing target. -->
+           PNG shows. This is the drone's mpc-landing target. -->
       <visual name="marker_vis">
         <pose>0 0 0.081 0 0 0</pose>
         <geometry>
