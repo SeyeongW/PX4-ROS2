@@ -9,6 +9,18 @@ Starts, in this order:
     siyi_gimbal_node   points the camera down the moment the vehicle arms
     mpc_landing_node   the gated mission
 
+BEFORE ANYTHING ELSE: `source flight_env.sh`
+--------------------------------------------
+Every terminal on this Jetson is put on a FastDDS Discovery Server by .bashrc.
+In that mode the nodes still talk to each other, but `ros2 topic list`, `ros2
+service list` and therefore `ros2 run mpc_landing approve` see NOTHING — the
+graph is invisible, so the mission cannot be watched or approved. Measured: 2
+topics visible with the server, 177 without.
+
+The whole stack runs on this one machine, so the discovery server buys nothing
+here. `flight_env.sh` turns it off and sources the workspace. Source it in every
+terminal you use for a flight — the one that launches, and the one that approves.
+
 MAVROS is NOT started here. Its fcu_url depends on how the companion is wired,
 and guessing it would be a parameter in a launch file by another name:
 
