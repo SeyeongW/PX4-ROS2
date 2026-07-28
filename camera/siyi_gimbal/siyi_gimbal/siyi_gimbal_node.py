@@ -78,6 +78,7 @@ class SiyiGimbalNode(Node):
         self.attitude_tol = float(g('attitude_tolerance_deg').value)
         self.poll_attitude = bool(g('poll_attitude').value)
         self.poll_s = float(g('attitude_poll_period_s').value)
+        self.nadir_on_start = bool(g('nadir_on_start').value)
         self.disarm_centers = bool(g('center_on_disarm').value)
 
         self._seq = 0
@@ -109,6 +110,10 @@ class SiyiGimbalNode(Node):
         if self.poll_attitude:
             self.create_timer(self.poll_s, self._poll)
         self.create_timer(2.0, self._publish_status)
+
+        if self.nadir_on_start:
+            self._want_nadir = True
+            self._command_nadir('startup — down for preflight')
 
         ok, why = siyi.clamped(self.nadir_yaw, self.nadir_pitch)
         if not ok:
@@ -148,8 +153,16 @@ class SiyiGimbalNode(Node):
         # tell whether the command landed, so it re-sends unconditionally.
         p('poll_attitude', True)
         p('attitude_poll_period_s', 0.5)
-        # Recentre when the vehicle disarms, so the camera is not left staring
-        # at the ground on the bench.
+        # Look down AS SOON AS THIS NODE STARTS, not only once armed.
+        # Preflight is when you want to see whether the camera can actually
+        # find the marker — checking that after arming is checking it too late.
+        # The arm trigger still fires and still re-asserts; this only moves the
+        # first command earlier.
+        p('nadir_on_start', True)
+        # Recentre when the vehicle disarms. Ignored while nadir_on_start is
+        # set: recentring after a landing would leave the next preflight
+        # looking at the horizon, which is the problem nadir_on_start exists to
+        # remove.
         p('center_on_disarm', True)
 
     # ---------------------------------------------------------------- helpers
@@ -193,8 +206,10 @@ class SiyiGimbalNode(Node):
             self._command_nadir('vehicle ARMED' if not first
                                 else 'vehicle already ARMED at startup')
         else:
-            self._want_nadir = False
-            if not first and self.disarm_centers:
+            # Stay pointed down when nadir_on_start is set: the next preflight
+            # wants the same view this one did.
+            self._want_nadir = self.nadir_on_start
+            if not first and self.disarm_centers and not self.nadir_on_start:
                 self._send(siyi.encode(siyi.CENTER, bytes([cmds.TRIGGER]), self._next_seq()),
                            'center')
                 self.get_logger().info('-> gimbal: centre [vehicle DISARMED]')

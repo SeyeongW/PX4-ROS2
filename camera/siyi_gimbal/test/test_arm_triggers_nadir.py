@@ -76,6 +76,10 @@ def rig():
         Parameter('transport', value='udp'),
         Parameter('gimbal_host', value='127.0.0.1'),
         Parameter('gimbal_port', value=PORT),
+        # These tests are about the ARM EDGE specifically, so the startup
+        # command is turned off to isolate it. `test_nadir_on_start` below
+        # covers the default the vehicle actually flies with.
+        Parameter('nadir_on_start', value=False),
     ])
     yield node, gimbal
     node.destroy_node()
@@ -139,3 +143,47 @@ def test_disarming_centres_the_gimbal(rig):
     assert any(c == p.CENTER for c, _ in gimbal.commands), \
         'disarming should recentre so the camera is not left staring down'
     assert node._want_nadir is False
+
+
+def test_nadir_on_start_points_down_before_arming(rig):
+    """The default on the vehicle: down from startup, so PREFLIGHT can see the
+    marker. Checking the camera only after arming checks it too late."""
+    _node, gimbal = rig
+    import rclpy as _rclpy
+    from rclpy.parameter import Parameter as _P
+    started = SiyiGimbalNode(parameter_overrides=[
+        _P('transport', value='udp'),
+        _P('gimbal_host', value='127.0.0.1'),
+        _P('gimbal_port', value=PORT),
+        _P('nadir_on_start', value=True),
+    ])
+    try:
+        angles = _settle(gimbal, 1)
+        assert angles, 'nothing was commanded at startup'
+        assert angles[0][1] == pytest.approx(-90.0)
+        assert started._want_nadir is True
+    finally:
+        started.destroy_node()
+
+
+def test_disarm_keeps_looking_down_when_nadir_on_start(rig):
+    """Recentring after a landing would leave the next preflight staring at the
+    horizon — the exact problem nadir_on_start exists to remove."""
+    _node, gimbal = rig
+    import rclpy as _rclpy
+    from rclpy.parameter import Parameter as _P
+    started = SiyiGimbalNode(parameter_overrides=[
+        _P('transport', value='udp'),
+        _P('gimbal_host', value='127.0.0.1'),
+        _P('gimbal_port', value=PORT),
+        _P('nadir_on_start', value=True),
+    ])
+    try:
+        started._on_state(State(connected=True, armed=True))
+        started._on_state(State(connected=True, armed=False))
+        time.sleep(0.3)
+        assert started._want_nadir is True
+        assert not any(c == p.CENTER for c, _ in gimbal.commands), \
+            'disarm must not recentre while nadir_on_start is set'
+    finally:
+        started.destroy_node()
