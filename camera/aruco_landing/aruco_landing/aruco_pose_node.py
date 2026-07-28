@@ -796,7 +796,18 @@ class ArucoPoseNode(Node):
             "depth_relative_tolerance": 0.08,
             "depth_sync_tolerance_s": 0.10,
             "depth_history_size": 12,
-            "max_image_age_s": 0.25,
+            # MEASURED on this airframe: usb_cam frames arrive 0.58-0.60 s
+            # after their capture stamp (145 frames, 1280x720 MJPG). At the old
+            # 0.25 s every single frame was rejected as stale, which reads as
+            # "the marker is never seen" and blocks preflight with no clue why.
+            #
+            # Raising it is safe here because the latency is COMPENSATED, not
+            # ignored: the TF lookup uses the image's own capture stamp, so the
+            # marker is placed with the vehicle pose from when the shutter
+            # fired, not from now. The gate exists to catch a stalled camera,
+            # and 1.0 s still does that while leaving margin over the measured
+            # 0.6 s. Re-measure if the camera, format or resolution changes.
+            "max_image_age_s": 1.0,
             # Gazebo sensor stamps may lead the most recent source-throttled
             # /clock tick by one bounded publish interval.  The original
             # capture stamp is retained; mission-side state interpolation and
