@@ -780,13 +780,19 @@ class ArucoPoseNode(Node):
             # seen". Set both together if a registered depth source is added.
             "depth_topic": "",
             "aruco_dictionary": "DICT_4X4_50",
-            "marker_size_m": 1.0,
+            # MEASURED marker edge, metres. solvePnP range is LINEAR in this,
+            # so a wrong value scales every distance by the same ratio with no
+            # other symptom. 0.18 m is the printed marker this airframe uses.
+            "marker_size_m": 0.18,
             "marker_id": 0,
             "board_layout_file": "",
             "minimum_board_markers": 1,
             "board_outlier_mad_scale": 3.5,
             "calibration_file": "",
-            "publish_debug": False,
+            # ON by default on the real vehicle: the annotated view is the
+            # only way to see WHY a detection was rejected, and finding that out
+            # in the field is the whole point of having it.
+            "publish_debug": True,
             "subpixel_window_px": 5,
             "depth_required": False,
             "depth_scale": 0.001,

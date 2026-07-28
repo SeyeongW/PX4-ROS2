@@ -76,10 +76,24 @@ def generate_launch_description():
                 'camera_name': 'down_camera',
                 'camera_info_url': f'file://{calib}',
                 'frame_id': 'down_camera_optical_frame',
+                # JPEG quality for /down_camera/image/compressed. 30 is enough
+                # to see framing and exposure over a field link while costing a
+                # fraction of the raw 2.7 MB/frame — this is the picture you
+                # watch, not the one the detector measures from.
+                'image_raw.compressed.jpeg_quality': 30,
             }],
             remappings=[
                 ('image_raw', '/down_camera/image'),
                 ('camera_info', '/down_camera/camera_info'),
+                # image_transport's sub-topics do NOT follow the base remap —
+                # they are separate publishers created under the ORIGINAL name.
+                # Without these three the compressed stream lands on
+                # /image_raw/compressed, which is both confusing and impossible
+                # to find when you are outside looking for the camera view.
+                ('image_raw/compressed', '/down_camera/image/compressed'),
+                ('image_raw/compressedDepth',
+                 '/down_camera/image/compressedDepth'),
+                ('image_raw/theora', '/down_camera/image/theora'),
             ],
         ),
 
