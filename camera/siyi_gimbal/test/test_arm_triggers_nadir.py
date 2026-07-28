@@ -14,6 +14,7 @@ import time
 import pytest
 import rclpy
 from mavros_msgs.msg import State
+from rclpy.parameter import Parameter
 
 from siyi_gimbal import protocol as p
 from siyi_gimbal.siyi_gimbal_node import SiyiGimbalNode
@@ -67,10 +68,15 @@ class FakeGimbal:
 def rig():
     rclpy.init()
     gimbal = FakeGimbal()
-    node = SiyiGimbalNode()
-    # Point it at the fake rather than the factory address. Done after
-    # construction so the node's own declared defaults stay the thing under test.
-    node.host, node.port = '127.0.0.1', PORT
+    # transport:=udp because this test drives a fake gimbal on a loopback
+    # socket; the node's DEFAULT is serial, which is what the aircraft uses and
+    # what `test_transport.py` covers. Everything else stays at its declared
+    # default so the node under test is the real one.
+    node = SiyiGimbalNode(parameter_overrides=[
+        Parameter('transport', value='udp'),
+        Parameter('gimbal_host', value='127.0.0.1'),
+        Parameter('gimbal_port', value=PORT),
+    ])
     yield node, gimbal
     node.destroy_node()
     rclpy.shutdown()

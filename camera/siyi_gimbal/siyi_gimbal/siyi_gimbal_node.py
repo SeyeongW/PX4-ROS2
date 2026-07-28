@@ -17,18 +17,26 @@ where it should be, so a healthy link is quiet.
 ALL PARAMETERS ARE DECLARED HERE, IN `_declare`, WITH THEIR VALUES.
 The launch file passes none — same rule as `precland_hw`.
 
+TWO WAYS TO REACH THE GIMBAL
+----------------------------
+The A8 mini can be wired either way and speaks the same protocol on both:
+
+    transport:=serial   /dev/ttyTHS1 @115200 — the Jetson's header UART
+    transport:=udp      192.168.144.25:37260 — the vehicle ethernet
+
+Only the pipe differs; see `transport.py`. Default is serial, because that is
+how the aircraft is actually wired.
+
 Interfaces
 ----------
 Subscribes  /mavros/state                mavros_msgs/State
 Publishes   ~/attitude                   geometry_msgs/Vector3Stamped  (r,p,y deg)
             ~/status                     std_msgs/String
 Services    ~/look_down, ~/center        std_srvs/Trigger   (manual override)
-Talks to    the gimbal over UDP, default 192.168.144.25:37260
+Talks to    the gimbal over serial or UDP — see `transport`
 """
 
 from __future__ import annotations
-
-import socket
 
 import rclpy
 from geometry_msgs.msg import Vector3Stamped
@@ -42,6 +50,7 @@ from mavros_msgs.msg import State
 
 from . import protocol as siyi
 from . import siyi_commands as cmds
+from . import transport as tp
 
 
 def _sensor_qos() -> QoSProfile:
@@ -52,12 +61,17 @@ def _sensor_qos() -> QoSProfile:
 
 
 class SiyiGimbalNode(Node):
-    def __init__(self):
-        super().__init__('siyi_gimbal_node')
+    def __init__(self, **kwargs):
+        # **kwargs so a caller can inject parameter_overrides — the tests use it
+        # to select the UDP transport, since a desktop has no gimbal UART.
+        super().__init__('siyi_gimbal_node', **kwargs)
         self._declare()
         g = self.get_parameter
+        self.transport_kind = str(g('transport').value)
         self.host = str(g('gimbal_host').value)
         self.port = int(g('gimbal_port').value)
+        self.device = str(g('serial_device').value)
+        self.baud = int(g('serial_baud').value)
         self.nadir_pitch = float(g('nadir_pitch_deg').value)
         self.nadir_yaw = float(g('nadir_yaw_deg').value)
         self.reassert_s = float(g('reassert_period_s').value)
@@ -73,8 +87,15 @@ class SiyiGimbalNode(Node):
         self._sent = 0
         self._rx_bad = 0
 
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock.setblocking(False)
+        # A bad port or a missing permission is an OPERATOR problem, so it gets
+        # one readable line rather than a traceback that buries the reason.
+        try:
+            self.link = tp.make(self.transport_kind, host=self.host,
+                                port=self.port, device=self.device,
+                                baud=self.baud)
+        except (RuntimeError, ValueError) as exc:
+            self.get_logger().fatal(str(exc))
+            raise SystemExit(1) from None
 
         self.att_pub = self.create_publisher(Vector3Stamped, '~/attitude', 10)
         self.status_pub = self.create_publisher(String, '~/status', 10)
@@ -94,7 +115,7 @@ class SiyiGimbalNode(Node):
             self.get_logger().warn(f'requested nadir is outside the A8 mini '
                                    f'travel and will be clamped: {why}')
         self.get_logger().info(
-            f'siyi_gimbal_node: {self.host}:{self.port} — will look down '
+            f'siyi_gimbal_node: {self.link.description} — will look down '
             f'(yaw {self.nadir_yaw:.0f}, pitch {self.nadir_pitch:.0f} deg) '
             f'the moment /mavros/state reports ARMED')
 
@@ -102,8 +123,16 @@ class SiyiGimbalNode(Node):
     def _declare(self) -> None:
         """THE one place any of these may be set. The launch file passes none."""
         p = self.declare_parameter
-        # SIYI's factory address. The A8 mini is a UDP peer on the vehicle
-        # network, not a MAVLink mount, so this is its IP and not a MAVROS topic.
+        # HOW the gimbal is wired: 'serial' or 'udp'. Defaults to serial
+        # because that is how the aircraft is built — the gimbal hangs off the
+        # Jetson's header UART, not the vehicle ethernet.
+        p('transport', 'serial')
+        # serial: the Jetson's 40-pin header UART. /dev/ttyUSB0 for a USB-TTL
+        # adapter on a desktop.
+        p('serial_device', '/dev/ttyTHS1')
+        p('serial_baud', 115200)
+        # udp: SIYI's factory address, used when the gimbal is on the vehicle
+        # network instead. Same protocol, different pipe.
         p('gimbal_host', '192.168.144.25')
         p('gimbal_port', 37260)
         # Straight down, level in yaw. Pitch is negative-down on this gimbal.
@@ -126,7 +155,7 @@ class SiyiGimbalNode(Node):
     # ---------------------------------------------------------------- helpers
     def _send(self, packet: bytes, what: str) -> None:
         try:
-            self.sock.sendto(packet, (self.host, self.port))
+            self.link.send(packet)
             self._sent += 1
         except OSError as exc:
             # Log, do not raise: the gimbal being unreachable must not take the
@@ -182,11 +211,13 @@ class SiyiGimbalNode(Node):
         self._send(siyi.request_attitude(self._next_seq()), 'attitude request')
 
     def _drain_socket(self) -> None:
-        while True:
-            try:
-                data, _addr = self.sock.recvfrom(1024)
-            except (BlockingIOError, OSError):
-                return
+        try:
+            packets = self.link.read()
+        except OSError as exc:
+            self.get_logger().warn(f'link read failed ({exc})',
+                                   throttle_duration_sec=5.0)
+            return
+        for data in packets:
             parsed = siyi.decode(data)
             if parsed is None:
                 self._rx_bad += 1
@@ -229,13 +260,15 @@ class SiyiGimbalNode(Node):
             att = f'r{r:+.1f} p{pi:+.1f} y{y:+.1f}'
         holding = 'holding nadir' if self._want_nadir else 'idle'
         self.status_pub.publish(String(
-            data=f'{holding} | vehicle {armed} | gimbal {att} | '
-                 f'sent {self._sent} | bad_rx {self._rx_bad}'))
+            data=f'{holding} | {self.link.description} | vehicle {armed} | '
+                 f'gimbal {att} | sent {self._sent} | bad_rx {self._rx_bad}'))
         if self._want_nadir and self._attitude is None:
             self.get_logger().warn(
-                f'no attitude feedback from {self.host}:{self.port} — commands '
-                f'are being sent blind; check the gimbal IP and that the '
-                f'vehicle network is up', throttle_duration_sec=10.0)
+                f'no attitude feedback over {self.link.description} — commands '
+                f'are being sent blind. serial: check the wiring, the baud and '
+                f'that nothing else holds the port; udp: check the gimbal IP '
+                f'and that the vehicle network is up',
+                throttle_duration_sec=10.0)
 
 
 def main(args=None):
@@ -246,6 +279,7 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
+        node.link.close()
         node.destroy_node()
         rclpy.try_shutdown()
 

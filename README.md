@@ -26,7 +26,7 @@ simulation/   시뮬레이터 전용
 
 | 패키지 | 역할 |
 |---|---|
-| **`siyi_gimbal`** | SIYI A8 mini 제어 — 시동 걸리면 직하방 조준, 유지. 프로토콜 표는 `siyi_commands.py` |
+| **`siyi_gimbal`** | SIYI A8 mini 제어 — 시동 걸리면 직하방 조준, 유지. **시리얼/UDP 양쪽 지원**(기본 `/dev/ttyTHS1`). 프로토콜 표는 `siyi_commands.py` |
 | **`aruco_landing`** | 실기체 ArUco 인식 (보정 solvePnP, 품질 게이트) |
 | `gimbal_camera` | 짐벌 카메라 시뮬 모델 — gz-sim + Gazebo Classic 양쪽 |
 
