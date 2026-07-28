@@ -105,6 +105,10 @@ class GimbalMonitor(Node):
 
         self.create_subscription(Imu, '/mavros/imu/data', self._on_imu,
                                  _sensor_qos())
+        # Say it EARLY. Telling someone their vehicle attitude was missing only
+        # in the verdict, after they have already tilted the airframe through a
+        # full test, wastes the one thing this tool is asking them to do.
+        self.create_timer(3.0, self._nag)
         hz = float(g('poll_hz').value)
         self.create_timer(1.0 / hz, self._poll)
         self.create_timer(0.05, self._drain)
@@ -118,6 +122,16 @@ class GimbalMonitor(Node):
 
     def _on_imu(self, msg: Imu) -> None:
         self.vehicle = _rpy_deg(msg.orientation)
+
+    def _nag(self) -> None:
+        """Keep saying it until the vehicle attitude shows up."""
+        if self.vehicle is not None:
+            return
+        print('\n  !! NO VEHICLE ATTITUDE on /mavros/imu/data — do not bother '
+              'tilting yet.\n'
+              '     The frame cannot be decided without it. Check MAVROS is up '
+              'and in this\n'
+              '     ROS_DOMAIN_ID:  ros2 topic hz /mavros/imu/data\n')
 
     def _poll(self) -> None:
         self._seq = (self._seq + 1) % 0xFFFF
