@@ -41,6 +41,7 @@ from std_srvs.srv import Trigger
 from mavros_msgs.msg import State
 
 from . import protocol as siyi
+from . import siyi_commands as cmds
 
 
 def _sensor_qos() -> QoSProfile:
@@ -165,7 +166,7 @@ class SiyiGimbalNode(Node):
         else:
             self._want_nadir = False
             if not first and self.disarm_centers:
-                self._send(siyi.encode(siyi.CENTER, b'\x01', self._next_seq()),
+                self._send(siyi.encode(siyi.CENTER, bytes([cmds.TRIGGER]), self._next_seq()),
                            'center')
                 self.get_logger().info('-> gimbal: centre [vehicle DISARMED]')
 
@@ -211,7 +212,7 @@ class SiyiGimbalNode(Node):
 
     def _on_center(self, _req, res):
         self._want_nadir = False
-        self._send(siyi.encode(siyi.CENTER, b'\x01', self._next_seq()), 'center')
+        self._send(siyi.encode(siyi.CENTER, bytes([cmds.TRIGGER]), self._next_seq()), 'center')
         res.success = True
         res.message = 'commanded centre; nadir hold released until next ARM'
         self.get_logger().info('-> gimbal: centre [manual service call]')

@@ -45,14 +45,14 @@ GIMBAL_ROTATION = cmds.GIMBAL_ROTATION.cid
 ABSOLUTE_ZOOM = cmds.ABSOLUTE_ZOOM.cid
 ACQUIRE_FIRMWARE_VERSION = cmds.ACQUIRE_FIRMWARE_VERSION.cid
 
-#: A8 mini mechanical limits, degrees. Commanding past these is silently
-#: clamped by the gimbal, which looks identical to a command that never
-#: arrived — so it is clamped here instead, where it can be logged.
-PITCH_MIN_DEG, PITCH_MAX_DEG = -90.0, 25.0
-YAW_MIN_DEG, YAW_MAX_DEG = -135.0, 135.0
+# Mechanical limits and scale factors also come from the table — see the
+# A8_* constants and DEG_PER_LSB in `siyi_commands`.
+PITCH_MIN_DEG, PITCH_MAX_DEG = cmds.A8_PITCH_MIN_DEG, cmds.A8_PITCH_MAX_DEG
+YAW_MIN_DEG, YAW_MAX_DEG = cmds.A8_YAW_MIN_DEG, cmds.A8_YAW_MAX_DEG
 
-#: Straight down. The whole point of the arming behaviour.
-NADIR_PITCH_DEG = -90.0
+#: Straight down. The whole point of the arming behaviour — and it is the
+#: pitch LIMIT, not an independent number, so it tracks the table.
+NADIR_PITCH_DEG = cmds.A8_PITCH_MIN_DEG
 
 
 def crc16(data: bytes, initial: int = 0) -> int:
@@ -87,7 +87,8 @@ def set_angle(yaw_deg: float, pitch_deg: float, seq: int = 0) -> bytes:
     """
     yaw = max(YAW_MIN_DEG, min(YAW_MAX_DEG, float(yaw_deg)))
     pitch = max(PITCH_MIN_DEG, min(PITCH_MAX_DEG, float(pitch_deg)))
-    payload = struct.pack('<hh', int(round(-yaw * 10)), int(round(pitch * 10)))
+    lsb = 1.0 / cmds.DEG_PER_LSB          # degrees -> wire units (deci-degrees)
+    payload = struct.pack('<hh', int(round(-yaw * lsb)), int(round(pitch * lsb)))
     return encode(SET_ANGLE, payload, seq)
 
 
@@ -139,4 +140,5 @@ def parse_attitude(payload: bytes):
     if len(payload) < 12:
         return None
     z, y, x, _sz, _sy, _sx = struct.unpack('<hhhhhh', payload[:12])
-    return x * 0.1, y * 0.1, -z * 0.1
+    d = cmds.DEG_PER_LSB
+    return x * d, y * d, -z * d
