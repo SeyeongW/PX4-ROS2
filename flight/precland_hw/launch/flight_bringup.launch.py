@@ -21,7 +21,7 @@ another name. Start it yourself first:
 
 **The camera and the marker detector.** There is no camera driver in this repo
 yet — nothing converts the A8 mini's RTSP stream (rtsp://192.168.144.25:8554/
-video1) into a ROS image topic, and `camera/camera_detection`'s `aruco_pose_node`
+video1) into a ROS image topic, and `flight/aruco_landing`'s `aruco_pose_node`
 still defaults to the SIMULATOR's `/down_camera/image`. Until that gap is
 closed, `precland_hw_node` will pass every preflight check except the marker
 pipeline one, which is exactly the behaviour you want: it refuses to arm rather

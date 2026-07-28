@@ -13,7 +13,7 @@ from launch_ros.actions import Node
 
 def generate_launch_description() -> LaunchDescription:
     precision_share = get_package_share_directory("precision_landing")
-    camera_share = get_package_share_directory("camera_detection")
+    camera_share = get_package_share_directory("aruco_landing")
     config_default = os.path.join(
         precision_share, "config", "mpc_precision_landing.yaml"
     )

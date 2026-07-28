@@ -8,7 +8,7 @@ from gz.msgs10.laserscan_pb2 import LaserScan as GzLaserScan
 from gz.msgs10.pointcloud_packed_pb2 import PointCloudPacked as GzPointCloud
 from sensor_msgs.msg import PointField
 
-from camera_detection.native_gz_sensor_bridge import (
+from gz_bridge.native_gz_sensor_bridge import (
     DOWN_DEPTH_DISPLAY_TOPIC,
     DOWN_DEPTH_METRIC_TOPIC,
     FRONT_DEPTH_DISPLAY_TOPIC,

@@ -22,7 +22,7 @@ import numpy as np
 import rclpy
 import yaml
 
-from camera_detection.aruco_board import (
+from aruco_landing.aruco_board import (
     BoardLayout,
     BoardPoseEstimate,
     estimate_board_pose,

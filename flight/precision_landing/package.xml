@@ -16,7 +16,7 @@
   <depend>mavros_msgs</depend>
   <depend>python3-numpy</depend>
   <exec_depend>python3-scipy</exec_depend>
-  <exec_depend>camera_detection</exec_depend>
+  <exec_depend>aruco_landing</exec_depend>
 
   <export>
     <build_type>ament_python</build_type>

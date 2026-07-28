@@ -231,15 +231,15 @@ mkdir -p "$BUILD_BASE" "$INSTALL_BASE" "$LOG_BASE"
 BUILD_STAMP="$COLCON_ROOT/package-layout.sha256"
 BUILD_SIGNATURE="$({
   sha256sum \
-    "$REPO_DIR/camera/camera_detection/setup.py" \
-    "$REPO_DIR/camera/camera_detection/setup.cfg" \
-    "$REPO_DIR/camera/camera_detection/package.xml" \
+    "$REPO_DIR/flight/aruco_landing/setup.py" \
+    "$REPO_DIR/flight/aruco_landing/setup.cfg" \
+    "$REPO_DIR/flight/aruco_landing/package.xml" \
     "$REPO_DIR/flight/precision_landing/setup.py" \
     "$REPO_DIR/flight/precision_landing/setup.cfg" \
     "$REPO_DIR/flight/precision_landing/package.xml"
   find \
-    "$REPO_DIR/camera/camera_detection/config" \
-    "$REPO_DIR/camera/camera_detection/launch" \
+    "$REPO_DIR/flight/aruco_landing/config" \
+    "$REPO_DIR/flight/aruco_landing/launch" \
     "$REPO_DIR/flight/precision_landing/config" \
     "$REPO_DIR/flight/precision_landing/launch" \
     -maxdepth 1 -type f -printf '%p\n' 2>/dev/null | sort
@@ -247,7 +247,7 @@ BUILD_SIGNATURE="$({
 OVERLAY_READY=0
 if [[ -f "$INSTALL_BASE/setup.bash" && \
       -x "$INSTALL_BASE/precision_landing/lib/precision_landing/mpc_precision_landing_node" && \
-      -x "$INSTALL_BASE/camera_detection/lib/camera_detection/aruco_pose_node" ]]; then
+      -x "$INSTALL_BASE/aruco_landing/lib/aruco_landing/aruco_pose_node" ]]; then
   if [[ ! -f "$BUILD_STAMP" || \
         "$(<"$BUILD_STAMP")" == "$BUILD_SIGNATURE" ]]; then
     OVERLAY_READY=1
@@ -260,8 +260,8 @@ if [[ "$OVERLAY_READY" == "1" ]]; then
 else
   echo "[1/4] 최초 1회 /tmp 격리 overlay를 빌드합니다."
   colcon --log-base "$LOG_BASE" build \
-    --base-paths "$REPO_DIR/camera/camera_detection" "$REPO_DIR/flight/precision_landing" \
-    --packages-select camera_detection precision_landing \
+    --base-paths "$REPO_DIR/flight/aruco_landing" "$REPO_DIR/flight/precision_landing" \
+    --packages-select aruco_landing precision_landing \
     --build-base "$BUILD_BASE" \
     --install-base "$INSTALL_BASE" \
     --symlink-install \
@@ -275,14 +275,14 @@ source "$INSTALL_BASE/setup.bash"
 set -u
 
 expected_precision_prefix="$(realpath -m "$INSTALL_BASE/precision_landing")"
-expected_camera_prefix="$(realpath -m "$INSTALL_BASE/camera_detection")"
+expected_camera_prefix="$(realpath -m "$INSTALL_BASE/aruco_landing")"
 actual_precision_prefix="$(realpath -m "$(ros2 pkg prefix precision_landing)")"
-actual_camera_prefix="$(realpath -m "$(ros2 pkg prefix camera_detection)")"
+actual_camera_prefix="$(realpath -m "$(ros2 pkg prefix aruco_landing)")"
 if [[ "$actual_precision_prefix" != "$expected_precision_prefix" || \
       "$actual_camera_prefix" != "$expected_camera_prefix" ]]; then
   echo "ERROR: ROS package provenance is not the isolated PX4-ROS22 build." >&2
   echo "  precision_landing: $actual_precision_prefix" >&2
-  echo "  camera_detection : $actual_camera_prefix" >&2
+  echo "  aruco_landing    : $actual_camera_prefix" >&2
   exit 73
 fi
 if ! ros2 pkg executables precision_landing | \

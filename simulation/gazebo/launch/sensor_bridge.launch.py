@@ -132,11 +132,11 @@ def _launch_setup(context, *args, **kwargs):
     if backend == "native":
         source_bridge = (
             Path(__file__).resolve().parents[2]
-            / "camera_detection/camera_detection/native_gz_sensor_bridge.py"
+            / "gz_bridge/gz_bridge/native_gz_sensor_bridge.py"
         )
         try:
             installed = importlib.util.find_spec(
-                "camera_detection.native_gz_sensor_bridge"
+                "gz_bridge.native_gz_sensor_bridge"
             )
         except (ImportError, ModuleNotFoundError):
             installed = None

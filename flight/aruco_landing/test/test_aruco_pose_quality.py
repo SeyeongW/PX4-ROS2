@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 import yaml
 
-from camera_detection.aruco_pose_node import (
+from aruco_landing.aruco_pose_node import (
     DetectionStreak,
     PoseInnovationGate,
     covariance_and_quality,
@@ -141,21 +141,42 @@ def test_detection_streak_requires_contiguous_frames_and_same_id():
     assert not streak.update(True, 0, 2.0)
 
 
-def test_front_and_down_configs_have_distinct_inputs_outputs_and_real_depth():
+def test_front_and_down_configs_have_distinct_inputs_and_outputs():
+    """The two instances must not share a topic, a frame or a depth policy.
+
+    This test previously asserted that BOTH cameras use depth, and had been
+    failing because `aruco_down.yaml` deliberately does not: the reference
+    airframe mounts the down depth camera 3 cm off-axis with a different FOV,
+    so it is not a registered per-pixel depth source for ArUco and the config
+    says so in a comment. The config was right and the assertion was stale, so
+    the policy is pinned here instead — including that `depth_required` tracks
+    whether a depth topic is actually configured, which is the pairing that
+    would silently fail closed if it ever got out of step.
+    """
     configs = []
     for name in ("aruco_front.yaml", "aruco_down.yaml"):
-        data = yaml.safe_load((ROOT / "camera_detection/config" / name).read_text())
+        data = yaml.safe_load((ROOT / "aruco_landing/config" / name).read_text())
         configs.append(next(iter(data.values()))["ros__parameters"])
     front, down = configs
     assert front["image_topic"] != down["image_topic"]
-    assert front["depth_topic"] == "/front_depth/image_raw"
-    assert down["depth_topic"] == "/down_depth/image_raw"
     assert front["pose_topic"] != down["pose_topic"]
     assert front["optical_frame_id"] != down["optical_frame_id"]
-    assert front["depth_required"] and down["depth_required"]
+
+    # front: a registered depth source, and it is required.
+    assert front["depth_topic"] == "/front_depth/image_raw"
+    assert front["depth_required"] is True
+
+    # down: no usable depth source, so depth must NOT be required — requiring
+    # a topic that is never subscribed would reject every detection.
+    assert down["depth_topic"] == ""
+    assert down["depth_required"] is False
+
+    for cfg in (front, down):
+        assert bool(cfg["depth_topic"]) == bool(cfg["depth_required"]), \
+            'depth_required must match whether a depth topic is configured'
 
 
 def test_perception_node_never_imports_gazebo_ground_truth():
-    source = (ROOT / "camera_detection/camera_detection/aruco_pose_node.py").read_text()
+    source = (ROOT / "aruco_landing/aruco_landing/aruco_pose_node.py").read_text()
     forbidden = ("dynamic_pose", "gz.transport", "/trailer/pose", "ground_truth")
     assert not any(token in source for token in forbidden)

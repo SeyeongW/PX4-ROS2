@@ -12,7 +12,7 @@ from launch_ros.actions import Node
 
 
 def generate_launch_description():
-    share = get_package_share_directory("camera_detection")
+    share = get_package_share_directory("aruco_landing")
     front_default = os.path.join(share, "config", "aruco_front.yaml")
     down_default = os.path.join(share, "config", "aruco_down.yaml")
     return LaunchDescription([
@@ -24,7 +24,7 @@ def generate_launch_description():
         DeclareLaunchArgument("board_layout_file", default_value=""),
         DeclareLaunchArgument("enable_front", default_value="true"),
         Node(
-            package="camera_detection",
+            package="aruco_landing",
             executable="aruco_pose_node",
             name="front_aruco_pose",
             output="screen",
@@ -35,7 +35,7 @@ def generate_launch_description():
             condition=IfCondition(LaunchConfiguration("enable_front")),
         ),
         Node(
-            package="camera_detection",
+            package="aruco_landing",
             executable="aruco_pose_node",
             name="down_aruco_pose",
             output="screen",
