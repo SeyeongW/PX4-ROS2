@@ -18,7 +18,7 @@ simulation/   시뮬레이터 전용
 
 | 패키지 | 역할 |
 |---|---|
-| **`mpc_landing`** | **게이트형 MPC 정밀착륙 미션.** 5 m 이륙 → 마커 탐색 → MPC 하강. 단계마다 조종자 승인 |
+| **`mpc_landing`** | **게이트형 MPC 정밀착륙 미션.** 5 m 이륙 → 마커 탐색 → MPC 하강. 단계마다 조종자 승인. 기본 **PX4**(`autopilot` 파라미터로 ArduPilot 전환) |
 | `path_plan` | A*/SFC/B-spline 전역 + MPC 지역 경로 |
 | `offboard` | C++ MAVROS offboard 제어 모음 |
 
@@ -34,7 +34,8 @@ simulation/   시뮬레이터 전용
 ### 실비행 실행
 
 ```bash
-ros2 launch mavros apm.launch fcu_url:=/dev/ttyTHS1:921600   # 별도로 먼저
+# MAVROS — PX4 는 px4.launch, ArduPilot 은 apm.launch
+ros2 launch mavros px4.launch fcu_url:=/dev/ttyTHS1:921600   # 별도로 먼저
 ros2 launch mpc_landing flight_bringup.launch.py             # 짐벌 + 미션
 ```
 

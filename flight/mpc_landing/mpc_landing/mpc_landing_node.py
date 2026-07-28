@@ -124,6 +124,7 @@ class MpcLandingNode(Node):
         self._announced = ''
         self._takeoff_xy: np.ndarray | None = None
         self._t_touch = None
+        self._t_prestream = None
 
         # --- MAVROS
         self.create_subscription(State, '/mavros/state', self._on_state,
@@ -154,10 +155,16 @@ class MpcLandingNode(Node):
         self.create_service(Trigger, '~/abort', self._on_abort)
 
         self.create_timer(1.0 / self.rate_hz, self._tick)
+        # Say the autopilot and mode FIRST. It decides the whole arming
+        # sequence, and it is the one thing you want confirmed before a real
+        # vehicle is armed in front of you.
         self.get_logger().info(
-            f'mpc_landing_node: takeoff {self.takeoff_alt:.1f} m, descend on '
-            f'{self.marker_pose_topic}. Every step before the descent needs '
-            f'`ros2 service call {self.get_name()}/approve std_srvs/srv/Trigger`.')
+            f'mpc_landing_node: autopilot={self.autopilot.upper()} '
+            f'mode={self.mode_name} | takeoff {self.takeoff_alt:.1f} m | '
+            f'descend on {self.marker_pose_topic}')
+        self.get_logger().info(
+            f'every step before the descent waits for you: '
+            f'ros2 service call /{self.get_name()}/approve std_srvs/srv/Trigger')
 
     # ------------------------------------------------------------- parameters
     def _declare(self) -> None:
@@ -184,7 +191,16 @@ class MpcLandingNode(Node):
         p('require_battery', True)          # false only for bench tests
         p('max_start_alt_m', 1.0)           # must start near the ground
         # --- flight controller
-        p('offboard_mode', 'GUIDED')        # ArduPilot; use 'OFFBOARD' for PX4
+        # WHICH AUTOPILOT. This is not just a mode name: PX4 refuses to ENTER
+        # offboard until setpoints are already streaming, and drops out again if
+        # the stream lapses for ~0.5 s, so the arming SEQUENCE differs too.
+        # 'px4'       -> mode OFFBOARD, pre-stream setpoints, then mode, then arm
+        # 'ardupilot' -> mode GUIDED, mode then arm (it does not require a stream)
+        p('autopilot', 'px4')
+        p('offboard_mode', '')              # blank = derive from `autopilot`
+        # How long to stream setpoints before asking PX4 for offboard. PX4 wants
+        # a steady stream, not a single message; 1 s at rate_hz is ~20 of them.
+        p('offboard_prestream_s', 1.0)
         p('rate_hz', 20.0)
         p('service_timeout_s', 5.0)
         # --- descent MPC: landing_mpc.LandingMPC, the SITL-validated one.
@@ -229,7 +245,13 @@ class MpcLandingNode(Node):
         self.min_batt = float(g('min_battery_v').value)
         self.require_batt = bool(g('require_battery').value)
         self.max_start_alt = float(g('max_start_alt_m').value)
-        self.mode_name = str(g('offboard_mode').value)
+        self.autopilot = str(g('autopilot').value).lower()
+        if self.autopilot not in ('px4', 'ardupilot'):
+            raise ValueError(f"autopilot must be 'px4' or 'ardupilot', "
+                             f"got '{self.autopilot}'")
+        self.mode_name = (str(g('offboard_mode').value)
+                          or ('OFFBOARD' if self.autopilot == 'px4' else 'GUIDED'))
+        self.prestream_s = float(g('offboard_prestream_s').value)
         self.rate_hz = float(g('rate_hz').value)
         self.svc_timeout = float(g('service_timeout_s').value)
         self.mpc_dt = float(g('mpc_dt_s').value)
@@ -388,6 +410,18 @@ class MpcLandingNode(Node):
         ph = self.gate.phase
         self._publish_state()
 
+        # KEEP THE OFFBOARD STREAM ALIVE, unconditionally, for every phase that
+        # needs it. This runs BEFORE the phase logic so that a phase which
+        # returns early — a gate waiting on a human, ARMING waiting out the
+        # pre-stream — cannot accidentally starve it. PX4 drops offboard after
+        # ~0.5 s of silence, and the phases that would go quiet are exactly the
+        # ones where the vehicle is armed and airborne.
+        # Phases that fly a real setpoint (TAKEOFF, SEARCH, DESCEND) overwrite
+        # this one later in the same tick; publishing twice is harmless, a gap
+        # is not.
+        if self.gate.needs_setpoint_stream:
+            self._send(0.0, 0.0, 0.0)
+
         if ph is Phase.PRECHECK:
             self._checks = self._run_checks()
             if all(x.passed for x in self._checks):
@@ -404,14 +438,27 @@ class MpcLandingNode(Node):
 
         if ph in (Phase.READY_TO_ARM, Phase.READY_TO_TAKEOFF,
                   Phase.READY_TO_SEARCH):
-            # Gates hold position. Once airborne that means actively holding, so
-            # the offboard stream must not lapse while we wait for a human.
-            if self.gate.flying:
-                self._send(0.0, 0.0, 0.0)
+            # Gates hold position, and on PX4 they must keep the offboard stream
+            # alive too — READY_TO_TAKEOFF happens AFTER arming, and a lapse
+            # there drops the vehicle out of offboard while it waits for a human.
             self._announce()
             return
 
         if ph is Phase.ARMING:
+            # ORDER MATTERS ON PX4: stream -> mode -> arm.
+            # PX4 rejects a request for OFFBOARD unless setpoints are already
+            # arriving, so the stream (kept up by `needs_setpoint_stream` at the
+            # top of this tick) has to lead. ArduPilot does not care, and the
+            # same order works there, so there is one path rather than two.
+            if self._t_prestream is None:
+                self._t_prestream = self._now()
+                self.get_logger().info(
+                    f'streaming setpoints for {self.prestream_s:.1f} s before '
+                    f'requesting {self.mode_name}')
+                return
+            if self._now() - self._t_prestream < self.prestream_s:
+                return
+
             if self.state and self.state.mode != self.mode_name:
                 req = SetMode.Request()
                 req.custom_mode = self.mode_name
@@ -421,6 +468,9 @@ class MpcLandingNode(Node):
                 self.gate.armed_confirmed()
                 self._announce()
                 return
+            # Only ask to arm once the FCU confirms it is IN the mode. Arming
+            # first and switching after is the ArduPilot habit; on PX4 it can
+            # arm in whatever mode it was in, which is not what anyone wants.
             req = CommandBool.Request()
             req.value = True
             self._call(self.arm_cli, req, 'arming')

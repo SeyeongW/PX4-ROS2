@@ -87,3 +87,34 @@ def test_marker_acquisition_only_counts_from_search():
 def test_every_gate_has_a_prompt():
     for gate in GATES:
         assert GateState(phase=gate).prompt, f'{gate.value} has no prompt'
+
+
+# --------------------------------------------------------------------------
+# PX4 keeps offboard only while setpoints keep arriving. These pin the phases
+# where a lapse would drop the vehicle out of offboard mid-mission.
+# --------------------------------------------------------------------------
+
+def test_setpoint_stream_covers_every_armed_phase():
+    """A gap in any of these is a PX4 offboard dropout, not a cosmetic issue."""
+    must_stream = (Phase.ARMING, Phase.READY_TO_TAKEOFF, Phase.TAKEOFF,
+                   Phase.READY_TO_SEARCH, Phase.SEARCH, Phase.DESCEND)
+    for phase in must_stream:
+        assert GateState(phase=phase).needs_setpoint_stream, \
+            f'{phase.value} would starve the offboard stream'
+
+
+def test_no_stream_before_arming_or_after_landing():
+    """Streaming setpoints at a disarmed vehicle on the pad is not harmless —
+    it is what lets a stray approval put it straight into offboard."""
+    for phase in (Phase.PRECHECK, Phase.READY_TO_ARM, Phase.TOUCHDOWN,
+                  Phase.DONE, Phase.ABORT):
+        assert not GateState(phase=phase).needs_setpoint_stream, \
+            f'{phase.value} should not be streaming setpoints'
+
+
+def test_ready_to_takeoff_streams_even_though_it_is_not_flying():
+    """The gate that catches people out: it is a WAIT, but the vehicle is
+    already armed and in offboard, so the stream must not pause for it."""
+    g = GateState(phase=Phase.READY_TO_TAKEOFF)
+    assert g.waiting and not g.flying
+    assert g.needs_setpoint_stream

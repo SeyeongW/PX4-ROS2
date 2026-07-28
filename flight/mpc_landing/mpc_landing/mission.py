@@ -164,3 +164,22 @@ class GateState:
         """Is the vehicle airborne under our command?"""
         return self.phase in (Phase.TAKEOFF, Phase.READY_TO_SEARCH,
                               Phase.SEARCH, Phase.DESCEND)
+
+    @property
+    def needs_setpoint_stream(self) -> bool:
+        """Must a setpoint go out THIS tick to keep offboard control?
+
+        Wider than `flying`, and the difference is PX4-specific and dangerous:
+        PX4 will not ENTER offboard until setpoints have been streaming, and it
+        drops straight back out if the stream lapses for ~0.5 s. So the stream
+        has to start in ARMING — before the mode request — and must not pause at
+        READY_TO_TAKEOFF, which is a gate that happens AFTER the vehicle is
+        armed and in offboard.
+
+        Getting this wrong on ArduPilot is invisible (GUIDED does not care);
+        getting it wrong on PX4 means the mode request is rejected, or the
+        vehicle falls out of offboard while waiting for a human.
+        """
+        return self.phase in (Phase.ARMING, Phase.READY_TO_TAKEOFF,
+                              Phase.TAKEOFF, Phase.READY_TO_SEARCH,
+                              Phase.SEARCH, Phase.DESCEND)
