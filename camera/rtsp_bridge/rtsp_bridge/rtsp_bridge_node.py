@@ -24,12 +24,24 @@ On a desktop that element does not exist and the pipeline must fall back to
 `avdec_h264`. The node probes the registry rather than making the operator
 choose, and says which one it picked.
 
-CALIBRATION IS NOT OPTIONAL
----------------------------
-A `CameraInfo` full of zeros makes solvePnP return garbage that LOOKS like a
-pose, which is worse than no pose at all. If no calibration file is given, this
-node publishes a clearly-marked PLACEHOLDER derived from the image size and
-warns on a loop. Calibrate the real A8 mini before trusting a range.
+WHAT CALIBRATION ACTUALLY BUYS YOU HERE
+---------------------------------------
+Not what people usually assume. Measured against this repo's real calibration:
+
+  * **DISTORTION barely matters on this lens.** With k1=-0.058, k2=0.055 the
+    largest pixel displacement anywhere in a 1280x720 frame is ~4 px, and only
+    0.4 px at the corner. For a 1.5 m marker that is nothing — skipping
+    undistortion costs almost no accuracy.
+  * **FOCAL LENGTH is the whole game.** Range from a marker is
+    `z ~ fx * marker_size / pixel_width`, i.e. LINEAR in fx. Get fx wrong by
+    10% and every range is wrong by 10%, with no symptom other than the vehicle
+    stopping at the wrong height.
+
+So the placeholder below is built from the A8 mini's DATASHEET field of view
+rather than an arbitrary guess. An earlier version assumed 60 deg and produced
+fx=1108 against a real ~719 — a **+54% range error**. The datasheet figure gets
+within a few percent, which is good enough to fly and debug with, and still not
+good enough to trust a touchdown height to.
 
 ALL PARAMETERS ARE DECLARED HERE, IN `_declare`. The launch file passes none.
 
@@ -68,6 +80,7 @@ class RtspBridgeNode(Node):
         self.reconnect_s = float(g('reconnect_period_s').value)
         self.calib_file = str(g('camera_info_file').value)
         self.force_decoder = str(g('force_decoder').value)
+        self.placeholder_hfov = float(g('placeholder_hfov_deg').value)
 
         self.image_pub = self.create_publisher(Image, f'{self.camera_name}/image', 10)
         self.info_pub = self.create_publisher(
@@ -114,7 +127,14 @@ class RtspBridgeNode(Node):
         p('reconnect_period_s', 3.0)
         # Intrinsics from `ros2 run camera_calibration cameracalibrator`.
         # Empty = publish a placeholder and warn (see the module docstring).
+        # NOTE: aruco_landing/config/down_camera.yaml is a REAL calibration but
+        # of the Jetson USB camera, not this gimbal — do not point this at it.
         p('camera_info_file', '')
+        # Datasheet FOV for the placeholder, HORIZONTAL degrees. SIYI quote the
+        # A8 mini as 81 deg DIAGONAL; on a 16:9 sensor that is 73.3 deg
+        # horizontal (and 45.4 deg vertical). Change this only if the camera or
+        # the stream aspect ratio changes.
+        p('placeholder_hfov_deg', 73.3)
         # Override the automatic Jetson/desktop decoder choice.
         p('force_decoder', '')
 
@@ -160,13 +180,16 @@ class RtspBridgeNode(Node):
                 f'PLACEHOLDER calibration, which will give WRONG ranges')
 
     def _placeholder_info(self, width: int, height: int) -> CameraInfo:
-        """A guess, marked as one. Better than zeros, far worse than a calibration.
+        """Datasheet-derived stand-in, marked as one.
 
-        Assumes a 60 deg horizontal FOV and no distortion. solvePnP will return
-        a plausible-looking pose whose SCALE is wrong, which is exactly the
-        failure mode that is hard to spot in flight — hence the repeated warning.
+        Distortion is left at zero deliberately: on this lens it is worth ~4 px
+        at most (see the module docstring), so it is the honest thing to omit
+        rather than to invent. The focal length is what matters, and it comes
+        from the quoted field of view — close enough to fly and debug with, not
+        close enough to trust a touchdown height to.
         """
-        fx = fy = width / (2.0 * 0.5774)          # tan(30 deg)
+        import math
+        fx = fy = width / (2.0 * math.tan(math.radians(self.placeholder_hfov / 2.0)))
         cx, cy = width / 2.0, height / 2.0
         info = CameraInfo()
         info.width, info.height = width, height
@@ -261,9 +284,14 @@ class RtspBridgeNode(Node):
             data=f'{self.url} | {self._width}x{self._height} | '
                  f'{self._frames} frames | {self.decoder} | {calib}'))
         if not self._calibrated:
+            # `_info` only exists once a frame has told us the resolution, so
+            # this must survive being called before the stream is up.
+            fx = f'{self._info.k[0]:.0f}' if self._info is not None else 'pending'
             self.get_logger().warn(
-                'publishing PLACEHOLDER intrinsics — solvePnP ranges will be '
-                'WRONG. Calibrate the camera and set camera_info_file.',
+                f'PLACEHOLDER intrinsics from a {self.placeholder_hfov:.1f} deg '
+                f'datasheet FOV (fx={fx}). Range scales LINEARLY with fx, so '
+                f'this is a few percent out at best — calibrate and set '
+                f'camera_info_file before trusting a height.',
                 throttle_duration_sec=30.0)
         if self._frames == 0:
             self.get_logger().warn(
