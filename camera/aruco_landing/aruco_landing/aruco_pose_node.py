@@ -10,6 +10,7 @@ input and output topics.
 
 from __future__ import annotations
 
+import array
 from collections import deque
 from dataclasses import dataclass
 import math
@@ -34,7 +35,9 @@ from geometry_msgs.msg import (
     PoseStamped,
     PoseWithCovarianceStamped,
 )
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.duration import Duration
+from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import (
     DurabilityPolicy,
@@ -52,13 +55,19 @@ try:
         do_transform_pose_stamped,
         do_transform_pose_with_covariance_stamped,
     )
-    from tf2_ros import Buffer, TransformException, TransformListener
+    from tf2_ros import (
+        Buffer,
+        ExtrapolationException,
+        TransformException,
+        TransformListener,
+    )
 
     TF2_AVAILABLE = True
 except Exception:  # pragma: no cover - depends on ROS installation
     TF2_AVAILABLE = False
     Buffer = TransformListener = object  # type: ignore[assignment,misc]
     TransformException = Exception  # type: ignore[assignment]
+    ExtrapolationException = Exception  # type: ignore[assignment]
 
 
 @dataclass(frozen=True)
@@ -575,6 +584,16 @@ class ArucoPoseNode(Node):
             self.get_parameter("depth_sync_tolerance_s").value
         )
         self.max_image_age_s = float(self.get_parameter("max_image_age_s").value)
+        detection_rate_hz = float(
+            self.get_parameter("max_detection_rate_hz").value
+        )
+        if not math.isfinite(detection_rate_hz) or detection_rate_hz < 0.0:
+            raise ValueError("max_detection_rate_hz must be finite and >= 0")
+        # 0 means "solve every frame the camera sends".
+        self.min_detection_period_s = (
+            1.0 / detection_rate_hz if detection_rate_hz > 0.0 else 0.0
+        )
+        self.last_detection_stamp_s: Optional[float] = None
         self.max_image_future_tolerance_s = float(
             self.get_parameter("max_image_future_tolerance_s").value
         )
@@ -598,6 +617,9 @@ class ArucoPoseNode(Node):
         self.optical_frame_id = str(self.get_parameter("optical_frame_id").value)
         self.target_frame = str(self.get_parameter("target_frame").value)
         self.tf_timeout_s = float(self.get_parameter("tf_timeout_s").value)
+        self.tf_extrapolation_fallback_s = float(
+            self.get_parameter("tf_extrapolation_fallback_s").value
+        )
 
         dictionary_name = str(self.get_parameter("aruco_dictionary").value)
         self.board_layout: Optional[BoardLayout] = None
@@ -743,8 +765,14 @@ class ArucoPoseNode(Node):
         self.create_subscription(
             CameraInfo, info_topic, self._camera_info_callback, qos_profile_sensor_data
         )
+        # Detection gets a callback group to itself so a MultiThreadedExecutor
+        # can run it alongside the /tf callbacks in the node's default group
+        # rather than behind them. Still mutually exclusive within itself: two
+        # frames must never be solved concurrently, because the innovation gate
+        # and the detection streak are ordered state.
         self.create_subscription(Image, image_topic, self._image_callback,
-                                 latest_sample_qos)
+                                 latest_sample_qos,
+                                 callback_group=MutuallyExclusiveCallbackGroup())
         if depth_topic:
             self.create_subscription(Image, depth_topic, self._depth_callback,
                                      latest_sample_qos)
@@ -755,6 +783,18 @@ class ArucoPoseNode(Node):
             if not TF2_AVAILABLE:
                 raise RuntimeError("target_frame configured but tf2 is unavailable")
             self.tf_buffer = Buffer()
+            # The /tf subscription gets its OWN callback group so a
+            # MultiThreadedExecutor can keep filling the buffer while an image
+            # is being processed — see main(). On one shared thread this node
+            # rejected everything: detection costs ~90 ms and pins a core, so
+            # /tf callbacks only ran between frames and the buffer's newest
+            # sample fell 90-880 ms behind, while an outside observer measured
+            # those same transforms arriving at a steady 50 Hz. Every image then
+            # looked like a lookup "into the future". The marker was visible,
+            # the chain was healthy, and not one pose came out.
+            #
+            # NOT TransformListener(spin_thread=True): that adds THIS node to a
+            # second executor, and main() has already given it to one.
             self.tf_listener = TransformListener(self.tf_buffer, self)
 
         target_description = (
@@ -814,6 +854,23 @@ class ArucoPoseNode(Node):
             # and 1.0 s still does that while leaving margin over the measured
             # 0.6 s. Re-measure if the camera, format or resolution changes.
             "max_image_age_s": 1.0,
+            # Process at most this many frames a second, and DROP the rest.
+            #
+            # The camera delivers ~27 fps and solving one 1280x720 frame costs
+            # ~75 ms, so taking every frame pins this process at 92% of a core.
+            # rclpy callbacks need the GIL, so a saturated detector cannot drain
+            # its own /tf subscription: MEASURED here, the buffer's newest
+            # transform fell 111-946 ms behind wall clock while an outside
+            # observer saw those same transforms arriving at a steady 50 Hz.
+            # Every lookup at capture time then failed as an extrapolation into
+            # the future and the node published nothing at all.
+            #
+            # 12 Hz is chosen against the consumer, not the camera:
+            # mpc_landing_node runs its loop at 20 Hz and treats a marker as
+            # lost after 1.5 s, so 12 Hz is ~18 fixes inside that window. The
+            # operator's view is unaffected — the ground station watches the
+            # camera's own compressed stream, not this node.
+            "max_detection_rate_hz": 12.0,
             # Gazebo sensor stamps may lead the most recent source-throttled
             # /clock tick by one bounded publish interval.  The original
             # capture stamp is retained; mission-side state interpolation and
@@ -822,15 +879,62 @@ class ArucoPoseNode(Node):
             "camera_info_timeout_s": 2.0,
             "max_reprojection_error_px": 2.5,
             "min_facing_cosine": 0.15,
-            "min_ambiguity_ratio": 1.15,
+            # 1.0, not the textbook 1.15. A camera on a nadir gimbal sees the
+            # marker nearly fronto-parallel, and that is precisely the geometry
+            # where IPPE's two solutions have almost equal reprojection error —
+            # the SITL config measured a 1.085 minimum and 1.187 median ratio
+            # over 40 clearly visible frames, so 1.15 rejected whole runs of
+            # good detections. This airframe flies that same geometry for the
+            # entire descent. The facing, reprojection, temporal and innovation
+            # gates all still fail closed, so the flip is still caught.
+            "min_ambiguity_ratio": 1.0,
             "minimum_detection_frames": 3,
             "maximum_detection_gap_s": 1.0,
             "innovation_gate_squared": 16.27,
-            "innovation_process_variance": 0.25,
+            # This gate runs on the marker's position in the CAMERA frame (see
+            # the innovation_gate.update call), which moves at the vehicle's
+            # full speed, not the marker's. 0.25 m2/s2 allows ~0.5 m/s of
+            # apparent motion at 1 sigma and rejects a normal descent; the SITL
+            # config raised it to 4.0 for the same reason.
+            "innovation_process_variance": 4.0,
             "innovation_reset_after_s": 1.0,
             "optical_frame_id": "down_camera_optical_frame",
-            "target_frame": "base_link",
-            "tf_timeout_s": 0.05,
+            # EMPTY: publish in the camera's own optical frame and do not touch
+            # tf2 at all.
+            #
+            # `map` is the better answer and the chain for it exists
+            # (landing_tf_node), but it does not work on this vehicle yet: the
+            # transforms are published at a healthy 50 Hz and an outside
+            # observer sees them 2 ms old, while THIS node's tf2 buffer runs
+            # 135-880 ms behind and rejects every lookup at capture time as an
+            # extrapolation into the future. Until that is fixed, asking for
+            # `map` here means publishing nothing at all.
+            #
+            # Nothing is lost by waiting. mpc_landing_node reads the frame_id on
+            # the pose it receives and converts an optical-frame marker itself,
+            # using the vehicle heading and the gimbal's nadir hold — which also
+            # gives it height above the MARKER rather than above the EKF datum.
+            # Set this back to "map" once the buffer lag is solved and the
+            # mission node follows automatically, with no second setting to
+            # keep in step.
+            "target_frame": "",
+            # ZERO, deliberately. tf2_ros' timeout sleeps inside the callback
+            # while it waits, and this node runs on a single-threaded executor,
+            # so the TransformListener cannot receive the very transform being
+            # waited for — the wait can only ever burn the full timeout on a
+            # frame that was going to fail anyway. Freshness is bought by
+            # publishing TF faster (landing_tf_node does 50 Hz) and by the
+            # bounded latest-sample fallback below, not by blocking here.
+            "tf_timeout_s": 0.0,
+            # tf2 will not extrapolate past its newest sample, so an image
+            # stamped a few milliseconds after the last TF tick raises rather
+            # than returning a nearly identical transform. Rejecting a good
+            # detection over that is the failure this whole path just came from,
+            # so fall back to the latest available transform when the gap is
+            # smaller than this, and say so in the log. Larger gaps still fail:
+            # that is a stalled TF source, and quietly reusing a stale vehicle
+            # attitude there would place the marker somewhere it never was.
+            "tf_extrapolation_fallback_s": 0.05,
             "detected_topic": "/perception/down/aruco_detected",
             "pose_topic": "/perception/down/marker_pose",
             "pose_covariance_topic": "/perception/down/marker_pose_covariance",
@@ -931,6 +1035,17 @@ class ArucoPoseNode(Node):
         self._process_pending_image()
 
     def _image_callback(self, message: Image) -> None:
+        # Drop by CAPTURE stamp, not arrival: the point is an even spacing of
+        # the frames actually solved, and arrival order already jitters.
+        if self.min_detection_period_s > 0.0:
+            stamp_s = _stamp_seconds(message.header.stamp)
+            if self.last_detection_stamp_s is not None:
+                elapsed = stamp_s - self.last_detection_stamp_s
+                # A backwards stamp means the camera restarted; take the frame
+                # rather than stall until the old clock is caught up again.
+                if 0.0 <= elapsed < self.min_detection_period_s:
+                    return
+            self.last_detection_stamp_s = stamp_s
         if not self.depth_required:
             self._process_image(message)
             return
@@ -1005,12 +1120,33 @@ class ArucoPoseNode(Node):
         if not self.target_frame or self.target_frame == pose.header.frame_id:
             return pose, covariance_pose
         assert self.tf_buffer is not None
-        transform = self.tf_buffer.lookup_transform(
-            self.target_frame,
-            pose.header.frame_id,
-            Time.from_msg(pose.header.stamp),
-            timeout=Duration(seconds=self.tf_timeout_s),
-        )
+        try:
+            transform = self.tf_buffer.lookup_transform(
+                self.target_frame,
+                pose.header.frame_id,
+                Time.from_msg(pose.header.stamp),
+                timeout=Duration(seconds=self.tf_timeout_s),
+            )
+        except ExtrapolationException:
+            # The capture stamp sits past the newest TF sample. Retry at "latest
+            # available" only if the chain is actually live, and only if it is
+            # within the configured gap — a transform one tick old is the same
+            # transform, but a transform from a source that stopped is a lie
+            # about where the vehicle was pointing.
+            transform = self.tf_buffer.lookup_transform(
+                self.target_frame, pose.header.frame_id, Time()
+            )
+            gap_s = abs(
+                _stamp_seconds(pose.header.stamp)
+                - _stamp_seconds(transform.header.stamp)
+            )
+            if gap_s > self.tf_extrapolation_fallback_s:
+                raise
+            self.get_logger().debug(
+                f"tf extrapolated {gap_s * 1e3:.0f} ms to the latest sample "
+                f"(raise landing_tf_node's tf_rate_hz if this is constant)",
+                throttle_duration_sec=5.0,
+            )
         return (
             do_transform_pose_stamped(pose, transform),
             do_transform_pose_with_covariance_stamped(covariance_pose, transform),
@@ -1322,7 +1458,11 @@ class ArucoPoseNode(Node):
             raw_debug.encoding = "bgr8"
             raw_debug.is_bigendian = 0
             raw_debug.step = int(raw_frame.shape[1] * 3)
-            raw_debug.data = raw_frame.tobytes()
+            # array.array, NOT bytes/numpy: rosidl's uint8[] setter passes an
+            # array.array straight through, but validates anything else element
+            # by element. On a 1280x720 frame that check was measured at 457 ms
+            # — per frame — which is enough to stall the detector outright.
+            raw_debug.data = array.array("B", raw_frame.tobytes())
             self.debug_raw_publisher.publish(raw_debug)
 
         success, encoded = (
@@ -1334,15 +1474,21 @@ class ArucoPoseNode(Node):
             debug = CompressedImage()
             debug.header = message.header
             debug.format = "jpeg"
-            debug.data = encoded.tobytes()
+            debug.data = array.array("B", encoded.tobytes())
             self.debug_publisher.publish(debug)
 
 
 def main(args=None) -> None:
     rclpy.init(args=args)
     node = ArucoPoseNode()
+    # Two threads, not one: detection holds its thread for ~90 ms per frame, and
+    # on a single-threaded executor that is 90 ms in which no /tf message is
+    # taken off the wire. The buffer then trails the images it is asked about
+    # and every lookup fails as an extrapolation into the future.
+    executor = MultiThreadedExecutor(num_threads=2)
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
+        executor.spin()
     except KeyboardInterrupt:
         pass
     finally:
