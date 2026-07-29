@@ -7,7 +7,23 @@ Starts, in this order:
     usb_cam            /dev/video0 -> /down_camera/image + camera_info
     aruco_pose_node    -> /perception/down/marker_pose
     siyi_gimbal_node   points the camera down the moment the vehicle arms
+    landing_tf_node    map -> base_link -> gimbal_mount -> camera
     mpc_landing_node   the gated mission
+
+WITHOUT landing_tf_node THE DETECTOR PUBLISHES NOTHING
+------------------------------------------------------
+aruco_pose_node solves the marker in the camera's optical frame and then asks
+tf2 for `map`, because that is the frame mpc_landing_node differences against
+the vehicle's local position. Until this launch grew landing_tf_node, nobody on
+the aircraft published any part of that chain: MAVROS had the vehicle pose and
+siyi_gimbal had the gimbal attitude, but nothing joined them. Every detection
+was discarded with `tf_lookup` while the debug view kept drawing a green square
+around a marker it was seeing perfectly — which reads, from outside, as a
+camera that cannot find the marker.
+
+landing_tf_node needs MAVROS running for the vehicle pose. Its
+`gimbal_attitude_reference` is the one setting that cannot be decided from a
+desk; `ros2 run siyi_gimbal gimbal_monitor` decides it on the aircraft.
 
 WATCHING THIS FROM THE GROUND STATION PC
 ----------------------------------------
@@ -44,82 +60,46 @@ through this launch — it detects the terminal and prompts:
 
     ros2 run mpc_landing mpc_landing_node
 
+THE CAMERA IS gst_camera_node, NOT usb_cam
+------------------------------------------
+usb_cam decoded MJPEG on the ARM cores at 21 fps while the camera pushes ~58, so
+the V4L2 queue stayed permanently full and every frame handed to the detector was
+already 618 ms old. gst_camera_node moves the decode to the Jetson's NVJPG block
+and keeps up at 58 fps — see its module docstring for the measurements.
+
+It also removes two topics that had no business being on a flight link.
+image_transport loads every plugin it can find, so usb_cam advertised
+/down_camera/image/compressedDepth (a DEPTH codec on a colour camera) and
+/theora, which nothing in this stack speaks. `disable_pub_plugins` was supposed
+to suppress them and did not — the parameter is looked up under the resolved
+topic name, not the pre-remap `image_raw` this launch was setting. Rather than
+chase that, gst_camera_node creates its two publishers directly and never loads
+image_transport at all, so the extra transports cannot come back:
+
+    /down_camera/image             raw BGR, for the detector
+    /down_camera/image/compressed  the camera's own MJPEG bytes, for the PC
+
 ABOUT THE PARAMETERS BELOW
 --------------------------
-Our own nodes are started with NO parameters, as everywhere in flight/ — their
-values live in each node's `_declare()` with the reasoning beside them.
-
-`usb_cam` is the exception, and deliberately so: it is a third-party driver we
-do not own, so there is no `_declare()` to put its device path, pixel format or
-calibration file in. For it, this launch IS the source of truth. The three that
-matter:
-
-  video_device     which camera
-  camera_info_url  the CALIBRATION. Without it solvePnP has no focal length and
-                   every range is wrong — see aruco_landing/config.
-  image_width/height  MUST match the resolution the calibration was taken at
-                   (1280x720). Change the resolution and fx/fy/cx/cy all scale,
-                   so the calibration silently stops applying.
+There are none. Every node here is ours, so its values live in its own
+`_declare()` with the reasoning beside them — the same rule as the rest of
+flight/. The usb_cam exception that used to justify a block of camera settings
+in this file went away with usb_cam; device path, resolution and calibration are
+now in gst_camera_node.
 """
 
-import os
-
-from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch_ros.actions import Node
 
 
 def generate_launch_description():
-    calib = os.path.join(
-        get_package_share_directory('aruco_landing'), 'config', 'down_camera.yaml')
-
     return LaunchDescription([
-        # --- camera -------------------------------------------------------
+        # --- camera: hardware JPEG decode on the Jetson's NVJPG block -------
         Node(
-            package='usb_cam',
-            executable='usb_cam_node_exe',
+            package='aruco_landing',
+            executable='gst_camera_node',
             name='down_camera',
             output='screen',
-            parameters=[{
-                'video_device': '/dev/video0',
-                # MJPG because YUYV at this resolution drops to 5 fps on this
-                # camera, and the marker has to be seen while descending.
-                'pixel_format': 'mjpeg2rgb',
-                'image_width': 1280,
-                'image_height': 720,
-                'framerate': 30.0,
-                'camera_name': 'down_camera',
-                'camera_info_url': f'file://{calib}',
-                'frame_id': 'down_camera_optical_frame',
-                # JPEG quality for /down_camera/image/compressed. 30 is enough
-                # to see framing and exposure over a field link while costing a
-                # fraction of the raw 2.7 MB/frame — this is the picture you
-                # watch, not the one the detector measures from.
-                'image_raw.compressed.jpeg_quality': 30,
-                # image_transport loads EVERY transport plugin it can find, so
-                # by default this camera also advertises /compressedDepth and
-                # /theora. Both are dead weight here: compressedDepth is a depth
-                # codec pointed at a colour camera, and nothing in this stack
-                # speaks theora. Each one still costs a publisher, a discovery
-                # entry and a line in `ros2 topic list` while the vehicle is in
-                # the air. Two image streams leave this Jetson and that is all:
-                #   /down_camera/image             raw, for the detector
-                #   /down_camera/image/compressed  30% JPEG, for the PC
-                'image_raw.disable_pub_plugins': [
-                    'image_transport/compressedDepth',
-                    'image_transport/theora',
-                ],
-            }],
-            remappings=[
-                ('image_raw', '/down_camera/image'),
-                ('camera_info', '/down_camera/camera_info'),
-                # image_transport's sub-topics do NOT follow the base remap —
-                # they are separate publishers created under the ORIGINAL name.
-                # Without this the compressed stream lands on
-                # /image_raw/compressed, which is both confusing and impossible
-                # to find when you are outside looking for the camera view.
-                ('image_raw/compressed', '/down_camera/image/compressed'),
-            ],
         ),
 
         # --- perception ---------------------------------------------------
@@ -135,6 +115,14 @@ def generate_launch_description():
             package='siyi_gimbal',
             executable='siyi_gimbal_node',
             name='siyi_gimbal_node',
+            output='screen',
+        ),
+
+        # --- the frames the marker is measured through ----------------------
+        Node(
+            package='aruco_landing',
+            executable='landing_tf_node',
+            name='landing_tf_node',
             output='screen',
         ),
 
