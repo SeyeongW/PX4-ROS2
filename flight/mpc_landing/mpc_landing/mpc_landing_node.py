@@ -81,6 +81,31 @@ from landing_mpc.reference import HorizonReference
 from .mission import CheckResult, GateState, Phase
 
 
+def enu_yaw_from_quaternion(x: float, y: float, z: float, w: float) -> float:
+    """Heading of an ENU body frame, radians CCW from East."""
+    return math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+
+
+def marker_enu_from_nadir_camera(tvec, vehicle_enu, yaw_rad: float) -> np.ndarray:
+    """Marker in the camera's optical frame -> marker in map ENU.
+
+    Assumes the gimbal is holding nadir, so the only unknown is where the
+    vehicle is pointing. Optical is X right, Y down the image, Z along the
+    lens; at nadir the top of the image is the nose, which makes forward -y,
+    left -x, and the marker -z below. Kept a plain function so the geometry can
+    be tested without a running node — a sign error here is a landing that
+    misses in a believable direction.
+    """
+    x, y, z = float(tvec[0]), float(tvec[1]), float(tvec[2])
+    fwd, left, up = -y, -x, -z
+    c, s = math.cos(yaw_rad), math.sin(yaw_rad)
+    return np.array([
+        float(vehicle_enu[0]) + c * fwd - s * left,
+        float(vehicle_enu[1]) + s * fwd + c * left,
+        float(vehicle_enu[2]) + up,
+    ])
+
+
 def _sensor_qos() -> QoSProfile:
     """MAVROS publishes telemetry BEST_EFFORT; a RELIABLE subscriber gets nothing."""
     return QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -202,6 +227,9 @@ class MpcLandingNode(Node):
         p('touchdown_alt_m', 0.25)          # below this, hand over to LAND
         p('touchdown_dwell_s', 1.5)         # ...held for this long
         # --- marker input
+        # The frame a marker pose is ALREADY in. Anything else on that topic is
+        # taken to be the camera optical frame and converted — see _on_marker.
+        p('map_frame', 'map')
         p('marker_pose_topic', '/perception/down/marker_pose')
         p('marker_detected_topic', '/perception/down/aruco_detected')
         p('marker_timeout_s', 1.5)          # older than this is not a fix
@@ -210,7 +238,6 @@ class MpcLandingNode(Node):
         # --- preflight thresholds
         p('min_battery_v', 14.0)            # 4S nominal; raise for 6S
         p('require_battery', True)          # false only for bench tests
-        p('max_start_alt_m', 1.0)           # must start near the ground
         # --- flight controller. PX4 ONLY — see the module docstring.
         p('offboard_mode', 'OFFBOARD')
         # How long to stream setpoints before asking PX4 for offboard. PX4 wants
@@ -257,6 +284,7 @@ class MpcLandingNode(Node):
         self.touch_xy = float(g('touchdown_xy_m').value)
         self.touch_alt = float(g('touchdown_alt_m').value)
         self.touch_dwell = float(g('touchdown_dwell_s').value)
+        self.map_frame = str(g('map_frame').value)
         self.marker_pose_topic = str(g('marker_pose_topic').value)
         self.marker_detected_topic = str(g('marker_detected_topic').value)
         self.marker_timeout = float(g('marker_timeout_s').value)
@@ -264,7 +292,6 @@ class MpcLandingNode(Node):
         self.search_timeout = float(g('search_timeout_s').value)
         self.min_batt = float(g('min_battery_v').value)
         self.require_batt = bool(g('require_battery').value)
-        self.max_start_alt = float(g('max_start_alt_m').value)
         self.mode_name = str(g('offboard_mode').value)
         self.prestream_s = float(g('offboard_prestream_s').value)
         self.interactive = bool(g('interactive_approval').value)
@@ -305,9 +332,50 @@ class MpcLandingNode(Node):
         self._detector_seen = True
 
     def _on_marker(self, m: PoseStamped):
-        self.marker = np.array([m.pose.position.x, m.pose.position.y,
-                                m.pose.position.z])
+        """Accept the marker in `map`, or in the camera's optical frame.
+
+        Which one it is comes off the message, not off a parameter — the two
+        ends can then never be configured to disagree, and switching the
+        detector between them needs no change here.
+        """
+        p = np.array([m.pose.position.x, m.pose.position.y, m.pose.position.z])
+        if m.header.frame_id and m.header.frame_id != self.map_frame:
+            p = self._marker_enu_from_camera(p)
+            if p is None:
+                return
+        self.marker = p
         self.marker_t = self._now()
+
+    def _marker_enu_from_camera(self, tvec):
+        """Camera-optical marker -> ENU, on the gimbal's nadir hold alone.
+
+        No tf2, and deliberately so: the transforms are published correctly but
+        this process cannot drain them fast enough to look one up at capture
+        time, so the whole chain resolves to nothing. What is actually needed is
+        one angle — where the camera is pointing in the world — and a gimbal
+        commanded to nadir supplies all of it but the heading, which MAVROS
+        already gives us on the pose we are differencing against anyway.
+
+        The cost is the assumption: roll and pitch off the gimbal are ignored.
+        A 3-axis gimbal holds nadir to well under a degree, and at a 5 m search
+        height one degree is 9 cm — but if it is ever knocked off, this reads
+        the error as marker offset and flies toward it. Watch the debug view.
+
+        Optical is X right, Y down the image, Z along the lens. At nadir the
+        top of the image is the nose, so forward is -y and left is -x, and the
+        marker is -z below. Range comes straight from solvePnP, which makes the
+        descent gate measure height above the MARKER instead of above whatever
+        datum the EKF started at.
+        """
+        if self.pose is None:
+            return None
+        q = self.pose.pose.orientation
+        return marker_enu_from_nadir_camera(
+            tvec,
+            (self.pose.pose.position.x, self.pose.pose.position.y,
+             self.pose.pose.position.z),
+            enu_yaw_from_quaternion(q.x, q.y, q.z, q.w),
+        )
 
     # ------------------------------------------------------------ terminal UI
     def _stdin_loop(self) -> None:
@@ -431,11 +499,12 @@ class MpcLandingNode(Node):
         c.append(CheckResult(
             'velocity estimate', self.vel is not None,
             'ok' if self.vel is not None else 'no local velocity'))
-        on_ground = self.pose is not None and self._alt() < self.max_start_alt
-        c.append(CheckResult(
-            'on the ground', on_ground,
-            f'alt {self._alt():.2f} m < {self.max_start_alt:.2f} m' if on_ground
-            else f'alt {self._alt():.2f} m — expected to start on the ground'))
+        # There is deliberately NO altitude check here. It used to refuse to
+        # start above max_start_alt_m, but a disarmed vehicle is not flying and
+        # 'disarmed at start' below already refuses a live one — so the only
+        # thing the altitude gate actually caught was an EKF whose z datum had
+        # not settled on the pad, which grounds the mission for a reason that
+        # has nothing to do with whether it is safe to fly.
         # Say WHICH failure this is. Reporting "already ARMED" when the real
         # problem is that no telemetry has arrived sends the operator to inspect
         # the vehicle instead of the link.
@@ -640,7 +709,13 @@ class MpcLandingNode(Node):
         self._send(vel[0], vel[1], vel[2])
 
         radius = float(np.linalg.norm(p_d[:2] - tgt[:2]))
-        alt = self._alt()
+        # Height above the MARKER, not above the EKF's origin. With the marker
+        # coming from vision this is solvePnP's own range, so the handover to
+        # LAND happens at a real distance from the deck rather than at whatever
+        # the estimator's datum drifted to since takeoff. When the marker
+        # arrives in `map` instead, the same subtraction is still the right
+        # quantity — the touchdown gate is about the deck either way.
+        alt = float(p_d[2] - tgt[2])
         if alt <= self.touch_alt and radius <= self.touch_xy:
             self._t_touch = self._t_touch or self._now()
             if self._now() - self._t_touch >= self.touch_dwell:
