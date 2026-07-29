@@ -39,6 +39,21 @@ instead, which is the honest knob for a link budget — dropping to every 3rd
 frame is a 3x saving with no loss of picture quality on the frames that do
 arrive.
 
+NEVER ASSIGN bytes TO A uint8[] FIELD
+-------------------------------------
+`msg.data` must be handed an `array.array('B', ...)`, and this is not style.
+The setter rosidl generates for a `uint8[]` field takes the value unchanged if
+it is already an `array.array`; anything else falls through to a debug-mode
+validation that runs
+
+    all(isinstance(v, int) and 0 <= v < 256 for v in value)
+
+over every element. For a 1280x720 BGR frame that is 2,764,800 elements, and it
+was MEASURED here at 457 ms per frame — which capped this node at 2.1 fps and
+looked exactly like a slow camera. Through array.array the same publish costs
+4.7 ms and the node runs at the camera's full 30 fps. Same trap applies to the
+compressed stream, and to anyone else in this repo filling a uint8[].
+
 TIMESTAMPS
 ----------
 Frames are stamped when this node pulls them, not from the V4L2 buffer clock.
@@ -50,12 +65,19 @@ this node and call it glass-to-ROS.
 
 from __future__ import annotations
 
+import array
 import os
 
 import gi
 
 gi.require_version('Gst', '1.0')
-from gi.repository import Gst  # noqa: E402
+gi.require_version('GstApp', '1.0')
+# GstApp looks unused and is not. `Gst.parse_launch` hands back an object that
+# already IS a GstAppSink, but PyGObject only attaches that class's methods once
+# its typelib has been imported — without this line `try_pull_sample` simply
+# does not exist on the sink and the first timer tick dies with AttributeError.
+# The typelib ships with the JetPack gstreamer plugins, so this adds no package.
+from gi.repository import Gst, GstApp  # noqa: E402,F401
 
 import rclpy  # noqa: E402
 import yaml  # noqa: E402
@@ -102,6 +124,17 @@ class GstCamera(Node):
         # which is smooth enough to judge framing and exposure while costing a
         # third of the link. 1 sends every frame.
         p('compressed_every_n', 3)
+        # Publish the RAW frame every Nth pull. This throttles the detector at
+        # the source, which is the only place it can be done: rclpy builds the
+        # whole Python message before any subscriber callback runs, so a
+        # detector that drops the frame on arrival has already paid for it.
+        # MEASURED: at 27 fps the detector sat at 111% of a core and could not
+        # drain its own /tf subscription, leaving its transform buffer 100-950
+        # ms behind and every marker rejected as a lookup into the future.
+        # Every 2nd frame of 27 is ~13 Hz, which is what the landing loop
+        # consumes (mpc_landing_node runs at 20 Hz, marker timeout 1.5 s).
+        # 1 sends every frame.
+        p('image_every_n', 2)
         # Empty means "the calibration shipped with this package". An absolute
         # path overrides it, for a second airframe or a spare camera.
         p('calibration_file', '')
@@ -114,7 +147,9 @@ class GstCamera(Node):
         self.height = int(g('height').value)
         self.frame_id = str(g('frame_id').value)
         self.every_n = max(1, int(g('compressed_every_n').value))
+        self.image_every_n = max(1, int(g('image_every_n').value))
         self._n = 0
+        self._raw_n = 0
 
         self.image_pub = self.create_publisher(
             Image, str(g('image_topic').value), _sensor_qos())
@@ -141,6 +176,7 @@ class GstCamera(Node):
         self.create_timer(1.0 / (2.0 * int(g('framerate').value)), self._pump)
         self.create_timer(5.0, self._report)
         self._frames = 0
+        self._pulled = 0
         self._last_report = self.get_clock().now()
         self.get_logger().info(
             f'down camera up: {self.width}x{self.height} @'
@@ -189,7 +225,7 @@ class GstCamera(Node):
                 msg.header.stamp = stamp
                 msg.header.frame_id = self.frame_id
                 msg.format = 'jpeg'
-                msg.data = bytes(info.data)
+                msg.data = array.array('B', info.data)
                 self.comp_pub.publish(msg)
                 buf.unmap(info)
         if sample is not None:
@@ -197,6 +233,13 @@ class GstCamera(Node):
 
         sample = self.bgr_sink.try_pull_sample(0)
         if sample is None:
+            return
+        # Pull it either way — the appsink is one deep with drop=true, so a
+        # frame left unpulled is a frame the pipeline has to discard, and the
+        # next one is no fresher for it. Only the publish is skipped.
+        self._raw_n += 1
+        self._pulled += 1
+        if self._raw_n % self.image_every_n != 0:
             return
         buf = sample.get_buffer()
         ok, info = buf.map(Gst.MapFlags.READ)
@@ -211,7 +254,7 @@ class GstCamera(Node):
             msg.encoding = 'bgr8'
             msg.is_bigendian = 0
             msg.step = self.width * 3
-            msg.data = bytes(info.data)
+            msg.data = array.array('B', info.data)
             self.image_pub.publish(msg)
         finally:
             buf.unmap(info)
@@ -227,8 +270,11 @@ class GstCamera(Node):
         now = self.get_clock().now()
         dt = (now - self._last_report).nanoseconds * 1e-9
         if dt > 0:
-            self.get_logger().info(f'{self._frames / dt:.1f} fps')
+            self.get_logger().info(
+                f'{self._pulled / dt:.1f} fps from the camera, '
+                f'{self._frames / dt:.1f} fps published to the detector')
         self._frames = 0
+        self._pulled = 0
         self._last_report = now
 
     # ------------------------------------------------------------ calibration
