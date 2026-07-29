@@ -1,0 +1,3594 @@
+schema_version: 1
+map:
+  name: mountain
+  gazebo_world_name: ugv_drone_mountain_map
+  world_file: gazebo/worlds/ugv_drone_mountain_map.world
+  bounds_enu_m:
+    x:
+    - -150.0
+    - 150.0
+    y:
+    - -150.0
+    - 150.0
+frames:
+  gazebo_world:
+    convention: ENU
+    x_axis: east
+    y_axis: north
+    z_axis: up
+    yaw: counter_clockwise_from_east_rad
+    units: m
+  px4_local:
+    convention: NED
+    origin_enu_m:
+    - -80.0
+    - -80.0
+    - 0.4
+    origin_reference: PX4 x500 base_link at rest (model root + 0.24 m)
+    conversion_from_gazebo_enu:
+      x_north_m: y_enu - origin_y
+      y_east_m: x_enu - origin_x
+      z_down_m: -(z_enu - origin_z)
+      yaw_ned_rad: normalize(pi/2 - yaw_enu)
+px4_vehicle:
+  airframe_autostart_id: 4001
+  simulation_model: gz_x500_city_rgbd_lidar
+  runtime_entity_name: x500_city_rgbd_lidar_0
+terrain:
+  type: heightmap_and_triangle_mesh
+  image: gazebo/models/ugv_mou_terrain/materials/textures/mountain_height_300.png
+  collision_mesh: gazebo/models/ugv_mou_terrain/meshes/ugv_mou_terrain_collision.obj
+  rows: 257
+  columns: 257
+  sample_spacing_m: 1.171875
+  row_0_y_m: 150.0
+  column_0_x_m: -150.0
+  row_direction: decreasing_y
+  height_formula_m: pixel/255*40.0
+  height_range_m:
+  - 0.0
+  - 40.0
+spawn:
+  name: mountain_drone_spawn
+  gazebo_spawn_pose_enu:
+    x: -80.0
+    y: -80.0
+    z: 0.16
+    roll: 0.0
+    pitch: 0.0
+    yaw: 0.785398
+  pad:
+    shape: box
+    center_enu_m:
+    - -80.0
+    - -80.0
+    - 0.08
+    size_m:
+    - 12.0
+    - 12.0
+    - 0.16
+    top_z_m: 0.16
+trailer:
+  entity_name: flat_platform
+  model_uri: model://moving_platform_track
+  spawn_pose_enu:
+    x: 0.0
+    y: 0.0
+    z: 0.0
+    roll: 0.0
+    pitch: 0.0
+    yaw: 0.0
+  body_footprint_m:
+  - 5.0
+  - 5.0
+  command_topic: /model/flat_platform/cmd_vel
+  pose_topic: /world/ugv_drone_mountain_map/dynamic_pose/info
+  waypoints_enu_m:
+  - - 0.0
+    - 0.0
+  - - 25.0
+    - 0.0
+  - - 0.0
+    - 0.0
+  - - -25.0
+    - 0.0
+  - - 0.0
+    - 0.0
+  - - 0.0
+    - 15.0
+  - - 0.0
+    - 0.0
+  - - 0.0
+    - -15.0
+  - - 0.0
+    - 0.0
+  slope_validation_waypoints_enu_m:
+  - - 0.0
+    - 0.0
+  - - -20.0
+    - 5.0
+  - - -40.0
+    - 10.0
+  - - -50.0
+    - 12.5
+  - - -55.0
+    - 13.75
+  - - -50.0
+    - 12.5
+  - - -40.0
+    - 10.0
+  - - -20.0
+    - 5.0
+  - - 0.0
+    - 0.0
+  cruise_speed_m_s: 1.0
+  waypoint_tolerance_m: 0.5
+  route_surface: exact_z0_central_trailer_corridor
+  off_route_note: seo platform is not wheeled; use terrain-follow safeguard outside the flat corridor
+planner_defaults:
+  obstacle_inflation_m: 2.0
+  tree_collision_scope: trunk_only; canopy meshes are visual-only
+obstacles:
+  maze_walls: []
+  trees:
+  - id: mountain_tree_001
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 9.051065
+    - 44.917143
+    - 5.101245
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 0.10124499999999959
+    top_z_m: 10.101244999999999
+    yaw_rad: 2.257501
+  - id: mountain_tree_002
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -17.852665
+    - 80.474088
+    - 12.509015
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 7.509015
+    top_z_m: 17.509014999999998
+    yaw_rad: -0.042045
+  - id: mountain_tree_003
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 97.073538
+    - 65.08202
+    - 13.538971
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 8.538971
+    top_z_m: 18.538971
+    yaw_rad: -3.0793
+  - id: mountain_tree_004
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - -13.854763
+    - 66.76917
+    - 11.394086
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: 4.894086
+    top_z_m: 17.894086
+    yaw_rad: -2.77521
+  - id: mountain_tree_005
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -58.094246
+    - 67.907034
+    - 34.351326
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 29.351326
+    top_z_m: 39.351326
+    yaw_rad: 1.90597
+  - id: mountain_tree_006
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 25.484919
+    - 80.135078
+    - 14.796257
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 9.796257
+    top_z_m: 19.796257
+    yaw_rad: 2.165843
+  - id: mountain_tree_007
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -87.752767
+    - 65.782195
+    - 35.856427
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 30.856426999999996
+    top_z_m: 40.856427
+    yaw_rad: 1.756136
+  - id: mountain_tree_008
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - 67.024466
+    - 38.330219
+    - 11.439613
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: 4.939613
+    top_z_m: 17.939613
+    yaw_rad: -2.08412
+  - id: mountain_tree_009
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 16.751369
+    - 30.600805
+    - 4.997
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: -0.0030000000000001137
+    top_z_m: 9.997
+    yaw_rad: -0.195855
+  - id: mountain_tree_010
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 87.729134
+    - 75.852958
+    - 13.572757
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 8.572757
+    top_z_m: 18.572757
+    yaw_rad: -1.659041
+  - id: mountain_tree_011
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 81.066696
+    - 21.060493
+    - 5.96657
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 0.9665699999999999
+    top_z_m: 10.96657
+    yaw_rad: 0.835484
+  - id: mountain_tree_012
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - 76.826185
+    - 110.065279
+    - 13.541404
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: 7.041404
+    top_z_m: 20.041404
+    yaw_rad: 1.048413
+  - id: mountain_tree_013
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -39.598327
+    - 18.586046
+    - 7.355593
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 2.355593
+    top_z_m: 12.355592999999999
+    yaw_rad: -3.036239
+  - id: mountain_tree_014
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 58.519951
+    - 93.726716
+    - 19.982727
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 14.982727
+    top_z_m: 24.982727
+    yaw_rad: 1.46693
+  - id: mountain_tree_015
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 28.700869
+    - 116.378518
+    - 12.382387
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 7.382387
+    top_z_m: 17.382387
+    yaw_rad: 2.681941
+  - id: mountain_tree_016
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - 31.552139
+    - 132.98691
+    - 14.457329
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: 7.957329
+    top_z_m: 20.957329
+    yaw_rad: 2.251428
+  - id: mountain_tree_017
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -85.533969
+    - 4.742491
+    - 5.081297
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 0.08129700000000017
+    top_z_m: 10.081297
+    yaw_rad: -3.121591
+  - id: mountain_tree_018
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 18.571939
+    - 131.735987
+    - 14.12542
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 9.12542
+    top_z_m: 19.12542
+    yaw_rad: -0.843113
+  - id: mountain_tree_019
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 13.332406
+    - 90.219161
+    - 10.255895
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 5.255895000000001
+    top_z_m: 15.255895
+    yaw_rad: 0.540285
+  - id: mountain_tree_020
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - -45.23725
+    - 113.269624
+    - 18.821017
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: 12.321017000000001
+    top_z_m: 25.321017
+    yaw_rad: 0.820591
+  - id: mountain_tree_021
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -66.939355
+    - 79.352235
+    - 39.520111
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 34.520111
+    top_z_m: 44.520111
+    yaw_rad: -0.65173
+  - id: mountain_tree_022
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -71.318588
+    - 16.502818
+    - 11.786274
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 6.786274000000001
+    top_z_m: 16.786274
+    yaw_rad: -2.955758
+  - id: mountain_tree_023
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -74.141412
+    - 129.761051
+    - 13.943554
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 8.943554
+    top_z_m: 18.943554
+    yaw_rad: -0.760894
+  - id: mountain_tree_024
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - 66.33132
+    - 70.803705
+    - 21.165219
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: 14.665219
+    top_z_m: 27.665219
+    yaw_rad: 0.35496
+  - id: mountain_tree_025
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -70.218092
+    - 2.706447
+    - 4.997
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: -0.0030000000000001137
+    top_z_m: 9.997
+    yaw_rad: 2.743379
+  - id: mountain_tree_026
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 33.896513
+    - 24.450106
+    - 4.997
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: -0.0030000000000001137
+    top_z_m: 9.997
+    yaw_rad: -1.833261
+  - id: mountain_tree_027
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 58.779224
+    - 26.892839
+    - 6.702586
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 1.7025860000000002
+    top_z_m: 11.702586
+    yaw_rad: -2.234939
+  - id: mountain_tree_028
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - -118.010582
+    - 20.058724
+    - 18.543995
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: 12.043994999999999
+    top_z_m: 25.043995
+    yaw_rad: 0.217818
+  - id: mountain_tree_029
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -134.708403
+    - 62.627972
+    - 10.588072
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 5.588072
+    top_z_m: 15.588072
+    yaw_rad: 1.073383
+  - id: mountain_tree_030
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -132.001121
+    - 84.059832
+    - 12.306268
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 7.306267999999999
+    top_z_m: 17.306268
+    yaw_rad: 1.689888
+  - id: mountain_tree_031
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -51.727163
+    - 55.087728
+    - 27.471336
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 22.471336
+    top_z_m: 32.471336
+    yaw_rad: -2.147704
+  - id: mountain_tree_032
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - 10.311219
+    - 108.270212
+    - 12.339378
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: 5.839378
+    top_z_m: 18.839378
+    yaw_rad: -0.181548
+  - id: mountain_tree_033
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 2.321126
+    - 68.118725
+    - 6.404138
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 1.4041379999999997
+    top_z_m: 11.404138
+    yaw_rad: 1.91923
+  - id: mountain_tree_034
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 113.197223
+    - 108.626359
+    - 5.622328
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 0.6223280000000004
+    top_z_m: 10.622328
+    yaw_rad: -0.496775
+  - id: mountain_tree_035
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -17.371446
+    - 51.690485
+    - 9.894895
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 4.894895
+    top_z_m: 14.894895
+    yaw_rad: 0.519085
+  - id: mountain_tree_036
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - -74.326142
+    - 46.853548
+    - 30.194015
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: 23.694015
+    top_z_m: 36.694015
+    yaw_rad: -1.629188
+  - id: mountain_tree_037
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -33.556271
+    - 124.520258
+    - 14.380176
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 9.380176
+    top_z_m: 19.380176
+    yaw_rad: -1.926785
+  - id: mountain_tree_038
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 93.132777
+    - 102.623913
+    - 9.755674
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 4.755674000000001
+    top_z_m: 14.755674
+    yaw_rad: -1.381116
+  - id: mountain_tree_039
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 81.9588
+    - 36.723757
+    - 7.993618
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 2.9936179999999997
+    top_z_m: 12.993618
+    yaw_rad: -2.553985
+  - id: mountain_tree_040
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - -4.664111
+    - 111.162297
+    - 13.584214
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: 7.084213999999999
+    top_z_m: 20.084214
+    yaw_rad: -2.096581
+  - id: mountain_tree_041
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -130.913322
+    - 45.966296
+    - 14.28415
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 9.28415
+    top_z_m: 19.28415
+    yaw_rad: 2.794407
+  - id: mountain_tree_042
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 46.5403
+    - 47.149582
+    - 13.27917
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 8.27917
+    top_z_m: 18.27917
+    yaw_rad: -1.165719
+  - id: mountain_tree_043
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 53.638241
+    - 65.448872
+    - 19.817066
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 14.817066
+    top_z_m: 24.817066
+    yaw_rad: -1.873857
+  - id: mountain_tree_044
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - 112.803517
+    - 80.583202
+    - 12.085805
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: 5.585805000000001
+    top_z_m: 18.585805
+    yaw_rad: -2.092047
+  - id: mountain_tree_045
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 37.346938
+    - 86.57416
+    - 18.349968
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 13.349968
+    top_z_m: 23.349968
+    yaw_rad: -1.279379
+  - id: mountain_tree_046
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -1.890442
+    - 94.93583
+    - 6.957741
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 1.9577410000000004
+    top_z_m: 11.957741
+    yaw_rad: 1.066104
+  - id: mountain_tree_047
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -79.368918
+    - 83.346691
+    - 39.400141
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 34.400141
+    top_z_m: 44.400141
+    yaw_rad: -2.533128
+  - id: mountain_tree_048
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - 91.953944
+    - 119.632295
+    - 9.213584
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: 2.713584000000001
+    top_z_m: 15.713584
+    yaw_rad: 0.143709
+  - id: mountain_tree_049
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 77.719798
+    - -5.874827
+    - 5.279478
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 0.2794780000000001
+    top_z_m: 10.279478000000001
+    yaw_rad: 0.183458
+  - id: mountain_tree_050
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 128.858282
+    - -122.614216
+    - 8.582444
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 3.5824440000000006
+    top_z_m: 13.582444
+    yaw_rad: -2.288472
+  - id: mountain_tree_051
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -68.683929
+    - -71.564496
+    - 4.997
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: -0.0030000000000001137
+    top_z_m: 9.997
+    yaw_rad: -0.040556
+  - id: mountain_tree_052
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - 79.13648
+    - 126.467232
+    - 10.732294
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: 4.232294
+    top_z_m: 17.232294
+    yaw_rad: -2.172073
+  - id: mountain_tree_053
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 61.664928
+    - 119.709692
+    - 11.081342
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 6.081341999999999
+    top_z_m: 16.081342
+    yaw_rad: -1.053865
+  - id: mountain_tree_054
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 84.525773
+    - -89.326616
+    - 10.649662
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 5.649661999999999
+    top_z_m: 15.649662
+    yaw_rad: 2.189593
+  - id: mountain_tree_055
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -115.626424
+    - -83.901816
+    - 4.997
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: -0.0030000000000001137
+    top_z_m: 9.997
+    yaw_rad: -1.389918
+  - id: mountain_tree_056
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - 33.233605
+    - -131.824797
+    - 12.448844
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: 5.948843999999999
+    top_z_m: 18.948844
+    yaw_rad: 2.709307
+  - id: mountain_tree_057
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -113.638259
+    - -4.730032
+    - 12.175336
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 7.175336
+    top_z_m: 17.175336
+    yaw_rad: -0.547109
+  - id: mountain_tree_058
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -121.389356
+    - -112.489113
+    - 4.997
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: -0.0030000000000001137
+    top_z_m: 9.997
+    yaw_rad: -2.24622
+  - id: mountain_tree_059
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 82.892666
+    - 58.541305
+    - 12.838912
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 7.8389120000000005
+    top_z_m: 17.838912
+    yaw_rad: -2.618804
+  - id: mountain_tree_060
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - 51.832363
+    - -107.017577
+    - 10.560276
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: 4.060276
+    top_z_m: 17.060276
+    yaw_rad: -0.802638
+  - id: mountain_tree_061
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 133.165952
+    - 24.224771
+    - 10.911684
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 5.911683999999999
+    top_z_m: 15.911684
+    yaw_rad: 0.244017
+  - id: mountain_tree_062
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 96.014818
+    - 50.068574
+    - 13.599555
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 8.599555
+    top_z_m: 18.599555000000002
+    yaw_rad: -1.273234
+  - id: mountain_tree_063
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -99.968828
+    - 10.042566
+    - 9.542482
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 4.542482
+    top_z_m: 14.542482
+    yaw_rad: 2.407428
+  - id: mountain_tree_064
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - 5.097453
+    - 121.59629
+    - 16.534386
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: 10.034386000000001
+    top_z_m: 23.034386
+    yaw_rad: 1.278684
+  - id: mountain_tree_065
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -98.126803
+    - 113.458922
+    - 19.580255
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 14.580255000000001
+    top_z_m: 24.580255
+    yaw_rad: 0.121468
+  - id: mountain_tree_066
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -115.937486
+    - -42.575701
+    - 8.509304
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 3.509304
+    top_z_m: 13.509304
+    yaw_rad: -0.327013
+  - id: mountain_tree_067
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 115.958138
+    - 128.937234
+    - 5.938176
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 0.9381760000000003
+    top_z_m: 10.938176
+    yaw_rad: 1.427559
+  - id: mountain_tree_068
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - -33.920537
+    - -71.047634
+    - 6.497
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: -0.0030000000000001137
+    top_z_m: 12.997
+    yaw_rad: 0.21957
+  - id: mountain_tree_069
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 16.546363
+    - -51.162885
+    - 4.997
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: -0.0030000000000001137
+    top_z_m: 9.997
+    yaw_rad: 0.188234
+  - id: mountain_tree_070
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 37.934643
+    - -95.246239
+    - 6.962425
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 1.9624249999999996
+    top_z_m: 11.962425
+    yaw_rad: 0.013714
+  - id: mountain_tree_071
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -93.10306
+    - -91.483832
+    - 4.997
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: -0.0030000000000001137
+    top_z_m: 9.997
+    yaw_rad: -0.972774
+  - id: mountain_tree_072
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - 25.564423
+    - -70.134582
+    - 6.497
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: -0.0030000000000001137
+    top_z_m: 12.997
+    yaw_rad: -2.536021
+  - id: mountain_tree_073
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 107.250204
+    - 30.24493
+    - 14.989927
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 9.989927
+    top_z_m: 19.989927
+    yaw_rad: 1.07918
+  - id: mountain_tree_074
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -91.303087
+    - -24.551708
+    - 4.997
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: -0.0030000000000001137
+    top_z_m: 9.997
+    yaw_rad: 2.507607
+  - id: mountain_tree_075
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 49.893821
+    - 114.644777
+    - 12.865146
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 7.865145999999999
+    top_z_m: 17.865146
+    yaw_rad: -2.192502
+  - id: mountain_tree_076
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - -16.943447
+    - 104.561867
+    - 11.418471
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: 4.918471
+    top_z_m: 17.918471
+    yaw_rad: 2.377523
+  - id: mountain_tree_077
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -99.669983
+    - 46.160608
+    - 23.384714
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 18.384714
+    top_z_m: 28.384714
+    yaw_rad: -1.783195
+  - id: mountain_tree_078
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -14.052465
+    - 112.704886
+    - 12.577498
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 7.577498
+    top_z_m: 17.577498
+    yaw_rad: -2.680198
+  - id: mountain_tree_079
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -110.112728
+    - 83.880868
+    - 24.363538
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 19.363538
+    top_z_m: 29.363538
+    yaw_rad: 1.532054
+  - id: mountain_tree_080
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - -119.462099
+    - 29.56558
+    - 19.434451
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: 12.934451
+    top_z_m: 25.934451
+    yaw_rad: 2.438439
+  - id: mountain_tree_081
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 94.132384
+    - -93.410223
+    - 11.704725
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 6.704725
+    top_z_m: 16.704725
+    yaw_rad: -1.212109
+  - id: mountain_tree_082
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -30.530586
+    - 51.782419
+    - 16.555837
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 11.555837
+    top_z_m: 21.555837
+    yaw_rad: -1.309545
+  - id: mountain_tree_083
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 108.934831
+    - 101.596039
+    - 7.547573
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 2.547573
+    top_z_m: 12.547573
+    yaw_rad: -0.120417
+  - id: mountain_tree_084
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - -32.745943
+    - 105.503331
+    - 16.799595
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: 10.299595
+    top_z_m: 23.299595
+    yaw_rad: -2.036094
+  - id: mountain_tree_085
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 42.054637
+    - 100.165252
+    - 16.663886
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 11.663886000000002
+    top_z_m: 21.663886
+    yaw_rad: 0.320941
+  - id: mountain_tree_086
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 25.856033
+    - 45.357396
+    - 9.403185
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 4.403185000000001
+    top_z_m: 14.403185
+    yaw_rad: -1.940142
+  - id: mountain_tree_087
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 131.202454
+    - 55.606711
+    - 9.554203
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 4.554202999999999
+    top_z_m: 14.554203
+    yaw_rad: 2.591713
+  - id: mountain_tree_088
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - 45.268831
+    - 108.509392
+    - 15.974275
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: 9.474275
+    top_z_m: 22.474275
+    yaw_rad: -3.112508
+  - id: mountain_tree_089
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 130.839911
+    - 48.137629
+    - 10.433933
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 5.433933
+    top_z_m: 15.433933
+    yaw_rad: -0.840016
+  - id: mountain_tree_090
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -120.026578
+    - 55.204505
+    - 17.112464
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 12.112464
+    top_z_m: 22.112464
+    yaw_rad: -1.363553
+  - id: mountain_tree_091
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 86.003772
+    - -27.270857
+    - 8.864579
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 3.864579000000001
+    top_z_m: 13.864579
+    yaw_rad: 2.239542
+  - id: mountain_tree_092
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - 93.895978
+    - 92.123493
+    - 12.367142
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: 5.867141999999999
+    top_z_m: 18.867142
+    yaw_rad: 1.786325
+  - id: mountain_tree_093
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 69.194988
+    - -42.81305
+    - 11.405802
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 6.4058019999999996
+    top_z_m: 16.405802
+    yaw_rad: 1.430735
+  - id: mountain_tree_094
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 40.548142
+    - -110.453029
+    - 10.317944
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 5.317944000000001
+    top_z_m: 15.317944
+    yaw_rad: -0.938915
+  - id: mountain_tree_095
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -131.9354
+    - -61.650801
+    - 8.115324
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 3.1153239999999993
+    top_z_m: 13.115324
+    yaw_rad: -3.069676
+  - id: mountain_tree_096
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - -68.948664
+    - 69.710083
+    - 41.434208
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: 34.934208
+    top_z_m: 47.934208
+    yaw_rad: -1.879212
+  - id: mountain_tree_097
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -97.189147
+    - 39.25605
+    - 21.119348
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 16.119348
+    top_z_m: 26.119348
+    yaw_rad: -0.240929
+  - id: mountain_tree_098
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 106.168294
+    - -104.523065
+    - 10.968211
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 5.968211
+    top_z_m: 15.968211
+    yaw_rad: 0.589423
+  - id: mountain_tree_099
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 49.424753
+    - 123.598713
+    - 11.831672
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 6.831671999999999
+    top_z_m: 16.831671999999998
+    yaw_rad: -0.342412
+  - id: mountain_tree_100
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - 73.97456
+    - 41.186978
+    - 11.498722
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: 4.998722000000001
+    top_z_m: 17.998722
+    yaw_rad: 0.619867
+  - id: mountain_tree_101
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -63.226101
+    - 126.601253
+    - 14.991059
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 9.991059
+    top_z_m: 19.991059
+    yaw_rad: 0.0289
+  - id: mountain_tree_102
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -93.64971
+    - 121.306389
+    - 16.733962
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 11.733961999999998
+    top_z_m: 21.733962
+    yaw_rad: -0.472995
+  - id: mountain_tree_103
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -82.006017
+    - 91.308577
+    - 34.682708
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 29.682707999999998
+    top_z_m: 39.682708
+    yaw_rad: -0.957202
+  - id: mountain_tree_104
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - 138.737693
+    - 36.157121
+    - 10.191034
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: 3.691034
+    top_z_m: 16.691034000000002
+    yaw_rad: 1.250773
+  - id: mountain_tree_105
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 117.748043
+    - 36.339879
+    - 15.509838
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 10.509838
+    top_z_m: 20.509838000000002
+    yaw_rad: -3.04257
+  - id: mountain_tree_106
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 132.254949
+    - 81.720751
+    - 5.688044
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 0.6880439999999997
+    top_z_m: 10.688044
+    yaw_rad: -2.896655
+  - id: mountain_tree_107
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -125.396263
+    - 96.972081
+    - 13.811565
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 8.811565
+    top_z_m: 18.811565
+    yaw_rad: 0.56498
+  - id: mountain_tree_108
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - 70.384587
+    - 30.249918
+    - 8.512427
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: 2.0124270000000006
+    top_z_m: 15.012427
+    yaw_rad: 2.662
+  - id: mountain_tree_109
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 56.905151
+    - 101.120599
+    - 17.60827
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 12.608270000000001
+    top_z_m: 22.60827
+    yaw_rad: -1.862773
+  - id: mountain_tree_110
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 17.44412
+    - -131.4398
+    - 12.15811
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 7.158110000000001
+    top_z_m: 17.15811
+    yaw_rad: -1.798051
+  - id: mountain_tree_111
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 31.130159
+    - 63.88823
+    - 14.991755
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 9.991755
+    top_z_m: 19.991754999999998
+    yaw_rad: -2.470357
+  - id: mountain_tree_112
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - -91.210008
+    - 20.192618
+    - 14.015242
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: 7.515242000000001
+    top_z_m: 20.515242
+    yaw_rad: -1.805809
+  - id: mountain_tree_113
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 105.392763
+    - -114.426845
+    - 8.845088
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 3.8450880000000005
+    top_z_m: 13.845088
+    yaw_rad: 0.562607
+  - id: mountain_tree_114
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -108.242206
+    - 76.095926
+    - 26.092729
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 21.092729
+    top_z_m: 31.092729
+    yaw_rad: 1.367194
+  - id: mountain_tree_115
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 93.408673
+    - -57.165331
+    - 14.304027
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 9.304027
+    top_z_m: 19.304026999999998
+    yaw_rad: 2.602619
+  - id: mountain_tree_116
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - -23.830878
+    - -109.318785
+    - 11.051467
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: 4.551467000000001
+    top_z_m: 17.551467000000002
+    yaw_rad: 0.264299
+  - id: mountain_tree_117
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 69.301368
+    - 50.626876
+    - 13.643524
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 8.643524
+    top_z_m: 18.643524
+    yaw_rad: 1.152283
+  - id: mountain_tree_118
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -105.666513
+    - -133.477534
+    - 5.20394
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 0.20394000000000023
+    top_z_m: 10.20394
+    yaw_rad: 0.929383
+  - id: mountain_tree_119
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 71.934558
+    - -77.005362
+    - 10.002902
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 5.002902000000001
+    top_z_m: 15.002902
+    yaw_rad: -0.197546
+  - id: mountain_tree_120
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - 49.97764
+    - 90.598168
+    - 22.228537
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: 15.728537
+    top_z_m: 28.728537
+    yaw_rad: 0.629961
+  - id: mountain_tree_121
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 109.666955
+    - 67.51408
+    - 13.48091
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 8.48091
+    top_z_m: 18.48091
+    yaw_rad: -1.202539
+  - id: mountain_tree_122
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -42.609022
+    - 98.475688
+    - 22.274953
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 17.274953
+    top_z_m: 27.274953
+    yaw_rad: -0.394315
+  - id: mountain_tree_123
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 87.257745
+    - -39.023402
+    - 11.129976
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 6.129975999999999
+    top_z_m: 16.129976
+    yaw_rad: 0.437011
+  - id: mountain_tree_124
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - -68.534588
+    - 35.255447
+    - 23.419155
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: 16.919155
+    top_z_m: 29.919155
+    yaw_rad: 2.47153
+  - id: mountain_tree_125
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -32.005369
+    - 66.797161
+    - 20.086763
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 15.086763000000001
+    top_z_m: 25.086763
+    yaw_rad: -1.484607
+  - id: mountain_tree_126
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -107.349938
+    - -89.839448
+    - 4.997
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: -0.0030000000000001137
+    top_z_m: 9.997
+    yaw_rad: 1.914612
+  - id: mountain_tree_127
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 75.840991
+    - -64.081161
+    - 12.567566
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 7.567565999999999
+    top_z_m: 17.567566
+    yaw_rad: -1.35857
+  - id: mountain_tree_128
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - 55.007523
+    - 54.310001
+    - 17.434977
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: 10.934977
+    top_z_m: 23.934977
+    yaw_rad: 2.199948
+  - id: mountain_tree_129
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -123.657595
+    - -98.409328
+    - 4.997
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: -0.0030000000000001137
+    top_z_m: 9.997
+    yaw_rad: 2.798628
+  - id: mountain_tree_130
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -109.996762
+    - 36.682102
+    - 15.567567
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 10.567567
+    top_z_m: 20.567567
+    yaw_rad: 1.245471
+  - id: mountain_tree_131
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -125.423557
+    - -56.090975
+    - 8.516957
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 3.5169569999999997
+    top_z_m: 13.516957
+    yaw_rad: -1.698779
+  - id: mountain_tree_132
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - -77.292402
+    - -116.593094
+    - 8.293153
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: 1.7931530000000002
+    top_z_m: 14.793153
+    yaw_rad: 2.801072
+  - id: mountain_tree_133
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -52.908966
+    - 96.244689
+    - 27.548205
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 22.548205
+    top_z_m: 32.548204999999996
+    yaw_rad: -2.504037
+  - id: mountain_tree_134
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -53.166406
+    - 107.69076
+    - 22.603758
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 17.603758
+    top_z_m: 27.603758
+    yaw_rad: -2.766394
+  - id: mountain_tree_135
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -50.02601
+    - -123.184835
+    - 9.988558
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 4.988557999999999
+    top_z_m: 14.988558
+    yaw_rad: 2.235618
+  - id: mountain_tree_136
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - 119.757954
+    - 114.926155
+    - 6.497
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: -0.0030000000000001137
+    top_z_m: 12.997
+    yaw_rad: -2.86682
+  - id: mountain_tree_137
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -23.69979
+    - -96.179929
+    - 6.271208
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 1.2712079999999997
+    top_z_m: 11.271208
+    yaw_rad: 1.410921
+  - id: mountain_tree_138
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -104.193882
+    - -120.528171
+    - 4.997
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: -0.0030000000000001137
+    top_z_m: 9.997
+    yaw_rad: 0.397622
+  - id: mountain_tree_139
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 66.819248
+    - -118.176085
+    - 9.200977
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 4.200977
+    top_z_m: 14.200977
+    yaw_rad: 2.10721
+  - id: mountain_tree_140
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - -118.060614
+    - 68.56039
+    - 21.612582
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: 15.112582
+    top_z_m: 28.112582
+    yaw_rad: 2.04572
+  - id: mountain_tree_141
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 120.251252
+    - 14.90975
+    - 13.214178
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 8.214178
+    top_z_m: 18.214178
+    yaw_rad: 0.472191
+  - id: mountain_tree_142
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 70.047871
+    - -86.185207
+    - 8.061125
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 3.0611250000000005
+    top_z_m: 13.061125
+    yaw_rad: -2.923078
+  - id: mountain_tree_143
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -101.560338
+    - 95.197756
+    - 25.960387
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 20.960387
+    top_z_m: 30.960387
+    yaw_rad: -1.092823
+  - id: mountain_tree_144
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - -62.162269
+    - -110.661082
+    - 8.632581
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: 2.132581
+    top_z_m: 15.132581
+    yaw_rad: 2.771574
+  - id: mountain_tree_145
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -43.660524
+    - -86.136367
+    - 4.997
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: -0.0030000000000001137
+    top_z_m: 9.997
+    yaw_rad: -0.343136
+  - id: mountain_tree_146
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 66.147949
+    - -130.953691
+    - 8.407329
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 3.4073290000000007
+    top_z_m: 13.407329
+    yaw_rad: -1.17369
+  - id: mountain_tree_147
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -63.420287
+    - 116.282687
+    - 20.698732
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 15.698732
+    top_z_m: 25.698732
+    yaw_rad: -2.826106
+  - id: mountain_tree_148
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - 43.814878
+    - 60.170214
+    - 18.475436
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: 11.975435999999998
+    top_z_m: 24.975436
+    yaw_rad: 1.578615
+  - id: mountain_tree_149
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 51.019324
+    - -41.480633
+    - 8.451822
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 3.451822
+    top_z_m: 13.451822
+    yaw_rad: 0.457198
+  - id: mountain_tree_150
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -85.068114
+    - 42.754571
+    - 25.739841
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 20.739841
+    top_z_m: 30.739841
+    yaw_rad: -0.405446
+  - id: mountain_tree_151
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 122.552388
+    - 26.464239
+    - 13.982459
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 8.982459
+    top_z_m: 18.982459
+    yaw_rad: 0.39902
+  - id: mountain_tree_152
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - -61.315556
+    - 88.029933
+    - 35.415094
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: 28.915094000000003
+    top_z_m: 41.915094
+    yaw_rad: -1.678703
+  - id: mountain_tree_153
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -29.8443
+    - -133.382859
+    - 11.376288
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 6.376288000000001
+    top_z_m: 16.376288000000002
+    yaw_rad: -1.291625
+  - id: mountain_tree_154
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 63.772947
+    - -79.796384
+    - 7.689344
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 2.689344
+    top_z_m: 12.689344
+    yaw_rad: -0.371438
+  - id: mountain_tree_155
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -13.351643
+    - 41.848192
+    - 5.430823
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 0.4308230000000002
+    top_z_m: 10.430823
+    yaw_rad: -2.891069
+  - id: mountain_tree_156
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - -84.472422
+    - 78.078558
+    - 40.364461
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: 33.864461
+    top_z_m: 46.864461
+    yaw_rad: 0.783058
+  - id: mountain_tree_157
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 109.383182
+    - -86.781241
+    - 14.390299
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 9.390299
+    top_z_m: 19.390299
+    yaw_rad: -1.538876
+  - id: mountain_tree_158
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -108.546543
+    - -101.359445
+    - 4.997
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: -0.0030000000000001137
+    top_z_m: 9.997
+    yaw_rad: 1.389173
+  - id: mountain_tree_159
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -136.466698
+    - 36.398028
+    - 12.711837
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 7.711836999999999
+    top_z_m: 17.711837
+    yaw_rad: -0.546754
+  - id: mountain_tree_160
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - 79.945835
+    - 80.715175
+    - 17.639692
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: 11.139692
+    top_z_m: 24.139692
+    yaw_rad: 1.898198
+  - id: mountain_tree_161
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 94.831269
+    - -16.144181
+    - 5.487919
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 0.48791899999999977
+    top_z_m: 10.487919
+    yaw_rad: -1.98683
+  - id: mountain_tree_162
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -14.806037
+    - 138.538297
+    - 11.482218
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 6.482218
+    top_z_m: 16.482218
+    yaw_rad: 1.181794
+  - id: mountain_tree_163
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 71.401072
+    - 92.562832
+    - 17.815842
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 12.815842
+    top_z_m: 22.815842
+    yaw_rad: -1.845918
+  - id: mountain_tree_164
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - 6.499058
+    - 130.341959
+    - 16.579857
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: 10.079857
+    top_z_m: 23.079857
+    yaw_rad: -0.29335
+  - id: mountain_tree_165
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 64.811527
+    - 107.930481
+    - 14.72725
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 9.72725
+    top_z_m: 19.727249999999998
+    yaw_rad: 2.608884
+  - id: mountain_tree_166
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -109.063005
+    - 21.873916
+    - 13.977164
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 8.977164
+    top_z_m: 18.977164000000002
+    yaw_rad: 2.433006
+  - id: mountain_tree_167
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -97.211387
+    - 83.517368
+    - 31.319893
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 26.319893
+    top_z_m: 36.319893
+    yaw_rad: 0.165932
+  - id: mountain_tree_168
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - 112.734314
+    - -6.780552
+    - 10.783708
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: 4.283708000000001
+    top_z_m: 17.283708
+    yaw_rad: 1.624823
+  - id: mountain_tree_169
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -32.447269
+    - 38.184953
+    - 13.098374
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 8.098374
+    top_z_m: 18.098374
+    yaw_rad: 0.420165
+  - id: mountain_tree_170
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 17.352055
+    - -106.528906
+    - 10.139797
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 5.139797
+    top_z_m: 15.139797
+    yaw_rad: 1.043118
+  - id: mountain_tree_171
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 3.583337
+    - -137.48487
+    - 11.034925
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 6.034924999999999
+    top_z_m: 16.034925
+    yaw_rad: -1.014421
+  - id: mountain_tree_172
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - -128.834328
+    - 54.379387
+    - 14.65423
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: 8.15423
+    top_z_m: 21.15423
+    yaw_rad: 0.119804
+  - id: mountain_tree_173
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -73.866585
+    - 104.7219
+    - 27.977588
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 22.977588
+    top_z_m: 32.977588
+    yaw_rad: 0.194347
+  - id: mountain_tree_174
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -76.016536
+    - -108.993795
+    - 5.785681
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 0.7856810000000003
+    top_z_m: 10.785681
+    yaw_rad: 1.593564
+  - id: mountain_tree_175
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 53.588301
+    - 77.475164
+    - 23.790493
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 18.790493
+    top_z_m: 28.790493
+    yaw_rad: -2.190445
+  - id: mountain_tree_176
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - 104.094979
+    - -53.129614
+    - 13.229631
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: 6.7296309999999995
+    top_z_m: 19.729630999999998
+    yaw_rad: -0.63917
+  - id: mountain_tree_177
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -109.972695
+    - 11.875816
+    - 13.416815
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 8.416815
+    top_z_m: 18.416815
+    yaw_rad: 0.052311
+  - id: mountain_tree_178
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 29.444977
+    - -89.767271
+    - 5.495637
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 0.4956370000000003
+    top_z_m: 10.495637
+    yaw_rad: -1.903132
+  - id: mountain_tree_179
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 40.804297
+    - -118.102437
+    - 11.408777
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 6.408777000000001
+    top_z_m: 16.408777
+    yaw_rad: 2.168911
+  - id: mountain_tree_180
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - 122.848231
+    - 67.890494
+    - 11.78157
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: 5.28157
+    top_z_m: 18.281570000000002
+    yaw_rad: 1.14285
+  - id: mountain_tree_181
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 139.761495
+    - 57.692199
+    - 6.581094
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 1.5810940000000002
+    top_z_m: 11.581094
+    yaw_rad: 2.7525
+  - id: mountain_tree_182
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -100.441799
+    - 28.76732
+    - 15.111964
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 10.111964
+    top_z_m: 20.111964
+    yaw_rad: -0.399603
+  - id: mountain_tree_183
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -111.787789
+    - -61.15492
+    - 5.230118
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 0.23011800000000004
+    top_z_m: 10.230118000000001
+    yaw_rad: -1.293215
+  - id: mountain_tree_184
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - -111.593828
+    - -69.217759
+    - 6.497
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: -0.0030000000000001137
+    top_z_m: 12.997
+    yaw_rad: -0.219302
+  - id: mountain_tree_185
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 22.108276
+    - -96.978592
+    - 7.58306
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 2.5830599999999997
+    top_z_m: 12.58306
+    yaw_rad: 2.318975
+  - id: mountain_tree_186
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -34.310913
+    - 114.659568
+    - 12.967308
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 7.967307999999999
+    top_z_m: 17.967308
+    yaw_rad: 0.915598
+  - id: mountain_tree_187
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -113.3843
+    - 61.648651
+    - 21.856593
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 16.856593
+    top_z_m: 26.856593
+    yaw_rad: 1.513244
+  - id: mountain_tree_188
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - -54.511719
+    - -88.608501
+    - 6.497
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: -0.0030000000000001137
+    top_z_m: 12.997
+    yaw_rad: -1.670436
+  - id: mountain_tree_189
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -98.595999
+    - 106.164858
+    - 22.738399
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 17.738399
+    top_z_m: 27.738399
+    yaw_rad: -2.000252
+  - id: mountain_tree_190
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 40.598973
+    - 133.410943
+    - 12.27483
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 7.27483
+    top_z_m: 17.27483
+    yaw_rad: -0.488155
+  - id: mountain_tree_191
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -62.51381
+    - 41.175985
+    - 24.439935
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 19.439935
+    top_z_m: 29.439935
+    yaw_rad: 0.113402
+  - id: mountain_tree_192
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - -124.272997
+    - 88.945491
+    - 17.281609
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: 10.781609
+    top_z_m: 23.781609
+    yaw_rad: 1.521115
+  - id: mountain_tree_193
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -31.529921
+    - -116.821846
+    - 10.810077
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 5.810077
+    top_z_m: 15.810077
+    yaw_rad: -1.158538
+  - id: mountain_tree_194
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -87.277553
+    - -119.224286
+    - 6.253193
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 1.2531929999999996
+    top_z_m: 11.253193
+    yaw_rad: -1.376367
+  - id: mountain_tree_195
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 28.730817
+    - 71.242428
+    - 15.352116
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 10.352116
+    top_z_m: 20.352116000000002
+    yaw_rad: -1.363957
+  - id: mountain_tree_196
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - 89.016974
+    - -11.547454
+    - 6.658544
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: 0.15854400000000002
+    top_z_m: 13.158544
+    yaw_rad: 0.392992
+  - id: mountain_tree_197
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -19.050889
+    - 118.548218
+    - 14.239524
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 9.239524
+    top_z_m: 19.239524
+    yaw_rad: 2.354884
+  - id: mountain_tree_198
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 22.110008
+    - 88.947439
+    - 13.168688
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 8.168688
+    top_z_m: 18.168688
+    yaw_rad: 2.035887
+  - id: mountain_tree_199
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 87.480932
+    - 24.903385
+    - 8.511861
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 3.5118609999999997
+    top_z_m: 13.511861
+    yaw_rad: 1.724975
+  - id: mountain_tree_200
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - -133.070089
+    - -43.783838
+    - 12.437359
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: 5.937359000000001
+    top_z_m: 18.937359
+    yaw_rad: -1.955446
+  - id: mountain_tree_201
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 130.067527
+    - 34.872028
+    - 11.677939
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 6.677939
+    top_z_m: 16.677939000000002
+    yaw_rad: 0.43021
+  - id: mountain_tree_202
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 65.652078
+    - 100.175099
+    - 17.054561
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 12.054561
+    top_z_m: 22.054561
+    yaw_rad: -3.01696
+  - id: mountain_tree_203
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -50.454179
+    - 81.419994
+    - 30.507588
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 25.507588
+    top_z_m: 35.507588
+    yaw_rad: 2.079204
+  - id: mountain_tree_204
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - -122.797792
+    - 36.914612
+    - 18.961794
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: 12.461794000000001
+    top_z_m: 25.461794
+    yaw_rad: 1.605762
+  - id: mountain_tree_205
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 60.904319
+    - -102.747046
+    - 7.846874
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 2.8468739999999997
+    top_z_m: 12.846874
+    yaw_rad: -2.264849
+  - id: mountain_tree_206
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 15.05836
+    - -90.376002
+    - 5.658602
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 0.6586020000000001
+    top_z_m: 10.658602
+    yaw_rad: 0.01499
+  - id: mountain_tree_207
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 138.175949
+    - 16.620471
+    - 9.413583
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 4.413582999999999
+    top_z_m: 14.413583
+    yaw_rad: 1.749892
+  - id: mountain_tree_208
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - 21.377025
+    - 115.695166
+    - 14.10401
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: 7.604010000000001
+    top_z_m: 20.604010000000002
+    yaw_rad: -2.586795
+  - id: mountain_tree_209
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 49.917789
+    - 97.947211
+    - 18.4519
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 13.451899999999998
+    top_z_m: 23.4519
+    yaw_rad: 2.217088
+  - id: mountain_tree_210
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -133.66463
+    - -31.926468
+    - 12.878424
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 7.878424000000001
+    top_z_m: 17.878424000000003
+    yaw_rad: 2.720626
+  - id: mountain_tree_211
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -2.689304
+    - -108.627189
+    - 10.387808
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 5.387808
+    top_z_m: 15.387808
+    yaw_rad: -1.719837
+  - id: mountain_tree_212
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - -110.142512
+    - 109.188615
+    - 18.562496
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: 12.062496
+    top_z_m: 25.062496
+    yaw_rad: -0.010789
+  - id: mountain_tree_213
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -15.75633
+    - 89.340461
+    - 10.555569
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 5.555569
+    top_z_m: 15.555569
+    yaw_rad: 1.564585
+  - id: mountain_tree_214
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 71.293159
+    - 60.202659
+    - 16.075284
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 11.075284
+    top_z_m: 21.075284
+    yaw_rad: 2.895309
+  - id: mountain_tree_215
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -87.663865
+    - 108.638919
+    - 24.492627
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 19.492627
+    top_z_m: 29.492627
+    yaw_rad: -1.102856
+  - id: mountain_tree_216
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - -92.086345
+    - 94.436824
+    - 31.47619
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: 24.97619
+    top_z_m: 37.97619
+    yaw_rad: -1.451543
+  - id: mountain_tree_217
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 16.141686
+    - 59.116309
+    - 9.836208
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 4.836207999999999
+    top_z_m: 14.836208
+    yaw_rad: -1.274009
+  - id: mountain_tree_218
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 71.821541
+    - -16.635064
+    - 7.753727
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 2.7537269999999996
+    top_z_m: 12.753727
+    yaw_rad: -0.659933
+  - id: mountain_tree_219
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -107.13936
+    - -1.108274
+    - 10.755831
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 5.755831000000001
+    top_z_m: 15.755831
+    yaw_rad: 0.885716
+  - id: mountain_tree_220
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - -66.424751
+    - 55.94706
+    - 34.245635
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: 27.745635
+    top_z_m: 40.745635
+    yaw_rad: -1.41091
+  - id: mountain_tree_221
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 49.670312
+    - -95.787686
+    - 6.793651
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 1.7936509999999997
+    top_z_m: 11.793651
+    yaw_rad: -1.407223
+  - id: mountain_tree_222
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 126.590366
+    - 41.343424
+    - 12.452416
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 7.4524159999999995
+    top_z_m: 17.452416
+    yaw_rad: -1.429438
+  - id: mountain_tree_223
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 10.52904
+    - -65.188167
+    - 4.997
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: -0.0030000000000001137
+    top_z_m: 9.997
+    yaw_rad: 3.140406
+  - id: mountain_tree_224
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - 87.937288
+    - 67.927813
+    - 14.248824
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: 7.748824000000001
+    top_z_m: 20.748824
+    yaw_rad: -1.586802
+  - id: mountain_tree_225
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -81.646293
+    - 121.773409
+    - 18.220336
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 13.220336
+    top_z_m: 23.220336
+    yaw_rad: -2.123254
+  - id: mountain_tree_226
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 104.081297
+    - 109.499831
+    - 6.725632
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 1.725632
+    top_z_m: 11.725632000000001
+    yaw_rad: -3.078082
+  - id: mountain_tree_227
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -113.770972
+    - -50.912831
+    - 6.970187
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 1.9701870000000001
+    top_z_m: 11.970187
+    yaw_rad: 0.873592
+  - id: mountain_tree_228
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - -41.610226
+    - -105.54619
+    - 9.072698
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: 2.572698000000001
+    top_z_m: 15.572698
+    yaw_rad: -0.111785
+  - id: mountain_tree_229
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -107.281092
+    - 57.539972
+    - 24.091359
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 19.091359
+    top_z_m: 29.091359
+    yaw_rad: 2.679774
+  - id: mountain_tree_230
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 85.883115
+    - 111.990424
+    - 9.678988
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 4.678988
+    top_z_m: 14.678988
+    yaw_rad: 2.498587
+  - id: mountain_tree_231
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -96.417921
+    - -117.29062
+    - 5.18815
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 0.18815000000000026
+    top_z_m: 10.18815
+    yaw_rad: -2.363477
+  - id: mountain_tree_232
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - -93.744052
+    - -14.320951
+    - 6.497
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: -0.0030000000000001137
+    top_z_m: 12.997
+    yaw_rad: 2.513765
+  - id: mountain_tree_233
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 47.42762
+    - -66.382482
+    - 5.797174
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 0.797174
+    top_z_m: 10.797174
+    yaw_rad: -0.408157
+  - id: mountain_tree_234
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -37.181493
+    - -82.55139
+    - 4.997
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: -0.0030000000000001137
+    top_z_m: 9.997
+    yaw_rad: -1.285751
+  - id: mountain_tree_235
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -5.979726
+    - 80.634491
+    - 5.852956
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 0.8529559999999998
+    top_z_m: 10.852955999999999
+    yaw_rad: -0.41898
+  - id: mountain_tree_236
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - -102.76263
+    - 66.886866
+    - 29.736354
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: 23.236354
+    top_z_m: 36.236354
+    yaw_rad: -2.783319
+  - id: mountain_tree_237
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 100.472186
+    - -72.256676
+    - 16.297715
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 11.297715
+    top_z_m: 21.297715
+    yaw_rad: 2.939725
+  - id: mountain_tree_238
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -25.605641
+    - -82.840095
+    - 4.997
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: -0.0030000000000001137
+    top_z_m: 9.997
+    yaw_rad: 0.892917
+  - id: mountain_tree_239
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 90.29059
+    - -79.086378
+    - 13.854169
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 8.854169
+    top_z_m: 18.854169
+    yaw_rad: 1.091901
+  - id: mountain_tree_240
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - -98.324925
+    - -99.0597
+    - 6.497
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: -0.0030000000000001137
+    top_z_m: 12.997
+    yaw_rad: 1.461147
+  - id: mountain_tree_241
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 103.321109
+    - -9.55246
+    - 7.238857
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 2.2388570000000003
+    top_z_m: 12.238857
+    yaw_rad: -2.468511
+  - id: mountain_tree_242
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 89.509462
+    - 39.710154
+    - 10.723176
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 5.7231760000000005
+    top_z_m: 15.723176
+    yaw_rad: 2.720108
+  - id: mountain_tree_243
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 106.042091
+    - 92.922301
+    - 9.466486
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 4.466486
+    top_z_m: 14.466486
+    yaw_rad: -2.239896
+  - id: mountain_tree_244
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - 40.809818
+    - -76.768153
+    - 6.497
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: -0.0030000000000001137
+    top_z_m: 12.997
+    yaw_rad: -1.237596
+  - id: mountain_tree_245
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 100.115829
+    - 122.992072
+    - 7.201835
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 2.201835
+    top_z_m: 12.201834999999999
+    yaw_rad: -2.157341
+  - id: mountain_tree_246
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 93.276877
+    - 2.298444
+    - 6.880833
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 1.880833
+    top_z_m: 11.880832999999999
+    yaw_rad: 1.074799
+  - id: mountain_tree_247
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -8.820929
+    - 104.156658
+    - 9.975305
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 4.9753050000000005
+    top_z_m: 14.975305
+    yaw_rad: 1.584739
+  - id: mountain_tree_248
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - 120.205928
+    - 60.52277
+    - 13.632026
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: 7.132026
+    top_z_m: 20.132026
+    yaw_rad: 1.153166
+  - id: mountain_tree_249
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -123.724363
+    - -39.199148
+    - 10.707448
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 5.707447999999999
+    top_z_m: 15.707448
+    yaw_rad: 1.760368
+  - id: mountain_tree_250
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -44.769528
+    - 105.971095
+    - 20.393354
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 15.393353999999999
+    top_z_m: 25.393354
+    yaw_rad: -1.477797
+  - id: mountain_tree_251
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -89.275671
+    - 84.63375
+    - 35.014376
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 30.014376
+    top_z_m: 40.014376
+    yaw_rad: 0.919664
+  - id: mountain_tree_252
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - 43.34627
+    - 38.29522
+    - 11.458538
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: 4.958538000000001
+    top_z_m: 17.958538
+    yaw_rad: 3.120452
+  - id: mountain_tree_253
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -102.49971
+    - 121.776051
+    - 14.270102
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 9.270102
+    top_z_m: 19.270102
+    yaw_rad: 2.689194
+  - id: mountain_tree_254
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -116.276741
+    - 90.927571
+    - 19.841986
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 14.841985999999999
+    top_z_m: 24.841986
+    yaw_rad: -2.913231
+  - id: mountain_tree_255
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -40.825823
+    - 133.063271
+    - 12.823033
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 7.823033000000001
+    top_z_m: 17.823033000000002
+    yaw_rad: 2.082875
+  - id: mountain_tree_256
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - -92.31335
+    - -42.034827
+    - 6.497
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: -0.0030000000000001137
+    top_z_m: 12.997
+    yaw_rad: 2.74109
+  - id: mountain_tree_257
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -86.794076
+    - 32.437683
+    - 19.984892
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 14.984891999999999
+    top_z_m: 24.984892
+    yaw_rad: -0.569177
+  - id: mountain_tree_258
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 81.522409
+    - 49.894986
+    - 11.184275
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 6.1842749999999995
+    top_z_m: 16.184275
+    yaw_rad: 0.068873
+  - id: mountain_tree_259
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -47.166882
+    - -99.74296
+    - 5.912211
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 0.9122110000000001
+    top_z_m: 10.912211
+    yaw_rad: 2.028818
+  - id: mountain_tree_260
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - -18.179349
+    - -135.885834
+    - 12.858126
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: 6.358126
+    top_z_m: 19.358126
+    yaw_rad: 1.513653
+  - id: mountain_tree_261
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -8.572601
+    - -123.188552
+    - 13.794103
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 8.794103
+    top_z_m: 18.794103
+    yaw_rad: 0.977944
+  - id: mountain_tree_262
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -32.754094
+    - 134.724684
+    - 13.002667
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 8.002667
+    top_z_m: 18.002667000000002
+    yaw_rad: 1.978205
+  - id: mountain_tree_263
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -70.89627
+    - 117.924318
+    - 20.506743
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 15.506743
+    top_z_m: 25.506743
+    yaw_rad: 1.291262
+  - id: mountain_tree_264
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - 36.870669
+    - 126.932037
+    - 14.617632
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: 8.117632
+    top_z_m: 21.117632
+    yaw_rad: -0.687851
+  - id: mountain_tree_265
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -96.773328
+    - 56.949084
+    - 28.820953
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 23.820953
+    top_z_m: 33.820953
+    yaw_rad: -2.395577
+  - id: mountain_tree_266
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 111.041565
+    - -37.966107
+    - 7.33794
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 2.3379399999999997
+    top_z_m: 12.33794
+    yaw_rad: -0.995955
+  - id: mountain_tree_267
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 101.849962
+    - -94.899032
+    - 12.49606
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 7.49606
+    top_z_m: 17.49606
+    yaw_rad: -0.751411
+  - id: mountain_tree_268
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - 92.661004
+    - -32.359336
+    - 10.644328
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: 4.144328
+    top_z_m: 17.144328
+    yaw_rad: 3.048538
+  - id: mountain_tree_269
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -53.979791
+    - 36.384466
+    - 20.060362
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 15.060362000000001
+    top_z_m: 25.060362
+    yaw_rad: 2.932926
+  - id: mountain_tree_270
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 89.32802
+    - 83.815677
+    - 13.079015
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 8.079015
+    top_z_m: 18.079015
+    yaw_rad: 3.088331
+  - id: mountain_tree_271
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 53.925687
+    - 43.544078
+    - 12.413816
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 7.413816000000001
+    top_z_m: 17.413816
+    yaw_rad: -2.405193
+  - id: mountain_tree_272
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - 138.648818
+    - 46.135236
+    - 9.447051
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: 2.947051
+    top_z_m: 15.947051
+    yaw_rad: 2.431376
+  - id: mountain_tree_273
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 129.248703
+    - -31.47126
+    - 5.94056
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 0.9405599999999996
+    top_z_m: 10.94056
+    yaw_rad: 1.849996
+  - id: mountain_tree_274
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 107.038892
+    - 0.256097
+    - 9.676892
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 4.6768920000000005
+    top_z_m: 14.676892
+    yaw_rad: -0.968785
+  - id: mountain_tree_275
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -87.166756
+    - 51.068166
+    - 29.657633
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 24.657633
+    top_z_m: 34.657633000000004
+    yaw_rad: 2.133856
+  - id: mountain_tree_276
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - -45.894183
+    - 138.281158
+    - 12.687456
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: 6.187455999999999
+    top_z_m: 19.187455999999997
+    yaw_rad: -3.067287
+  - id: mountain_tree_277
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -79.727274
+    - 58.501378
+    - 35.04284
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 30.042839999999998
+    top_z_m: 40.04284
+    yaw_rad: 2.38312
+  - id: mountain_tree_278
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -125.725965
+    - -84.843901
+    - 4.997
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: -0.0030000000000001137
+    top_z_m: 9.997
+    yaw_rad: 2.751977
+  - id: mountain_tree_279
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -119.089132
+    - 108.103654
+    - 13.814919
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 8.814919
+    top_z_m: 18.814919
+    yaw_rad: 0.372643
+  - id: mountain_tree_280
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - 84.222135
+    - 92.235783
+    - 15.412507
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: 8.912507
+    top_z_m: 21.912506999999998
+    yaw_rad: 0.434088
+  - id: mountain_tree_281
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -36.308416
+    - -123.877347
+    - 11.301212
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 6.301212
+    top_z_m: 16.301212
+    yaw_rad: -0.817165
+  - id: mountain_tree_282
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 108.865184
+    - 11.766221
+    - 12.089505
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 7.089505000000001
+    top_z_m: 17.089505000000003
+    yaw_rad: -0.956527
+  - id: mountain_tree_283
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -117.464432
+    - -93.86057
+    - 4.997
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: -0.0030000000000001137
+    top_z_m: 9.997
+    yaw_rad: -0.532101
+  - id: mountain_tree_284
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - 109.311813
+    - 53.629392
+    - 17.457113
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: 10.957113
+    top_z_m: 23.957113
+    yaw_rad: 2.927412
+  - id: mountain_tree_285
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -65.351709
+    - -29.006839
+    - 4.997
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: -0.0030000000000001137
+    top_z_m: 9.997
+    yaw_rad: 1.609621
+  - id: mountain_tree_286
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - -39.788322
+    - 79.982383
+    - 24.724499
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 19.724499
+    top_z_m: 29.724499
+    yaw_rad: -3.110516
+  - id: mountain_tree_287
+    type: pine_tree
+    shape: cylinder
+    center_enu_m:
+    - 107.635152
+    - 45.097813
+    - 17.120949
+    radius_m: 0.6
+    length_m: 10.0
+    base_z_m: 12.120949
+    top_z_m: 22.120949
+    yaw_rad: 2.574324
+  - id: mountain_tree_288
+    type: oak_tree
+    shape: cylinder
+    center_enu_m:
+    - -3.321038
+    - 122.719255
+    - 17.148743
+    radius_m: 0.9
+    length_m: 13.0
+    base_z_m: 10.648743
+    top_z_m: 23.648743
+    yaw_rad: -0.429448
+source_sha256:
+  terrain_heightmap: dea9d2ca2f6a4f357037e0f626a90ab2bfb815d6b1185659cc8d53b1ed63548c
+  terrain_collision_mesh: baabbd642a9c625ad16e5c5bd1410b0e3344a045342e25b5ea94815899ca527e
+  forest_collision_sdf: 8113df8ca79de4236456f188bf260924577688a1ab5e3305a56f29efe176bf10
+  tree_source_layout: 60522042534512c814c41109c7d27cae8cc928f4f8ba99c9c88f2cd36d95d55a

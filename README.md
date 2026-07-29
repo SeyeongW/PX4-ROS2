@@ -1,544 +1,168 @@
-# ArduPilot ROS 2 오프보드 제어 + YOLO 추적
+# PX4-ROS2 — MPC 정밀착륙
 
-> **`jo` 브랜치의 도시/산악맵 실행은 PX4 SITL을 사용합니다.** 기존
-> ArduPilot/MAVROS 노드는 레거시로 남아 있지만, 아래
-> `gazebo/run_px4_map.sh`는 PX4 airframe 4001의 실제 동적
-> `x500_city_rgbd_lidar`를 생성합니다. 정적 드론 모형은 사용하지 않습니다.
+무빙 ArUco 표적에 대한 **MPC 정밀착륙** 스택. 저장소는 단 하나의 기준으로 나뉩니다:
 
-ArduPilot 기반 드론을 ROS 2로 Offboard 제어하며, 하방 카메라 + YOLO로 지상 표적을 추적하는 시스템입니다.
-
-## 프로젝트 구성
+> **이 코드가 진짜 기체에서 도는가?**
 
 ```
-PX4-ROS2/
-├── offboard/               # C++ MAVROS 오프보드 제어 노드
-│   └── src/
-│       ├── offboard_control.cpp          # 기본 웨이포인트 비행
-│       ├── offboard_sim_waypoints.cpp    # 시뮬레이션용 호버 추적
-│       └── offboard_tracking_control.cpp # YOLO 연동 실시간 추적
-├── camera_detection/       # Python YOLO 인식 노드
-│   └── camera_detection/
-│       ├── yolo_processor_node.py        # 실기체용 (TensorRT 엔진)
-│       ├── yolo_processor_sim_node.py    # 시뮬레이션용 (.pt 모델)
-│       ├── yolo_processor_depth.py       # RealSense 뎁스 카메라용
-│       └── commander.py                  # 추적 타겟 ID 지정 CLI
-├── precision_landing/      # ArUco 정밀착륙 (Python)
-│   ├── precision_landing/precision_landing_node.py  # 착륙 상태기계 제어
-│   ├── precision_landing/moving_marker_node.py      # 마커 이동 + ENU 좌표 송출
-│   └── launch/precision_landing.launch.py           # 풀 bringup 런치
-├── gazebo/                 # Gazebo Harmonic 시뮬레이션 자산
-│   ├── models/iris_with_down_camera/     # 하방 카메라 장착 Iris 모델
-│   ├── worlds/iris_down_camera_runway.sdf
-│   ├── worlds/ugv_drone.world            # 300 m 산악 드론 월드
-│   ├── worlds/ugv_drone_map.world        # 300 m 산악맵(PX4 런타임 스폰 대상)
-│   ├── worlds/applepark_city/             # 500 m 소스/회귀용 도시 자산
-│   ├── worlds/applepark_city_uav/         # 1300 m UAV 도시(205개, 균일 2.5x XY, 20–50 m·평균 35 m 스카이라인)
-│   ├── launch/camera_bridge.launch.py    # Gazebo → ROS 2 카메라 브리지
-│   ├── install_apt_deps.sh
-│   ├── run_world.sh                      # city/mountain 맵 전용 실행기
-│   ├── run_px4_map.sh                    # 맵 + 실제 PX4 x500 통합 실행기
-│   ├── maps/                             # 정확한 ENU 장애물·PX4 NED 변환 YAML
-│   ├── run_ugv_drone.sh                  # RTX GPU 산악 월드 실행기
-│   ├── MAPS.md                            # 두 맵 실행·좌표·검증 안내
-│   ├── MOUNTAIN_WORLD.md                 # 산악맵 좌표·실행·출처
-│   └── run_sim.sh
-└── config/                 # CycloneDDS 네트워크 설정 (PC ↔ Jetson)
-    ├── cyclonedds_pc.xml
-    └── cyclonedds_jetson.xml
+flight/       비행 임무·제어 (실기체)
+camera/       카메라·짐벌·인식 전부
+simulation/   시뮬레이터 전용
 ```
+
+경계에 걸치는 패키지는 두지 않습니다. 갈라지면 쪼갭니다.
 
 ---
 
-## 시스템 요구사항
+## flight/ — 실기체
 
-| 항목 | 사양 |
-|------|------|
-| OS | Ubuntu 22.04 LTS (Jammy) |
-| ROS 2 | Humble Hawksbill |
-| 비행 제어기 소프트웨어 | ArduPilot (MAVROS 기반) |
-| 시뮬레이터 | Gazebo Harmonic (gz-sim 8) |
-| GPU (실기체) | NVIDIA Jetson (TensorRT 추론용) |
+| 패키지 | 역할 |
+|---|---|
+| `path_plan` | A*/SFC/B-spline 전역 + MPC 지역 경로. PX4 명령 브리지는 아직 구현 전 |
 
----
+## camera/ — 카메라·짐벌·인식
 
-## 1단계: ROS 2 Humble 설치
+| 패키지 | 역할 |
+|---|---|
+| **`rtsp_bridge`** | **A8 mini RTSP → ROS Image + CameraInfo** (GStreamer). 실비행 인식의 입력 |
+| **`siyi_gimbal`** | SIYI A8 mini 제어 — 시동 걸리면 직하방 조준, 유지. 프로토콜 표는 `siyi_commands.py` |
+| **`aruco_landing`** | 실기체 ArUco 인식 (보정 solvePnP, 품질 게이트) |
+| `gimbal_camera` | 짐벌 카메라 시뮬 모델 — gz-sim + Gazebo Classic 양쪽 |
+
+### PX4/MAVROS 실기체 연결
 
 ```bash
-sudo apt-get update && sudo apt-get install -y locales
-sudo locale-gen en_US en_US.UTF-8
-sudo update-locale LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8
+ros2 launch mavros px4.launch fcu_url:=/dev/ttyTHS1:921600
+```
 
-sudo apt-get install -y software-properties-common
-sudo add-apt-repository universe
+이 저장소는 PX4용 MAVROS를 유지합니다. 현재 `flight/`에는 PX4 실기체에서
+arm·mode 전환·setpoint·착륙까지 책임지는 검증 완료 미션 노드가 없습니다.
+`path_plan`의 `/path_plan/cmd_vel`을 바로 기체에 연결하지 마세요. PX4/MAVROS
+명령 브리지와 운용자 승인·failsafe를 먼저 구현하고 props-off bench와 HIL을
+통과해야 합니다.
 
-sudo curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
-  -o /usr/share/keyrings/ros-archive-keyring.gpg
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] \
-  http://packages.ros.org/ros2/ubuntu $(lsb_release -cs) main" \
-  | sudo tee /etc/apt/sources.list.d/ros2.list > /dev/null
+카메라 체인은 별도로 띄웁니다:
 
-sudo apt-get update
+```bash
+ros2 launch rtsp_bridge rtsp_bridge.launch.py        # RTSP → /gimbal_camera/image
+ros2 run aruco_landing aruco_pose_node               # → /perception/down/marker_pose
+```
+
+> ### ⚠️ 카메라 캘리브레이션이 필요합니다
+> `rtsp_bridge`는 `camera_info_file`이 비어 있으면 **PLACEHOLDER intrinsic**을
+> 발행하고 경고를 반복합니다. solvePnP는 그래도 "그럴듯한" 자세를 내놓지만
+> **거리 스케일이 틀립니다** — 실기체 A8 mini로 체커보드 캘리브레이션을 한 뒤
+> 그 파일을 지정하세요.
+>
+> 짐벌 IP `192.168.144.25`는 **제어(UDP 37260)** 와 **영상(RTSP 8554)** 에 모두
+> 쓰이지만 서로 다른 채널입니다.
+
+---
+
+## simulation/ — 시뮬레이터 전용
+
+| 패키지 | 역할 |
+|---|---|
+| **`landing_mpc`** | **MPC 착륙 스택 본체.** 인식 체인 + 짐벌 조준 + 미션 상태기계 → [`docs/ROLES.md`](simulation/landing_mpc/docs/ROLES.md) |
+| `gazebo` | 월드·모델·실행 스크립트 → [`MAPS.md`](simulation/gazebo/MAPS.md) |
+| `px4_models` | PX4 SITL 기체 (`link_px4_model.sh`가 PX4 트리에 심링크) |
+| `gz_bridge` | gz-transport → ROS 2 센서/clock 브리지 |
+
+기본 착륙 실험은 장애물 없는 `300 × 100 m` 직선 셔틀 맵이며, 트레일러가
+`3 m/s`로 300 m 전진한 뒤 차체를 돌리지 않고 300 m 후진합니다.
+
+```bash
+./simulation/gazebo/run_gimbal.sh mission     # 전체 미션
+./simulation/gazebo/run_gimbal.sh gimbal      # 짐벌 + 인식만
+./simulation/gazebo/run_gimbal.sh baseline    # 고정 카메라 (비교군)
+HEADLESS=1 ./simulation/gazebo/run_gimbal.sh mission
+```
+
+---
+
+## 비행 인터페이스 규칙
+
+### 1. 비행제어기는 PX4만 사용합니다
+
+저장소의 기체 펌웨어 기준은 PX4입니다. 실기체 연결은 PX4용 MAVROS를 사용하며,
+시뮬레이션 정밀착륙 스택은 PX4 uXRCE-DDS `/fmu/*` 토픽을 직접 사용합니다.
+
+### 2. 한 기체에는 하나의 명령 권한만 둡니다
+
+MAVROS와 uXRCE-DDS를 같은 PX4에 연결할 수는 있지만, 동시에 둘 이상의 노드가
+arm/mode/setpoint를 발행하면 안 됩니다. 각 실행 스크립트가 선택한 인터페이스와
+실제 setpoint 발행자를 시작 전에 확인하세요.
+
+---
+
+## 빌드 · 테스트
+
+```bash
+colcon build && source install/setup.bash
+
+PYTHONPATH="$PWD/camera/siyi_gimbal:$PYTHONPATH" \
+  PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
+  python3 -m pytest flight/*/test camera/*/test simulation/*/test -q
+```
+
+---
+
+## 환경 구축 (최초 1회)
+
+<details>
+<summary>ROS 2 Humble + PX4용 MAVROS</summary>
+
+```bash
 sudo apt-get install -y ros-humble-desktop python3-colcon-common-extensions python3-rosdep
-
-# 매 터미널마다 자동 source되도록 설정
-echo "source /opt/ros/humble/setup.bash" >> ~/.bashrc
-source ~/.bashrc
-```
-
----
-
-## 2단계: MAVROS 설치
-
-MAVROS는 ROS 2와 ArduPilot(MAVLink) 사이의 미들웨어입니다.
-
-```bash
-sudo apt-get install -y \
-  ros-humble-mavros \
-  ros-humble-mavros-msgs \
-  ros-humble-mavros-extras
-
-# GeographicLib 데이터셋 (필수)
+sudo apt-get install -y ros-humble-mavros ros-humble-mavros-msgs ros-humble-mavros-extras
 sudo /opt/ros/humble/lib/mavros/install_geographiclib_datasets.sh
+echo "source /opt/ros/humble/setup.bash" >> ~/.bashrc
 ```
+</details>
 
----
-
-## 3단계: Python 의존성 설치
+<details>
+<summary>PX4 SITL + Gazebo Harmonic (시뮬레이션용)</summary>
 
 ```bash
-pip3 install ultralytics opencv-python numpy
-
-# RealSense 뎁스 카메라를 사용하는 경우
-pip3 install pyrealsense2
+sudo bash simulation/gazebo/install_apt_deps.sh   # sudo 필요
+./simulation/gazebo/setup_px4_sitl.sh             # PX4 트리 준비
+./simulation/gazebo/link_px4_model.sh             # px4_models를 PX4에 심링크
+python3 simulation/gazebo/gen_aruco_model.py      # 마커 텍스처 생성
 ```
 
----
+`px4_models/`를 옮기거나 저장소를 다른 경로로 옮기면 `link_px4_model.sh`를
+다시 실행해야 합니다 — PX4 트리의 심링크가 절대경로입니다.
+</details>
 
-## 4단계: 워크스페이스 설정 및 빌드
+<details>
+<summary>Gazebo Classic (짐벌 카메라 Classic 버전용)</summary>
 
 ```bash
-mkdir -p ~/ros2_ws/src
-cd ~/ros2_ws/src
-git clone -b jo https://github.com/SeyeongW/PX4-ROS2.git
-cd ~/ros2_ws
-
-# 의존성 자동 설치
-rosdep init  # (최초 1회)
-rosdep update
-rosdep install --from-paths src --ignore-src -r -y
-
-# 빌드
-colcon build --symlink-install
-source install/setup.bash
-
-# 매 터미널마다 자동 source되도록 설정
-echo "source ~/ros2_ws/install/setup.bash" >> ~/.bashrc
+sudo apt install gazebo11 ros-humble-gazebo-ros-pkgs
+cmake -S camera/gimbal_camera/plugins -B camera/gimbal_camera/plugins/build
+cmake --build camera/gimbal_camera/plugins/build
 ```
+</details>
 
----
+<details>
+<summary>PC ↔ Jetson 네트워크 (CycloneDDS + Tailscale)</summary>
 
-## 5단계: ArduPilot SITL + Gazebo 시뮬레이션 환경 구성
-
-시뮬레이션을 사용하지 않고 실기체만 사용한다면 이 단계를 건너뛰어도 됩니다.
-
-### 5-1. apt 의존성 일괄 설치 (sudo 필요)
+현재는 `rmw_fastrtps_cpp`를 씁니다. Cyclone 설정은 `config/`에 남아 있습니다.
 
 ```bash
-sudo bash ~/ros2_ws/src/PX4-ROS2/gazebo/install_apt_deps.sh
+curl -fsSL https://tailscale.com/install.sh | sh && sudo tailscale up
+export CYCLONEDDS_URI=$PWD/config/cyclonedds_pc.xml     # 필요할 때만
 ```
-
-이 스크립트는 요청된 ROS 2 Humble 데스크톱·Navigation2·SLAM·비전·PCL·
-MAVROS 패키지와 Python 과학 계산 도구, 빌드 도구, Git/LFS, Docker 및
-Gazebo Classic 11/Harmonic 병행 환경을 한 번에 설치합니다. 전체 목록은
-스크립트 안에 고정되어 있습니다.
-
-### 5-2. ArduPilot 소스 클론 및 SITL 빌드
-
-```bash
-cd ~
-git clone --recurse-submodules https://github.com/ArduPilot/ardupilot.git
-cd ardupilot
-
-# 의존성 설치 (Python, 빌드 도구, MAVProxy 등)
-Tools/environment_install/install-prereqs-ubuntu.sh -y
-. ~/.profile   # sim_vehicle.py를 PATH에 등록
-
-# SITL 빌드 (시간 소요)
-./waf configure --board sitl
-./waf copter
-```
-
-### 5-3. ardupilot_gazebo 플러그인 빌드
-
-ArduPilot과 Gazebo를 연결하는 플러그인입니다.
-
-```bash
-cd ~
-git clone https://github.com/ArduPilot/ardupilot_gazebo.git
-cd ardupilot_gazebo
-mkdir -p build && cd build
-cmake .. -DCMAKE_BUILD_TYPE=RelWithDebInfo
-make -j$(nproc)
-```
-
-### 5-4. ros_gz 브리지 빌드 (Gazebo Harmonic ↔ ROS 2)
-
-> Humble 바이너리 패키지는 Gazebo Fortress 기준이므로, Harmonic과 쓰려면 소스 빌드가 필요합니다.
-
-```bash
-export GZ_VERSION=harmonic
-mkdir -p ~/ros_gz_ws/src && cd ~/ros_gz_ws/src
-git clone https://github.com/gazebosim/ros_gz.git -b humble
-cd ~/ros_gz_ws
-GZ_VERSION=harmonic colcon build --merge-install --packages-up-to ros_gz_bridge
-
-echo "source ~/ros_gz_ws/install/setup.bash" >> ~/.bashrc
-```
-
----
-
-## 시뮬레이션 실행 (ArduPilot SITL + Gazebo)
-
-### PX4로 동작하는 맵 + 드론 실행
-
-```bash
-cd ~/ros2_ws/src/PX4-ROS2
-# 새 PC에서만 1회. PX4 공식 Ubuntu 일반 의존성도 설치하므로 sudo를 한 번 요청할 수 있음.
-# 기존 ~/PX4-Autopilot이 있으면 브랜치/버전/펌웨어 파일은 변경하지 않음.
-./gazebo/setup_px4_sitl.sh
-
-# 도시맵 + PX4 x500
-./gazebo/run_px4_map.sh city
-
-# 또는
-# 산악맵 + PX4 x500
-./gazebo/run_px4_map.sh mountain
-
-# 산악맵에서만 트레일러 웨이포인트 주행을 선택적으로 실행
-DRIVE_TRAILER=1 TRAILER_ROUTE_LOOPS=1 ./gazebo/run_px4_map.sh mountain
-```
-
-두 맵에는 트레일러가 기본으로 소환됩니다. 도시맵은 드론을 북동 끝단 도로
-ENU `(587,580)`, 트레일러를 대각선 반대편 남서 끝단 도로
-`(-587,-512)`에 약 1.60 km 떨어뜨려 배치합니다. 도시 트레일러는 정지 상태로만 유지되며, 산악맵만 `DRIVE_TRAILER=1`일 때
-좌표 YAML의 웨이포인트를 주행합니다. 두 명령은 Gazebo를 먼저 실행한 뒤 동일한 world에 PX4 SITL이 실제
-`x500_city_rgbd_lidar_0` 엔티티를 동적으로 스폰합니다. 기본 통신은
-MAVROS/MAVLink 전용입니다. 실행기가 PX4의 임시 rcS 사본에서 DDS 시작 한 줄을
-부팅 전에 제외하므로 `uxrce_dds_client got no ping` 경쟁 로그도 발생하지 않습니다
-(`START_XRCE=1`일 때만 원본 rcS와 Agent를 사용). 현재 도시맵의
-전체 XYZ 구조물 계약은 `gazebo/maps/city_coordinates_uav.yaml`에, 산악맵은
-`gazebo/maps/mountain_coordinates.yaml`에
-Gazebo ENU와 PX4 NED 변환을 분리해 기록했습니다. 상세 내용은
-[`gazebo/MAPS.md`](gazebo/MAPS.md)를 참고하세요.
-활성 도시맵은 274개 중 69개를 제거한 205개 건물을 사용하며,
-`origin/main` 초기 도시 비율을 따라 중심점과 XY 발자국을 모두 2.5x로 확대했습니다. 평면 지면은
-`z=0`, 기초는 `-0.05..0 m`, 지붕 고도는 재현 가능한 해시 순위 난수
-분포로 정확히 `20..50 m`, 평균 `35 m`입니다.
-69개 제거 대상은 시드 `7577`의 5x5 공간 층화 난수 방식으로 지도 전역에
-분산됩니다. 유지 건물의 ID·중심 좌표·기초 높이는 그대로 두고, 각 건물의
-XY 발자국과 지붕 높이 프로파일만 위 계약대로 재생성합니다.
-
-Gazebo GUI는 스폰 위치 가까이에서 시작하지만 드론에 화면을 고정하지 않습니다.
-명시적으로 추적이 필요할 때만 `FOLLOW_DRONE=1 ./gazebo/run_px4_map.sh city`를
-사용합니다. 일반 실행은
-대화형 PX4 `pxh>` 콘솔을 표시하므로 `PX4_DAEMON=1`을 지정하지 않습니다.
-
-이 브랜치에서는 기존 실험용 3D planner/SFC/B-spline/MPC 계층을 제거했습니다.
-도시맵 형상 YAML, PX4 동적 기체, 전·하방 센서와 MAVROS 실행 경로만 유지합니다.
-
-드론 없이 맵 형상만 빠르게 확인할 때만 다음을 사용합니다.
-
-```bash
-./gazebo/run_world.sh city
-./gazebo/run_world.sh city-legacy  # 원본 500 x 500 m 도시맵
-./gazebo/run_world.sh mountain
-```
-
-다른 사람에게 스크립트 없이 전달할 RTX/NVIDIA 직접 실행 명령은 다음과
-같습니다. 저장소 최상위 디렉터리에서 실행합니다.
-
-```bash
-# 산악맵
-GZ_SIM_RESOURCE_PATH="$PWD/gazebo/models:$PWD/gazebo/worlds" __NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia __VK_LAYER_NV_optimus=NVIDIA_only QT_QPA_PLATFORM=xcb gz sim -v4 -r --physics-engine gz-physics-bullet-featherstone-plugin "$PWD/gazebo/worlds/ugv_drone_map.world"
-
-# 현재 UAV 도시맵
-GZ_SIM_RESOURCE_PATH="$PWD/gazebo/models:$PWD/gazebo/worlds" __NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia __VK_LAYER_NV_optimus=NVIDIA_only QT_XCB_GL_INTEGRATION=xcb_glx QT_QPA_PLATFORM=xcb gz sim -v4 -r --physics-engine gz-physics-dartsim-plugin "$PWD/gazebo/worlds/applepark_city_uav/applepark_uav.world"
-```
-
-### 산악 드론 월드
-
-300 x 300 m 지형, 기존 40 m / 20 m 봉우리와 추가 능선, 숲 장애물(미로 제거)을 사용하는 산악맵은 다음처럼 실행합니다.
-RTX 5060 선택, 모델 경로와 ArduPilot 플러그인 경로는 스크립트가 설정합니다.
-
-```bash
-cd ~/PX4-ROS2
-./gazebo/run_ugv_drone.sh
-```
-
-다른 터미널에서 SITL을 실행합니다.
-
-```bash
-cd ~/ardupilot
-sim_vehicle.py -v ArduCopter -f JSON -I0 --console --map
-```
-
-맵 좌표, 직접 실행 명령, GPU·실시간 배율 확인법과 참고한 오픈소스는
-[`gazebo/MOUNTAIN_WORLD.md`](gazebo/MOUNTAIN_WORLD.md)에 정리되어 있습니다.
-
-4개의 터미널이 필요합니다.
-
-### 터미널 1 — Gazebo 실행
-
-```bash
-cd ~/ros2_ws/PX4-ROS2/gazebo
-./run_sim.sh
-```
-
-Gazebo에 하방 카메라가 장착된 Iris 모델이 로드됩니다.
-
-### 터미널 2 — ArduPilot SITL 실행
-
-```bash
-cd ~/ardupilot
-sim_vehicle.py -v ArduCopter -f gazebo-iris --model JSON --map --console
-```
-
-MAVProxy 콘솔에서 기체를 제어할 수 있습니다:
-
-```
-mode guided
-arm throttle
-takeoff 10
-```
-
-### 터미널 3 — MAVROS 실행
-
-SITL과 ROS 2를 연결합니다.
-
-```bash
-ros2 launch mavros apm.launch fcu_url:=udp://:14550@
-```
-
-> MAVProxy(`sim_vehicle.py`)는 `127.0.0.1:14550` 으로만 MAVLink를 내보냅니다.
-> 그래서 MAVROS는 **14550 에 bind**하고 remote(`@` 뒤)는 비워서 상대 주소를 자동 학습시킵니다.
-> `@14555` 처럼 빈 포트로 송신하게 두면 `connection refused`(UDP closed)가 납니다.
-
-### YOLO 시뮬레이션 노드 실행 (선택)
-
-> 카메라 영상 브리지는 아래 **ArUco 정밀착륙 런치에 포함**되어 자동 실행됩니다.
-> YOLO만 단독으로 쓸 때는 카메라 브리지를 별도로 띄우세요:
-> `source ~/ros_gz_ws/install/setup.bash && ros2 launch ~/ros2_ws/PX4-ROS2/gazebo/launch/camera_bridge.launch.py`
-> ( `ros2 topic hz /down_camera/image` 로 ~30 Hz 확인 )
-
-```bash
-ros2 run camera_detection yolo_processor_sim_node \
-  --ros-args -p image_topic:=/down_camera/image -p model_path:=yolo11s.pt
-```
-
-### 오프보드 추적 제어 실행
-
-```bash
-# 웨이포인트 시뮬레이션
-ros2 run offboard offboard_sim_waypoints
-
-# 또는 YOLO 연동 추적 제어
-ros2 run offboard offboard_tracking_control
-```
-
----
-
-## ArUco 마커 정밀착륙
-
-하방 카메라로 ArUco 마커(DICT_4X4_50, ID 0)를 검출해 그 위로 정밀착륙합니다.
-마커는 **움직이는 플랫폼**(차량) 위에 있을 수 있으며, 드론은 외부에서 송출되는
-마커 좌표(cue)로 먼저 접근하다가 카메라가 마커를 잡으면 비전 서보로 인계받아
-플랫폼 속도를 맞춰가며 착륙합니다.
-
-`precision_landing.launch.py` **하나가 ROS 쪽을 전부 띄웁니다** — Gazebo와
-ArduPilot SITL만 따로 켜면 되고, MAVROS·카메라 브리지를 따로 수동 실행할 필요가 없습니다.
-
-### 런치파일 구성 (`precision_landing.launch.py`)
-
-런치 하나가 다음 **4개 노드를 자동 기동**하고 SITL에 연결합니다:
-
-| 노드 | 패키지 | 역할 |
-|------|--------|------|
-| MAVROS | `mavros` | ROS 2 ↔ ArduPilot MAVLink 브리지 (`fcu_url`로 SITL 연결) |
-| 카메라 브리지 | `ros_gz_bridge` | Gazebo 하방 카메라 → `/down_camera/image` 토픽 |
-| ArUco 검출 | `camera_detection` | 마커 검출 → `/perception/aruco_offset`, `/perception/aruco_detected` |
-| 정밀착륙 제어 | `precision_landing` | 상태기계(이륙→접근→정렬→하강→착륙), 속도 셋포인트 발행 |
-
-> 마커 이동 + 좌표 송출(`moving_marker_node`)은 월드의 일부라
-> `gazebo/run_sim.sh`가 Gazebo와 함께 띄웁니다(런치에서 중복 실행하지 않음).
-
-주요 런치 인자 (`이름:=값` 으로 변경):
-
-| 인자 | 기본값 | 역할 |
-|------|--------|------|
-| `fcu_url` | `udp://:14550@` | MAVROS↔SITL 연결 (14550 bind, remote 자동학습) |
-| `flight_alt` | `5.0` | 이륙/접근 호버 고도 (m) |
-| `auto_takeoff` | `true` | 노드가 스스로 GUIDED→시동→이륙 |
-| `use_cue` | `true` | 비전 인식 전 cue 좌표로 먼저 접근 |
-| `platform_height` | `1.0` | 마커가 올라앉은 플랫폼 높이 (m, 평면 지면이면 0) |
-| `land_clearance` | `0.2` | 마커 윗면 위 이 높이에서 강제 disarm |
-| `vel_gain` / `vel_max` | `0.4` / `5.0` | 정밀 수평 속도 게인 / 상한 |
-| `approach_vel_max` / `approach_decel_s` | `10.0` / `5.0` | 접근 최대 속도 / ETA 감속 시작(s) |
-| `lat_swap` / `lat_sign_fwd` / `lat_sign_left` | `false` / `1` / `1` | 카메라 마운트 이미지→기체 매핑 보정 |
-| `yaw_track` | `true` | APPROACH 중 진행방향으로 기수 정렬 (false면 헤딩 고정) |
-
-> 전체 파라미터 · 코드 함수 · 디버그 로그 읽는 법 · 튜닝 가이드는
-> **[`docs/precision_landing.md`](docs/precision_landing.md)** 를 참고하세요.
-
-### 사전 준비 (최초 1회)
-
-```bash
-# 마커 텍스처 생성 (안 하면 마커가 검은 박스로 보임)
-python3 ~/ros2_ws/PX4-ROS2/gazebo/gen_aruco_model.py
-
-# 빌드
-cd ~/ros2_ws/PX4-ROS2
-colcon build --symlink-install --packages-select camera_detection precision_landing
-source install/setup.bash
-```
-
-### 실행 (터미널 3개)
-
-```bash
-# 터미널 1 — Gazebo
-cd ~/ros2_ws/PX4-ROS2/gazebo && ./run_sim.sh
-
-# 터미널 2 — ArduPilot SITL
-cd ~/ardupilot && sim_vehicle.py -v ArduCopter -f gazebo-iris --model JSON --console --map
-
-# 터미널 3 — 서버 일괄 (MAVROS + 카메라 브리지 + 검출 + 정밀착륙[Python])
-source ~/ros2_ws/PX4-ROS2/install/setup.bash
-source ~/ros_gz_ws/install/setup.bash
-ros2 launch precision_landing precision_landing.launch.py
-```
-
-### 착륙 동작
-
-기본값 `auto_takeoff:=true` 면 `precision_landing` 노드가 **스스로 GUIDED 전환 → 시동 → `flight_alt`까지 이륙**한 뒤,
-cue 접근 → 마커 감지 → 정렬 → 하강 → 플랫폼 윗면 `land_clearance` 이내에서 **강제 disarm**으로 안착합니다.
-(지면까지 내려가는 `LAND` 모드는 쓰지 않습니다 — 플랫폼을 무시하므로.)
-
-수동으로 띄우려면 `auto_takeoff:=false` 로 실행하고 터미널 2(MAVProxy)에서 직접 이륙시키세요.
-그러면 `armed + GUIDED + (마커 감지 또는 유효 cue)` 상태가 됐을 때 자동으로 인계받습니다.
-
-```
-mode guided
-arm throttle
-takeoff 5
-```
-
-### 모니터링
-
-```bash
-ros2 topic echo /precision_landing/debug                        # 단계 전환 로그
-ros2 run rqt_image_view rqt_image_view /perception/aruco_debug/compressed
-```
-
-> **마운트 매핑 튜닝:** 기체가 마커 반대 방향으로 미끄러지면 런치 인자
-> `lat_swap` / `lat_sign_fwd` / `lat_sign_left` 를 뒤집으세요. 디버그 로그의
-> `off`(이미지 오프셋)가 `cmd`(명령 속도)에 의해 줄어드는지로 매핑이 맞는지 판단합니다
-> (`--symlink-install` 빌드면 재빌드 불필요). 자세한 내용은 `docs/precision_landing.md`.
-
----
-
-## 실기체 운용
-
-### 연결 구성
-
-```
-[Pixhawk] --USB/UART--> [Jetson] --MAVROS--> [ROS 2 노드]
-                            |
-                       [USB 카메라 or RealSense]
-```
-
-### MAVROS 실행 (Pixhawk 연결)
-
-```bash
-# USB 시리얼 연결 (포트는 환경에 따라 변경)
-ros2 launch mavros apm.launch fcu_url:=serial:///dev/ttyACM0:921600
-
-# 또는 UDP (GCS 포워딩)
-ros2 launch mavros apm.launch fcu_url:=udp://192.168.1.1:14550@14555
-```
-
-### YOLO 실기체 노드 실행 (TensorRT)
-
-```bash
-# yolo11n.engine 파일을 프로젝트 루트에 위치시키거나 경로를 지정
-ros2 run camera_detection yolo_processor_node \
-  --ros-args -p model_path:=/path/to/yolo11n.engine
-```
-
-### RealSense 뎁스 카메라 노드 실행
-
-```bash
-ros2 run camera_detection yolo_processor_depth
-```
-
-### 추적 타겟 ID 지정 (Commander)
-
-```bash
-ros2 run camera_detection commander
-# Target ID >> 1   (숫자 입력 후 Enter → YOLO ID 1번 객체를 추적)
-# Target ID >> q   (종료)
-```
-
-### 오프보드 추적 제어 실행
-
-```bash
-ros2 run offboard offboard_tracking_control
-```
-
----
-
-## PC ↔ Jetson 네트워크 설정 (Tailscale)
-
-두 머신이 서로 다른 네트워크에 있을 때 ROS 2 토픽을 공유하려면 CycloneDDS + Tailscale VPN을 사용합니다.
-
-### Tailscale 설치
-
-```bash
-curl -fsSL https://tailscale.com/install.sh | sh
-sudo tailscale up
-```
-
-### CycloneDDS 설정 적용
-
-**PC에서:**
-
-```bash
-# config/cyclonedds_pc.xml 의 <Peer address> 를 Jetson의 Tailscale IP로 수정
-export CYCLONEDDS_URI=~/ros2_ws/src/PX4-ROS2/config/cyclonedds_pc.xml
-```
-
-**Jetson에서:**
-
-```bash
-# config/cyclonedds_jetson.xml 의 <Peer address> 를 PC의 Tailscale IP로 수정
-export CYCLONEDDS_URI=~/ros2_ws/src/PX4-ROS2/config/cyclonedds_jetson.xml
-```
-
-매 터미널마다 자동 적용하려면:
-
-```bash
-echo 'export CYCLONEDDS_URI=~/ros2_ws/src/PX4-ROS2/config/cyclonedds_pc.xml' >> ~/.bashrc
-```
+</details>
 
 ---
 
 ## 트러블슈팅
 
 | 증상 | 원인 / 해결 |
-|------|-------------|
-| `ros2 run offboard` 실행 후 아무 반응 없음 | MAVROS가 실행 중인지 확인: `ros2 topic echo /mavros/state` |
-| MAVROS 연결 실패 (`timeout`) | `fcu_url` 포트/경로 확인, Pixhawk 시리얼 권한: `sudo usermod -aG dialout $USER` 후 재로그인 |
-| Gazebo에 모델이 안 뜸 | `GZ_SIM_RESOURCE_PATH` 누락 → `run_sim.sh` 사용 |
-| `ArduPilotPlugin` 로드 실패 | `~/ardupilot_gazebo/build` 미생성 → 5-3 재빌드 |
-| SITL이 Gazebo와 연결 안 됨 | Gazebo를 **먼저** 실행 후 `sim_vehicle.py` 실행, 포트 9002 점유 확인 |
-| `ros2 topic`에 카메라 없음 | `ros_gz_bridge` 빌드/`source` 여부, `GZ_VERSION=harmonic` 확인 |
-| YOLO 모델 로드 실패 | `model_path` 파라미터로 절대 경로 지정, TensorRT 엔진은 Jetson에서만 동작 |
-| 두 머신 간 토픽 안 보임 | CycloneDDS IP 설정 확인, `tailscale status`로 VPN 연결 확인 |
+|---|---|
+| 짐벌이 안 움직임 | `/siyi_gimbal_node/status`의 `bad_rx`와 자세 피드백 확인. IP·기체 네트워크 |
+| PX4용 MAVROS 연결 실패 | `px4.launch`, `fcu_url`, 시리얼 권한 `sudo usermod -aG dialout $USER` 확인 |
+| SITL에서 월드를 못 찾음 | 저장소를 옮겼다면 `link_px4_model.sh` 재실행 |
+| Gazebo에 모델이 안 뜸 | `run_gimbal.sh` / `run_px4_map.sh`를 쓰세요 (경로를 직접 설정합니다) |
+| 토픽이 안 보임 (두 머신) | `tailscale status`, RMW 구현 일치 확인 |

@@ -1,0 +1,97 @@
+schema_version: 2
+map:
+  name: drone_cju_track
+  gazebo_world_name: DRONE_CJU_TRACK
+  world_file: gazebo/worlds/DRONE_CJU_TRACK.world
+  bounds_enu_m:
+    x: [-70.0, 210.0]
+    y: [-20.0, 260.0]
+  real_world_reference:
+    name: Cheongju University Main Complex Stadium
+    center_wgs84_approx: [36.65440, 127.49591, 74.0]
+    model_heading_deg_enu: 96.3
+    source_notes: gazebo/CJU_STADIUM_WORLD.md
+  variant:
+    based_on: mpc_landing_200m_moving
+    isolated_assets: true
+    visual_changes:
+      - continuous_red_running_track
+      - smooth_blue_grandstand_roof
+
+frames:
+  gazebo_world:
+    convention: ENU
+    x_axis: east
+    y_axis: north
+    z_axis: up
+    units: m
+  mavros_local:
+    convention: ENU
+    origin_enu_m: [30.0, 30.0, 0.24]
+
+px4_vehicle:
+  airframe_autostart_id: 4001
+  simulation_model: gz_x500_city_rgbd_lidar
+  runtime_entity_name: x500_city_rgbd_lidar_0
+  model_source: px4_models/x500_city_rgbd_lidar/model.sdf
+  spawn_mode: dynamic_by_px4_sitl
+  gimbal_variant:
+    simulation_model: gz_x500_gimbal_rgbd_lidar
+    runtime_entity_name: x500_gimbal_rgbd_lidar_0
+    model_source: px4_models/x500_gimbal_rgbd_lidar/model.sdf
+  sitl_parameter_overrides:
+    LNDMC_Z_VEL_MAX: 0.05
+    LNDMC_XY_VEL_MAX: 6.0
+    COM_DISARM_LAND: 10.0
+
+spawn:
+  name: drone_cju_track_drone_spawn
+  gazebo_spawn_pose_enu:
+    x: 30.0
+    y: 30.0
+    z: 0.0
+    roll: 0.0
+    pitch: 0.0
+    yaw: 0.0
+
+trailer:
+  entity_name: trailer
+  model_uri: model://moving_platform_aruco_velocity
+  spawn_pose_enu:
+    x: 37.071067811865476
+    y: 37.071067811865476
+    z: 0.0
+    roll: 0.0
+    pitch: 0.0
+    # Gazebo VelocityControl consumes horizontal commands in model axes.
+    yaw: 0.0
+  separation_m: 10.0
+  motion: stadium_track_after_px4_spawn
+  command_topic: /model/trailer/cmd_vel
+  pose_topic: /world/DRONE_CJU_TRACK/dynamic_pose/info
+  odometry_topic: /model/trailer/odometry
+  route_type: stadium
+  stadium_center_enu_m: [28.402605907228356, 115.5890134880474]
+  stadium_straight_length_m: 84.39
+  stadium_curve_radius_m: 36.8
+  stadium_heading_deg: 96.3
+  stadium_direction: counterclockwise
+  command_rate_hz: 50.0
+  cruise_speed_m_s: 3.0
+  acceleration_m_s2: 3.0
+  waypoint_tolerance_m: 0.2
+  body_footprint_m: [5.0, 5.0]
+  deck_height_m: 2.05
+  marker_surface_height_m: 2.051
+  aruco_dictionary: DICT_4X4_50
+  marker_size_m: 1.3
+  aruco_marker_id: 0
+  small_marker_size_m: 0.30
+  small_aruco_marker_id: 1
+  marker_offset_m: [-1.1, 0.0]
+  marker_2_offset_m: [1.1, 0.0]
+
+terrain:
+  type: flat_box
+  size_m: [280.0, 280.0]
+  ground_z_m: 0.0

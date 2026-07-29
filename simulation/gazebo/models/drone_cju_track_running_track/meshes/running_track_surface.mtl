@@ -1,0 +1,8 @@
+# Procedurally generated local material
+newmtl continuous_track_red
+Ka 0.560000 0.140000 0.100000
+Kd 0.560000 0.140000 0.100000
+Ks 0.040000 0.040000 0.040000
+Ns 8.000000
+d 1.000000
+illum 2
