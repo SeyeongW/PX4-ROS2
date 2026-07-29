@@ -27,6 +27,7 @@ setup(
         'console_scripts': [
             'aruco_pose_node = aruco_landing.aruco_pose_node:main',
             'gst_camera_node = aruco_landing.gst_camera_node:main',
+            'landing_tf_node = aruco_landing.landing_tf_node:main',
         ],
     },
 )
