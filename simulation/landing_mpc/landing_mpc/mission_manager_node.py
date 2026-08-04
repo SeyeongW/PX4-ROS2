@@ -12,6 +12,7 @@ This node is the single Offboard setpoint authority — never run it alongside
 another setpoint publisher.
 
 Subscribes
+    /mission/command     String          takeoff → mission → land
     /marker/cue          PointStamped    long-range target position (ENU)
     /marker/cue_velocity Vector3Stamped  long-range target velocity
     /marker/position     PointStamped    vision/KF target position (ENU)
@@ -24,8 +25,11 @@ Publishes
 
 Phases
 
-    IDLE      wait for a cue, then arm + Offboard
+    IDLE      automatic mode waits for a cue; command mode waits for takeoff
     TAKEOFF   climb to takeoff_alt over the launch point
+    READY     hold after takeoff and wait for mission
+    MISSION_PLAN plan from the current position without blocking Offboard
+    MISSION   follow A*, then replan the reverse leg and keep patrolling
     APPROACH  cruise to the CUE at approach_alt, matching its velocity.
               Position-led with velocity feed-forward — no descent yet.
     ACQUIRE   settle over the cue until the relative motion has died.
@@ -54,10 +58,14 @@ the cruise ones, the MPC's own `a_max` in DESCEND.
 from __future__ import annotations
 
 import math
+import multiprocessing
 import re
+from concurrent.futures import ProcessPoolExecutor
+from pathlib import Path
 
 import numpy as np
 import rclpy
+import yaml
 from geometry_msgs.msg import PointStamped, Vector3Stamped
 from rclpy.node import Node
 from rclpy.qos import (DurabilityPolicy, HistoryPolicy, QoSProfile,
@@ -88,6 +96,77 @@ def _px4_qos():
     return QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT,
                       durability=DurabilityPolicy.TRANSIENT_LOCAL,
                       history=HistoryPolicy.KEEP_LAST, depth=5)
+
+
+def _plan_global_path(map_yaml, start_local_enu=None, goal_local_enu=None):
+    """Plan one CJU patrol leg from the current PX4-local ENU position."""
+    from path_plan.astar import AStarPlanner3D
+    from path_plan.world_model import WorldModel
+
+    document = yaml.safe_load(Path(map_yaml).read_text(encoding='utf-8'))
+    mission = document['mission']
+    trailer = document['trailer']
+    spawn_pose = document['spawn']['gazebo_spawn_pose_enu']
+
+    heading = math.radians(float(trailer['stadium_heading_deg']))
+    rotation = np.array([
+        [math.cos(heading), -math.sin(heading)],
+        [math.sin(heading), math.cos(heading)],
+    ])
+    stadium_center = np.asarray(trailer['stadium_center_enu_m'], float)
+    spawn = np.asarray([spawn_pose['x'], spawn_pose['y']], float)
+    altitude = float(mission['cruise_altitude_m'])
+    start_local = (np.zeros(3) if start_local_enu is None
+                   else np.asarray(start_local_enu, float).copy())
+    start = np.r_[((spawn + start_local[:2]) - stadium_center) @ rotation,
+                  altitude]
+    if goal_local_enu is None:
+        goal_xy = np.asarray(mission['goal_stadium_local_m'], float)
+    else:
+        goal_local = np.asarray(goal_local_enu, float)
+        goal_xy = ((spawn + goal_local[:2]) - stadium_center) @ rotation
+    goal = np.r_[goal_xy, altitude]
+    clearance = float(mission['obstacle_clearance_m'])
+
+    lows, highs = [], []
+    for obstacle in mission['obstacles']:
+        centre = np.asarray(obstacle['center_m'], float)
+        half_size = 0.5 * np.asarray(obstacle['size_m'], float)
+        low, high = centre - half_size, centre + half_size
+        low[:2] -= clearance
+        high[:2] += clearance
+        # Deliberately forbid overflight: this mission verifies lateral
+        # avoidance of the four ten-metre barriers.
+        low[2], high[2] = -1.0e4, 1.0e4
+        lows.append(low)
+        highs.append(high)
+
+    terrain_size = np.asarray(document['terrain']['size_m'], float)
+    if (terrain_size.shape != (2,) or not np.all(np.isfinite(terrain_size))
+            or np.any(terrain_size <= 0.0)):
+        raise ValueError('terrain.size_m must contain two positive dimensions')
+    half_terrain = 0.5 * terrain_size
+    bounds_min = np.r_[-half_terrain, altitude]
+    bounds_max = np.r_[half_terrain, altitude]
+    world = WorldModel.from_boxes(lows, highs, bounds_min, bounds_max)
+    planner = AStarPlanner3D(
+        world,
+        resolution_m=float(mission['planner_resolution_m']),
+        clearance_pref_m=clearance,
+        altitude_pref_m=altitude,
+    )
+    result = planner.plan(start, goal)
+    if not result.success:
+        raise RuntimeError(f'CJU A* failed: {result.message}')
+    if not all(world.segment_is_free(a, b, step_m=0.1)
+               for a, b in zip(result.waypoints_m[:-1],
+                               result.waypoints_m[1:])):
+        raise RuntimeError('CJU A* returned a colliding shortcut')
+
+    world_xy = result.waypoints_m[:, :2] @ rotation.T + stadium_center
+    local_xy = world_xy - spawn
+    path = np.column_stack((local_xy, result.waypoints_m[:, 2]))
+    return path, result.expanded, float(mission['cruise_speed_m_s'])
 
 
 class MissionManagerNode(Node):
@@ -216,8 +295,11 @@ class MissionManagerNode(Node):
             p('vision_gate_timeout_s', 20.0).value)
         self.vis_fresh = require_positive(
             'vision_fresh_s', p('vision_fresh_s', 0.5).value)
+        self.cue_timeout_s = require_positive(
+            'cue_timeout_s', p('cue_timeout_s', 2.0).value)
         self._t_gate = None
         self._hold_z = None                  # altitude the hold froze us at
+        self._terminal_commit = False        # near-field marker loss is expected
         # Backward-compatible declaration only.  This timeout was never wired
         # into TOUCHDOWN; retaining it for one deprecation cycle prevents old
         # parameter files from failing while making the no-op explicit.
@@ -291,6 +373,13 @@ class MissionManagerNode(Node):
         self.xy_p = require_positive(
             'px4_mpc_xy_p', p('px4_mpc_xy_p', 0.95).value)
         self.auto_start = bool(p('auto_start', True).value)
+        self.mission_map_yaml = str(p('mission_map_yaml', '').value).strip()
+        self.mission_tolerance = require_positive(
+            'mission_waypoint_tolerance_m',
+            p('mission_waypoint_tolerance_m', 0.7).value)
+        self.mission_command_topic = require_nonempty(
+            'mission_command_topic',
+            p('mission_command_topic', '/mission/command').value)
 
         # The MPC descent corridor must keep the marker WHOLLY in frame, which
         # is not the same as keeping its CENTRE inside the camera cone.
@@ -388,11 +477,38 @@ class MissionManagerNode(Node):
         # NOTE: routing APPROACH through its own jerk-limited MPC was tried and
         # REVERTED — see the APPROACH phase for the measured regression.
 
+        self._mission_path = None
+        self._mission_speed = 2.0
+        self._planner_pool = None
+        self._plan_future = None
+        if self.mission_map_yaml:
+            mission_document = yaml.safe_load(
+                Path(self.mission_map_yaml).read_text(encoding='utf-8'))
+            self._mission_speed = float(
+                mission_document['mission']['cruise_speed_m_s'])
+            self._mission_speed = require_positive(
+                'mission.cruise_speed_m_s', self._mission_speed)
+            # A* is CPU-bound Python. A thread delayed the 50 Hz Offboard
+            # heartbeat by hundreds of milliseconds in measurement; a spawned
+            # worker process keeps ROS/DDS state out of the child and the
+            # control timer responsive.
+            self._planner_pool = ProcessPoolExecutor(
+                max_workers=1,
+                mp_context=multiprocessing.get_context('spawn'))
+            self.get_logger().info(
+                f'CJU map-based global A* ready: {self._mission_speed:g} m/s')
+
         self.state = 'IDLE'
+        self._takeoff_requested = False
+        self._mission_i = 0
+        self._patrol_origin = None
+        self._planning_to_map_goal = True
+        self._hold_pos = np.array([0.0, 0.0, self.takeoff_alt])
         self.p_d = None
         self.v_d = np.zeros(3)
         self.cue = None
         self.cue_v = np.zeros(3)
+        self._t_cue = None
         self.vis = None
         self.vis_v = np.zeros(3)
         self.vis_valid = False
@@ -416,6 +532,8 @@ class MissionManagerNode(Node):
         self.cmd_pub = self.create_publisher(VehicleCommand,
                                              '/fmu/in/vehicle_command', _px4_qos())
         self.state_pub = self.create_publisher(String, '/mission/state', 10)
+        self.create_subscription(String, self.mission_command_topic,
+                                 self._on_command, 10)
 
         self.create_subscription(PointStamped, '/marker/cue', self._on_cue, 10)
         self.create_subscription(Vector3Stamped, '/marker/cue_velocity',
@@ -495,8 +613,63 @@ class MissionManagerNode(Node):
                 f'racing the camera down')
 
     # ------------------------------------------------------------- callbacks
+    def _on_command(self, message):
+        if self.auto_start:
+            self.get_logger().warn(
+                f'{self.mission_command_topic} ignored while auto_start=true')
+            return
+        command = message.data.strip()
+        # The CLI republishes until the state changes so DDS discovery cannot
+        # lose a one-shot word. Accepted repeats are intentionally quiet.
+        already_accepted = {
+            'takeoff': ('TAKEOFF', 'READY', 'MISSION_PLAN', 'MISSION',
+                        'APPROACH', 'ACQUIRE', 'DESCEND', 'TOUCHDOWN', 'DONE'),
+            'mission': ('MISSION_PLAN', 'MISSION', 'APPROACH', 'ACQUIRE',
+                        'DESCEND', 'TOUCHDOWN', 'DONE'),
+            'land': ('APPROACH', 'ACQUIRE', 'DESCEND', 'TOUCHDOWN', 'DONE'),
+        }
+        if self.state in already_accepted.get(command, ()):
+            return
+        allowed = {
+            'takeoff': self.state == 'IDLE',
+            'mission': self.state == 'READY',
+            'land': self.state in ('MISSION_PLAN', 'MISSION'),
+        }
+        if not allowed.get(command, False):
+            expected = {
+                'IDLE': 'takeoff',
+                'READY': 'mission',
+                'MISSION_PLAN': 'land',
+                'MISSION': 'land',
+            }.get(self.state, '없음')
+            self.get_logger().warn(
+                f'command {command!r} rejected in {self.state}; '
+                f'expected {expected!r}')
+            return
+
+        if command == 'takeoff':
+            self._takeoff_requested = True
+        elif command == 'mission':
+            if self._planner_pool is None or self.p_d is None:
+                self.get_logger().error('dynamic mission planner is unavailable')
+                return
+            self._patrol_origin = self.p_d.copy()
+            self._planning_to_map_goal = True
+            self._start_mission_plan(None)
+        else:
+            if not self._cue_fresh():
+                self.get_logger().warn(
+                    'landing rejected: trailer cue unavailable or stale')
+                return
+            if self._plan_future is not None:
+                self._plan_future.cancel()
+                self._plan_future = None
+            self._t_solve = None
+            self._set_state('APPROACH', '(land requested)')
+
     def _on_cue(self, m):
         self.cue = np.array([m.point.x, m.point.y, m.point.z])
+        self._t_cue = self._now()
 
     def _on_cue_v(self, m):
         self.cue_v = np.array([m.vector.x, m.vector.y, m.vector.z])
@@ -619,6 +792,12 @@ class MissionManagerNode(Node):
     def _now(self):
         return self.get_clock().now().nanoseconds * 1e-9
 
+    def _cue_fresh(self):
+        if self.cue is None or self._t_cue is None:
+            return False
+        age = self._now() - self._t_cue
+        return 0.0 <= age <= self.cue_timeout_s
+
     def _cmd(self, command, p1=0.0, p2=0.0):
         c = VehicleCommand()
         c.timestamp = int(self.get_clock().now().nanoseconds / 1000)
@@ -662,12 +841,24 @@ class MissionManagerNode(Node):
         if s != self.state:
             self.get_logger().info(f'{self.state} -> {s}  {why}')
             self.state = s
+            if s == 'APPROACH':
+                self._terminal_commit = False
             if s not in ('APPROACH', 'ACQUIRE'):
                 # Leaving the carrot-driven phases: drop the ramped cap so a
                 # later re-entry accelerates from rest instead of resuming a
                 # stale speed and stepping the setpoint.
                 self._v_cmd = 0.0
                 self._v_ff = np.zeros(2)
+
+    def _start_mission_plan(self, goal_local_enu):
+        """Start one A* leg while the control timer keeps holding position."""
+        start = self.p_d.copy()
+        self._hold_pos = start.copy()
+        goal = None if goal_local_enu is None else list(goal_local_enu)
+        self._plan_future = self._planner_pool.submit(
+            _plan_global_path, self.mission_map_yaml, list(start), goal)
+        destination = '운동장 중앙' if goal is None else '이륙 지점'
+        self._set_state('MISSION_PLAN', f'(global A* replan -> {destination})')
 
     def _xy_to(self, target):
         d = self.p_d - target
@@ -782,6 +973,12 @@ class MissionManagerNode(Node):
             roughly, not precisely, and descending would lose the race with the
             shrinking view (see `_bias_settling`).
         """
+        # Once a fresh, converged marker fix has carried the vehicle into the
+        # camera's near-field limit, climbing away because the marker becomes
+        # too large to decode is exactly backwards.  Keep the final correction
+        # and finish the last metre on the continuous trailer cue.
+        if self._terminal_commit:
+            return ''
         if self.p_d[2] - self.deck_z > self.vision_gate_h:
             return ''
         if (self._t_aruco_seen is None
@@ -792,6 +989,16 @@ class MissionManagerNode(Node):
         if self._bias_settling():
             return 'correction still settling'
         return ''
+
+    def _touchdown_geometry(self, target, target_v):
+        """Return whether height, alignment and relative speed all say landed."""
+        xy_error = self._xy_to(target)
+        relative_speed = float(np.linalg.norm(self.v_d - target_v))
+        height = float((self.p_d - target)[2])
+        ready = (height <= self.touch_h
+                 and xy_error < self.touch_xy
+                 and relative_speed < self.touch_v)
+        return ready, xy_error, relative_speed
 
     def _los_speed_cap(self, target):
         """Largest RELATIVE speed the gimbal can be asked to track right now.
@@ -821,7 +1028,7 @@ class MissionManagerNode(Node):
         rng = float(np.linalg.norm(self.p_d - target))
         return float(np.clip(self.los_rate * rng, self.v_rel_floor, self.cruise_v))
 
-    def _send_capped(self, target, target_v, alt):
+    def _send_capped(self, target, target_v, alt, max_closing_speed=None):
         """Fly to `target` at `alt`, closing no faster than the gimbal can track.
 
         Handing PX4 the far-away goal directly is what makes it sprint: its
@@ -839,6 +1046,8 @@ class MissionManagerNode(Node):
         the target instead of orbiting a lead point.  Returns the cap.
         """
         v_cap = self._los_speed_cap(target)
+        if max_closing_speed is not None:
+            v_cap = min(v_cap, float(max_closing_speed))
         # Ramp the cap rather than stepping it: the carrot converts speed
         # DIRECTLY into position error, so a step in v_cap is a step in the
         # setpoint and PX4 answers it with MPC_ACC_HOR (3 m/s^2) of lurch.
@@ -877,22 +1086,73 @@ class MissionManagerNode(Node):
         self._ocm()
         if self.p_d is None:
             return
+        if (self.state in ('APPROACH', 'ACQUIRE', 'DESCEND')
+                and not self._cue_fresh()):
+            self._set_state('ABORT', '(trailer cue stale)')
 
         if self.state == 'IDLE':
-            if self.cue is None:
+            if not self._cue_fresh():
                 return
-            if self.auto_start and not self.engaged and self.k * self.dt >= 1.5:
+            requested = ((self.auto_start and self.state == 'IDLE'
+                          and self.k * self.dt >= 1.5)
+                         or self._takeoff_requested)
+            if requested and not self.engaged and self.k * self.dt >= 1.5:
                 self._cmd(VehicleCommand.VEHICLE_CMD_DO_SET_MODE, 1.0, 6.0)
                 self._cmd(VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM, 1.0)
                 self.engaged = True
                 self._set_state('TAKEOFF', '(armed + offboard)')
-            self._send(np.array([0.0, 0.0, self.takeoff_alt]))
+            self._send(self._hold_pos)
             return
 
         if self.state == 'TAKEOFF':
-            self._send(np.array([0.0, 0.0, self.takeoff_alt]))
+            self._send(self._hold_pos)
             if self.p_d[2] >= self.takeoff_alt - 0.3:
-                self._set_state('APPROACH', f'(alt {self.p_d[2]:.1f} m)')
+                next_state = 'APPROACH' if self.auto_start else 'READY'
+                self._set_state(next_state, f'(alt {self.p_d[2]:.1f} m)')
+            return
+
+        if self.state == 'READY':
+            self._send(self._hold_pos)
+            return
+
+        if self.state == 'MISSION_PLAN':
+            self._send(self._hold_pos)
+            if not self._plan_future.done():
+                return
+            try:
+                path, expanded, speed = self._plan_future.result()
+            except Exception as exc:
+                self._plan_future = None
+                self.get_logger().error(f'global A* replan failed: {exc}')
+                self._set_state('READY', '(planner failure; retry mission)')
+                return
+            self._plan_future = None
+            self._mission_path = path
+            self._mission_speed = speed
+            self._mission_i = 0
+            self.get_logger().info(
+                f'global A* replan: {len(path)} waypoints, '
+                f'{expanded} expansions')
+            self._set_state('MISSION', '(A* obstacle route)')
+            return
+
+        if self.state == 'MISSION':
+            waypoint = self._mission_path[self._mission_i]
+            self._send_capped(
+                waypoint, np.zeros(3), waypoint[2], self._mission_speed)
+            if float(np.linalg.norm(self.p_d - waypoint)) <= self.mission_tolerance:
+                self._mission_i += 1
+                self._v_cmd = 0.0
+                self._v_ff = np.zeros(2)
+                if self._mission_i == len(self._mission_path):
+                    next_goal = (self._patrol_origin
+                                 if self._planning_to_map_goal else None)
+                    self._planning_to_map_goal = not self._planning_to_map_goal
+                    self._start_mission_plan(next_goal)
+                else:
+                    self.get_logger().info(
+                        f'MISSION waypoint {self._mission_i + 1}/'
+                        f'{len(self._mission_path)}')
             return
 
         if self.state == 'APPROACH':
@@ -968,6 +1228,14 @@ class MissionManagerNode(Node):
             # Hold at the vision gate rather than committing blind, and give up
             # rather than hovering there forever.
             blocked = self._descent_blocked()
+            height = float(self.p_d[2] - self.deck_z)
+            if (not self._terminal_commit and not blocked and self.vis_valid
+                    and height <= self.keep_h):
+                self._terminal_commit = True
+                self.get_logger().info(
+                    f'terminal landing committed at h={height:.2f} m; '
+                    'holding the last converged marker correction through the '
+                    'near-field blind zone')
             if blocked:
                 if self._t_gate is None:
                     self._t_gate = self._now()
@@ -1048,11 +1316,12 @@ class MissionManagerNode(Node):
                     vel[2] = max(float(vel[2]), 0.0)
                     acc[2] = max(float(acc[2]), 0.0)
                 self._send(pos, vel, acc)
-            p_rel = self.p_d - tgt
-            if p_rel[2] <= self.touch_h and abs(self._xy_to(tgt)) < self.touch_xy:
+            touchdown_ready, xy_error, relative_speed = (
+                self._touchdown_geometry(tgt, tgt_v))
+            if self._terminal_commit and touchdown_ready:
                 self._set_state('TOUCHDOWN',
-                                f'(xy {self._xy_to(tgt):.2f} m, '
-                                f'|v_rel| {np.linalg.norm(self.v_d - tgt_v):.2f} m/s)')
+                                f'(xy {xy_error:.2f} m, '
+                                f'|v_rel| {relative_speed:.2f} m/s)')
             return
 
         if self.state == 'TOUCHDOWN':
@@ -1071,16 +1340,22 @@ class MissionManagerNode(Node):
             #     (the mid-air-flip case) does not.
             if self._t_touch is None:
                 self._t_touch = self._now()
-            tgt, tgt_v = self._target()
-            self._send(np.array([tgt[0], tgt[1], self.z_floor]),
-                       np.array([tgt_v[0], tgt_v[1], 0.0]))
+            if self._cue_fresh():
+                tgt, tgt_v = self._target()
+                self._send(np.array([tgt[0], tgt[1], self.z_floor]),
+                           np.array([tgt_v[0], tgt_v[1], 0.0]))
+                on_deck, _, _ = self._touchdown_geometry(tgt, tgt_v)
+            else:
+                # Never follow an old moving-target position.  Hold here and
+                # require PX4 contact before a forced disarm.
+                self._send(np.array([self.p_d[0], self.p_d[1], self.z_floor]))
+                self._t_touch_ok = None
+                on_deck = False
+                if self.k % 100 == 0:
+                    self.get_logger().error(
+                        'trailer cue stale during touchdown; holding position')
 
             # Is the touchdown geometry still holding this instant?
-            p_rel = self.p_d - tgt
-            v_rel = float(np.linalg.norm(self.v_d - tgt_v))
-            on_deck = (p_rel[2] <= self.touch_h
-                       and self._xy_to(tgt) < self.touch_xy
-                       and v_rel < self.touch_v)
             if on_deck:
                 if self._t_touch_ok is None:
                     self._t_touch_ok = self._now()
@@ -1100,18 +1375,11 @@ class MissionManagerNode(Node):
             waited = self._now() - self._t_touch
             if self.armed is False:
                 self._set_state('DONE', f'(disarmed, dwell {dwell:.1f} s)')
-            elif self._xy_to(tgt) > 2.0 * self.touch_xy and waited > 2.0:
-                # Genuinely drifted off the target (not a stale frame) — climb
-                # back and re-run the approach rather than disarming off-deck.
-                self._t_touch = self._t_touch_ok = None
-                self._t_solve = None
-                self._set_state('DESCEND', f'(drifted {self._xy_to(tgt):.1f} m '
-                                           f'off the target)')
-            elif self.armed is None and waited > 5.0:
-                self._set_state('DONE', '(UNVERIFIED — no VehicleStatus)')
+            elif self.armed is None and waited > 5.0 and self.k % 50 == 0:
                 self.get_logger().error(
                     'no VehicleStatus has EVER arrived — force disarm sent but '
-                    'unconfirmable. Stopping Offboard. The topic is resolved '
+                    'unconfirmable. Keeping Offboard and retrying. The topic is '
+                    'resolved '
                     'from the graph (see _resolve_px4), so this means PX4 is '
                     'not publishing vehicle_status at all: check the uXRCE '
                     'agent, then `ros2 topic list | grep vehicle_status`.')
@@ -1123,10 +1391,11 @@ class MissionManagerNode(Node):
             return
 
         if self.state == 'ABORT':
-            # climb back to approach altitude over the last known cue, then retry
-            base = self.cue if self.cue is not None else self.p_d
+            # A stale moving-target position is never a recovery destination.
+            fresh = self._cue_fresh()
+            base = self.cue if fresh else self.p_d
             self._send(np.array([base[0], base[1], self.approach_alt]))
-            if self.p_d[2] >= self.approach_alt - 0.5:
+            if fresh and self.p_d[2] >= self.approach_alt - 0.5:
                 self._set_state('APPROACH', '(recovered)')
             return
 
@@ -1134,7 +1403,11 @@ class MissionManagerNode(Node):
         if self._solves:
             self.get_logger().info(
                 f'MPC solves {self._solves}, failures {self._fails}')
-        super().destroy_node()
+        if self._plan_future is not None:
+            self._plan_future.cancel()
+        if self._planner_pool is not None:
+            self._planner_pool.shutdown(wait=False, cancel_futures=True)
+        return super().destroy_node()
 
 
 def main(args=None):

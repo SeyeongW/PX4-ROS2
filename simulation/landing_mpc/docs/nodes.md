@@ -505,12 +505,16 @@ h=0.12 m  fixes=0  KF_err=0.183  valid=False  ← 3 s 초과, 자동 무효
 
 | 단계 | 목표 소스 | 하는 일 |
 |---|---|---|
-| `IDLE` | — | 큐 대기 → arm + Offboard |
+| `IDLE` | — | `takeoff` 대기 → arm + Offboard |
 | `TAKEOFF` | — | 이륙 |
+| `READY` | — | 이륙점 hover, `mission` 대기 |
+| `MISSION_PLAN` | YAML 장애물 | 별도 프로세스에서 현재 위치 기준 A* 계산 |
+| `MISSION` | A* waypoint | 장애물 회피 순찰, 구간 끝에서 반대편 재계획 |
 | `APPROACH` | **큐** | 접근고도에서 큐로 순항(속도 피드포워드), 하강 안 함 |
-| `DESCEND` | **비전(KF)** | MPC 상대좌표 랑데부 + corridor 하강 |
+| `ACQUIRE` | 큐 + 비전 보정 | 트레일러와 상대속도 정합 |
+| `DESCEND` | 큐 + 비전 보정 | MPC 상대좌표 랑데부 + corridor 하강 |
 | `TOUCHDOWN` | — | 접지 판정 → disarm |
-| `ABORT` | 큐 | 비전 소실 → 상승·복귀 후 재시도 |
+| `ABORT` | 큐 | 접근 실패 시 상승·복귀 후 재시도 |
 
 **인수인계 조건** (히스테리시스): $d<0.7\,r(h)$ **이고** `/marker/valid`.
 복귀는 더 넓은 반경에서만 → 경계에서 채터링 방지.
@@ -518,7 +522,7 @@ h=0.12 m  fixes=0  KF_err=0.183  valid=False  ← 3 s 초과, 자동 무효
 **커밋 고도**: $h\le h_{commit}$ 아래에선 원뿔이 닫혀 비전 소실이 **정상**이므로
 abort하지 않고 KF coast로 밀어붙인다.
 
-### 실측 (3 m/s 원운동 트레일러, 실제 ArUco 인식)
+### 과거 기준 실측 (3 m/s 원운동 트레일러, 실제 ArUco 인식)
 
 ```
 IDLE → TAKEOFF → APPROACH

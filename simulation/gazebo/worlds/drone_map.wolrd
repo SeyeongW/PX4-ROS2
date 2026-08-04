@@ -3,8 +3,8 @@
   <!--
     Restored from the pre-CJU flat moving-landing world, then reduced to a
     50 x 50 m scattered-obstacle experiment. The legacy world name remains
-    for landing_mpc and Gazebo topic compatibility. The CJU version is
-    preserved separately as DRONE_CJU_TRACK.world.
+    for landing_mpc and Gazebo topic compatibility. The separate stadium-only
+    CJU world is drone_cju.world.
   -->
   <world name="mpc_landing_200m_moving">
     <magnetic_field>6.0e-6 2.3e-5 -4.2e-5</magnetic_field>

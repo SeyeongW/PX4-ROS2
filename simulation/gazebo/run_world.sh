@@ -25,8 +25,8 @@ case "$MAP" in
     DEFAULT_PHYSICS_ENGINE="gz-physics-dartsim-plugin"
     ;;
   cju-track)
-    WORLD="$SCRIPT_DIR/worlds/DRONE_CJU_TRACK.world"
-    DESCRIPTION="DRONE_CJU_TRACK isolated red-track / smooth-roof variant (stationary preview, no PX4 drone)"
+    WORLD="$SCRIPT_DIR/worlds/drone_cju.world"
+    DESCRIPTION="real-scale Cheongju University main stadium only (stationary preview, no PX4 drone)"
     DEFAULT_PHYSICS_ENGINE="gz-physics-dartsim-plugin"
     ;;
   -h|--help|help|"")
@@ -36,7 +36,7 @@ Usage: $(basename "$0") <city|mountain|mpc-landing-moving|cju-track> [gz sim opt
   city                Current UAV city + stationary trailer (no PX4 drone)
   mountain            300 x 300 m mountain + stationary trailer (no PX4 drone)
   mpc-landing-moving  1,000 x 100 m field + 1 km forward/reverse shuttle
-  cju-track           Isolated DRONE_CJU_TRACK red-track working copy
+  cju-track           Real-scale Cheongju University main stadium only
 
 Environment:
   PAUSED=1       Open without starting physics

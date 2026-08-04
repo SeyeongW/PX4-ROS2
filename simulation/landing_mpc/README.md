@@ -28,7 +28,7 @@ Perception + mission nodes (the live stack, launched by `gazebo/run_gimbal.sh`):
 | `marker_kf_node`      | const-velocity KF + coast |
 | `trailer_cue_node`    | long-range target cue (gz trailer pose) |
 | `gimbal_control_node` | aims the gimbal, publishes joint encoders + TF |
-| `mission_manager_node`| phase sequencing, MPC descent, the single setpoint authority |
+| `mission_manager_node`| word modes, A* route, MPC descent; single setpoint authority |
 
 ## Design notes (do not "improve" without rebutting the rationale — spec §2)
 
@@ -55,9 +55,10 @@ One command brings up Gazebo + PX4 + the perception chain + the mission, with
 every switch already set:
 
 ```bash
-./gazebo/run_gimbal.sh mission        # gimbal vehicle, moving trailer
-./gazebo/run_gimbal.sh baseline       # body-fixed camera, for comparison
+./gazebo/run_gimbal.sh mission        # CJU: takeoff → mission → land
+./gazebo/run_gimbal.sh baseline       # CJU body-fixed camera comparison
 HEADLESS=1 ./gazebo/run_gimbal.sh mission
+LANDING_MAP=mpc-landing-moving ./gazebo/run_gimbal.sh mission  # legacy shuttle
 ```
 
 Score a run against Gazebo ground truth (not the mission's own estimate):

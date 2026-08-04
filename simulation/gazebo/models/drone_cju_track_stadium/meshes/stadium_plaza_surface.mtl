@@ -1,7 +1,7 @@
 # Procedurally generated local material
-newmtl continuous_track_red
-Ka 0.540000 0.180000 0.130000
-Kd 0.540000 0.180000 0.130000
+newmtl cju_stadium_plaza
+Ka 0.480000 0.480000 0.450000
+Kd 0.480000 0.480000 0.450000
 Ks 0.040000 0.040000 0.040000
 Ns 8.000000
 d 1.000000

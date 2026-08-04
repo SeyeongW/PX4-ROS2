@@ -236,9 +236,14 @@ class AStarPlanner3D:
             return path
         kept = [path[0]]
         anchor = 0
+        # The mission collision contract validates at 0.1 m. Using half a
+        # coarse planning cell here can skip a thin inflated barrier even when
+        # every grid edge was safe, so shortcutting must be at least as strict.
+        check_step = min(0.1, 0.5 * self.res)
         for probe in range(2, len(path)):
-            if not self.world.segment_is_free(path[anchor], path[probe],
-                                               step_m=0.5 * self.res):
+            if not self.world.segment_is_free(
+                path[anchor], path[probe], step_m=check_step
+            ):
                 kept.append(path[probe - 1])
                 anchor = probe - 1
         kept.append(path[-1])

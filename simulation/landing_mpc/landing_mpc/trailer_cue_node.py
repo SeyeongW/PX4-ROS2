@@ -60,6 +60,7 @@ class TrailerCueNode(Node):
         self._hist = deque()
         self._pos = None
         self._vel = np.zeros(2)
+        self._updated = False
 
         self.pos_pub = self.create_publisher(PointStamped, '/marker/cue', 10)
         self.vel_pub = self.create_publisher(Vector3Stamped, '/marker/cue_velocity', 10)
@@ -89,12 +90,16 @@ class TrailerCueNode(Node):
                     if den > 1e-6:
                         self._vel = (dt_ @ (ps - ps.mean(axis=0))) / den
                 self._pos = loc
+                self._updated = True
             return
 
     def _tick(self):
         with self._lock:
+            if not self._updated:
+                return
             pos = None if self._pos is None else self._pos.copy()
             vel = self._vel.copy()
+            self._updated = False
         if pos is None:
             return
         stamp = self.get_clock().now().to_msg()

@@ -6,14 +6,13 @@ This generator intentionally writes only these new model directories:
 * ``models/drone_cju_track_running_track``
 * ``models/drone_cju_track_stadium``
 
-The older ``running_track`` and ``cheongju_university_stadium`` models remain
-untouched. Shared primitive-building helpers are imported from their generators
-to keep dimensions consistent.
+Shared primitive-building helpers are imported from the base-model generators
+so both base and dedicated assets use the same calibrated dimensions.
 
-All geometry is generated locally. The running surface is one connected
-procedural OBJ annulus, and the covered grandstand roof is a procedural, closed
-OBJ solid with 32 curved sections. No downloaded mesh, image, or texture is
-used.
+All geometry is generated locally. The red running surface is one connected
+procedural OBJ annulus, and the
+west royal-box canopy is a procedural, closed OBJ solid with 32 curved
+sections. No downloaded mesh, image, or texture is used.
 """
 
 import math
@@ -33,10 +32,13 @@ TRACK_MESH_RELATIVE_PATH = Path("meshes") / "running_track_surface.obj"
 TRACK_MTL_RELATIVE_PATH = Path("meshes") / "running_track_surface.mtl"
 ROOF_MESH_RELATIVE_PATH = Path("meshes") / "grandstand_roof.obj"
 ROOF_MTL_RELATIVE_PATH = Path("meshes") / "grandstand_roof.mtl"
+PLAZA_MESH_RELATIVE_PATH = Path("meshes") / "stadium_plaza_surface.obj"
+PLAZA_MTL_RELATIVE_PATH = Path("meshes") / "stadium_plaza_surface.mtl"
 
-CONTINUOUS_TRACK_RED_RGBA = (0.56, 0.14, 0.10, 1.0)
+CONTINUOUS_TRACK_RGBA = base_track.RED_STRAIGHT_RGBA
 TRACK_MATERIAL_NAME = "continuous_track_red"
-ROOF_MATERIAL_NAME = "cju_roof_blue"
+ROOF_MATERIAL_NAME = "cju_canopy_light"
+PLAZA_MATERIAL_NAME = "cju_stadium_plaza"
 
 # Each half-circle gets 96 angular intervals. The two exact straight edges and
 # both sampled half-circles form a single connected top surface with no
@@ -46,16 +48,47 @@ TRACK_SURFACE_Z_M = (
     base_track.SURFACE_Z_M + base_track.SURFACE_HEIGHT_M / 2.0
 )
 
-# Smooth grandstand canopy dimensions. There are 32 intervals and therefore
-# 33 cross sections, comfortably above the requested 24-section minimum.
+# The local mesh arches across x and spans along y. The SDF visual rotates it
+# 90 degrees and places it above the west (+local-y) royal-box stand.
 ROOF_SECTION_COUNT = 32
-ROOF_X_MIN_M = 85.5
-ROOF_X_MAX_M = 108.5
-ROOF_Y_MIN_M = -29.0
-ROOF_Y_MAX_M = +29.0
-ROOF_EDGE_TOP_Z_M = 7.25
-ROOF_ARCH_RISE_M = 1.85
+ROOF_X_MIN_M = -7.5
+ROOF_X_MAX_M = +7.5
+ROOF_Y_MIN_M = -34.0
+ROOF_Y_MAX_M = +34.0
+ROOF_EDGE_TOP_Z_M = 7.15
+ROOF_ARCH_RISE_M = 1.15
 ROOF_THICKNESS_M = 0.22
+ROOF_POSE_X_M = 0.0
+ROOF_POSE_Y_M = 55.5
+ROOF_POSE_YAW_RAD = math.pi / 2.0
+
+# OSM way 431113163, expressed in the stadium-local frame whose origin is the
+# track centre and whose +x axis follows the 96.3 degree stadium heading.  The
+# closing point is omitted because OBJ faces close the outline themselves.
+SITE_OUTLINE_LOCAL_XY_M = (
+    (+70.2794, +60.2564),
+    (-63.3405, +62.5592),
+    (-79.7080, +55.4785),
+    (-92.5799, +48.0029),
+    (-101.1635, +34.3685),
+    (-110.0262, +15.0706),
+    (-110.4224, -4.0915),
+    (-105.1884, -21.7072),
+    (-94.8136, -40.9969),
+    (-80.2949, -54.7079),
+    (-60.0891, -65.1425),
+    (-36.1421, -66.3648),
+    (+38.5441, -65.5961),
+    (+67.0457, -65.3062),
+    (+88.2255, -53.0626),
+    (+103.0763, -37.2688),
+    (+113.1072, -20.2323),
+    (+115.7801, -2.3925),
+    (+110.5681, +17.7482),
+    (+101.0799, +34.4479),
+    (+89.4456, +51.0248),
+)
+PLAZA_SURFACE_Z_M = 0.004
 
 
 def build_mtl(material_name, rgba):
@@ -71,6 +104,36 @@ Ns 8.000000
 d {alpha:.6f}
 illum 2
 """
+
+
+def make_stadium_plaza_mesh():
+    """Return one upward-facing triangle fan for the OSM stadium outline."""
+
+    vertices = [(0.0, 0.0, PLAZA_SURFACE_Z_M)]
+    vertices.extend(
+        (x, y, PLAZA_SURFACE_Z_M) for x, y in SITE_OUTLINE_LOCAL_XY_M
+    )
+    faces = []
+    area_m2 = 0.0
+    outline_count = len(SITE_OUTLINE_LOCAL_XY_M)
+    for index, (x0, y0) in enumerate(SITE_OUTLINE_LOCAL_XY_M):
+        x1, y1 = SITE_OUTLINE_LOCAL_XY_M[(index + 1) % outline_count]
+        cross_z = x0 * y1 - y0 * x1
+        if cross_z <= 0.0:
+            raise ValueError("stadium outline is not counter-clockwise/star-shaped")
+        area_m2 += cross_z / 2.0
+        faces.append((1, index + 2, (index + 1) % outline_count + 2))
+
+    lines = [
+        "# OSM way 431113163 stadium-only plaza surface",
+        f"mtllib {PLAZA_MTL_RELATIVE_PATH.name}",
+        f"o {STADIUM_MODEL_NAME}_plaza_surface",
+        f"usemtl {PLAZA_MATERIAL_NAME}",
+    ]
+    lines.extend(f"v {x:.4f} {y:.4f} {z:.4f}" for x, y, z in vertices)
+    lines.extend(("vn 0.000000 0.000000 1.000000", "s 1"))
+    lines.extend(f"f {a}//1 {b}//1 {c}//1" for a, b, c in faces)
+    return "\n".join(lines) + "\n", vertices, faces, area_m2
 
 
 def make_track_surface_mesh():
@@ -292,14 +355,15 @@ def track_surface_mesh_visual():
             <scale>1 1 1</scale>
           </mesh>
         </geometry>
-        {base_stadium.material_xml(CONTINUOUS_TRACK_RED_RGBA)}
+        {base_stadium.material_xml(CONTINUOUS_TRACK_RGBA)}
       </visual>"""
 
 
 def build_track_sdf():
     visuals = [track_surface_mesh_visual()]
 
-    # Retain the west-side green apron from the CJU-inspired visual layout.
+    # Mission variant: colour the connected running surface red while keeping
+    # the real west-side green apron and lane geometry.
     visuals.append(
         base_track.box_visual(
             "green_west_apron",
@@ -342,16 +406,16 @@ def build_track_sdf():
             )
 
     visual_body = "\n".join(visuals)
-    centre_perimeter = (
+    measurement_perimeter = (
         2.0 * base_track.STRAIGHT_LENGTH_M
-        + 2.0 * math.pi * base_track.CURVE_RADIUS_M
+        + 2.0 * math.pi * base_track.MEASUREMENT_CURVE_RADIUS_M
     )
     return f"""<?xml version="1.0"?>
 <sdf version="1.9">
   <!-- Generated by gen_drone_cju_track_models.py. -->
   <!-- Dedicated model; no external mesh, image, or texture.
-       Centre path perimeter: {centre_perimeter:.6f} m.
-       Eight visual lanes, one connected procedural red track surface. -->
+       Lane-1 measurement perimeter: {measurement_perimeter:.6f} m.
+       Eight visual lanes on one continuous red surface. -->
   <model name="{TRACK_MODEL_NAME}">
     <static>true</static>
     <link name="track_link">
@@ -369,7 +433,7 @@ def build_track_config():
   <version>1.0</version>
   <sdf version="1.9">model.sdf</sdf>
   <description>
-    Dedicated centred 400 m track with eight lanes and a continuous red surface.
+    OSM-calibrated 400 m track with eight lanes and a continuous red surface.
   </description>
 </model>
 """
@@ -577,7 +641,7 @@ def make_roof_mesh():
     validate_roof_mesh(vertices, faces)
 
     lines = [
-        "# Procedurally generated closed grandstand roof",
+        "# Procedurally generated closed royal-box canopy",
         "# No external source asset",
         f"mtllib {ROOF_MTL_RELATIVE_PATH.name}",
         f"o {STADIUM_MODEL_NAME}_grandstand_roof",
@@ -652,8 +716,8 @@ def roof_mesh_visual():
         f"model://{STADIUM_MODEL_NAME}/"
         f"{ROOF_MESH_RELATIVE_PATH.as_posix()}"
     )
-    return f"""      <visual name="north_smooth_blue_roof">
-        <pose>0 0 0 0 0 0</pose>
+    return f"""      <visual name="west_smooth_canopy_roof">
+        <pose>{ROOF_POSE_X_M} {ROOF_POSE_Y_M} 0 0 0 {ROOF_POSE_YAW_RAD}</pose>
         <cast_shadows>true</cast_shadows>
         <geometry>
           <mesh>
@@ -661,39 +725,45 @@ def roof_mesh_visual():
             <scale>1 1 1</scale>
           </mesh>
         </geometry>
-        {base_stadium.material_xml(base_stadium.ROOF_BLUE_RGBA)}
+        {base_stadium.material_xml(base_stadium.ROOF_LIGHT_RGBA)}
+      </visual>"""
+
+
+def stadium_plaza_mesh_visual():
+    plaza_uri = (
+        f"model://{STADIUM_MODEL_NAME}/"
+        f"{PLAZA_MESH_RELATIVE_PATH.as_posix()}"
+    )
+    return f"""      <visual name="stadium_plaza">
+        <cast_shadows>false</cast_shadows>
+        <geometry>
+          <mesh>
+            <uri>{plaza_uri}</uri>
+            <scale>1 1 1</scale>
+          </mesh>
+        </geometry>
+        {base_stadium.material_xml(base_stadium.PLAZA_RGBA)}
       </visual>"""
 
 
 def build_stadium_sdf():
-    visuals = [
-        base_stadium.box_visual(
-            "stadium_plaza",
-            0.0,
-            0.0,
-            0.002,
-            base_stadium.SITE_LENGTH_M,
-            base_stadium.SITE_WIDTH_M,
-            0.004,
-            base_stadium.PLAZA_RGBA,
-            cast_shadows=False,
-        )
-    ]
+    visuals = [stadium_plaza_mesh_visual()]
     collisions = []
 
     base_stadium.add_football_field(visuals)
-    base_stadium.add_blue_court(visuals)
+    base_stadium.add_blue_courts(visuals)
     base_stadium.add_stands(visuals, collisions)
-    base_stadium.add_trees(visuals)
-    base_stadium.add_floodlights(visuals)
-    base_stadium.add_surroundings(visuals)
+    base_stadium.add_safety_rails(visuals)
+    # The source helper uses the old rectangular apron edge. Pull that ring
+    # inward so every tree stands on the OSM polygon instead of floating beyond it.
+    base_stadium.add_trees(visuals, position_scale=0.85)
 
-    # Replace the seven faceted box panels from the legacy visual with a single
-    # smooth, closed procedural mesh. Columns and all seating remain.
+    # Replace the seven faceted west-canopy panels with one smooth closed mesh.
+    # Columns, blue steel trim, royal-box block, and all seating remain.
     visuals = [
         visual
         for visual in visuals
-        if 'name="north_blue_roof_panel_' not in visual
+        if 'name="west_canopy_roof_panel_' not in visual
     ]
     visuals.append(roof_mesh_visual())
 
@@ -702,7 +772,7 @@ def build_stadium_sdf():
     return f"""<?xml version="1.0"?>
 <sdf version="1.9">
   <!-- Generated by gen_drone_cju_track_models.py. -->
-  <!-- Dedicated primitive stadium plus a locally generated closed roof OBJ. -->
+  <!-- Dedicated primitive stadium with local OSM plaza and closed roof OBJs. -->
   <model name="{STADIUM_MODEL_NAME}">
     <static>true</static>
     <link name="stadium_link">
@@ -721,7 +791,7 @@ def build_stadium_config():
   <version>1.0</version>
   <sdf version="1.9">model.sdf</sdf>
   <description>
-    Dedicated CJU-inspired stadium with a smooth procedural blue grandstand roof.
+    OSM-calibrated CJU stadium with a smooth west royal-box canopy.
   </description>
 </model>
 """
@@ -788,6 +858,9 @@ def main():
         track_faces,
         track_topology,
     ) = make_track_surface_mesh()
+    plaza_obj, plaza_vertices, plaza_faces, plaza_area_m2 = (
+        make_stadium_plaza_mesh()
+    )
     roof_obj, roof_vertices, roof_faces, roof_normal_count = make_roof_mesh()
 
     (TRACK_MODEL_DIR / "model.sdf").write_text(track_sdf, encoding="utf-8")
@@ -798,7 +871,7 @@ def main():
         track_obj, encoding="utf-8"
     )
     (TRACK_MODEL_DIR / TRACK_MTL_RELATIVE_PATH).write_text(
-        build_mtl(TRACK_MATERIAL_NAME, CONTINUOUS_TRACK_RED_RGBA),
+        build_mtl(TRACK_MATERIAL_NAME, CONTINUOUS_TRACK_RGBA),
         encoding="utf-8",
     )
     (STADIUM_MODEL_DIR / "model.sdf").write_text(
@@ -807,11 +880,18 @@ def main():
     (STADIUM_MODEL_DIR / "model.config").write_text(
         build_stadium_config(), encoding="utf-8"
     )
+    (STADIUM_MODEL_DIR / PLAZA_MESH_RELATIVE_PATH).write_text(
+        plaza_obj, encoding="utf-8"
+    )
+    (STADIUM_MODEL_DIR / PLAZA_MTL_RELATIVE_PATH).write_text(
+        build_mtl(PLAZA_MATERIAL_NAME, base_stadium.PLAZA_RGBA),
+        encoding="utf-8",
+    )
     (STADIUM_MODEL_DIR / ROOF_MESH_RELATIVE_PATH).write_text(
         roof_obj, encoding="utf-8"
     )
     (STADIUM_MODEL_DIR / ROOF_MTL_RELATIVE_PATH).write_text(
-        build_mtl(ROOF_MATERIAL_NAME, base_stadium.ROOF_BLUE_RGBA),
+        build_mtl(ROOF_MATERIAL_NAME, base_stadium.ROOF_LIGHT_RGBA),
         encoding="utf-8",
     )
 
@@ -826,7 +906,7 @@ def main():
     roof_max_z = max(vertex[2] for vertex in roof_vertices)
     print(f"Generated dedicated track: {TRACK_MODEL_DIR}")
     print(
-        f"  one continuous red mesh visual; "
+        f"  one continuous red mesh; "
         f"{base_track.LANE_COUNT} lanes / "
         f"{track_sdf.count('<visual name=')} visuals"
     )
@@ -855,6 +935,10 @@ def main():
         f"{base_stadium.SITE_LENGTH_M / 2:.1f}], "
         f"y=[-{base_stadium.SITE_WIDTH_M / 2:.1f}, "
         f"{base_stadium.SITE_WIDTH_M / 2:.1f}] m"
+    )
+    print(
+        f"  OSM plaza: {len(plaza_vertices) - 1} outline points, "
+        f"{len(plaza_faces)} triangles, area={plaza_area_m2:.1f} m^2"
     )
     print(
         f"  roof: {ROOF_SECTION_COUNT} sections, "

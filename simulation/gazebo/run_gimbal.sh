@@ -4,11 +4,11 @@
 # not where run_px4_map.sh looks), GZ_PARTITION, and the gimbal camera's wider
 # tan(vfov/2) that mission_manager would otherwise default to the down camera's.
 #
-#   ./gazebo/run_gimbal.sh              gimbal + perception, 1 km shuttle
-#   ./gazebo/run_gimbal.sh mission      ...plus landing + ArUco result window
+#   ./gazebo/run_gimbal.sh              CJU gimbal + perception
+#   ./gazebo/run_gimbal.sh mission      CJU word-command mission + ArUco landing
 #   ./gazebo/run_gimbal.sh baseline     body-fixed direct landing, to compare
-#   LANDING_MAP=cju-track ./gazebo/run_gimbal.sh
-#                                      isolated DRONE_CJU_TRACK working copy
+#   LANDING_MAP=mpc-landing-moving ./gazebo/run_gimbal.sh mission
+#                                      legacy 1 km shuttle mission
 #   FOLLOW_DRONE=1 ./gazebo/run_gimbal.sh   optional camera tracking
 #   ARUCO_VIEW=0 ./gazebo/run_gimbal.sh mission   disable the automatic viewer
 #
@@ -18,14 +18,14 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 MODE="${1:-}"
-LANDING_MAP="${LANDING_MAP:-mpc-landing-moving}"
+LANDING_MAP="${LANDING_MAP:-cju-track}"
 case "$LANDING_MAP" in
   mpc-landing-moving)
     LANDING_WORLD="mpc_landing_200m_moving"
     LANDING_COORDINATES="$SCRIPT_DIR/maps/mpc_landing_200m_moving.yaml"
     ;;
   cju-track)
-    LANDING_WORLD="DRONE_CJU_TRACK"
+    LANDING_WORLD="drone_cju"
     LANDING_COORDINATES="$SCRIPT_DIR/maps/drone_cju_track.yaml"
     ;;
   *)
@@ -37,7 +37,7 @@ esac
 # trailer_cue_node publishes Gazebo ENU relative to the drone's local origin.
 # Read that origin from the same coordinate contract used by run_px4_map.sh so
 # a map edit cannot silently leave the long-range target cue displaced.
-LANDING_SPAWN_ENU="$(
+mapfile -t LANDING_CONFIG < <(
   python3 - "$LANDING_COORDINATES" <<'PY'
 import json
 import pathlib
@@ -48,8 +48,17 @@ import yaml
 document = yaml.safe_load(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
 pose = document["spawn"]["gazebo_spawn_pose_enu"]
 print(json.dumps([float(pose["x"]), float(pose["y"])]))
+trailer = document["trailer"]
+marker_world_z = (float(trailer["spawn_pose_enu"]["z"])
+                  + float(trailer["marker_surface_height_m"]))
+local_origin_z = float(document["frames"]["mavros_local"]["origin_enu_m"][2])
+print(f"{marker_world_z - local_origin_z:.9f}")
+print(float(document.get("mission", {}).get("cruise_altitude_m", 6.0)))
 PY
-)"
+)
+LANDING_SPAWN_ENU="${LANDING_CONFIG[0]}"
+LANDING_DECK_Z="${LANDING_CONFIG[1]}"
+LANDING_TAKEOFF_ALT="${LANDING_CONFIG[2]}"
 
 GIMBAL=1
 case "$MODE" in
@@ -63,9 +72,14 @@ case "$MODE" in
 esac
 
 ROS_SETUP="${ROS_SETUP:-/opt/ros/humble/setup.bash}"
+PX4_MSGS_SETUP="${PX4_MSGS_SETUP:-${HOME}/px4_ros2_ws/install/setup.bash}"
 export GZ_PARTITION="${GZ_PARTITION:-px4_ros2_${USER:-user}}"
 
 PIDS=()
+TRAILER_GATE_DIR=""
+TRAILER_START_FILE=""
+DRIVE_TRAILER_FOR_RUN=1
+TRAILER_SPEED_FOR_RUN="${TRAILER_SPEED_M_S:-3.0}"
 # Kill the WHOLE stack, not just our direct children.  Two components detach
 # themselves and used to survive Ctrl-C, then break the NEXT run: the sensor
 # bridge (run_px4_map.sh starts it with setsid) and the perception nodes
@@ -83,6 +97,7 @@ STACK_PATTERNS=(
   'gimbal_perception.launch'
   'landing_mpc/lib/landing_mpc/'
   'ros2 run landing_mpc'
+  'python3 .*simulation/gazebo/trailer_waypoint_driver.py'
   'python3 .*simulation/gazebo/tools/aruco_debug_viewer.py'
 )
 _sweep() {
@@ -97,14 +112,29 @@ cleanup() {
   _sweep -TERM
   sleep 2
   _sweep -KILL      # anything that ignored TERM (setsid-detached children)
-  wait 2>/dev/null || true
+  for pid in "${PIDS[@]}"; do kill -KILL "$pid" 2>/dev/null || true; done
+  for pid in "${PIDS[@]}"; do wait "$pid" 2>/dev/null || true; done
+  if [[ -n "$TRAILER_GATE_DIR" ]]; then
+    rm -f "$TRAILER_START_FILE"
+    rmdir "$TRAILER_GATE_DIR" 2>/dev/null || true
+  fi
 }
 trap cleanup EXIT INT TERM
+
+if [[ "$LANDING_MAP" == "cju-track" ]]; then
+  DRIVE_TRAILER_FOR_RUN=0
+  TRAILER_SPEED_FOR_RUN=3.0
+  if [[ "$RUN_MISSION" == "1" ]]; then
+    TRAILER_GATE_DIR="$(mktemp -d /tmp/drone_cju_trailer.XXXXXX)"
+    TRAILER_START_FILE="$TRAILER_GATE_DIR/start"
+    DRIVE_TRAILER_FOR_RUN=1
+  fi
+fi
 
 # The launcher refuses to start beside a stale instance, and leftover pieces
 # from a previous Ctrl-C are the usual reason this script appears to hang or
 # never takes off.  Clear the FULL stack, not just PX4, before starting.
-if pgrep -f 'px4_sitl_default/bin/px4|native_gz_sensor_bridge|landing_mpc/lib/landing_mpc/|python3 .*simulation/gazebo/tools/aruco_debug_viewer.py' >/dev/null 2>&1; then
+if pgrep -f 'px4_sitl_default/bin/px4|native_gz_sensor_bridge|landing_mpc/lib/landing_mpc/|python3 .*simulation/gazebo/(trailer_waypoint_driver.py|tools/aruco_debug_viewer.py)' >/dev/null 2>&1; then
   echo "Leftover sim/perception processes from a previous run; clearing them first."
   _sweep -TERM
   sleep 2
@@ -122,7 +152,8 @@ pgrep -f 'MicroXRCEAgent.*8888' >/dev/null 2>&1 || {
 echo "=== Gazebo + PX4 (GIMBAL=$GIMBAL) — log: /tmp/gimbal_sim.log ==="
 GIMBAL="$GIMBAL" FOLLOW_DRONE="${FOLLOW_DRONE:-0}" \
 START_XRCE=1 START_MAVROS="${START_MAVROS:-1}" PX4_DAEMON=1 \
-DRIVE_TRAILER=1 TRAILER_SPEED_M_S="${TRAILER_SPEED_M_S:-3.0}" \
+DRIVE_TRAILER="$DRIVE_TRAILER_FOR_RUN" TRAILER_SPEED_M_S="$TRAILER_SPEED_FOR_RUN" \
+TRAILER_START_FILE="$TRAILER_START_FILE" \
   "$SCRIPT_DIR/run_px4_map.sh" "$LANDING_MAP" >/tmp/gimbal_sim.log 2>&1 &
 PIDS+=($!)
 
@@ -144,20 +175,25 @@ echo " up."
 set +u
 # shellcheck disable=SC1090
 source "$ROS_SETUP"
+# shellcheck disable=SC1090
+[[ -f "$PX4_MSGS_SETUP" ]] && source "$PX4_MSGS_SETUP"
 # shellcheck disable=SC1091
 source "$REPO_DIR/install/setup.bash"
 set -u
+python3 -c 'import px4_msgs' >/dev/null 2>&1 || {
+  echo "ERROR: px4_msgs not found; set PX4_MSGS_SETUP to its install/setup.bash." >&2
+  exit 3
+}
 
 if [[ "$GIMBAL" == "1" ]]; then
   echo "=== gimbal + perception — log: /tmp/gimbal_stack.log ==="
-  # Gazebo diagnostic default: do not reject finite same-frame poses by their
-  # pair disagreement.  The detector-side check remains available for a
-  # reversible A/B run by explicitly setting MAX_PAIR_DISAGREEMENT_M.
+  # Same-frame markers describe one rigid deck, so gross disagreement is an
+  # invalid measurement.  Keep the safety gate tunable without disabling it.
   PAIR_GATE_ARG=(
-    max_pair_disagreement_m:="${MAX_PAIR_DISAGREEMENT_M:-1000000}"
+    max_pair_disagreement_m:="${MAX_PAIR_DISAGREEMENT_M:-1.0}"
   )
   ros2 launch landing_mpc gimbal_perception.launch.py \
-    world:="$LANDING_WORLD" "${PAIR_GATE_ARG[@]}" \
+    world:="$LANDING_WORLD" deck_z:="$LANDING_DECK_Z" "${PAIR_GATE_ARG[@]}" \
     >/tmp/gimbal_stack.log 2>&1 &
   PIDS+=($!)
   # The gimbal camera is wider than the body-fixed one this defaults to.
@@ -167,8 +203,10 @@ else
   ros2 run landing_mpc aruco_detector_node --ros-args -p use_sim_time:=true \
     >/tmp/gimbal_stack.log 2>&1 & PIDS+=($!)
   ros2 run landing_mpc marker_tf_node --ros-args -p use_sim_time:=true \
+    -p deck_z:="$LANDING_DECK_Z" \
     >>/tmp/gimbal_stack.log 2>&1 & PIDS+=($!)
   ros2 run landing_mpc marker_kf_node --ros-args -p use_sim_time:=true \
+    -p deck_z:="$LANDING_DECK_Z" \
     >>/tmp/gimbal_stack.log 2>&1 & PIDS+=($!)
   VFOV_ARG=()
 fi
@@ -216,12 +254,21 @@ if [[ "$RUN_MISSION" == "1" ]]; then
   echo "=== mission — log: /tmp/gimbal_mission.log ==="
   ros2 run landing_mpc trailer_cue_node --ros-args \
     -p use_sim_time:=true -p world:="$LANDING_WORLD" \
-    -p "spawn_enu:=$LANDING_SPAWN_ENU" \
+    -p "spawn_enu:=$LANDING_SPAWN_ENU" -p deck_z:="$LANDING_DECK_Z" \
     >/tmp/gimbal_cue.log 2>&1 &
   PIDS+=($!)
   sleep 2
+  MISSION_ARGS=(-p auto_start:=true)
+  if [[ "$LANDING_MAP" == "cju-track" ]]; then
+    MISSION_ARGS=(
+      -p auto_start:=false
+      -p takeoff_alt:="$LANDING_TAKEOFF_ALT"
+      -p "mission_map_yaml:=$LANDING_COORDINATES"
+    )
+  fi
   ros2 run landing_mpc mission_manager_node --ros-args -p use_sim_time:=true \
-    "${VFOV_ARG[@]}" -p auto_start:=true >/tmp/gimbal_mission.log 2>&1 &
+    -p deck_z:="$LANDING_DECK_Z" "${VFOV_ARG[@]}" "${MISSION_ARGS[@]}" \
+    >/tmp/gimbal_mission.log 2>&1 &
   PIDS+=($!)
 fi
 
@@ -238,6 +285,62 @@ cat <<EOF
   score a run      :  python3 scratchpad/gimbal_chase_monitor.py
 
 EOF
+
+if [[ "$RUN_MISSION" == "1" && "$LANDING_MAP" == "cju-track" ]]; then
+  wait_for_states() {
+    timeout "$2" bash -c \
+      'ros2 topic echo /mission/state std_msgs/msg/String 2>/dev/null | grep -m1 -E "^data: ($1)$"' \
+      _ "$1" >/dev/null
+  }
+  send_until_state() {
+    local command="$1" states="$2" timeout_s="$3" publisher pid_index status=0
+    ros2 topic pub --rate 5 --wait-matching-subscriptions 1 --print 100000 \
+      /mission/command std_msgs/msg/String "{data: '$command'}" >/dev/null &
+    publisher=$!
+    pid_index=${#PIDS[@]}
+    PIDS+=("$publisher")
+    wait_for_states "$states" "$timeout_s" || status=$?
+    kill "$publisher" 2>/dev/null || true
+    wait "$publisher" 2>/dev/null || true
+    unset 'PIDS[pid_index]'
+    return "$status"
+  }
+
+  commands=(takeoff mission land)
+  step=0
+  echo '  명령 순서: takeoff → mission → land'
+  while (( step < ${#commands[@]} )); do
+    IFS= read -r -p '  명령> ' command || break
+    if [[ "$command" != "${commands[$step]}" ]]; then
+      echo "  지금 입력할 명령: ${commands[$step]}" >&2
+      continue
+    fi
+    case "$command" in
+      takeoff)
+        echo '  이륙 중...'
+        send_until_state takeoff 'TAKEOFF|READY' 10 || {
+          echo '  TAKEOFF 상태 확인 실패' >&2; exit 7;
+        }
+        wait_for_states READY 90 || { echo '  이륙 완료 확인 실패' >&2; exit 7; }
+        echo '  이륙 완료'
+        ;;
+      mission)
+        send_until_state mission 'MISSION' 30 || {
+          echo '  지도 기반 전역 A* 경로 생성 실패' >&2; exit 7;
+        }
+        touch "$TRAILER_START_FILE"
+        echo '  지도 기반 전역 A* 반복 순찰 시작 — 구간별 재계획, 트레일러 3.0 m/s'
+        ;;
+      land)
+        send_until_state land 'APPROACH|ACQUIRE|DESCEND|TOUCHDOWN|DONE' 10 || {
+          echo '  착륙 상태 확인 실패' >&2; exit 7;
+        }
+        echo '  이동 트레일러 아루코 착륙 시작'
+        ;;
+    esac
+    ((step += 1))
+  done
+fi
 
 # Surface the lines worth reading instead of making anyone tail three files.
 tail -f /tmp/gimbal_stack.log /tmp/gimbal_mission.log 2>/dev/null \

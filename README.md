@@ -68,8 +68,9 @@ ros2 run aruco_landing aruco_pose_node               # → /perception/down/mark
 | `px4_models` | PX4 SITL 기체 (`link_px4_model.sh`가 PX4 트리에 심링크) |
 | `gz_bridge` | gz-transport → ROS 2 센서/clock 브리지 |
 
-기본 착륙 실험은 장애물 없는 `300 × 100 m` 직선 셔틀 맵이며, 트레일러가
-`3 m/s`로 300 m 전진한 뒤 차체를 돌리지 않고 300 m 후진합니다.
+기본 착륙 실험은 실제 비율의 청주대학교 종합운동장입니다. `takeoff → mission → land`
+세 단어로 전환하며, `mission`은 입력 지도로 전역 A* 경로를 구간별 재계획해 반복 순찰하고 트레일러는
+육상 트랙을 `3 m/s`로 주행합니다.
 
 ```bash
 ./simulation/gazebo/run_gimbal.sh mission     # 전체 미션

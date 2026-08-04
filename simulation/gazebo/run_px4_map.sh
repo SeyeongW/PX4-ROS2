@@ -51,7 +51,7 @@ A repository-owned trailer model is included in each map. The stationary
 mpc-landing baseline cannot be driven; the default moving profile follows its
 map-defined 1,000 m forward / 1,000 m no-turn reverse shuttle with
 DRIVE_TRAILER=1.
-cju-track selects the isolated DRONE_CJU_TRACK.world working copy.
+cju-track selects the real-scale Cheongju University main-stadium world.
 
 Environment:
   PX4_DIR=~/PX4-Autopilot  Existing PX4 source/build (firmware is not changed)
@@ -299,7 +299,7 @@ if [[ "$MOVING_LANDING_PROFILE" == "1" ]]; then
     )
     for asset in "${CJU_MESH_ASSETS[@]}"; do
       [[ -f "$SCRIPT_DIR/models/$asset" ]] || {
-        echo "ERROR: DRONE_CJU_TRACK mesh asset is missing: $SCRIPT_DIR/models/$asset" >&2
+        echo "ERROR: drone_cju mesh asset is missing: $SCRIPT_DIR/models/$asset" >&2
         exit 3
       }
     done
@@ -608,7 +608,7 @@ elif [[ "$MAP" == "mpc-landing" ]]; then
 elif [[ "$MOVING_LANDING_PROFILE" == "1" ]]; then
   echo "Landing trailer  : deterministic velocity model"
   if [[ "$MAP" == "cju-track" ]]; then
-    echo "World reference  : DRONE_CJU_TRACK isolated working copy"
+    echo "World reference  : real-scale Cheongju University main stadium only"
   else
     echo "World reference  : 1,000 x 100 m forward/reverse shuttle"
   fi
@@ -938,12 +938,16 @@ SPAWN_CHECK_PID=$!
 
 if [[ "${DRIVE_TRAILER:-0}" == "1" ]]; then
   # Keep the map-defined initial spawn geometry until the aircraft exists.
-  # This remains independent of the mission and ArUco detector; it only avoids
-  # giving the 3 m/s trailer a 30--40 s head start during PX4 startup.
+  # This avoids giving the trailer a head start during PX4 startup. The CJU
+  # word-command launcher additionally supplies a gate held until `mission`.
   (
     for _ in {1..45}; do
       if gz model --list 2>/dev/null | grep -Fq -- "$ENTITY_NAME"; then
-        echo "Trailer route    : PX4 entity confirmed; starting"
+        if [[ -n "${TRAILER_START_FILE:-}" ]]; then
+          echo "Trailer route    : PX4 entity confirmed; waiting for mission clearance"
+          while [[ ! -e "$TRAILER_START_FILE" ]]; do sleep 0.1; done
+        fi
+        echo "Trailer route    : starting"
         exec python3 -u "$SCRIPT_DIR/trailer_waypoint_driver.py" \
           "${TRAILER_ARGS[@]}"
       fi

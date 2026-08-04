@@ -136,6 +136,14 @@ class MarkerKfNode(Node):
         var = max(0.0, self._lag_sq / self._lag_n - mean * mean)
         return max(float(np.sqrt(var)), self.lag_jitter_floor)
 
+    def _initialise(self, z, t):
+        """Start, or restart, the filter from one current marker fix."""
+        self.x = np.array([z[0], z[1], 0.0, 0.0])
+        self.P = np.diag([
+            self.sigma_m ** 2, self.sigma_m ** 2, 4.0, 4.0])
+        self._t_last = t
+        self._t_meas = t
+
     def _on_meas(self, msg: PointStamped):
         """Fold in one fix, AT THE INSTANT IT WAS TAKEN.
 
@@ -158,13 +166,15 @@ class MarkerKfNode(Node):
         """
         z = np.array([msg.point.x, msg.point.y])
         t = self._now()
-        t_cap = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
-        if self.x is None:                       # first fix initialises
-            self.x = np.array([z[0], z[1], 0.0, 0.0])
-            self.P = np.diag([self.sigma_m ** 2, self.sigma_m ** 2, 4.0, 4.0])
-            self._t_last = t
-            self._t_meas = t
+        expired = (self._t_meas is not None
+                   and t - self._t_meas > self.max_coast)
+        if self.x is None or expired:
+            if expired:
+                self.get_logger().info(
+                    'expired marker track recovered from a fresh fix')
+            self._initialise(z, t)
             return
+        t_cap = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
         # bring the state up to now, then bring the MEASUREMENT forward to meet
         # it across the pipeline delay (see the docstring)
         dt = max(0.0, t - self._t_last)

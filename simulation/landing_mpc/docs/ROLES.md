@@ -81,11 +81,14 @@ predictor가 없으면 MPC가 움직이는 표적을 놓치고, reference가 없
   `marker_tf_node`가 프레임 오프셋에 면역이 되는 이유입니다.
 
 ### 2.6 `mission_manager_node` — 단계 시퀀싱 + 유일한 setpoint 권한
-- **입력** `/marker/cue*`, `/marker/position`, `/marker/valid`, PX4 상태
+- **입력** `/mission/command`, `/marker/cue*`, `/marker/position`,
+  `/marker/valid`, PX4 상태
 - **출력** `/fmu/in/trajectory_setpoint`, `/fmu/in/offboard_control_mode`,
   `/fmu/in/vehicle_command`, `/mission/state`
-- 단계: `IDLE → TAKEOFF → APPROACH → ACQUIRE → DESCEND → TOUCHDOWN → DONE`
-  (실패 시 `ABORT`)
+- 단계: `IDLE → TAKEOFF → READY → MISSION_PLAN ↔ MISSION → APPROACH →
+  ACQUIRE → DESCEND → TOUCHDOWN → DONE` (접근 복구 시 `ABORT`)
+- `MISSION_PLAN`은 별도 프로세스에서 실제 위치 기준 A*를 계산하므로 50 Hz
+  Offboard heartbeat를 막지 않습니다. 중앙과 이륙점을 매 구간 재계획해 순찰합니다.
 - **다른 setpoint 발행자와 절대 같이 띄우지 마세요.**
 - 원칙: **큐가 날고, 마커가 중심을 잡는다.** 미션 전체는 `/marker/cue`를 추종하고,
   비전은 거기에 **천천히 필터링되는 수평 보정**으로만 들어갑니다.
@@ -113,6 +116,8 @@ predictor가 없으면 MPC가 움직이는 표적을 놓치고, reference가 없
 ./simulation/gazebo/run_gimbal.sh gimbal      # 짐벌+인식만
 HEADLESS=1 ./simulation/gazebo/run_gimbal.sh mission
 ```
+
+전체 미션에서는 `takeoff`, `mission`, `land`를 순서대로 입력합니다.
 
 ---
 
