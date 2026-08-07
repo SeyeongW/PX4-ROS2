@@ -180,6 +180,21 @@ class MissionManagerNode(Node):
         self.vision_gate_h = float(p('vision_gate_height_m', 6.0).value)
         # How long to wait at the gate before giving up and climbing away.
         self.gate_timeout = float(p('vision_gate_timeout_s', 20.0).value)
+        # CUE-ONLY LANDING (default ON).  The vision gate above exists to stop a
+        # blind descent on a cue that can be metres off (trailer_cue_node
+        # publishes gz-world coords as PX4-local and that offset drifts), which
+        # risks missing a 5x5 m deck and clipping its edge.  But when the goal is
+        # only "get ONTO the platform", not centimetre precision, that gate turns
+        # a continuous cue into a needless ABORT whenever the flat marker never
+        # resolves.  With this ON the descent proceeds on the cue alone: follow
+        # the cue, let vision centre it if the marker shows, and otherwise just
+        # land on the cue.  The two descent safety limits still hold regardless
+        # -- the MPC corridor (align-before-descend, so no diving lunge) and the
+        # z-floor (never command below the deck) -- so this is a vertical settle
+        # onto the cue, not a reckless plunge.  Turn OFF to restore the
+        # precision-landing interlock that requires a converged marker fix below
+        # vision_gate_h before it will commit past that height.
+        self.cue_only_landing = bool(p('cue_only_landing', True).value)
         self._t_gate = None
         self._hold_z = None                  # altitude the hold froze us at
         # How long to press into the deck before concluding that PX4 is right
@@ -380,6 +395,12 @@ class MissionManagerNode(Node):
             f'descent corridor: |p_xy| <= h/{self.cone_k:.2f}, which keeps the '
             f'{self.centre_marker:.2f} m centre marker whole in frame down to '
             f'h={self.keep_h:.1f} m')
+        self.get_logger().info(
+            'landing mode: CUE-ONLY — lands on the cue even if the marker is '
+            'never seen; MPC corridor + z-floor still enforced'
+            if self.cue_only_landing else
+            f'landing mode: PRECISION — requires a converged marker fix below '
+            f'{self.vision_gate_h:.0f} m or it holds and aborts')
         # The descent hold (`_bias_settling`) is what makes this safe, but say
         # so when the raw rates are on the wrong side of it anyway.
         if self.bias_rate < self.vz_max * self.tan_vfov_2:
@@ -668,7 +689,16 @@ class MissionManagerNode(Node):
           * it has been seen but the correction has not settled -> we know
             roughly, not precisely, and descending would lose the race with the
             shrinking view (see `_bias_settling`).
+
+        Both are waived when `cue_only_landing` is set: the mission then commits
+        to the cue and lands without ever requiring a marker, trading precision
+        for always completing the descent (see that parameter's rationale).  The
+        MPC corridor and z-floor still gate the descent, so waiving this removes
+        only the "must have seen the marker" requirement, not the geometric
+        safeguards.
         """
+        if self.cue_only_landing:
+            return ''
         if self.p_d[2] - self.deck_z > self.vision_gate_h:
             return ''
         if self._bias_n == 0:
