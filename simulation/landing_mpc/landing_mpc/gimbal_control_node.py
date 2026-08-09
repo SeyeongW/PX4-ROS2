@@ -69,6 +69,7 @@ import math
 
 import numpy as np
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from geometry_msgs.msg import PointStamped
 from rclpy.node import Node
 from rclpy.qos import (DurabilityPolicy, HistoryPolicy, QoSProfile,
@@ -113,6 +114,29 @@ def _rate_limit(current, desired, max_step):
     return current + max(-max_step, min(max_step, delta))
 
 
+def _nadir_handoff(direction, start_depression):
+    """Blend continuously from nadir to a shallow target direction."""
+    down = np.array([0.0, 0.0, -1.0])
+    target = np.asarray(direction, float)
+    norm = float(np.linalg.norm(target))
+    if norm < 1e-9:
+        return down
+    target /= norm
+    if start_depression <= 0.0:
+        return target
+    depression = math.atan2(max(0.0, -target[2]),
+                            max(float(np.hypot(target[0], target[1])), 1e-6))
+    end_depression = min(2.0 * start_depression, math.pi / 2.0)
+    if depression <= start_depression:
+        return down
+    if depression >= end_depression:
+        return target
+    weight = (depression - start_depression) / (
+        end_depression - start_depression)
+    blended = (1.0 - weight) * down + weight * target
+    return blended / np.linalg.norm(blended)
+
+
 class GimbalControlNode(Node):
     def __init__(self):
         super().__init__('gimbal_control_node')
@@ -140,7 +164,7 @@ class GimbalControlNode(Node):
         # buys nothing, so stop chasing and hold nadir for a clean touchdown.
         self.nadir_below_m = require_nonnegative(
             'nadir_below_m', p('nadir_below_m', 2.0).value)
-        # Do not aim at the CUE until the look-down angle is steep enough to be
+        # Do not aim at a target until the look-down angle is steep enough to be
         # worth it.  Chasing a cue 57 m out and 14 m below is a ~14 deg
         # depression: the 1.3 m marker is unresolvable at that range AND lies
         # edge-on (measured 0% detection during the whole approach), so aiming
@@ -150,10 +174,9 @@ class GimbalControlNode(Node):
         # it looks like the drone flipped (it did not — the flight log holds
         # the airframe at <=5 deg tilt throughout).  So hold nadir until the
         # geometry is steep; the image stays stable and the yaw stops thrashing.
-        # 25 deg starts cue pointing at roughly 30 m horizontal range for the
-        # current 16 m approach / 1.811 m deck geometry.  VISION, once valid,
-        # is always tracked — a valid fix already implies that the marker was
-        # actually seen.
+        # 25 deg starts a continuous nadir-to-target handoff; it reaches the
+        # target direction at 50 deg.  Applying the same handoff to cue and
+        # vision prevents either source from creating a 65–80 deg aim step.
         self.min_cue_depression = math.radians(require_between(
             'min_cue_depression_deg',
             p('min_cue_depression_deg', 25.0).value,
@@ -301,19 +324,16 @@ class GimbalControlNode(Node):
             d_enu = target - self._p_d
             height = self._p_d[2] - self.deck_z
             hold_nadir = height < self.nadir_below_m or np.linalg.norm(d_enu) < 1e-3
-            # Gate the CUE on look-down angle (see min_cue_depression).  Vision,
-            # once valid, is never gated: it is only valid when the marker was
-            # actually seen, which already implies a steep view.
-            if self._source == 'cue' and not hold_nadir:
-                horiz = float(math.hypot(d_enu[0], d_enu[1]))
-                depression = math.atan2(max(0.0, -d_enu[2]), max(horiz, 1e-6))
-                if depression < self.min_cue_depression:
-                    self._source = 'nadir (cue too shallow)'
-                    hold_nadir = True
             if hold_nadir:
-                if self._source == 'cue':
-                    self._source = 'nadir'
                 d_enu = np.array([0.0, 0.0, -1.0])
+                self._source = 'nadir'
+            else:
+                target_axis = d_enu / np.linalg.norm(d_enu)
+                d_enu = _nadir_handoff(d_enu, self.min_cue_depression)
+                if np.allclose(d_enu, [0.0, 0.0, -1.0]):
+                    self._source = f'nadir ({self._source} too shallow)'
+                elif not np.allclose(d_enu, target_axis):
+                    self._source += ' handoff'
         return enu_dir_to_flu(d_enu, self._q)
 
     # ----------------------------------------------------------------- loop
@@ -321,18 +341,20 @@ class GimbalControlNode(Node):
         if self._q is None:
             return
         yaw_d, roll_d, pitch_d = gimbal_joint_angles(self._desired_axis_flu(),
-                                                     yaw_hold=self._yaw)
+                                                     yaw_hold=self._yaw,
+                                                     pitch_hold=self._pitch)
         step = self.max_rate / self.rate_hz
-        # Count slew SATURATION before it is hidden by the limiter.  A tick that
-        # saturates is a tick where the aim is falling behind the target for a
-        # reason no servo-tracking metric can see, so it is measured separately.
-        if max(abs(_rate_limit(0.0, yaw_d - self._yaw, math.pi)),
-               abs(_rate_limit(0.0, pitch_d - self._pitch, math.pi))) > step:
+        yaw_next = _rate_limit(self._yaw, yaw_d, step)
+        roll_next = _rate_limit(self._roll, roll_d, step)
+        pitch_next = _rate_limit(self._pitch, pitch_d, step)
+        desired_axis = gimbal_axis_flu(yaw_d, pitch_d)
+        limited_axis = gimbal_axis_flu(yaw_next, pitch_next)
+        optical_residual = math.acos(float(np.clip(
+            np.dot(desired_axis, limited_axis), -1.0, 1.0)))
+        if optical_residual > 1e-4:
             self._sat_n += 1
         self._desired = (yaw_d, pitch_d)
-        self._yaw = _rate_limit(self._yaw, yaw_d, step)
-        self._roll = _rate_limit(self._roll, roll_d, step)
-        self._pitch = _rate_limit(self._pitch, pitch_d, step)
+        self._yaw, self._roll, self._pitch = yaw_next, roll_next, pitch_next
 
         for publisher, value in ((self._pub_yaw, self._yaw),
                                  (self._pub_roll, self._roll),
@@ -473,7 +495,7 @@ def main(args=None):
     node = GimbalControlNode()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         node.destroy_node()

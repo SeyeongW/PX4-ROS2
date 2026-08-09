@@ -4,24 +4,42 @@ map:
   gazebo_world_name: drone_cju
   world_file: gazebo/worlds/drone_cju.world
   bounds_enu_m:
-    x: [-47.80386026294595, 104.60907207740266]
-    y: [-4.165614917060537, 235.34364189315534]
+    x: [-46.327675738662, 105.725453481149]
+    y: [-0.596778313793, 238.097118087389]
   real_world_reference:
     name: Cheongju University Main Complex Stadium (No. 40)
-    track_center_wgs84_approx: [36.654417, 127.495904, 74.0]
+    horizontal_datum: WGS84
+    horizontal_source: OpenStreetMap ways 1374978221 and 431113163
+    horizontal_accuracy: osm_scale_visual_with_integer_operational_anchors_not_survey_grade
+    source_track_center_wgs84: [36.654416832792, 127.495903519248]
+    elevation_m_approx: 74.0
     spherical_origin_wgs84: [36.6533752165, 127.4955858675, 74.0]
-    model_heading_deg_enu: 96.3
-    stadium_footprint_m: [226.8, 128.3]
-    track_footprint_m_approx: [179.0, 87.1]
+    # Local +x points approximately east; the physical stadium long axis is +y.
+    model_heading_deg_enu: 6.307121199814
+    stadium_long_axis_heading_deg_enu: 96.307121199814
+    stadium_outline_osm_way: 431113163
+    stadium_footprint_m: [226, 128]
+    # Physical long-axis x short-axis dimensions from OSM way 1374978221.
+    track_footprint_m: [178.7, 87.4]
+    track_bounds_stadium_endpoint_m:
+      x: [-87.4, 0]
+      y: [-43.35, 135.35]
+    site_bounds_stadium_endpoint_m:
+      x: [-106, 22]
+      y: [-64, 162]
     source_notes: gazebo/CJU_STADIUM_WORLD.md
   variant:
     based_on: mpc_landing_200m_moving
     isolated_assets: true
     visual_changes:
-      - real_scale_stadium_only
+      - integer_operational_anchors
+      - photo_bottom_right_origin
+      - stadium_field_only
       - red_running_track
-      - north_and_south_blue_basketball_courts
-      - west_royal_box_canopy
+      - eight_lane_markings
+      - basketball_court
+      - jokgu_court
+      - enlarged_vertical_jokgu_court
 
 frames:
   gazebo_world:
@@ -30,10 +48,22 @@ frames:
     y_axis: north
     z_axis: up
     units: m
+  stadium_endpoint:
+    convention: track_aligned_xy
+    # OSM node 12730808466: photo/map bottom-right (south-east) tangent.
+    # +x is approximately east and +y approximately north.
+    origin_track_center_local_m: [44, -46]
+    origin_wgs84: [36.6540480, 127.4964451, 74.0]
+    origin_enu_m: [76.827710406649, 74.660781359808, 0.0]
+    heading_deg_enu: 6.307121199814
+    track_center_m: [-44, 46]
+  stadium_center:
+    parent: stadium_endpoint
+    origin_m: [-44, 46, 0]
   mavros_local:
     convention: ENU
-    # PX4 model root rests on the 2.051 m deck; base_link is 0.24 m higher.
-    origin_enu_m: [37.74461362761062, 30.970166134855617, 2.291]
+    # PX4 spawns the model root at the 2.051 m deck; base_link is 0.24 m higher.
+    origin_enu_m: [37.378484880918, 31.063090991854, 2.291]
 
 px4_vehicle:
   airframe_autostart_id: 4001
@@ -53,34 +83,34 @@ px4_vehicle:
 spawn:
   name: drone_cju_drone_spawn
   gazebo_spawn_pose_enu:
-    x: 37.74461362761062
-    y: 30.970166134855617
+    x: 37.378484880918
+    y: 31.063090991854
     z: 2.051
     roll: 0.0
     pitch: 0.0
-    yaw: 0.109955742876
+    yaw: 0.110080031259
 
 trailer:
   entity_name: trailer
   model_uri: model://moving_platform_aruco_velocity
   spawn_pose_enu:
-    x: 37.74461362761062
-    y: 30.970166134855617
+    x: 37.378484880918
+    y: 31.063090991854
     z: 0.0
     roll: 0.0
     pitch: 0.0
     # Gazebo VelocityControl consumes horizontal commands in model axes.
-    yaw: 0.109955742876
+    yaw: 0.110080031259
   separation_m: 0.0
   motion: stadium_track_at_3_m_s
   command_topic: /model/trailer/cmd_vel
   pose_topic: /world/drone_cju/dynamic_pose/info
   odometry_topic: /model/trailer/odometry
   route_type: stadium
-  stadium_center_enu_m: [28.402605907228356, 115.5890134880474]
-  stadium_straight_length_m: 92.96593829219574
-  stadium_curve_radius_m: 38.65
-  stadium_heading_deg: 96.3
+  stadium_center_enu_m: [28.040567797218, 115.548612263477]
+  stadium_straight_length_m: 92
+  stadium_curve_radius_m: 39
+  stadium_heading_deg: 96.307121199814
   stadium_direction: counterclockwise
   command_rate_hz: 50.0
   cruise_speed_m_s: 3.0
@@ -99,21 +129,30 @@ trailer:
 
 terrain:
   type: flat_box
-  size_m: [226.8, 128.3]
+  coordinate_frame: stadium_endpoint
+  center_m: [-42, 49]
+  size_m: [128, 226]
   ground_z_m: 0.0
   source_model: inline_stadium_ground
 
+facilities:
+  coordinate_frame: stadium_endpoint
+  stadium_field: {center_m: [-44, 48], size_m: [68, 105]}
+  basketball_court: {center_m: [-44, 113], size_m: [28, 15]}
+  jokgu_court: {center_m: [-44, -18], size_m: [10, 20]}
+
 mission:
+  coordinate_frame: stadium_endpoint
   command_topic: /mission/command
   command_sequence: [takeoff, mission, land]
   cruise_altitude_m: 5.0
   cruise_speed_m_s: 2.0
-  goal_stadium_local_m: [0.0, 0.0]
-  planner_resolution_m: 0.75
-  obstacle_clearance_m: 0.8
-  # These are the same stadium-local poses used by drone_cju.world.
+  goal_m: [-44, 46]
+  planner_resolution_m: 1
+  obstacle_clearance_m: 1
+  # Integer centres relative to the photo/map bottom-right endpoint (0, 0).
   obstacles:
-    - {name: barrier_1, center_m: [-44.0, 0.0, 5.0], size_m: [0.35, 4.5, 10.0]}
-    - {name: barrier_2, center_m: [-34.0, 1.5, 5.0], size_m: [0.35, 4.5, 10.0]}
-    - {name: barrier_3, center_m: [-24.0, -1.5, 5.0], size_m: [0.35, 4.5, 10.0]}
-    - {name: barrier_4, center_m: [-14.0, 1.5, 5.0], size_m: [0.35, 4.5, 10.0]}
+    - {name: barrier_1, center_m: [-47, 2, 5], size_m: [4.5, 0.35, 10]}
+    - {name: barrier_2, center_m: [-41, 12, 5], size_m: [4.5, 0.35, 10]}
+    - {name: barrier_3, center_m: [-47, 22, 5], size_m: [4.5, 0.35, 10]}
+    - {name: barrier_4, center_m: [-41, 32, 5], size_m: [4.5, 0.35, 10]}

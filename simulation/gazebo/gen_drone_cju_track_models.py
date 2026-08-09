@@ -1,25 +1,15 @@
 #!/usr/bin/env python3
-"""Generate the dedicated ``drone_cju_track`` Gazebo model pair.
+"""Generate the CJU stadium track and its three requested facilities.
 
-This generator intentionally writes only these new model directories:
-
-* ``models/drone_cju_track_running_track``
-* ``models/drone_cju_track_stadium``
-
-Shared primitive-building helpers are imported from the base-model generators
-so both base and dedicated assets use the same calibrated dimensions.
-
-All geometry is generated locally. The red running surface is one connected
-procedural OBJ annulus, and the
-west royal-box canopy is a procedural, closed OBJ solid with 32 curved
-sections. No downloaded mesh, image, or texture is used.
+The ``stadium_endpoint`` origin is the south-east track tangent visible at the
+bottom-right of a north-up map.  Local +x is approximately east and local +y
+is approximately north, so the stadium extends left/up from (0, 0).
 """
 
 import math
 from pathlib import Path
 
 import gen_cju_stadium_model as base_stadium
-import gen_track_model as base_track
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -28,75 +18,35 @@ TRACK_MODEL_NAME = "drone_cju_track_running_track"
 STADIUM_MODEL_NAME = "drone_cju_track_stadium"
 TRACK_MODEL_DIR = MODELS_DIR / TRACK_MODEL_NAME
 STADIUM_MODEL_DIR = MODELS_DIR / STADIUM_MODEL_NAME
-TRACK_MESH_RELATIVE_PATH = Path("meshes") / "running_track_surface.obj"
-TRACK_MTL_RELATIVE_PATH = Path("meshes") / "running_track_surface.mtl"
-ROOF_MESH_RELATIVE_PATH = Path("meshes") / "grandstand_roof.obj"
-ROOF_MTL_RELATIVE_PATH = Path("meshes") / "grandstand_roof.mtl"
-PLAZA_MESH_RELATIVE_PATH = Path("meshes") / "stadium_plaza_surface.obj"
-PLAZA_MTL_RELATIVE_PATH = Path("meshes") / "stadium_plaza_surface.mtl"
+TRACK_MESH_PATH = Path("meshes/running_track_surface.obj")
+TRACK_MTL_PATH = Path("meshes/running_track_surface.mtl")
 
-CONTINUOUS_TRACK_RGBA = base_track.RED_STRAIGHT_RGBA
-TRACK_MATERIAL_NAME = "continuous_track_red"
-ROOF_MATERIAL_NAME = "cju_canopy_light"
-PLAZA_MATERIAL_NAME = "cju_stadium_plaza"
+# OSM way 1374978221 is approximately 178.7 m by 87.4 m.  The 92 m tangent
+# separation and 39 m trailer radius remain unchanged, keeping the moving
+# platform centred on the rendered track.
+TRACK_CENTER_M = (-44, 46)
+STRAIGHT_LENGTH_M = 92.0
+OUTER_HALF_WIDTH_M = 43.7
+OUTER_END_RADIUS_M = 43.35
+LANE_COUNT = 8
+LANE_WIDTH_M = 1.22
+TRACK_WIDTH_M = LANE_COUNT * LANE_WIDTH_M
+LINE_WIDTH_M = 0.08
+ARC_SEGMENTS = 48
+# Keep the track above court/field markings where their rectangles
+# meet the rounded infield.  This cleanly masks sub-metre corner overlap.
+TRACK_SURFACE_Z_M = 0.016
+LINE_SURFACE_Z_M = 0.020
 
-# Each half-circle gets 96 angular intervals. The two exact straight edges and
-# both sampled half-circles form a single connected top surface with no
-# overlapping chord boxes or gaps.
-TRACK_ARC_SEGMENTS = 96
-TRACK_SURFACE_Z_M = (
-    base_track.SURFACE_Z_M + base_track.SURFACE_HEIGHT_M / 2.0
-)
-
-# The local mesh arches across x and spans along y. The SDF visual rotates it
-# 90 degrees and places it above the west (+local-y) royal-box stand.
-ROOF_SECTION_COUNT = 32
-ROOF_X_MIN_M = -7.5
-ROOF_X_MAX_M = +7.5
-ROOF_Y_MIN_M = -34.0
-ROOF_Y_MAX_M = +34.0
-ROOF_EDGE_TOP_Z_M = 7.15
-ROOF_ARCH_RISE_M = 1.15
-ROOF_THICKNESS_M = 0.22
-ROOF_POSE_X_M = 0.0
-ROOF_POSE_Y_M = 55.5
-ROOF_POSE_YAW_RAD = math.pi / 2.0
-
-# OSM way 431113163, expressed in the stadium-local frame whose origin is the
-# track centre and whose +x axis follows the 96.3 degree stadium heading.  The
-# closing point is omitted because OBJ faces close the outline themselves.
-SITE_OUTLINE_LOCAL_XY_M = (
-    (+70.2794, +60.2564),
-    (-63.3405, +62.5592),
-    (-79.7080, +55.4785),
-    (-92.5799, +48.0029),
-    (-101.1635, +34.3685),
-    (-110.0262, +15.0706),
-    (-110.4224, -4.0915),
-    (-105.1884, -21.7072),
-    (-94.8136, -40.9969),
-    (-80.2949, -54.7079),
-    (-60.0891, -65.1425),
-    (-36.1421, -66.3648),
-    (+38.5441, -65.5961),
-    (+67.0457, -65.3062),
-    (+88.2255, -53.0626),
-    (+103.0763, -37.2688),
-    (+113.1072, -20.2323),
-    (+115.7801, -2.3925),
-    (+110.5681, +17.7482),
-    (+101.0799, +34.4479),
-    (+89.4456, +51.0248),
-)
-PLAZA_SURFACE_Z_M = 0.004
+TRACK_RGBA = (0.54, 0.18, 0.13, 1.0)
+LINE_RGBA = (0.96, 0.96, 0.93, 1.0)
+TRACK_MATERIAL_NAME = "cju_track_red"
+LINE_MATERIAL_NAME = "cju_lane_white"
 
 
-def build_mtl(material_name, rgba):
-    """Return a local Wavefront material matching the SDF visual colour."""
-
+def _material(name, rgba):
     red, green, blue, alpha = rgba
-    return f"""# Procedurally generated local material
-newmtl {material_name}
+    return f"""newmtl {name}
 Ka {red:.6f} {green:.6f} {blue:.6f}
 Kd {red:.6f} {green:.6f} {blue:.6f}
 Ks 0.040000 0.040000 0.040000
@@ -106,854 +56,227 @@ illum 2
 """
 
 
-def make_stadium_plaza_mesh():
-    """Return one upward-facing triangle fan for the OSM stadium outline."""
-
-    vertices = [(0.0, 0.0, PLAZA_SURFACE_Z_M)]
-    vertices.extend(
-        (x, y, PLAZA_SURFACE_Z_M) for x, y in SITE_OUTLINE_LOCAL_XY_M
+def build_mtl():
+    return (
+        "# Procedurally generated CJU track materials\n"
+        + _material(TRACK_MATERIAL_NAME, TRACK_RGBA)
+        + "\n"
+        + _material(LINE_MATERIAL_NAME, LINE_RGBA)
     )
-    faces = []
-    area_m2 = 0.0
-    outline_count = len(SITE_OUTLINE_LOCAL_XY_M)
-    for index, (x0, y0) in enumerate(SITE_OUTLINE_LOCAL_XY_M):
-        x1, y1 = SITE_OUTLINE_LOCAL_XY_M[(index + 1) % outline_count]
-        cross_z = x0 * y1 - y0 * x1
-        if cross_z <= 0.0:
-            raise ValueError("stadium outline is not counter-clockwise/star-shaped")
-        area_m2 += cross_z / 2.0
-        faces.append((1, index + 2, (index + 1) % outline_count + 2))
 
-    lines = [
-        "# OSM way 431113163 stadium-only plaza surface",
-        f"mtllib {PLAZA_MTL_RELATIVE_PATH.name}",
-        f"o {STADIUM_MODEL_NAME}_plaza_surface",
-        f"usemtl {PLAZA_MATERIAL_NAME}",
-    ]
-    lines.extend(f"v {x:.4f} {y:.4f} {z:.4f}" for x, y, z in vertices)
-    lines.extend(("vn 0.000000 0.000000 1.000000", "s 1"))
-    lines.extend(f"f {a}//1 {b}//1 {c}//1" for a, b, c in faces)
-    return "\n".join(lines) + "\n", vertices, faces, area_m2
+
+def stadium_outline(offset_m=0.0):
+    """Return one smooth clockwise-free stadium contour.
+
+    ``offset_m`` moves the contour inward.  Every contour starts at the
+    south-east tangent, continues north on the east straight, then closes via
+    the north curve, west straight, and south curve.
+    """
+
+    radius_x = OUTER_HALF_WIDTH_M - offset_m
+    radius_y = OUTER_END_RADIUS_M - offset_m
+    if radius_x <= 0.0 or radius_y <= 0.0:
+        raise ValueError("track offset is larger than the curve radius")
+
+    centre_x = -OUTER_HALF_WIDTH_M
+    east_x = centre_x + radius_x
+    west_x = centre_x - radius_x
+    points = [(east_x, 0.0), (east_x, STRAIGHT_LENGTH_M)]
+
+    for index in range(1, ARC_SEGMENTS + 1):
+        theta = math.pi * index / ARC_SEGMENTS
+        points.append((
+            centre_x + radius_x * math.cos(theta),
+            STRAIGHT_LENGTH_M + radius_y * math.sin(theta),
+        ))
+
+    points.append((west_x, 0.0))
+    for index in range(1, ARC_SEGMENTS):
+        theta = math.pi + math.pi * index / ARC_SEGMENTS
+        points.append((
+            centre_x + radius_x * math.cos(theta),
+            radius_y * math.sin(theta),
+        ))
+    return tuple(points)
+
+
+def _append_annulus(vertices, sections, name, material, outer, inner, z):
+    if len(outer) != len(inner):
+        raise ValueError("track contours must have the same station count")
+    first_vertex = len(vertices) + 1
+    for inner_point, outer_point in zip(inner, outer):
+        vertices.extend(((*inner_point, z), (*outer_point, z)))
+
+    faces = []
+    for station in range(len(outer)):
+        next_station = (station + 1) % len(outer)
+        inner_index = first_vertex + station * 2
+        outer_index = inner_index + 1
+        next_inner = first_vertex + next_station * 2
+        next_outer = next_inner + 1
+        faces.extend((
+            (inner_index, outer_index, next_outer),
+            (inner_index, next_outer, next_inner),
+        ))
+    sections.append((name, material, faces))
+
+
+def _validate_layout():
+    outer = stadium_outline()
+    if outer[0] != (0.0, 0.0):
+        raise ValueError("photo bottom-right track tangent must be (0, 0)")
+    if len(outer) < 64:
+        raise ValueError("track curve sampling is too coarse")
+    values = (
+        *TRACK_CENTER_M,
+        *(value for point in outer for value in point),
+        *(value for _, centre, _, _ in base_stadium.FACILITIES
+          for value in centre),
+    )
+    if not all(math.isfinite(value) for value in values):
+        raise ValueError("layout contains a non-finite coordinate")
+    if any(value != round(value) for value in TRACK_CENTER_M):
+        raise ValueError("mission-relevant track centre must be integer metres")
+    for _, centre, _, _ in base_stadium.FACILITIES:
+        if any(value != round(value) for value in centre):
+            raise ValueError("facility centres must be integer metres")
+
+    inner_radius_x = OUTER_HALF_WIDTH_M - TRACK_WIDTH_M
+    inner_radius_y = OUTER_END_RADIUS_M - TRACK_WIDTH_M
+    for name, centre, size, _ in base_stadium.FACILITIES:
+        if not name.endswith("_court"):
+            continue
+        half_x = size[0] / 2.0 + base_stadium.LINE_WIDTH_M / 2.0
+        half_y = size[1] / 2.0 + base_stadium.LINE_WIDTH_M / 2.0
+        for x in (centre[0] - half_x, centre[0] + half_x):
+            for y in (centre[1] - half_y, centre[1] + half_y):
+                curve_y = min(max(y, 0.0), STRAIGHT_LENGTH_M)
+                inside = (
+                    ((x + OUTER_HALF_WIDTH_M) / inner_radius_x) ** 2
+                    + ((y - curve_y) / inner_radius_y) ** 2
+                ) <= 1.0
+                if not inside:
+                    raise ValueError(f"{name} extends into the running track")
 
 
 def make_track_surface_mesh():
-    """Return one connected, non-overlapping stadium-ring top surface.
-
-    The station sequence travels counter-clockwise along the lower straight,
-    right half-circle, upper straight, and left half-circle. Each station has
-    exactly one inner and one outer vertex. Adjacent station pairs therefore
-    form one quad (two triangles), including the final-to-first closure.
-    """
-
-    straight_half = base_track.STRAIGHT_LENGTH_M / 2.0
-    inner_radius = (
-        base_track.CURVE_RADIUS_M - base_track.TRACK_HALF_WIDTH_M
-    )
-    outer_radius = (
-        base_track.CURVE_RADIUS_M + base_track.TRACK_HALF_WIDTH_M
-    )
-
-    # Each item is (inner_xyz, outer_xyz).
-    stations = [
-        (
-            (-straight_half, -inner_radius, TRACK_SURFACE_Z_M),
-            (-straight_half, -outer_radius, TRACK_SURFACE_Z_M),
-        ),
-        (
-            (+straight_half, -inner_radius, TRACK_SURFACE_Z_M),
-            (+straight_half, -outer_radius, TRACK_SURFACE_Z_M),
-        ),
-    ]
-
-    # Right curve: lower-right to upper-right, including the upper endpoint.
-    for index in range(1, TRACK_ARC_SEGMENTS + 1):
-        theta = -math.pi / 2.0 + index * math.pi / TRACK_ARC_SEGMENTS
-        cos_theta = math.cos(theta)
-        sin_theta = math.sin(theta)
-        stations.append(
-            (
-                (
-                    +straight_half + inner_radius * cos_theta,
-                    inner_radius * sin_theta,
-                    TRACK_SURFACE_Z_M,
-                ),
-                (
-                    +straight_half + outer_radius * cos_theta,
-                    outer_radius * sin_theta,
-                    TRACK_SURFACE_Z_M,
-                ),
-            )
-        )
-
-    # The upper straight ends at the upper-left curve tangent.
-    stations.append(
-        (
-            (-straight_half, +inner_radius, TRACK_SURFACE_Z_M),
-            (-straight_half, +outer_radius, TRACK_SURFACE_Z_M),
-        )
-    )
-
-    # Left curve: upper-left toward lower-left. The final lower endpoint is the
-    # first station and is deliberately omitted to avoid duplicate vertices.
-    for index in range(1, TRACK_ARC_SEGMENTS):
-        theta = math.pi / 2.0 + index * math.pi / TRACK_ARC_SEGMENTS
-        cos_theta = math.cos(theta)
-        sin_theta = math.sin(theta)
-        stations.append(
-            (
-                (
-                    -straight_half + inner_radius * cos_theta,
-                    inner_radius * sin_theta,
-                    TRACK_SURFACE_Z_M,
-                ),
-                (
-                    -straight_half + outer_radius * cos_theta,
-                    outer_radius * sin_theta,
-                    TRACK_SURFACE_Z_M,
-                ),
-            )
-        )
-
-    expected_station_count = 2 * TRACK_ARC_SEGMENTS + 2
-    if len(stations) != expected_station_count:
-        raise ValueError(
-            f"track station count {len(stations)} != "
-            f"{expected_station_count}"
-        )
+    """Return one red annulus with regulation-width eight-lane markings."""
 
     vertices = []
-    for inner_vertex, outer_vertex in stations:
-        vertices.extend((inner_vertex, outer_vertex))
+    sections = []
+    _append_annulus(
+        vertices,
+        sections,
+        "continuous_red_surface",
+        TRACK_MATERIAL_NAME,
+        stadium_outline(0.0),
+        stadium_outline(TRACK_WIDTH_M),
+        TRACK_SURFACE_Z_M,
+    )
 
-    faces = []
-    station_count = len(stations)
-    for station_index in range(station_count):
-        next_station = (station_index + 1) % station_count
-        inner = station_index * 2 + 1
-        outer = station_index * 2 + 2
-        next_inner = next_station * 2 + 1
-        next_outer = next_station * 2 + 2
-
-        # Winding points upward (+z) on both triangles.
-        faces.extend(
-            (
-                (inner, outer, next_outer),
-                (inner, next_outer, next_inner),
-            )
+    for boundary in range(LANE_COUNT + 1):
+        offset = boundary * LANE_WIDTH_M
+        outer_offset = max(0.0, offset - LINE_WIDTH_M / 2.0)
+        inner_offset = min(TRACK_WIDTH_M, offset + LINE_WIDTH_M / 2.0)
+        if boundary == 0:
+            inner_offset = LINE_WIDTH_M
+        elif boundary == LANE_COUNT:
+            outer_offset = TRACK_WIDTH_M - LINE_WIDTH_M
+        _append_annulus(
+            vertices,
+            sections,
+            f"lane_boundary_{boundary}",
+            LINE_MATERIAL_NAME,
+            stadium_outline(outer_offset),
+            stadium_outline(inner_offset),
+            LINE_SURFACE_Z_M,
         )
 
-    topology = validate_track_surface_mesh(vertices, faces)
     lines = [
-        "# Procedurally generated continuous 400 m running-track surface",
-        "# One connected topological annulus; no external source asset",
-        f"mtllib {TRACK_MTL_RELATIVE_PATH.name}",
-        f"o {TRACK_MODEL_NAME}_continuous_surface",
-        f"usemtl {TRACK_MATERIAL_NAME}",
+        "# Smooth OSM-scale CJU eight-lane running track",
+        f"mtllib {TRACK_MTL_PATH.name}",
     ]
-    lines.extend(
-        f"v {x:.6f} {y:.6f} {z:.6f}" for x, y, z in vertices
-    )
-    lines.extend(("vn 0.000000 0.000000 1.000000", "s 1"))
-    lines.extend(
-        f"f {first}//1 {second}//1 {third}//1"
-        for first, second, third in faces
-    )
-    return "\n".join(lines) + "\n", vertices, faces, topology
-
-
-def validate_track_surface_mesh(vertices, faces):
-    """Validate connected annulus topology, triangle winding, and mesh area."""
-
-    edge_counts = {}
-    vertex_neighbors = {index: set() for index in range(1, len(vertices) + 1)}
-    area_m2 = 0.0
-
-    for face in faces:
-        if len(set(face)) != 3:
-            raise ValueError(f"degenerate track face indices: {face}")
-        points = [vertices[index - 1] for index in face]
-        edge_a = tuple(points[1][axis] - points[0][axis] for axis in range(3))
-        edge_b = tuple(points[2][axis] - points[0][axis] for axis in range(3))
-        cross = (
-            edge_a[1] * edge_b[2] - edge_a[2] * edge_b[1],
-            edge_a[2] * edge_b[0] - edge_a[0] * edge_b[2],
-            edge_a[0] * edge_b[1] - edge_a[1] * edge_b[0],
-        )
-        if cross[2] <= 1.0e-10:
-            raise ValueError(f"track face is degenerate or faces down: {face}")
-        area_m2 += 0.5 * math.sqrt(
-            sum(component * component for component in cross)
-        )
-
-        for start, end in zip(face, face[1:] + face[:1]):
-            edge = tuple(sorted((start, end)))
-            edge_counts[edge] = edge_counts.get(edge, 0) + 1
-            vertex_neighbors[start].add(end)
-            vertex_neighbors[end].add(start)
-
-    invalid_edge_counts = {
-        edge: count
-        for edge, count in edge_counts.items()
-        if count not in (1, 2)
-    }
-    if invalid_edge_counts:
-        raise ValueError(
-            f"track has non-manifold edges: {invalid_edge_counts}"
-        )
-
-    boundary_edge_count = sum(
-        count == 1 for count in edge_counts.values()
-    )
-    expected_boundary_edge_count = len(vertices)
-    if boundary_edge_count != expected_boundary_edge_count:
-        raise ValueError(
-            f"track boundary edges {boundary_edge_count} != "
-            f"{expected_boundary_edge_count}"
-        )
-
-    # One flood fill proves the ring is a single connected mesh component.
-    visited = set()
-    pending = [1]
-    while pending:
-        vertex = pending.pop()
-        if vertex in visited:
-            continue
-        visited.add(vertex)
-        pending.extend(vertex_neighbors[vertex] - visited)
-    if len(visited) != len(vertices):
-        raise ValueError(
-            f"track has disconnected vertices: "
-            f"{len(vertices) - len(visited)}"
-        )
-
-    euler_characteristic = len(vertices) - len(edge_counts) + len(faces)
-    if euler_characteristic != 0:
-        raise ValueError(
-            f"track annulus Euler characteristic is "
-            f"{euler_characteristic}, expected 0"
-        )
-
-    return {
-        "area_m2": area_m2,
-        "boundary_edges": boundary_edge_count,
-        "edges": len(edge_counts),
-        "euler_characteristic": euler_characteristic,
-    }
-
-
-def track_surface_mesh_visual():
-    track_uri = (
-        f"model://{TRACK_MODEL_NAME}/"
-        f"{TRACK_MESH_RELATIVE_PATH.as_posix()}"
-    )
-    return f"""      <visual name="continuous_red_surface">
-        <pose>0 0 0 0 0 0</pose>
-        <cast_shadows>false</cast_shadows>
-        <geometry>
-          <mesh>
-            <uri>{track_uri}</uri>
-            <scale>1 1 1</scale>
-          </mesh>
-        </geometry>
-        {base_stadium.material_xml(CONTINUOUS_TRACK_RGBA)}
-      </visual>"""
+    lines.extend(f"v {x:.6f} {y:.6f} {z:.6f}" for x, y, z in vertices)
+    lines.extend(("vn 0 0 1", "s 1"))
+    face_count = 0
+    for name, material, faces in sections:
+        lines.extend((f"o {name}", f"usemtl {material}"))
+        lines.extend(f"f {a}//1 {b}//1 {c}//1" for a, b, c in faces)
+        face_count += len(faces)
+    return "\n".join(lines) + "\n", vertices, face_count
 
 
 def build_track_sdf():
-    visuals = [track_surface_mesh_visual()]
-
-    # Mission variant: colour the connected running surface red while keeping
-    # the real west-side green apron and lane geometry.
-    visuals.append(
-        base_track.box_visual(
-            "green_west_apron",
-            0.0,
-            (
-                base_track.CURVE_RADIUS_M
-                + base_track.TRACK_HALF_WIDTH_M
-                + 1.5
-            ),
-            base_track.SURFACE_Z_M,
-            0.0,
-            base_track.STRAIGHT_LENGTH_M,
-            3.0,
-            base_track.SURFACE_HEIGHT_M,
-            base_track.GREEN_APRON_RGBA,
-        )
-    )
-
-    # Eight 1.22 m lanes have nine white boundary lines.
-    for boundary_index in range(base_track.LANE_COUNT + 1):
-        offset_m = (
-            -base_track.TRACK_HALF_WIDTH_M
-            + boundary_index * base_track.LANE_WIDTH_M
-        )
-        for segment_index, (x, y, yaw, length) in enumerate(
-            base_track.path_segments(offset_m)
-        ):
-            visuals.append(
-                base_track.box_visual(
-                    f"lane_{boundary_index}_{segment_index}",
-                    x,
-                    y,
-                    base_track.LINE_Z_M,
-                    yaw,
-                    length,
-                    base_track.LINE_WIDTH_M,
-                    base_track.LINE_HEIGHT_M,
-                    base_track.WHITE_RGBA,
-                )
-            )
-
-    visual_body = "\n".join(visuals)
-    measurement_perimeter = (
-        2.0 * base_track.STRAIGHT_LENGTH_M
-        + 2.0 * math.pi * base_track.MEASUREMENT_CURVE_RADIUS_M
-    )
+    uri = f"model://{TRACK_MODEL_NAME}/{TRACK_MESH_PATH.as_posix()}"
     return f"""<?xml version="1.0"?>
 <sdf version="1.9">
-  <!-- Generated by gen_drone_cju_track_models.py. -->
-  <!-- Dedicated model; no external mesh, image, or texture.
-       Lane-1 measurement perimeter: {measurement_perimeter:.6f} m.
-       Eight visual lanes on one continuous red surface. -->
+  <!-- Smooth red 8-lane track; materials are embedded in the OBJ/MTL. -->
   <model name="{TRACK_MODEL_NAME}">
     <static>true</static>
     <link name="track_link">
-{visual_body}
+      <visual name="continuous_red_surface">
+        <pose>0 0 0 0 0 0</pose>
+        <cast_shadows>false</cast_shadows>
+        <geometry><mesh><uri>{uri}</uri><scale>1 1 1</scale></mesh></geometry>
+      </visual>
     </link>
   </model>
 </sdf>
 """
-
-
-def build_track_config():
-    return f"""<?xml version="1.0"?>
-<model>
-  <name>{TRACK_MODEL_NAME}</name>
-  <version>1.0</version>
-  <sdf version="1.9">model.sdf</sdf>
-  <description>
-    OSM-calibrated 400 m track with eight lanes and a continuous red surface.
-  </description>
-</model>
-"""
-
-
-def roof_top_z(x):
-    normalized = (x - ROOF_X_MIN_M) / (ROOF_X_MAX_M - ROOF_X_MIN_M)
-    return ROOF_EDGE_TOP_Z_M + ROOF_ARCH_RISE_M * math.sin(
-        math.pi * normalized
-    )
-
-
-def roof_top_slope(x):
-    normalized = (x - ROOF_X_MIN_M) / (ROOF_X_MAX_M - ROOF_X_MIN_M)
-    return (
-        ROOF_ARCH_RISE_M
-        * math.pi
-        / (ROOF_X_MAX_M - ROOF_X_MIN_M)
-        * math.cos(math.pi * normalized)
-    )
-
-
-def normalized(vector):
-    magnitude = math.sqrt(sum(component * component for component in vector))
-    if magnitude <= 0.0:
-        raise ValueError("cannot normalize a zero-length vector")
-    return tuple(component / magnitude for component in vector)
-
-
-def make_roof_mesh():
-    """Return ``(obj_text, vertices, faces, normal_count)`` for a closed roof.
-
-    Four vertices are emitted per cross section:
-
-    * top at y-min / y-max
-    * bottom at y-min / y-max
-
-    Top, bottom, both longitudinal sides, and both end caps are triangulated.
-    The resulting solid is a closed two-manifold.
-    """
-
-    vertices = []
-    top_normal_vectors = []
-    bottom_normal_vectors = []
-
-    for section_index in range(ROOF_SECTION_COUNT + 1):
-        fraction = section_index / ROOF_SECTION_COUNT
-        x = ROOF_X_MIN_M + fraction * (
-            ROOF_X_MAX_M - ROOF_X_MIN_M
-        )
-        top_z = roof_top_z(x)
-        bottom_z = top_z - ROOF_THICKNESS_M
-        vertices.extend(
-            (
-                (x, ROOF_Y_MIN_M, top_z),
-                (x, ROOF_Y_MAX_M, top_z),
-                (x, ROOF_Y_MIN_M, bottom_z),
-                (x, ROOF_Y_MAX_M, bottom_z),
-            )
-        )
-
-        slope = roof_top_slope(x)
-        top_normal_vectors.append(normalized((-slope, 0.0, 1.0)))
-        bottom_normal_vectors.append(normalized((slope, 0.0, -1.0)))
-
-    normals = []
-    top_normal_indices = []
-    bottom_normal_indices = []
-    for top_normal, bottom_normal in zip(
-        top_normal_vectors, bottom_normal_vectors
-    ):
-        normals.append(top_normal)
-        top_normal_indices.append(len(normals))
-        normals.append(bottom_normal)
-        bottom_normal_indices.append(len(normals))
-
-    y_min_normal_index = len(normals) + 1
-    normals.append((0.0, -1.0, 0.0))
-    y_max_normal_index = len(normals) + 1
-    normals.append((0.0, +1.0, 0.0))
-    x_min_normal_index = len(normals) + 1
-    normals.append((-1.0, 0.0, 0.0))
-    x_max_normal_index = len(normals) + 1
-    normals.append((+1.0, 0.0, 0.0))
-
-    def vertex_index(section_index, corner_index):
-        # OBJ indices are one-based.
-        return section_index * 4 + corner_index + 1
-
-    # Each face is a tuple of (vertex_index, normal_index) pairs.
-    faces = []
-    for section_index in range(ROOF_SECTION_COUNT):
-        next_section = section_index + 1
-        top_here = top_normal_indices[section_index]
-        top_next = top_normal_indices[next_section]
-        bottom_here = bottom_normal_indices[section_index]
-        bottom_next = bottom_normal_indices[next_section]
-
-        top_y_min = vertex_index(section_index, 0)
-        top_y_max = vertex_index(section_index, 1)
-        bottom_y_min = vertex_index(section_index, 2)
-        bottom_y_max = vertex_index(section_index, 3)
-        next_top_y_min = vertex_index(next_section, 0)
-        next_top_y_max = vertex_index(next_section, 1)
-        next_bottom_y_min = vertex_index(next_section, 2)
-        next_bottom_y_max = vertex_index(next_section, 3)
-
-        # Curved top, outward normal +z.
-        faces.extend(
-            (
-                (
-                    (top_y_min, top_here),
-                    (next_top_y_min, top_next),
-                    (next_top_y_max, top_next),
-                ),
-                (
-                    (top_y_min, top_here),
-                    (next_top_y_max, top_next),
-                    (top_y_max, top_here),
-                ),
-            )
-        )
-        # Curved bottom, outward normal -z.
-        faces.extend(
-            (
-                (
-                    (bottom_y_min, bottom_here),
-                    (bottom_y_max, bottom_here),
-                    (next_bottom_y_max, bottom_next),
-                ),
-                (
-                    (bottom_y_min, bottom_here),
-                    (next_bottom_y_max, bottom_next),
-                    (next_bottom_y_min, bottom_next),
-                ),
-            )
-        )
-        # y-min side, outward normal -y.
-        faces.extend(
-            (
-                (
-                    (bottom_y_min, y_min_normal_index),
-                    (next_bottom_y_min, y_min_normal_index),
-                    (next_top_y_min, y_min_normal_index),
-                ),
-                (
-                    (bottom_y_min, y_min_normal_index),
-                    (next_top_y_min, y_min_normal_index),
-                    (top_y_min, y_min_normal_index),
-                ),
-            )
-        )
-        # y-max side, outward normal +y.
-        faces.extend(
-            (
-                (
-                    (bottom_y_max, y_max_normal_index),
-                    (top_y_max, y_max_normal_index),
-                    (next_top_y_max, y_max_normal_index),
-                ),
-                (
-                    (bottom_y_max, y_max_normal_index),
-                    (next_top_y_max, y_max_normal_index),
-                    (next_bottom_y_max, y_max_normal_index),
-                ),
-            )
-        )
-
-    # Closed end caps.
-    first_top_y_min = vertex_index(0, 0)
-    first_top_y_max = vertex_index(0, 1)
-    first_bottom_y_min = vertex_index(0, 2)
-    first_bottom_y_max = vertex_index(0, 3)
-    last = ROOF_SECTION_COUNT
-    last_top_y_min = vertex_index(last, 0)
-    last_top_y_max = vertex_index(last, 1)
-    last_bottom_y_min = vertex_index(last, 2)
-    last_bottom_y_max = vertex_index(last, 3)
-
-    faces.extend(
-        (
-            (
-                (first_bottom_y_min, x_min_normal_index),
-                (first_top_y_min, x_min_normal_index),
-                (first_top_y_max, x_min_normal_index),
-            ),
-            (
-                (first_bottom_y_min, x_min_normal_index),
-                (first_top_y_max, x_min_normal_index),
-                (first_bottom_y_max, x_min_normal_index),
-            ),
-            (
-                (last_bottom_y_min, x_max_normal_index),
-                (last_bottom_y_max, x_max_normal_index),
-                (last_top_y_max, x_max_normal_index),
-            ),
-            (
-                (last_bottom_y_min, x_max_normal_index),
-                (last_top_y_max, x_max_normal_index),
-                (last_top_y_min, x_max_normal_index),
-            ),
-        )
-    )
-
-    validate_roof_mesh(vertices, faces)
-
-    lines = [
-        "# Procedurally generated closed royal-box canopy",
-        "# No external source asset",
-        f"mtllib {ROOF_MTL_RELATIVE_PATH.name}",
-        f"o {STADIUM_MODEL_NAME}_grandstand_roof",
-        f"usemtl {ROOF_MATERIAL_NAME}",
-    ]
-    lines.extend(
-        f"v {x:.6f} {y:.6f} {z:.6f}" for x, y, z in vertices
-    )
-    lines.extend(
-        f"vn {x:.8f} {y:.8f} {z:.8f}" for x, y, z in normals
-    )
-    lines.append("s 1")
-    for face in faces:
-        face_fields = " ".join(
-            f"{vertex_index_value}//{normal_index_value}"
-            for vertex_index_value, normal_index_value in face
-        )
-        lines.append(f"f {face_fields}")
-
-    return "\n".join(lines) + "\n", vertices, faces, len(normals)
-
-
-def validate_roof_mesh(vertices, faces):
-    """Raise if the procedural roof is degenerate or not a closed manifold."""
-
-    edge_counts = {}
-    signed_volume_times_six = 0.0
-
-    for face in faces:
-        vertex_indices = [vertex_index for vertex_index, _ in face]
-        if len(set(vertex_indices)) != 3:
-            raise ValueError(f"degenerate face indices: {vertex_indices}")
-
-        points = [vertices[index - 1] for index in vertex_indices]
-        edge_a = tuple(points[1][axis] - points[0][axis] for axis in range(3))
-        edge_b = tuple(points[2][axis] - points[0][axis] for axis in range(3))
-        cross = (
-            edge_a[1] * edge_b[2] - edge_a[2] * edge_b[1],
-            edge_a[2] * edge_b[0] - edge_a[0] * edge_b[2],
-            edge_a[0] * edge_b[1] - edge_a[1] * edge_b[0],
-        )
-        if math.sqrt(sum(value * value for value in cross)) < 1.0e-10:
-            raise ValueError(f"zero-area face: {vertex_indices}")
-
-        p0, p1, p2 = points
-        signed_volume_times_six += (
-            p0[0] * (p1[1] * p2[2] - p1[2] * p2[1])
-            + p0[1] * (p1[2] * p2[0] - p1[0] * p2[2])
-            + p0[2] * (p1[0] * p2[1] - p1[1] * p2[0])
-        )
-
-        for start, end in zip(
-            vertex_indices,
-            vertex_indices[1:] + vertex_indices[:1],
-        ):
-            edge = tuple(sorted((start, end)))
-            edge_counts[edge] = edge_counts.get(edge, 0) + 1
-
-    non_manifold_edges = {
-        edge: count for edge, count in edge_counts.items() if count != 2
-    }
-    if non_manifold_edges:
-        raise ValueError(
-            f"roof mesh is not closed; edge counts: {non_manifold_edges}"
-        )
-    if abs(signed_volume_times_six) < 1.0e-8:
-        raise ValueError("roof mesh has zero signed volume")
-
-
-def roof_mesh_visual():
-    roof_uri = (
-        f"model://{STADIUM_MODEL_NAME}/"
-        f"{ROOF_MESH_RELATIVE_PATH.as_posix()}"
-    )
-    return f"""      <visual name="west_smooth_canopy_roof">
-        <pose>{ROOF_POSE_X_M} {ROOF_POSE_Y_M} 0 0 0 {ROOF_POSE_YAW_RAD}</pose>
-        <cast_shadows>true</cast_shadows>
-        <geometry>
-          <mesh>
-            <uri>{roof_uri}</uri>
-            <scale>1 1 1</scale>
-          </mesh>
-        </geometry>
-        {base_stadium.material_xml(base_stadium.ROOF_LIGHT_RGBA)}
-      </visual>"""
-
-
-def stadium_plaza_mesh_visual():
-    plaza_uri = (
-        f"model://{STADIUM_MODEL_NAME}/"
-        f"{PLAZA_MESH_RELATIVE_PATH.as_posix()}"
-    )
-    return f"""      <visual name="stadium_plaza">
-        <cast_shadows>false</cast_shadows>
-        <geometry>
-          <mesh>
-            <uri>{plaza_uri}</uri>
-            <scale>1 1 1</scale>
-          </mesh>
-        </geometry>
-        {base_stadium.material_xml(base_stadium.PLAZA_RGBA)}
-      </visual>"""
 
 
 def build_stadium_sdf():
-    visuals = [stadium_plaza_mesh_visual()]
-    collisions = []
-
-    base_stadium.add_football_field(visuals)
-    base_stadium.add_blue_courts(visuals)
-    base_stadium.add_stands(visuals, collisions)
-    base_stadium.add_safety_rails(visuals)
-    # The source helper uses the old rectangular apron edge. Pull that ring
-    # inward so every tree stands on the OSM polygon instead of floating beyond it.
-    base_stadium.add_trees(visuals, position_scale=0.85)
-
-    # Replace the seven faceted west-canopy panels with one smooth closed mesh.
-    # Columns, blue steel trim, royal-box block, and all seating remain.
-    visuals = [
-        visual
-        for visual in visuals
-        if 'name="west_canopy_roof_panel_' not in visual
-    ]
-    visuals.append(roof_mesh_visual())
-
-    visual_body = "\n".join(visuals)
-    collision_body = "\n".join(collisions)
-    return f"""<?xml version="1.0"?>
-<sdf version="1.9">
-  <!-- Generated by gen_drone_cju_track_models.py. -->
-  <!-- Dedicated primitive stadium with local OSM plaza and closed roof OBJs. -->
-  <model name="{STADIUM_MODEL_NAME}">
-    <static>true</static>
-    <link name="stadium_link">
-{visual_body}
-{collision_body}
-    </link>
-  </model>
-</sdf>
-"""
+    return base_stadium.build_sdf(STADIUM_MODEL_NAME)
 
 
-def build_stadium_config():
+def build_config(name, description):
     return f"""<?xml version="1.0"?>
 <model>
-  <name>{STADIUM_MODEL_NAME}</name>
+  <name>{name}</name>
   <version>1.0</version>
   <sdf version="1.9">model.sdf</sdf>
-  <description>
-    OSM-calibrated CJU stadium with a smooth west royal-box canopy.
-  </description>
+  <description>{description}</description>
 </model>
 """
 
 
-def visual_xy_bounds():
-    """Return the generated track's exact box AABB in local x/y coordinates."""
-
-    min_x = min_y = math.inf
-    max_x = max_y = -math.inf
-
-    def expand(x, y, yaw, length, width):
-        nonlocal min_x, min_y, max_x, max_y
-        half_x = (
-            abs(math.cos(yaw)) * length / 2.0
-            + abs(math.sin(yaw)) * width / 2.0
-        )
-        half_y = (
-            abs(math.sin(yaw)) * length / 2.0
-            + abs(math.cos(yaw)) * width / 2.0
-        )
-        min_x = min(min_x, x - half_x)
-        max_x = max(max_x, x + half_x)
-        min_y = min(min_y, y - half_y)
-        max_y = max(max_y, y + half_y)
-
-    for x, y, yaw, length in base_track.path_segments():
-        expand(x, y, yaw, length, base_track.TRACK_WIDTH_M)
-    expand(
-        0.0,
-        (
-            base_track.CURVE_RADIUS_M
-            + base_track.TRACK_HALF_WIDTH_M
-            + 1.5
-        ),
-        0.0,
-        base_track.STRAIGHT_LENGTH_M,
-        3.0,
-    )
-    for boundary_index in range(base_track.LANE_COUNT + 1):
-        offset_m = (
-            -base_track.TRACK_HALF_WIDTH_M
-            + boundary_index * base_track.LANE_WIDTH_M
-        )
-        for x, y, yaw, length in base_track.path_segments(offset_m):
-            expand(x, y, yaw, length, base_track.LINE_WIDTH_M)
-
-    return min_x, min_y, max_x, max_y
-
-
 def main():
-    (TRACK_MODEL_DIR / TRACK_MESH_RELATIVE_PATH.parent).mkdir(
+    _validate_layout()
+    (TRACK_MODEL_DIR / TRACK_MESH_PATH.parent).mkdir(
         parents=True, exist_ok=True
     )
-    (STADIUM_MODEL_DIR / ROOF_MESH_RELATIVE_PATH.parent).mkdir(
-        parents=True, exist_ok=True
-    )
+    STADIUM_MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
-    track_sdf = build_track_sdf()
-    stadium_sdf = build_stadium_sdf()
-    (
-        track_obj,
-        track_vertices,
-        track_faces,
-        track_topology,
-    ) = make_track_surface_mesh()
-    plaza_obj, plaza_vertices, plaza_faces, plaza_area_m2 = (
-        make_stadium_plaza_mesh()
+    track_obj, vertices, face_count = make_track_surface_mesh()
+    (TRACK_MODEL_DIR / "model.sdf").write_text(
+        build_track_sdf(), encoding="utf-8"
     )
-    roof_obj, roof_vertices, roof_faces, roof_normal_count = make_roof_mesh()
-
-    (TRACK_MODEL_DIR / "model.sdf").write_text(track_sdf, encoding="utf-8")
     (TRACK_MODEL_DIR / "model.config").write_text(
-        build_track_config(), encoding="utf-8"
+        build_config(
+            TRACK_MODEL_NAME,
+            "OSM-scale red running track with eight 1.22 m lanes.",
+        ),
+        encoding="utf-8",
     )
-    (TRACK_MODEL_DIR / TRACK_MESH_RELATIVE_PATH).write_text(
+    (TRACK_MODEL_DIR / TRACK_MESH_PATH).write_text(
         track_obj, encoding="utf-8"
     )
-    (TRACK_MODEL_DIR / TRACK_MTL_RELATIVE_PATH).write_text(
-        build_mtl(TRACK_MATERIAL_NAME, CONTINUOUS_TRACK_RGBA),
-        encoding="utf-8",
+    (TRACK_MODEL_DIR / TRACK_MTL_PATH).write_text(
+        build_mtl(), encoding="utf-8"
     )
     (STADIUM_MODEL_DIR / "model.sdf").write_text(
-        stadium_sdf, encoding="utf-8"
+        build_stadium_sdf(), encoding="utf-8"
     )
     (STADIUM_MODEL_DIR / "model.config").write_text(
-        build_stadium_config(), encoding="utf-8"
-    )
-    (STADIUM_MODEL_DIR / PLAZA_MESH_RELATIVE_PATH).write_text(
-        plaza_obj, encoding="utf-8"
-    )
-    (STADIUM_MODEL_DIR / PLAZA_MTL_RELATIVE_PATH).write_text(
-        build_mtl(PLAZA_MATERIAL_NAME, base_stadium.PLAZA_RGBA),
+        build_config(
+            STADIUM_MODEL_NAME,
+            "CJU field, basketball court, and jokgu court only.",
+        ),
         encoding="utf-8",
     )
-    (STADIUM_MODEL_DIR / ROOF_MESH_RELATIVE_PATH).write_text(
-        roof_obj, encoding="utf-8"
-    )
-    (STADIUM_MODEL_DIR / ROOF_MTL_RELATIVE_PATH).write_text(
-        build_mtl(ROOF_MATERIAL_NAME, base_stadium.ROOF_LIGHT_RGBA),
-        encoding="utf-8",
-    )
-
-    min_x, min_y, max_x, max_y = visual_xy_bounds()
-    track_mesh_min = [
-        min(vertex[axis] for vertex in track_vertices) for axis in range(3)
-    ]
-    track_mesh_max = [
-        max(vertex[axis] for vertex in track_vertices) for axis in range(3)
-    ]
-    roof_min_z = min(vertex[2] for vertex in roof_vertices)
-    roof_max_z = max(vertex[2] for vertex in roof_vertices)
-    print(f"Generated dedicated track: {TRACK_MODEL_DIR}")
     print(
-        f"  one continuous red mesh; "
-        f"{base_track.LANE_COUNT} lanes / "
-        f"{track_sdf.count('<visual name=')} visuals"
-    )
-    print(
-        f"  red mesh: {TRACK_ARC_SEGMENTS} segments/half-circle, "
-        f"{len(track_vertices)} vertices, {len(track_faces)} triangles, "
-        f"{track_topology['edges']} edges / "
-        f"{track_topology['boundary_edges']} boundary edges, "
-        f"Euler={track_topology['euler_characteristic']}, "
-        f"area={track_topology['area_m2']:.3f} m^2"
-    )
-    print(
-        f"  red mesh AABB: "
-        f"x=[{track_mesh_min[0]:.3f}, {track_mesh_max[0]:.3f}], "
-        f"y=[{track_mesh_min[1]:.3f}, {track_mesh_max[1]:.3f}], "
-        f"z={track_mesh_min[2]:.3f} m"
-    )
-    print(
-        f"  track AABB: x=[{min_x:.3f}, {max_x:.3f}], "
-        f"y=[{min_y:.3f}, {max_y:.3f}], "
-        f"z=[0.005, 0.018] m"
-    )
-    print(f"Generated dedicated stadium: {STADIUM_MODEL_DIR}")
-    print(
-        f"  stadium footprint: x=[-{base_stadium.SITE_LENGTH_M / 2:.1f}, "
-        f"{base_stadium.SITE_LENGTH_M / 2:.1f}], "
-        f"y=[-{base_stadium.SITE_WIDTH_M / 2:.1f}, "
-        f"{base_stadium.SITE_WIDTH_M / 2:.1f}] m"
-    )
-    print(
-        f"  OSM plaza: {len(plaza_vertices) - 1} outline points, "
-        f"{len(plaza_faces)} triangles, area={plaza_area_m2:.1f} m^2"
-    )
-    print(
-        f"  roof: {ROOF_SECTION_COUNT} sections, "
-        f"{len(roof_vertices)} vertices, {len(roof_faces)} triangle faces, "
-        f"{roof_normal_count} normals"
-    )
-    print(
-        f"  roof AABB: x=[{ROOF_X_MIN_M:.2f}, {ROOF_X_MAX_M:.2f}], "
-        f"y=[{ROOF_Y_MIN_M:.2f}, {ROOF_Y_MAX_M:.2f}], "
-        f"z=[{roof_min_z:.2f}, {roof_max_z:.2f}] m"
-    )
-    print(
-        f"  stadium visuals/collisions: "
-        f"{stadium_sdf.count('<visual name=')}/"
-        f"{stadium_sdf.count('<collision name=')}"
+        f"Generated CJU map: {len(vertices)} track vertices, "
+        f"{face_count} triangles, {LANE_COUNT} lanes"
     )
 
 

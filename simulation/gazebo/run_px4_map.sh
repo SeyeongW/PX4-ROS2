@@ -294,8 +294,6 @@ if [[ "$MOVING_LANDING_PROFILE" == "1" ]]; then
     CJU_MESH_ASSETS=(
       drone_cju_track_running_track/meshes/running_track_surface.obj
       drone_cju_track_running_track/meshes/running_track_surface.mtl
-      drone_cju_track_stadium/meshes/grandstand_roof.obj
-      drone_cju_track_stadium/meshes/grandstand_roof.mtl
     )
     for asset in "${CJU_MESH_ASSETS[@]}"; do
       [[ -f "$SCRIPT_DIR/models/$asset" ]] || {
@@ -955,7 +953,7 @@ if [[ "${DRIVE_TRAILER:-0}" == "1" ]]; then
     done
     echo "ERROR: trailer route did not see PX4 entity within 45 seconds." >&2
     exit 6
-  ) > >(tee "$TRAILER_LOG") 2>&1 &
+  ) >"$TRAILER_LOG" 2>&1 &
   TRAILER_PID=$!
 fi
 

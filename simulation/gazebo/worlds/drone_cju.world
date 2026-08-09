@@ -67,60 +67,78 @@
 
     <spherical_coordinates>
       <surface_model>EARTH_WGS84</surface_model>
-      <!-- The stadium model is at ENU (28.403, 115.589). This southwest
-           origin georeferences that model centre to 36.654417, 127.495904. -->
+      <!-- World ENU georeference; the integer stadium map frame is declared
+           separately below at the selected OSM endpoint. -->
       <latitude_deg>36.6533752165</latitude_deg>
       <longitude_deg>127.4955858675</longitude_deg>
       <elevation>74.0</elevation>
       <heading_deg>0</heading_deg>
     </spherical_coordinates>
 
-    <!-- Collision-only physics pad for the stadium footprint; the dedicated
-         stadium model supplies the visible surface without a duplicate layer. -->
+    <!-- Canonical map coordinates: the photo/map bottom-right (south-east)
+         running-track tangent is (0, 0); +x is east-ish and +y north-ish. -->
+    <frame name="stadium_endpoint">
+      <pose>76.827710406649 74.660781359808 0 0 0 0.110080031259</pose>
+    </frame>
+    <frame name="stadium_center">
+      <pose relative_to="stadium_endpoint">-44 46 0 0 0 0</pose>
+    </frame>
+
+    <!-- One low grass/earth pad fills gaps between the requested facilities. -->
     <model name="stadium_ground">
       <static>true</static>
-      <pose>28.402605907228356 115.5890134880474 0 0 0 1.6807520696705394</pose>
+      <pose relative_to="stadium_endpoint">0 0 0 0 0 0</pose>
       <link name="ground">
         <collision name="collision">
-          <pose>0 0 -0.05 0 0 0</pose>
-          <geometry><box><size>226.8 128.3 0.1</size></box></geometry>
+          <pose>-42 49 -1 0 0 0</pose>
+          <geometry><box><size>128 226 2</size></box></geometry>
         </collision>
+        <visual name="stadium_ground_surface">
+          <pose>-42 49 -0.03 0 0 0</pose>
+          <cast_shadows>false</cast_shadows>
+          <geometry><box><size>128 226 0.04</size></box></geometry>
+          <material>
+            <ambient>0.16 0.25 0.13 1</ambient>
+            <diffuse>0.16 0.25 0.13 1</diffuse>
+            <specular>0.02 0.02 0.02 1</specular>
+          </material>
+        </visual>
       </link>
     </model>
 
     <include>
       <uri>model://drone_cju_track_stadium</uri>
       <name>drone_cju_track_stadium</name>
-      <pose>28.402605907228356 115.5890134880474 0 0 0 1.6807520696705394</pose>
+      <pose relative_to="stadium_endpoint">0 0 0 0 0 0</pose>
     </include>
     <include>
       <uri>model://drone_cju_track_running_track</uri>
       <name>drone_cju_track_running_track</name>
-      <pose>28.402605907228356 115.5890134880474 0 0 0 1.6807520696705394</pose>
+      <pose relative_to="stadium_endpoint">0 0 0 0 0 0</pose>
     </include>
 
-    <!-- Four exact mission barriers in stadium-local coordinates. -->
+    <!-- Four integer-centre mission barriers measured from the SE (0, 0). -->
     <model name="mission_obstacles">
       <static>true</static>
-      <pose>28.402605907228356 115.5890134880474 0 0 0 1.6807520696705394</pose>
+      <pose relative_to="stadium_endpoint">0 0 0 0 0 0</pose>
       <link name="barriers">
-        <collision name="barrier_1_collision"><pose>-44 0 5 0 0 0</pose><geometry><box><size>0.35 4.5 10</size></box></geometry></collision>
-        <collision name="barrier_2_collision"><pose>-34 1.5 5 0 0 0</pose><geometry><box><size>0.35 4.5 10</size></box></geometry></collision>
-        <collision name="barrier_3_collision"><pose>-24 -1.5 5 0 0 0</pose><geometry><box><size>0.35 4.5 10</size></box></geometry></collision>
-        <collision name="barrier_4_collision"><pose>-14 1.5 5 0 0 0</pose><geometry><box><size>0.35 4.5 10</size></box></geometry></collision>
-        <visual name="barrier_1"><pose>-44 0 5 0 0 0</pose><geometry><box><size>0.35 4.5 10</size></box></geometry><material><ambient>0.95 0.32 0.05 1</ambient><diffuse>0.95 0.32 0.05 1</diffuse></material></visual>
-        <visual name="barrier_2"><pose>-34 1.5 5 0 0 0</pose><geometry><box><size>0.35 4.5 10</size></box></geometry><material><ambient>0.95 0.90 0.78 1</ambient><diffuse>0.95 0.90 0.78 1</diffuse></material></visual>
-        <visual name="barrier_3"><pose>-24 -1.5 5 0 0 0</pose><geometry><box><size>0.35 4.5 10</size></box></geometry><material><ambient>0.95 0.32 0.05 1</ambient><diffuse>0.95 0.32 0.05 1</diffuse></material></visual>
-        <visual name="barrier_4"><pose>-14 1.5 5 0 0 0</pose><geometry><box><size>0.35 4.5 10</size></box></geometry><material><ambient>0.95 0.90 0.78 1</ambient><diffuse>0.95 0.90 0.78 1</diffuse></material></visual>
+        <collision name="barrier_1_collision"><pose>-47 2 5 0 0 0</pose><geometry><box><size>4.5 0.35 10</size></box></geometry></collision>
+        <collision name="barrier_2_collision"><pose>-41 12 5 0 0 0</pose><geometry><box><size>4.5 0.35 10</size></box></geometry></collision>
+        <collision name="barrier_3_collision"><pose>-47 22 5 0 0 0</pose><geometry><box><size>4.5 0.35 10</size></box></geometry></collision>
+        <collision name="barrier_4_collision"><pose>-41 32 5 0 0 0</pose><geometry><box><size>4.5 0.35 10</size></box></geometry></collision>
+        <visual name="barrier_1"><pose>-47 2 5 0 0 0</pose><geometry><box><size>4.5 0.35 10</size></box></geometry><material><ambient>0.95 0.32 0.05 1</ambient><diffuse>0.95 0.32 0.05 1</diffuse></material></visual>
+        <visual name="barrier_2"><pose>-41 12 5 0 0 0</pose><geometry><box><size>4.5 0.35 10</size></box></geometry><material><ambient>0.95 0.90 0.78 1</ambient><diffuse>0.95 0.90 0.78 1</diffuse></material></visual>
+        <visual name="barrier_3"><pose>-47 22 5 0 0 0</pose><geometry><box><size>4.5 0.35 10</size></box></geometry><material><ambient>0.95 0.32 0.05 1</ambient><diffuse>0.95 0.32 0.05 1</diffuse></material></visual>
+        <visual name="barrier_4"><pose>-41 32 5 0 0 0</pose><geometry><box><size>4.5 0.35 10</size></box></geometry><material><ambient>0.95 0.90 0.78 1</ambient><diffuse>0.95 0.90 0.78 1</diffuse></material></visual>
       </link>
     </model>
 
-    <frame name="drone_spawn"><pose>37.74461362761062 30.970166134855617 2.051 0 0 0.109955742876</pose></frame>
-    <frame name="trailer_spawn"><pose>37.74461362761062 30.970166134855617 0 0 0 0.109955742876</pose></frame>
+    <frame name="drone_spawn"><pose relative_to="stadium_endpoint">-44 -39 2.051 0 0 0</pose></frame>
+    <frame name="trailer_spawn"><pose relative_to="stadium_endpoint">-44 -39 0 0 0 0</pose></frame>
     <include>
       <uri>model://moving_platform_aruco_velocity</uri>
       <name>trailer</name>
-      <pose>37.74461362761062 30.970166134855617 0 0 0 0.109955742876</pose>
+      <pose relative_to="stadium_endpoint">-44 -39 0 0 0 0</pose>
     </include>
 
     <!-- PX4 SITL dynamically creates the x500 on the trailer deck. -->

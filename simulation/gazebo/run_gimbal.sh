@@ -4,13 +4,15 @@
 # not where run_px4_map.sh looks), GZ_PARTITION, and the gimbal camera's wider
 # tan(vfov/2) that mission_manager would otherwise default to the down camera's.
 #
-#   ./gazebo/run_gimbal.sh              CJU gimbal + perception
-#   ./gazebo/run_gimbal.sh mission      CJU word-command mission + ArUco landing
-#   ./gazebo/run_gimbal.sh baseline     body-fixed direct landing, to compare
-#   LANDING_MAP=mpc-landing-moving ./gazebo/run_gimbal.sh mission
+#   ./simulation/gazebo/run_gimbal.sh              CJU gimbal + perception
+#   ./simulation/gazebo/run_gimbal.sh mission      CJU word-command mission + ArUco landing
+#   ./simulation/gazebo/run_gimbal.sh baseline     body-fixed direct landing, to compare
+#   LANDING_MAP=mpc-landing-moving ./simulation/gazebo/run_gimbal.sh mission
 #                                      legacy 1 km shuttle mission
-#   FOLLOW_DRONE=1 ./gazebo/run_gimbal.sh   optional camera tracking
-#   ARUCO_VIEW=0 ./gazebo/run_gimbal.sh mission   disable the automatic viewer
+#   FOLLOW_DRONE=1 ./simulation/gazebo/run_gimbal.sh   optional camera tracking
+#   ARUCO_VIEW=0 ./simulation/gazebo/run_gimbal.sh mission   disable the automatic viewer
+#   CJU_LOG_ROOT=/data/cju ./simulation/gazebo/run_gimbal.sh mission
+#                                      override the persistent artifact root
 #
 # Ctrl-C stops everything it started.
 set -Eeuo pipefail
@@ -54,11 +56,13 @@ marker_world_z = (float(trailer["spawn_pose_enu"]["z"])
 local_origin_z = float(document["frames"]["mavros_local"]["origin_enu_m"][2])
 print(f"{marker_world_z - local_origin_z:.9f}")
 print(float(document.get("mission", {}).get("cruise_altitude_m", 6.0)))
+print(trailer["odometry_topic"])
 PY
 )
 LANDING_SPAWN_ENU="${LANDING_CONFIG[0]}"
 LANDING_DECK_Z="${LANDING_CONFIG[1]}"
 LANDING_TAKEOFF_ALT="${LANDING_CONFIG[2]}"
+LANDING_ODOMETRY_TOPIC="${LANDING_CONFIG[3]}"
 
 GIMBAL=1
 case "$MODE" in
@@ -74,56 +78,132 @@ esac
 ROS_SETUP="${ROS_SETUP:-/opt/ros/humble/setup.bash}"
 PX4_MSGS_SETUP="${PX4_MSGS_SETUP:-${HOME}/px4_ros2_ws/install/setup.bash}"
 export GZ_PARTITION="${GZ_PARTITION:-px4_ros2_${USER:-user}}"
+if [[ -z "${PX4_MAP_RUNTIME_DIR:-}" ]]; then
+  CJU_LOG_ROOT="${CJU_LOG_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/px4-ros2-wang/cju}"
+  mkdir -p "$CJU_LOG_ROOT"
+  PX4_MAP_RUNTIME_DIR="$(mktemp -d \
+    "$CJU_LOG_ROOT/$(date -u +%Y%m%dT%H%M%SZ).XXXXXX")"
+else
+  mkdir -p "$PX4_MAP_RUNTIME_DIR"
+  if find "$PX4_MAP_RUNTIME_DIR" -mindepth 1 -maxdepth 1 -print -quit \
+      | grep -q .; then
+    echo "ERROR: PX4_MAP_RUNTIME_DIR is not empty: $PX4_MAP_RUNTIME_DIR" >&2
+    exit 2
+  fi
+fi
+export PX4_MAP_RUNTIME_DIR
+XRCE_LOG="$PX4_MAP_RUNTIME_DIR/gimbal_xrce.log"
+SIM_LOG="$PX4_MAP_RUNTIME_DIR/gimbal_sim.log"
+STACK_LOG="$PX4_MAP_RUNTIME_DIR/gimbal_stack.log"
+VIEW_LOG="$PX4_MAP_RUNTIME_DIR/gimbal_aruco_view.log"
+CUE_LOG="$PX4_MAP_RUNTIME_DIR/gimbal_cue.log"
+MISSION_LOG="$PX4_MAP_RUNTIME_DIR/gimbal_mission.log"
+ODOMETRY_LOG="$PX4_MAP_RUNTIME_DIR/trailer_odometry.jsonl"
+ODOMETRY_ERROR_LOG="$PX4_MAP_RUNTIME_DIR/trailer_odometry.err"
+RUN_MANIFEST="$PX4_MAP_RUNTIME_DIR/manifest.tsv"
+echo "Run artifacts     : $PX4_MAP_RUNTIME_DIR"
 
 PIDS=()
+REQUIRED_PIDS=()
+REQUIRED_NAMES=()
+WATCHDOG_PID=""
 TRAILER_GATE_DIR=""
 TRAILER_START_FILE=""
+SIM_PID=""
 DRIVE_TRAILER_FOR_RUN=1
 TRAILER_SPEED_FOR_RUN="${TRAILER_SPEED_M_S:-3.0}"
-# Kill the WHOLE stack, not just our direct children.  Two components detach
-# themselves and used to survive Ctrl-C, then break the NEXT run: the sensor
-# bridge (run_px4_map.sh starts it with setsid) and the perception nodes
-# (ros2 launch/run spawn them in their own process groups).  A leftover bridge
-# publishing a stale /clock — or none — is exactly the "won't take off" freeze.
-# So sweep by pattern, TERM first, then KILL what refuses.  MicroXRCEAgent is
-# deliberately left alone: it is cheap and shared, and killing it slows restart.
-STACK_PATTERNS=(
-  'run_px4_map.sh mpc-landing-moving'
-  'run_px4_map.sh cju-track'
-  'px4_sitl_default/bin/px4'
-  'gz sim'
-  'native_gz_sensor_bridge'
-  'static_transform_publisher'
-  'gimbal_perception.launch'
-  'landing_mpc/lib/landing_mpc/'
-  'ros2 run landing_mpc'
-  'python3 .*simulation/gazebo/trailer_waypoint_driver.py'
-  'python3 .*simulation/gazebo/tools/aruco_debug_viewer.py'
-)
-_sweep() {
-  local sig="$1"
-  for pat in "${STACK_PATTERNS[@]}"; do pkill "$sig" -f "$pat" 2>/dev/null || true; done
-}
+if [[ "$LANDING_MAP" == "cju-track" ]]; then
+  DRIVE_TRAILER_FOR_RUN=0
+  TRAILER_SPEED_FOR_RUN=3.0
+fi
+RUN_STARTED_UTC="$(date -u +%FT%TZ)"
+GIT_COMMIT="$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || printf unknown)"
+GIT_BRANCH="$(git -C "$REPO_DIR" branch --show-current 2>/dev/null || printf unknown)"
+GIT_DIRTY=0
+[[ -n "$(git -C "$REPO_DIR" status --porcelain --untracked-files=normal 2>/dev/null)" ]] \
+  && GIT_DIRTY=1
+{
+  printf 'run_id\t%s\n' "$(basename "$PX4_MAP_RUNTIME_DIR")"
+  printf 'started_utc\t%s\n' "$RUN_STARTED_UTC"
+  printf 'git_commit\t%s\n' "$GIT_COMMIT"
+  printf 'git_branch\t%s\n' "$GIT_BRANCH"
+  printf 'git_dirty\t%s\n' "$GIT_DIRTY"
+  printf 'mode\t%s\n' "${MODE:-gimbal}"
+  printf 'map\t%s\n' "$LANDING_MAP"
+  printf 'world\t%s\n' "$LANDING_WORLD"
+  printf 'coordinates\t%s\n' "$LANDING_COORDINATES"
+  printf 'gimbal\t%s\n' "$GIMBAL"
+  printf 'takeoff_alt_m\t%s\n' "$LANDING_TAKEOFF_ALT"
+  printf 'approach_alt_m\t%s\n' "${CJU_APPROACH_ALT_M:-8.0}"
+  printf 'touchdown_height_m\t%s\n' "${CJU_TOUCHDOWN_HEIGHT_M:-0.40}"
+  printf 'z_floor_margin_m\t%s\n' "${CJU_Z_FLOOR_MARGIN_M:-0.22}"
+  printf 'trailer_speed_m_s\t%s\n' "$TRAILER_SPEED_FOR_RUN"
+} >"$RUN_MANIFEST"
+git -C "$REPO_DIR" status --short >"$PX4_MAP_RUNTIME_DIR/git_status.txt" || true
 cleanup() {
+  local status=$?
+  local run_result="failed"
+  local sim_state=""
+  local ulog_paths=()
+  local ulog_source=""
   trap - EXIT INT TERM
   echo
   echo "stopping..."
-  for pid in "${PIDS[@]:-}"; do kill "$pid" 2>/dev/null || true; done
-  _sweep -TERM
-  sleep 2
-  _sweep -KILL      # anything that ignored TERM (setsid-detached children)
-  for pid in "${PIDS[@]}"; do kill -KILL "$pid" 2>/dev/null || true; done
+  if [[ -n "$WATCHDOG_PID" ]]; then
+    kill "$WATCHDOG_PID" 2>/dev/null || true
+    wait "$WATCHDOG_PID" 2>/dev/null || true
+  fi
+  for pid in "${PIDS[@]:-}"; do kill -TERM -- "-$pid" 2>/dev/null || true; done
+  # run_px4_map owns a detached sensor-bridge group and cleans it internally.
+  # Let that wrapper finish before using this invocation's group KILL fallback.
+  if [[ -n "$SIM_PID" ]]; then
+    for _ in {1..100}; do
+      sim_state="$(awk '{print $3}' "/proc/$SIM_PID/stat" 2>/dev/null || true)"
+      [[ -z "$sim_state" || "$sim_state" == "Z" ]] && break
+      sleep 0.1
+    done
+  fi
+  for pid in "${PIDS[@]:-}"; do kill -KILL -- "-$pid" 2>/dev/null || true; done
   for pid in "${PIDS[@]}"; do wait "$pid" 2>/dev/null || true; done
+  mapfile -t ulog_paths < <(
+    sed -n 's|.*Opened full log file: \./||p' "$SIM_LOG" 2>/dev/null
+  )
+  if (( ${#ulog_paths[@]} == 1 )); then
+    ulog_source="${PX4_DIR:-$HOME/PX4-Autopilot}/build/px4_sitl_default/rootfs/${ulog_paths[0]}"
+    if [[ -f "$ulog_source" ]]; then
+      cp -- "$ulog_source" "$PX4_MAP_RUNTIME_DIR/flight.ulg" ||
+        echo "WARNING: could not preserve PX4 ULog: $ulog_source" >&2
+    else
+      echo "WARNING: PX4 ULog not found: $ulog_source" >&2
+    fi
+  else
+    echo "WARNING: expected one PX4 ULog path, found ${#ulog_paths[@]}" >&2
+  fi
+  if grep -q 'TOUCHDOWN -> DONE' "$MISSION_LOG" 2>/dev/null; then
+    run_result="done"
+  elif [[ "$status" == "130" ]]; then
+    run_result="interrupted"
+  elif [[ "$status" == "0" ]]; then
+    run_result="completed"
+  fi
+  {
+    printf 'finished_utc\t%s\n' "$(date -u +%FT%TZ)"
+    printf 'exit_status\t%s\n' "$status"
+    printf 'result\t%s\n' "$run_result"
+    printf 'flight_ulg\t%s\n' "$([[ -s "$PX4_MAP_RUNTIME_DIR/flight.ulg" ]] && printf present || printf missing)"
+    printf 'odometry_samples\t%s\n' "$(wc -l <"$ODOMETRY_LOG" 2>/dev/null || printf 0)"
+  } >>"$RUN_MANIFEST"
   if [[ -n "$TRAILER_GATE_DIR" ]]; then
     rm -f "$TRAILER_START_FILE"
     rmdir "$TRAILER_GATE_DIR" 2>/dev/null || true
   fi
+  echo "artifacts saved   : $PX4_MAP_RUNTIME_DIR"
+  exit "$status"
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT TERM
 
 if [[ "$LANDING_MAP" == "cju-track" ]]; then
-  DRIVE_TRAILER_FOR_RUN=0
-  TRAILER_SPEED_FOR_RUN=3.0
   if [[ "$RUN_MISSION" == "1" ]]; then
     TRAILER_GATE_DIR="$(mktemp -d /tmp/drone_cju_trailer.XXXXXX)"
     TRAILER_START_FILE="$TRAILER_GATE_DIR/start"
@@ -131,45 +211,70 @@ if [[ "$LANDING_MAP" == "cju-track" ]]; then
   fi
 fi
 
-# The launcher refuses to start beside a stale instance, and leftover pieces
-# from a previous Ctrl-C are the usual reason this script appears to hang or
-# never takes off.  Clear the FULL stack, not just PX4, before starting.
+# Never kill a process this invocation does not own.  A stale stack is reported
+# and must be stopped explicitly by its owner.
 if pgrep -f 'px4_sitl_default/bin/px4|native_gz_sensor_bridge|landing_mpc/lib/landing_mpc/|python3 .*simulation/gazebo/(trailer_waypoint_driver.py|tools/aruco_debug_viewer.py)' >/dev/null 2>&1; then
-  echo "Leftover sim/perception processes from a previous run; clearing them first."
-  _sweep -TERM
-  sleep 2
-  _sweep -KILL
-  sleep 2
+  echo "ERROR: another sim/perception stack is already running." >&2
+  pgrep -af 'px4_sitl_default/bin/px4|native_gz_sensor_bridge|landing_mpc/lib/landing_mpc/|python3 .*simulation/gazebo/(trailer_waypoint_driver.py|tools/aruco_debug_viewer.py)' >&2 || true
+  exit 4
 fi
 
 pgrep -f 'MicroXRCEAgent.*8888' >/dev/null 2>&1 || {
   echo "starting Micro XRCE-DDS agent"
-  MicroXRCEAgent udp4 -p 8888 >/tmp/gimbal_xrce.log 2>&1 &
+  setsid MicroXRCEAgent udp4 -p 8888 >"$XRCE_LOG" 2>&1 &
   PIDS+=($!)
   sleep 1
 }
 
-echo "=== Gazebo + PX4 (GIMBAL=$GIMBAL) — log: /tmp/gimbal_sim.log ==="
+echo "=== Gazebo + PX4 (GIMBAL=$GIMBAL) — log: $SIM_LOG ==="
 GIMBAL="$GIMBAL" FOLLOW_DRONE="${FOLLOW_DRONE:-0}" \
 START_XRCE=1 START_MAVROS="${START_MAVROS:-1}" PX4_DAEMON=1 \
 DRIVE_TRAILER="$DRIVE_TRAILER_FOR_RUN" TRAILER_SPEED_M_S="$TRAILER_SPEED_FOR_RUN" \
 TRAILER_START_FILE="$TRAILER_START_FILE" \
-  "$SCRIPT_DIR/run_px4_map.sh" "$LANDING_MAP" >/tmp/gimbal_sim.log 2>&1 &
-PIDS+=($!)
+  setsid "$SCRIPT_DIR/run_px4_map.sh" "$LANDING_MAP" >"$SIM_LOG" 2>&1 &
+SIM_PID=$!
+PIDS+=("$SIM_PID")
+REQUIRED_NAMES+=(simulator)
+REQUIRED_PIDS+=("$SIM_PID")
 
 echo -n "waiting for the vehicle to spawn"
+vehicle_ready=0
 for _ in $(seq 120); do
   if gz topic -l 2>/dev/null | grep -q 'gimbal_camera/image\|down_camera/image'; then
+    vehicle_ready=1
     break
   fi
   if ! kill -0 "${PIDS[-1]}" 2>/dev/null; then
     echo; echo "ERROR: the simulator exited. Last lines:" >&2
-    tail -15 /tmp/gimbal_sim.log >&2
+    tail -15 "$SIM_LOG" >&2
     exit 1
   fi
   echo -n "."; sleep 2
 done
+if [[ "$vehicle_ready" != "1" ]]; then
+  echo; echo "ERROR: vehicle sensor topics did not appear. Last lines:" >&2
+  tail -15 "$SIM_LOG" >&2
+  exit 1
+fi
 echo " up."
+
+setsid stdbuf -oL gz topic -e --json-output -t "$LANDING_ODOMETRY_TOPIC" \
+  >"$ODOMETRY_LOG" 2>"$ODOMETRY_ERROR_LOG" &
+ODOMETRY_PID=$!
+PIDS+=("$ODOMETRY_PID")
+REQUIRED_NAMES+=(trailer_odometry)
+REQUIRED_PIDS+=("$ODOMETRY_PID")
+for _ in {1..50}; do
+  [[ -s "$ODOMETRY_LOG" ]] && break
+  kill -0 "$ODOMETRY_PID" 2>/dev/null || break
+  sleep 0.1
+done
+if [[ ! -s "$ODOMETRY_LOG" ]]; then
+  echo "ERROR: no trailer odometry on $LANDING_ODOMETRY_TOPIC" >&2
+  cat "$ODOMETRY_ERROR_LOG" >&2 || true
+  exit 5
+fi
+echo "Trailer odometry : $ODOMETRY_LOG"
 
 # ROS's setup scripts read unset variables, so -u has to stand down for them.
 set +u
@@ -186,28 +291,34 @@ python3 -c 'import px4_msgs' >/dev/null 2>&1 || {
 }
 
 if [[ "$GIMBAL" == "1" ]]; then
-  echo "=== gimbal + perception — log: /tmp/gimbal_stack.log ==="
+  echo "=== gimbal + perception — log: $STACK_LOG ==="
   # Same-frame markers describe one rigid deck, so gross disagreement is an
   # invalid measurement.  Keep the safety gate tunable without disabling it.
   PAIR_GATE_ARG=(
     max_pair_disagreement_m:="${MAX_PAIR_DISAGREEMENT_M:-1.0}"
   )
-  ros2 launch landing_mpc gimbal_perception.launch.py \
+  setsid ros2 launch landing_mpc gimbal_perception.launch.py \
     world:="$LANDING_WORLD" deck_z:="$LANDING_DECK_Z" "${PAIR_GATE_ARG[@]}" \
-    >/tmp/gimbal_stack.log 2>&1 &
-  PIDS+=($!)
+    >"$STACK_LOG" 2>&1 &
+  STACK_PID=$!
+  PIDS+=("$STACK_PID")
+  REQUIRED_NAMES+=(perception)
+  REQUIRED_PIDS+=("$STACK_PID")
   # The gimbal camera is wider than the body-fixed one this defaults to.
   VFOV_ARG=(-p tan_vfov_half:=0.7722)
 else
   echo "=== baseline perception (body-fixed camera) ==="
-  ros2 run landing_mpc aruco_detector_node --ros-args -p use_sim_time:=true \
-    >/tmp/gimbal_stack.log 2>&1 & PIDS+=($!)
-  ros2 run landing_mpc marker_tf_node --ros-args -p use_sim_time:=true \
+  setsid ros2 run landing_mpc aruco_detector_node --ros-args -p use_sim_time:=true \
+    >"$STACK_LOG" 2>&1 &
+  PIDS+=("$!"); REQUIRED_NAMES+=(aruco_detector); REQUIRED_PIDS+=("$!")
+  setsid ros2 run landing_mpc marker_tf_node --ros-args -p use_sim_time:=true \
     -p deck_z:="$LANDING_DECK_Z" \
-    >>/tmp/gimbal_stack.log 2>&1 & PIDS+=($!)
-  ros2 run landing_mpc marker_kf_node --ros-args -p use_sim_time:=true \
+    >>"$STACK_LOG" 2>&1 &
+  PIDS+=("$!"); REQUIRED_NAMES+=(marker_tf); REQUIRED_PIDS+=("$!")
+  setsid ros2 run landing_mpc marker_kf_node --ros-args -p use_sim_time:=true \
     -p deck_z:="$LANDING_DECK_Z" \
-    >>/tmp/gimbal_stack.log 2>&1 & PIDS+=($!)
+    >>"$STACK_LOG" 2>&1 &
+  PIDS+=("$!"); REQUIRED_NAMES+=(marker_kf); REQUIRED_PIDS+=("$!")
   VFOV_ARG=()
 fi
 sleep 5
@@ -223,15 +334,15 @@ if [[ "${HEADLESS:-0}" != "1" && "${ARUCO_VIEW:-1}" == "1" ]]; then
   fi
   echo " received."
 
-  : >/tmp/gimbal_aruco_view.log
-  python3 -u "$SCRIPT_DIR/tools/aruco_debug_viewer.py" \
-    >/tmp/gimbal_aruco_view.log 2>&1 &
+  : >"$VIEW_LOG"
+  setsid python3 -u "$SCRIPT_DIR/tools/aruco_debug_viewer.py" \
+    >"$VIEW_LOG" 2>&1 &
   PIDS+=($!)
   ARUCO_VIEW_PID=$!
   ARUCO_VIEW_READY=0
   echo -n "waiting for the ArUco result window"
   for _ in $(seq 1 100); do
-    if grep -q 'displaying .* detector frames' /tmp/gimbal_aruco_view.log; then
+    if grep -q 'displaying .* detector frames' "$VIEW_LOG"; then
       ARUCO_VIEW_READY=1
       break
     fi
@@ -244,33 +355,63 @@ if [[ "${HEADLESS:-0}" != "1" && "${ARUCO_VIEW:-1}" == "1" ]]; then
   echo
   if [[ "$ARUCO_VIEW_READY" != "1" ]]; then
     echo "ERROR: the ArUco result window did not receive a frame." >&2
-    cat /tmp/gimbal_aruco_view.log >&2
+    cat "$VIEW_LOG" >&2
     exit 6
   fi
   echo "=== ArUco result window ready ==="
 fi
 
 if [[ "$RUN_MISSION" == "1" ]]; then
-  echo "=== mission — log: /tmp/gimbal_mission.log ==="
-  ros2 run landing_mpc trailer_cue_node --ros-args \
+  echo "=== mission — log: $MISSION_LOG ==="
+  setsid ros2 run landing_mpc trailer_cue_node --ros-args \
     -p use_sim_time:=true -p world:="$LANDING_WORLD" \
     -p "spawn_enu:=$LANDING_SPAWN_ENU" -p deck_z:="$LANDING_DECK_Z" \
-    >/tmp/gimbal_cue.log 2>&1 &
-  PIDS+=($!)
+    >"$CUE_LOG" 2>&1 &
+  CUE_PID=$!
+  PIDS+=("$CUE_PID")
+  REQUIRED_NAMES+=(trailer_cue)
+  REQUIRED_PIDS+=("$CUE_PID")
   sleep 2
   MISSION_ARGS=(-p auto_start:=true)
   if [[ "$LANDING_MAP" == "cju-track" ]]; then
     MISSION_ARGS=(
       -p auto_start:=false
       -p takeoff_alt:="$LANDING_TAKEOFF_ALT"
+      -p approach_alt:="${CJU_APPROACH_ALT_M:-8.0}"
+      -p touchdown_height_m:="${CJU_TOUCHDOWN_HEIGHT_M:-0.40}"
+      -p z_floor_margin_m:="${CJU_Z_FLOOR_MARGIN_M:-0.22}"
       -p "mission_map_yaml:=$LANDING_COORDINATES"
     )
   fi
-  ros2 run landing_mpc mission_manager_node --ros-args -p use_sim_time:=true \
+  setsid ros2 run landing_mpc mission_manager_node --ros-args -p use_sim_time:=true \
     -p deck_z:="$LANDING_DECK_Z" "${VFOV_ARG[@]}" "${MISSION_ARGS[@]}" \
-    >/tmp/gimbal_mission.log 2>&1 &
-  PIDS+=($!)
+    >"$MISSION_LOG" 2>&1 &
+  MISSION_PID=$!
+  PIDS+=("$MISSION_PID")
+  REQUIRED_NAMES+=(mission_manager)
+  REQUIRED_PIDS+=("$MISSION_PID")
 fi
+
+required_alive() {
+  local index
+  for index in "${!REQUIRED_PIDS[@]}"; do
+    if ! kill -0 "${REQUIRED_PIDS[$index]}" 2>/dev/null \
+        || [[ "$(awk '{print $3}' "/proc/${REQUIRED_PIDS[$index]}/stat" 2>/dev/null)" == "Z" ]]; then
+      echo "ERROR: required component exited: ${REQUIRED_NAMES[$index]}" >&2
+      return 1
+    fi
+  done
+}
+watch_required() {
+  while sleep 0.5; do
+    required_alive || {
+      kill -TERM "$$" 2>/dev/null || true
+      return
+    }
+  done
+}
+watch_required &
+WATCHDOG_PID=$!
 
 cat <<EOF
 
@@ -282,25 +423,37 @@ cat <<EOF
                       (marker outline, centre-to-centre dx/dy in px and m, and
                        the FILL gauge that shows the near-field blind zone)
   watch the gimbal :  rviz2      (Fixed Frame: map, then Add -> TF)
-  score a run      :  python3 scratchpad/gimbal_chase_monitor.py
-
 EOF
 
 if [[ "$RUN_MISSION" == "1" && "$LANDING_MAP" == "cju-track" ]]; then
+  retry_command() {
+    if ! required_alive; then
+      echo "  $1 실패 — 필수 구성요소가 종료됨" >&2
+      exit 7
+    fi
+    echo "  $1 시간초과 — Gazebo ▶/clock 확인 후 같은 명령 재입력" >&2
+  }
   wait_for_states() {
-    timeout "$2" bash -c \
+    local waiter pid_index status=0
+    setsid timeout "$2" bash -c \
       'ros2 topic echo /mission/state std_msgs/msg/String 2>/dev/null | grep -m1 -E "^data: ($1)$"' \
-      _ "$1" >/dev/null
+      _ "$1" >/dev/null &
+    waiter=$!
+    pid_index=${#PIDS[@]}
+    PIDS+=("$waiter")
+    wait "$waiter" || status=$?
+    unset 'PIDS[pid_index]'
+    return "$status"
   }
   send_until_state() {
     local command="$1" states="$2" timeout_s="$3" publisher pid_index status=0
-    ros2 topic pub --rate 5 --wait-matching-subscriptions 1 --print 100000 \
-      /mission/command std_msgs/msg/String "{data: '$command'}" >/dev/null &
+    setsid ros2 topic pub --rate 5 --wait-matching-subscriptions 1 --print 100000 \
+      /mission/command std_msgs/msg/String "{data: '$command'}" >/dev/null 2>&1 &
     publisher=$!
     pid_index=${#PIDS[@]}
     PIDS+=("$publisher")
     wait_for_states "$states" "$timeout_s" || status=$?
-    kill "$publisher" 2>/dev/null || true
+    kill -TERM -- "-$publisher" 2>/dev/null || true
     wait "$publisher" 2>/dev/null || true
     unset 'PIDS[pid_index]'
     return "$status"
@@ -319,29 +472,43 @@ if [[ "$RUN_MISSION" == "1" && "$LANDING_MAP" == "cju-track" ]]; then
       takeoff)
         echo '  이륙 중...'
         send_until_state takeoff 'TAKEOFF|READY' 10 || {
-          echo '  TAKEOFF 상태 확인 실패' >&2; exit 7;
+          retry_command 'TAKEOFF 상태 확인'
+          continue
         }
-        wait_for_states READY 90 || { echo '  이륙 완료 확인 실패' >&2; exit 7; }
+        wait_for_states READY 90 || {
+          retry_command '이륙 완료 확인'
+          continue
+        }
         echo '  이륙 완료'
         ;;
       mission)
         send_until_state mission 'MISSION' 30 || {
-          echo '  지도 기반 전역 A* 경로 생성 실패' >&2; exit 7;
+          retry_command 'A* 상태 확인'
+          continue
         }
         touch "$TRAILER_START_FILE"
         echo '  지도 기반 전역 A* 반복 순찰 시작 — 구간별 재계획, 트레일러 3.0 m/s'
         ;;
       land)
         send_until_state land 'APPROACH|ACQUIRE|DESCEND|TOUCHDOWN|DONE' 10 || {
-          echo '  착륙 상태 확인 실패' >&2; exit 7;
+          retry_command '착륙 상태 확인'
+          continue
         }
         echo '  이동 트레일러 아루코 착륙 시작'
         ;;
     esac
+    printf 'command_accepted\t%s\n' "$command" >>"$RUN_MANIFEST"
     ((step += 1))
   done
 fi
 
 # Surface the lines worth reading instead of making anyone tail three files.
-tail -f /tmp/gimbal_stack.log /tmp/gimbal_mission.log 2>/dev/null \
-  | grep --line-buffered -E 'gimbal:|detections|state|ABORT|ERROR|WARN' || true
+# Keep the pipeline in an owned group so a watchdog signal interrupts `wait`
+# immediately instead of being deferred behind a foreground `tail -f`.
+setsid bash -c '
+  tail -f "$1" "$2" 2>/dev/null \
+    | grep --line-buffered -E "gimbal:|detections|state|ABORT|ERROR|WARN"
+' tail "$STACK_LOG" "$MISSION_LOG" &
+TAIL_PID=$!
+PIDS+=("$TAIL_PID")
+wait "$TAIL_PID" || true

@@ -5,11 +5,10 @@ This is the estimator half of the stack (the MPC is the controller half): the
 Kalman filter answers "where is the target now, and how fast is it moving",
 fusing past measurements; the MPC then answers "what acceleration do I command".
 
-Why it is needed: below ~1.19 m above the deck the 1.5 m marker overflows the
-down camera's field of view (2*h*tan(vfov/2) < 1.5), so detections stop exactly
-during touchdown.  With no measurement the filter keeps predicting from the last
-estimate — the drone flies the final metre on dead reckoning instead of losing
-its target.
+Why it is needed: marker fixes are intermittent during oblique viewing and the
+handover between the two 1.3 m markers and centred 0.30 m marker.  With no new
+measurement the filter briefly predicts from the last estimate instead of
+dropping the target immediately.
 
 Subscribes
     /marker/measured    geometry_msgs/PointStamped   raw per-detection fix (ENU)
@@ -41,6 +40,7 @@ from __future__ import annotations
 
 import numpy as np
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from geometry_msgs.msg import PointStamped, Vector3Stamped
 from rclpy.node import Node
 from std_msgs.msg import Bool
@@ -266,7 +266,7 @@ def main(args=None):
     node = MarkerKfNode()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         node.destroy_node()

@@ -61,6 +61,7 @@ from collections import deque
 
 import numpy as np
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from geometry_msgs.msg import PointStamped, PoseStamped
 from rclpy.node import Node
 from rclpy.qos import (DurabilityPolicy, HistoryPolicy, QoSProfile,
@@ -230,7 +231,7 @@ def main(args=None):
     node = MarkerTfNode()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         node.destroy_node()

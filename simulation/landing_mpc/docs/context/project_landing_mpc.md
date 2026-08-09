@@ -35,7 +35,8 @@ opt-in auto_engage via VehicleCommand). SITL FLIGHT CONFIRMED (2026-07-22,
 headless): real PX4 x500 (gz_x500) took off to 5 m then MPC landed on a moving
 local-ENU marker — touchdown xy 0.23 m, |v_rel| 0.65 m/s (firmer than sim ~0.1
 due to real attitude/actuator dynamics; terminal-descent tuning is future work).
-Orchestrator that did takeoff+land: scratchpad/sitl_land.py.
+The original takeoff+land orchestrator was a local scratchpad and is not part
+of this repository; use `simulation/gazebo/run_gimbal.sh mission` now.
 
 SITL gotchas discovered: (1) this PX4 build uses MESSAGE VERSIONING — outputs are
 suffixed, so subscribe to `/fmu/out/vehicle_local_position_v1` NOT
@@ -52,9 +53,9 @@ spawn, avoids city world/local-frame offset).
 mpc_landing_200m WORLD LANDING CONFIRMED (2026-07-22): pulled origin/jo
 (merge; it also added a separate precision_landing MPC stack — mpc_core.py etc. —
 which the USER SAID TO IGNORE, keep landing_mpc). Kept only the new world files.
-Ran landing_mpc over XRCE (no code changes) via `START_XRCE=1 START_MAVROS=0
-START_BRIDGE=0 HEADLESS=1 PX4_DAEMON=1 ./gazebo/run_mpc_landing_200m.sh` +
-`ros2 run landing_mpc landing_mpc_sitl_demo`. Drone spawns world (30,30), ArUco
+Ran landing_mpc over XRCE (no code changes) via the then-current 200 m launcher
+(since removed) plus `ros2 run landing_mpc landing_mpc_sitl_demo`. Drone spawns
+world (30,30), ArUco
 trailer at world (37.07,37.07) = LOCAL ENU (7.07,7.07), deck marker z=1.811 local.
 Result: takeoff 8 m -> landed ON the 2 m deck, 0.27 m from marker, |v_rel| 0.8 m/s.
 Added `landing_mpc_sitl_demo` (sitl_demo.py) entry point = takeoff+land mission
@@ -76,7 +77,7 @@ is rougher but does close the distance. Dead mpc_app/_ref_app removed.
 Lesson: smoothness bought at the cost of never reaching the target is not a win.
 
 **INSTRUMENTED DIAGNOSIS (2026-07-23) — stop guessing, this is the data.**
-`scratchpad/vis_diag.py` projects the camera optical axis onto the deck plane
+The historical local visibility diagnostic projected the camera optical axis onto the deck plane
 (tilt-aware footprint centre) and compares "geometry says visible" vs "detector
 fired". Result over 155 s:
   - geometry OK -> detected **55/59 s (93%)**. THE DETECTOR IS FINE.
@@ -205,8 +206,8 @@ running. Jerk limit: `j_max*dt` = accel change per step; measured knee is
 **0.2 m/s²** (0.1 costs 4x tracking error + corridor dips, 0.05 fails to land,
 0.8 caused the airframe to lurch).
 
-MOVING platform CONFIRMED too (2026-07-22): `run_mpc_landing_200m_moving.sh`
-drives the trailer in a circle (center world (72.43,72.43), r=50 m, default 9 m/s;
+MOVING platform CONFIRMED too (2026-07-22): the historical moving-world launcher
+drove the trailer in a circle (center world (72.43,72.43), r=50 m, default 9 m/s;
 override with TRAILER_SPEED_M_S). Added `landing_mpc_sitl_demo_moving`
 (sitl_demo_moving.py) which reads the live trailer pose via gz.transport13
 (/world/<world>/dynamic_pose/info), converts world->local ENU (subtract spawn

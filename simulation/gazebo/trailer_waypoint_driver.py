@@ -477,6 +477,7 @@ class StadiumRoute:
         self._previous_progress_m: float | None = None
         self._distance_travelled_m = 0.0
         self.completed_loops = 0
+        self.max_cross_track_error_m = 0.0
 
     def _to_local(self, x: float, y: float) -> tuple[float, float]:
         dx = x - self.center[0]
@@ -592,6 +593,9 @@ class StadiumRoute:
         correction_x = nearest_x - local_x
         correction_y = nearest_y - local_y
         correction_distance = math.hypot(correction_x, correction_y)
+        self.max_cross_track_error_m = max(
+            self.max_cross_track_error_m, correction_distance
+        )
         if correction_distance > 1.0e-9:
             correction_strength = min(
                 0.20,
@@ -656,6 +660,13 @@ def publish_velocity(publisher: object, vx: float, vy: float, vz: float) -> None
     message.angular.y = 0.0
     message.angular.z = 0.0
     publisher.publish(message)  # type: ignore[attr-defined]
+
+
+def world_to_model_xy(vx: float, vy: float, yaw: float) -> tuple[float, float]:
+    """Express a horizontal world velocity in the model's fixed body axes."""
+    cosine = math.cos(yaw)
+    sine = math.sin(yaw)
+    return cosine * vx + sine * vy, -sine * vx + cosine * vy
 
 
 def main() -> int:
@@ -1051,7 +1062,12 @@ def main() -> int:
                     max_reverse_along_speed_m_s,
                     -along_speed_m_s,
                 )
-            publish_velocity(publisher, float(command[0]), float(command[1]), float(command[2]))
+            body_vx, body_vy = world_to_model_xy(
+                float(command[0]), float(command[1]), yaw
+            )
+            publish_velocity(
+                publisher, body_vx, body_vy, float(command[2])
+            )
             previous_velocity = command
             previous_time = now
 
@@ -1081,6 +1097,11 @@ def main() -> int:
     if STOP.is_set() and not route_complete:
         print("TRAILER WAYPOINT VALIDATION: INTERRUPTED", file=sys.stderr)
         print(f"completed_loops={completed_loops} reached_waypoints={reached}")
+        if stadium_route is not None:
+            print(
+                "max_cross_track_error_m="
+                f"{stadium_route.max_cross_track_error_m:.6f}"
+            )
         return 130
 
     z_limit = 0.40 if args.route == "slope" else 0.10
@@ -1127,6 +1148,11 @@ def main() -> int:
         print(
             "max_reverse_along_speed_m_s="
             f"{max_reverse_along_speed_m_s:.6f}"
+        )
+    if stadium_route is not None:
+        print(
+            "max_cross_track_error_m="
+            f"{stadium_route.max_cross_track_error_m:.6f}"
         )
     print(f"terrain_tracking_error_samples={tracking_error_samples}")
     print(f"excessive_tilt_samples={excessive_tilt_samples}")

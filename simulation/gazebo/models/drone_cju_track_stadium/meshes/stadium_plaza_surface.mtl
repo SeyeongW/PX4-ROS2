@@ -1,8 +1,0 @@
-# Procedurally generated local material
-newmtl cju_stadium_plaza
-Ka 0.480000 0.480000 0.450000
-Kd 0.480000 0.480000 0.450000
-Ks 0.040000 0.040000 0.040000
-Ns 8.000000
-d 1.000000
-illum 2

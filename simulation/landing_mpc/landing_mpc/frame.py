@@ -111,9 +111,10 @@ def enu_dir_to_flu(d_enu, q):
 #
 #     d_FLU = ( cos p cos y,  -cos p sin y,  sin p )                       (5)
 #
-# which inverts to the pointing solution
+# which has two equivalent downward-pointing solutions
 #
-#     p = asin(d_z),      y = atan2(-d_y, d_x)                            (6)
+#     p0 = asin(d_z),          y0 = atan2(-d_y, d_x)                      (6)
+#     p1 = -pi - p0,           y1 = y0 + pi                              (7)
 #
 # Nadir (d = (0,0,-1)) gives p = -90 deg, inside the joint's -135 deg limit,
 # and leaves y undefined — that is real gimbal lock, not a bug, so the caller
@@ -127,23 +128,42 @@ def enu_dir_to_flu(d_enu, q):
 _PITCH_MIN, _PITCH_MAX = -2.35619, 0.7854          # gimbal_down joint limits
 
 
-def gimbal_joint_angles(d_flu, yaw_hold=0.0, lock_tol=0.05):
-    """Eq. (6): body-FLU look direction -> (yaw, roll, pitch) joint commands.
+def gimbal_joint_angles(d_flu, yaw_hold=0.0, lock_tol=0.05,
+                        pitch_hold=-np.pi / 2.0):
+    """Eqs. (6)-(7): body-FLU direction -> continuous gimbal commands.
 
     ``yaw_hold`` is returned unchanged when the aim is within ``lock_tol`` of
     straight down, where yaw is geometrically undefined; otherwise a hovering
-    gimbal would spin on detector noise for no optical gain.
+    gimbal would spin on detector noise for no optical gain.  Of the exact
+    joint-space solutions allowed by the pitch limits, the one nearest the
+    current ``yaw_hold``/``pitch_hold`` is used to avoid a 180-degree yaw jump
+    when the optical axis crosses nadir.
     """
     d = np.asarray(d_flu, float)
     n = float(np.linalg.norm(d))
     if n < 1e-9:
         return float(yaw_hold), 0.0, -np.pi / 2.0
     d = d / n
-    pitch = float(np.arcsin(np.clip(d[2], -1.0, 1.0)))
-    pitch = float(np.clip(pitch, _PITCH_MIN, _PITCH_MAX))
+    pitch0 = float(np.arcsin(np.clip(d[2], -1.0, 1.0)))
+    yaw0 = float(np.arctan2(-d[1], d[0]))
+    exact = ((yaw0, pitch0), (yaw0 + np.pi, -np.pi - pitch0))
+    candidates = []
+    for yaw, pitch in exact:
+        if _PITCH_MIN <= pitch <= _PITCH_MAX:
+            yaw = float(yaw_hold) + (yaw - float(yaw_hold) + np.pi) % (
+                2.0 * np.pi) - np.pi
+            cost = max(abs(yaw - float(yaw_hold)),
+                       abs(pitch - float(pitch_hold)))
+            candidates.append((cost, yaw, pitch))
+    if candidates:
+        _, yaw, pitch = min(candidates, key=lambda item: item[0])
+    else:
+        yaw = float(yaw_hold) + (yaw0 - float(yaw_hold) + np.pi) % (
+            2.0 * np.pi) - np.pi
+        pitch = float(np.clip(pitch0, _PITCH_MIN, _PITCH_MAX))
     horizontal = float(np.hypot(d[0], d[1]))
-    yaw = float(yaw_hold) if horizontal < lock_tol else float(
-        np.arctan2(-d[1], d[0]))
+    if horizontal < lock_tol:
+        yaw = float(yaw_hold)
     return yaw, 0.0, pitch
 
 

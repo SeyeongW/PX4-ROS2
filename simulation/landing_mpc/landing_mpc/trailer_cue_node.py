@@ -1,6 +1,6 @@
 """trailer_cue_node — ONE job: publish the target's own reported position.
 
-This is the LONG-RANGE target source.  A camera cannot find a 1.5 m marker from
+This is the LONG-RANGE target source.  A camera cannot find a 1.3 m marker from
 90 m away (it subtends ~1 px per ArUco cell; the resolution limit is ~30 m), so
 the approach must be flown to coordinates the target itself reports.  On a real
 vehicle that is the truck's GPS/telemetry link; in SITL we stand in for it by
@@ -25,6 +25,7 @@ from collections import deque
 import numpy as np
 import rclpy
 from geometry_msgs.msg import PointStamped, Vector3Stamped
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 
 from gz.transport13 import Node as GzNode
@@ -120,7 +121,7 @@ def main(args=None):
     node = TrailerCueNode()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         node.destroy_node()

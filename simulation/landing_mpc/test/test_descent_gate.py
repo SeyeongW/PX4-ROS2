@@ -41,3 +41,11 @@ def test_vision_gate_allows_descent_with_fresh_converged_vision():
 
 def test_terminal_commit_does_not_abort_in_expected_near_field_blind_zone():
     assert _gate(height=0.6, last_seen=None, terminal_commit=True) == ''
+
+
+def test_terminal_commit_disables_the_camera_reacquisition_climb():
+    state = SimpleNamespace(_terminal_commit=False, cone_k=1.607)
+    assert MissionManagerNode._descent_cone_k(state) == state.cone_k
+
+    state._terminal_commit = True
+    assert MissionManagerNode._descent_cone_k(state) == 0.0

@@ -46,6 +46,7 @@ from __future__ import annotations
 import cv2
 import numpy as np
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from geometry_msgs.msg import PoseStamped, Vector3Stamped
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
@@ -117,6 +118,15 @@ def maximum_pair_disagreement(points_by_id):
     return worst, worst_pair
 
 
+def minimum_marker_span_px(corners):
+    """Smallest 2-D span of a marker quad; zero means unusable geometry."""
+    points = np.asarray(corners, dtype=float)
+    if points.shape != (4, 2) or not np.isfinite(points).all():
+        return 0.0
+    centered = points - np.mean(points, axis=0)
+    return float(np.linalg.svd(centered, compute_uv=False)[-1])
+
+
 def rvec_to_quat(rvec):
     """OpenCV rotation vector -> [w, x, y, z]."""
     R, _ = cv2.Rodrigues(rvec)
@@ -138,14 +148,9 @@ class ArucoDetectorNode(Node):
         # detector always reports the landing point, so nothing downstream has
         # to know which marker was used — the handover is invisible above this
         # node.  Defaults match the deck in
-        # `gazebo/models/moving_platform_aruco_velocity/model.sdf`.
-        # Sizes are chosen so the ladder OVERLAPS rather than merely meets.
-        # The big marker is usable only above (offset + s/2)/tan = 2.65 m —
-        # being off-centre costs it the bottom of its own range — and the small
-        # one only below s*fy/min_px = 3.88 m, so 0.30 m at a 1.3 m offset
-        # leaves a 1.2 m band where both work.  0.35 m widens that band but
-        # puts h_blind at 0.23 m against a 0.25 m touchdown, i.e. 2 cm of
-        # margin; 0.25 m keeps the margin but narrows the band to 0.69 m.
+        # `simulation/gazebo/models/moving_platform_aruco_velocity/model.sdf`.
+        # The mirrored big markers and centred small marker overlap in range;
+        # their configured offsets are ±1.1 m and 0 m respectively.
         self.ids = [int(v) for v in p(
             'marker_ids', list(DEFAULT_MARKER_IDS)).value]
         self.sizes = [float(v) for v in p('marker_sizes_m',
@@ -347,7 +352,7 @@ class ArucoDetectorNode(Node):
         PnP rotation over a lever arm, and a planar square's pose is ambiguous
         exactly when the view is fronto-parallel — which for a down camera over
         a flat deck is the NORMAL case, not an edge case.  Measured on
-        synthetic frames of this deck, `R @ o` over the 1.4 m arm was fine at
+        synthetic frames of this deck, `R @ o` over the 1.1 m offset was fine at
         most heights and then produced a **49 cm** error at 12 m with the deck
         dead level, because solvePnP returned the mirrored IPPE solution.
 
@@ -363,8 +368,7 @@ class ArucoDetectorNode(Node):
         |o|*sin(tilt) — and because `o` points the opposite way on the mirrored
         marker, the pair disagrees by TWICE it, which is the signature the SITL
         runs kept reporting (mean 0.35 m, max 1.35 m of disagreement).
-        Synthetic, exact geometry, tilt taken IN the plane the markers are
-        offset along (`scratchpad/landing_point_accuracy.py`):
+        Synthetic exact geometry, with tilt in the marker-offset plane:
 
             tilt      10 deg   20 deg   30 deg
             centre-depth   0.19 m   0.38 m   0.57 m
@@ -519,9 +523,10 @@ class ArucoDetectorNode(Node):
         seen = {} if ids is None else {
             int(v): corners[k].reshape(4, 2).astype(np.float32)
             for k, v in enumerate(ids.flatten()) if int(v) in self.msize}
-        # drop anything too small to carry a pose (see `min_px`)
+        # Require resolution in both image dimensions.  A nearly edge-on quad
+        # can have a large bounding box while its planar pose is ill-conditioned.
         seen = {i: c for i, c in seen.items()
-                if float(max(np.ptp(c[:, 0]), np.ptp(c[:, 1]))) >= self.min_px}
+                if minimum_marker_span_px(c) >= self.min_px}
         if not seen:
             self._maybe_dump(img, now)
             self.det_pub.publish(det)
@@ -649,7 +654,7 @@ def main(args=None):
     node = ArucoDetectorNode()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         node.destroy_node()

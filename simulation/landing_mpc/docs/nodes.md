@@ -344,6 +344,10 @@ $$R(q)=\begin{pmatrix}
 
 **한 줄**: 픽셀 → 카메라 광학 프레임 마커 자세. 드론도 프레임도 착륙도 모른다.
 
+> 아래 1.5 m 단일 마커 유도는 초기 설계 기록이다. 현재는 ID 0/2의
+> 1.30 m 코드(±1.10 m)와 ID 1의 0.30 m 중앙 코드를 겹쳐 쓰며,
+> 모든 검출을 덱 중앙으로 변환한다.
+
 핀홀 투영 + PnP:
 
 $$s\begin{pmatrix}u\\v\\1\end{pmatrix}
@@ -513,14 +517,13 @@ h=0.12 m  fixes=0  KF_err=0.183  valid=False  ← 3 s 초과, 자동 무효
 | `APPROACH` | **큐** | 접근고도에서 큐로 순항(속도 피드포워드), 하강 안 함 |
 | `ACQUIRE` | 큐 + 비전 보정 | 트레일러와 상대속도 정합 |
 | `DESCEND` | 큐 + 비전 보정 | MPC 상대좌표 랑데부 + corridor 하강 |
-| `TOUCHDOWN` | — | 접지 판정 → disarm |
+| `TOUCHDOWN` | 큐 + final hold | 최종 데크 포획 유지 → contact/dwell 확인 후 disarm |
 | `ABORT` | 큐 | 접근 실패 시 상승·복귀 후 재시도 |
 
-**인수인계 조건** (히스테리시스): $d<0.7\,r(h)$ **이고** `/marker/valid`.
-복귀는 더 넓은 반경에서만 → 경계에서 채터링 방지.
-
-**커밋 고도**: $h\le h_{commit}$ 아래에선 원뿔이 닫혀 비전 소실이 **정상**이므로
-abort하지 않고 KF coast로 밀어붙인다.
+**현재 전환 조건**: `APPROACH` → `ACQUIRE`는 큐 15 m 이내이고
+상대속도 1 m/s 미만, `ACQUIRE` → `DESCEND`는 0.5 m/s 미만이다.
+하강 중 3 m 이하에서는 최신 ArUco 검출과 수렴한 보정이 필수이고,
+1 m 이하 terminal commit 후에만 근거리 블라인드존에서 마지막 보정을 유지한다.
 
 ### 과거 기준 실측 (3 m/s 원운동 트레일러, 실제 ArUco 인식)
 
@@ -541,14 +544,14 @@ TOUCHDOWN → DONE (disarmed)
 
 ---
 
-## 2.6 미해결 문제 — 카메라 지향과 기체 자세의 결합
+## 2.6 과거 진단 기록 — 카메라 지향과 기체 자세의 결합
 
 전 파이프라인이 동작하는데도 **이동 표적 착륙이 재현되지 않는다.** 원인을 추측이
 아니라 계측으로 특정했으므로, 그 과정과 **기각된 가설들**을 남긴다.
 
 ### 계측 방법
 
-`scratchpad/vis_diag.py` 가 카메라 광축을 덱 평면에 투영해 **틸트를 반영한**
+당시 로컬 진단 도구가 카메라 광축을 덱 평면에 투영해 **틸트를 반영한**
 지상 발자국 중심을 구하고, 거기서 실제 트레일러까지 거리를 가시반경 $r(h)$ 와
 비교한다. 즉 **"기하적으로 보여야 하는가"** 와 **"실제로 검출됐는가"** 를 대조한다.
 
@@ -617,7 +620,7 @@ raw position setpoint 를 던지고 가속을 만드는 것은 **PX4 자신의 �
 몸체고정 vs 짐벌을 **통제된 비교**로 돌릴 수 있다.
 
 ```
-GIMBAL=1 ./gazebo/run_px4_map.sh mpc-landing-moving
+GIMBAL=1 ./simulation/gazebo/run_px4_map.sh mpc-landing-moving
 ros2 launch landing_mpc gimbal_perception.launch.py
 ```
 
@@ -683,9 +686,8 @@ $$R_{\text{cam}\to\text{ENU}_{\text{PX4}}} = \underbrace{R(q_{\text{PX4}})}_{\te
 gz 엔코더를 읽어 `/gimbal/joint_state` 로 중계한다. 명령각이 아니라 **엔코더각**을
 쓰는 이유는 서보의 적분항이 꺼져 있어(`i_max=0`) 중력 처짐이 남기 때문이다.
 
-> 같은 함정이 `trailer_cue_node` 에도 있다. gz 월드 좌표에서 스폰을 뺀 값을
-> PX4 로컬 좌표인 양 publish 한다. 짐벌과 무관한 **선재 이슈**이므로 여기서는
-> 건드리지 않았지만, 이동표적 미션을 다시 볼 때 반드시 확인할 것.
+> `trailer_cue_node`는 현재 gz 월드 좌표에서 드론 스폰을 빼 PX4 로컬 ENU로
+> 변환한다. 아래 요 오프셋 수치는 이 보정 전의 과거 기록이다.
 
 ### 실측 (SITL, 지상 정지 상태)
 
@@ -701,7 +703,7 @@ gz 엔코더를 읽어 `/gimbal/joint_state` 로 중계한다. 명령각이 아�
 (카메라 IMU vs base_link IMU + 관절각). PX4 를 끌어들이지 않았으므로 위의 27.33°
 오프셋이 검증 자체를 오염시킬 수 없다.
 
-### 비행 검증 (`scratchpad/gimbal_hover_test.py`)
+### 과거 비행 검증 (당시 로컬 도구, 현재 미포함)
 
 호버링 상태에서 10 m 떨어진 **정지** 트레일러를 겨눈다. 진실값은 Gazebo pose 피드,
 추정값은 영상+엔코더+PX4 자세 — **완전히 독립인 두 경로**라서 일치하면 의미가 있다.

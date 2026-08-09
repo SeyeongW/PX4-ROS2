@@ -20,7 +20,8 @@ Two settings are load-bearing and are set here rather than left to defaults:
 * ``use_sim_time`` — image stamps are sim time, and the whole chain
   interpolates vehicle state to them.
 
-Run the vehicle with ``GIMBAL=1 ./gazebo/run_px4_map.sh mpc-landing-moving``.
+Run the vehicle with
+``GIMBAL=1 ./simulation/gazebo/run_px4_map.sh mpc-landing-moving``.
 The mission itself (trailer_cue_node, mission_manager_node, px4_node) is
 unchanged and launched separately: the gimbal is a sensor-pointing concern, and
 keeping it out of the mission state machine is what makes a body-fixed vs
@@ -31,8 +32,10 @@ import os
 from typing import List
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, LogInfo, SetEnvironmentVariable
+from launch.actions import (DeclareLaunchArgument, EmitEvent, LogInfo,
+                            SetEnvironmentVariable)
 from launch.conditions import LaunchConfigurationNotEquals
+from launch.events import Shutdown
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
@@ -115,6 +118,8 @@ def generate_launch_description():
             name='gimbal_control_node', output='screen',
             parameters=[sim_time, {'model_name': model, 'world': world,
                                    'deck_z': deck_z}],
+            on_exit=EmitEvent(event=Shutdown(
+                reason='required gimbal control node exited')),
         ),
         Node(
             package='landing_mpc', executable='aruco_detector_node',
@@ -126,6 +131,8 @@ def generate_launch_description():
                 'marker_sizes_m': marker_sizes,
                 'max_pair_disagreement_m': max_pair_disagreement,
             }],
+            on_exit=EmitEvent(event=Shutdown(
+                reason='required ArUco detector node exited')),
         ),
         Node(
             package='landing_mpc', executable='marker_tf_node',
@@ -136,10 +143,14 @@ def generate_launch_description():
                 'deck_z': deck_z,
                 'use_deck_z': LaunchConfiguration('use_deck_z'),
             }],
+            on_exit=EmitEvent(event=Shutdown(
+                reason='required marker transform node exited')),
         ),
         Node(
             package='landing_mpc', executable='marker_kf_node',
             name='marker_kf_node', output='screen',
             parameters=[sim_time, {'deck_z': deck_z}],
+            on_exit=EmitEvent(event=Shutdown(
+                reason='required marker filter node exited')),
         ),
     ])

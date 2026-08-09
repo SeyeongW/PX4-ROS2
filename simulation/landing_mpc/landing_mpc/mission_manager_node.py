@@ -1,9 +1,10 @@
 """mission_manager_node — ONE job: sequence the landing mission and decide
 WHICH target source the controller should believe.
 
-The reason this node exists: a 1.5 m marker is unresolvable beyond ~30 m (at
-90 m it is ~1 px per ArUco cell), so vision cannot fly the approach.  The
-approach is flown to the target's REPORTED coordinates (`/marker/cue`), and
+The reason this node exists: even the 1.3 m long-range markers are unresolved
+at long range (at 90 m they are ~1 px per ArUco cell), so vision cannot fly
+the approach.  The approach is flown to the target's REPORTED coordinates
+(`/marker/cue`), and
 vision (`/marker/position`, from the KF) takes over only once the vehicle is
 close enough for the camera to actually see the marker.  Measured detection
 rate: 0.3% while chasing at 50-90 m, 60-80% hovering overhead.
@@ -36,7 +37,7 @@ Phases
     DESCEND   hand over to the MPC, which does the relative-frame rendezvous
               and corridor-gated descent — still flying the cue, now with the
               marker correcting it.
-    TOUCHDOWN contact detected -> disarm
+    TOUCHDOWN final deck capture and contact/disarm handshake
     ABORT     cue lost -> climb and hold, then retry the approach.
 
 THE CUE FLIES, THE MARKER CENTRES.  The whole mission tracks `/marker/cue`;
@@ -60,6 +61,7 @@ from __future__ import annotations
 import math
 import multiprocessing
 import re
+import signal
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
@@ -67,6 +69,7 @@ import numpy as np
 import rclpy
 import yaml
 from geometry_msgs.msg import PointStamped, Vector3Stamped
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import (DurabilityPolicy, HistoryPolicy, QoSProfile,
                        ReliabilityPolicy)
@@ -92,6 +95,10 @@ from .predictor import predict_const_vel
 from .reference import HorizonReference
 
 
+def _planner_worker_init():
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+
+
 def _px4_qos():
     return QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT,
                       durability=DurabilityPolicy.TRANSIENT_LOCAL,
@@ -105,26 +112,29 @@ def _plan_global_path(map_yaml, start_local_enu=None, goal_local_enu=None):
 
     document = yaml.safe_load(Path(map_yaml).read_text(encoding='utf-8'))
     mission = document['mission']
-    trailer = document['trailer']
     spawn_pose = document['spawn']['gazebo_spawn_pose_enu']
+    frame_name = mission['coordinate_frame']
+    if document['terrain']['coordinate_frame'] != frame_name:
+        raise ValueError('mission and terrain must use the same frame')
+    frame = document['frames'][frame_name]
 
-    heading = math.radians(float(trailer['stadium_heading_deg']))
+    heading = math.radians(float(frame['heading_deg_enu']))
     rotation = np.array([
         [math.cos(heading), -math.sin(heading)],
         [math.sin(heading), math.cos(heading)],
     ])
-    stadium_center = np.asarray(trailer['stadium_center_enu_m'], float)
+    frame_origin = np.asarray(frame['origin_enu_m'][:2], float)
     spawn = np.asarray([spawn_pose['x'], spawn_pose['y']], float)
     altitude = float(mission['cruise_altitude_m'])
     start_local = (np.zeros(3) if start_local_enu is None
                    else np.asarray(start_local_enu, float).copy())
-    start = np.r_[((spawn + start_local[:2]) - stadium_center) @ rotation,
+    start = np.r_[((spawn + start_local[:2]) - frame_origin) @ rotation,
                   altitude]
     if goal_local_enu is None:
-        goal_xy = np.asarray(mission['goal_stadium_local_m'], float)
+        goal_xy = np.asarray(mission['goal_m'], float)
     else:
         goal_local = np.asarray(goal_local_enu, float)
-        goal_xy = ((spawn + goal_local[:2]) - stadium_center) @ rotation
+        goal_xy = ((spawn + goal_local[:2]) - frame_origin) @ rotation
     goal = np.r_[goal_xy, altitude]
     clearance = float(mission['obstacle_clearance_m'])
 
@@ -145,9 +155,12 @@ def _plan_global_path(map_yaml, start_local_enu=None, goal_local_enu=None):
     if (terrain_size.shape != (2,) or not np.all(np.isfinite(terrain_size))
             or np.any(terrain_size <= 0.0)):
         raise ValueError('terrain.size_m must contain two positive dimensions')
+    terrain_center = np.asarray(document['terrain']['center_m'], float)
+    if terrain_center.shape != (2,) or not np.all(np.isfinite(terrain_center)):
+        raise ValueError('terrain.center_m must contain two finite values')
     half_terrain = 0.5 * terrain_size
-    bounds_min = np.r_[-half_terrain, altitude]
-    bounds_max = np.r_[half_terrain, altitude]
+    bounds_min = np.r_[terrain_center - half_terrain, altitude]
+    bounds_max = np.r_[terrain_center + half_terrain, altitude]
     world = WorldModel.from_boxes(lows, highs, bounds_min, bounds_max)
     planner = AStarPlanner3D(
         world,
@@ -163,7 +176,7 @@ def _plan_global_path(map_yaml, start_local_enu=None, goal_local_enu=None):
                                result.waypoints_m[1:])):
         raise RuntimeError('CJU A* returned a colliding shortcut')
 
-    world_xy = result.waypoints_m[:, :2] @ rotation.T + stadium_center
+    world_xy = result.waypoints_m[:, :2] @ rotation.T + frame_origin
     local_xy = world_xy - spawn
     path = np.column_stack((local_xy, result.waypoints_m[:, 2]))
     return path, result.expanded, float(mission['cruise_speed_m_s'])
@@ -192,9 +205,9 @@ class MissionManagerNode(Node):
         # offset satisfies
         #     r(h) = h*tan(vfov/2) - s_m/2
         # (h = height above the deck).  At the 8 m approach altitude that is
-        # 4.3 m, not 20 m — and r(h) -> 0 at h = 1.19 m, which is exactly the
-        # blind zone.  So the same geometry explains both.  Derive the radius
-        # from altitude instead of guessing it.
+        # 4.4 m, not 20 m.  A smaller centred marker covers the near-field
+        # blind zone; derive the long-range radius from altitude instead of
+        # guessing it.
         self.tan_vfov_2 = require_positive(
             'tan_vfov_half', p('tan_vfov_half', 0.6292).value)
         # The LARGEST marker of the ladder — this only feeds the startup report
@@ -279,11 +292,9 @@ class MissionManagerNode(Node):
         # was never written down: the OLD design would not descend at all
         # without a marker, so "can I see the deck" was implicitly answered
         # before committing.  Cue-led descent has no such check, and the cue is
-        # not trustworthy on its own — `trailer_cue_node` publishes gz world
-        # coordinates as if they were PX4-local and that offset DRIFTS (0.9 to
-        # 27.3 deg measured across runs).  Descending on it blind aims the
-        # vehicle at a point that may be metres from the deck, and the deck is a
-        # 5x5x1.9 m box moving at 3 m/s — hitting its edge flips the airframe.
+        # not precise enough on its own.  Descending on it blind can aim the
+        # vehicle away from the deck centre, and the deck is a 5x5x1.9 m box
+        # moving at 3 m/s — hitting its edge flips the airframe.
         # So the cue may fly the vehicle DOWN TO this height and no lower;
         # below it the marker must have been seen and the correction converged.
         self.vision_gate_h = require_positive(
@@ -324,11 +335,9 @@ class MissionManagerNode(Node):
             'touchdown_vel_m_s',
             p('touchdown_vel_m_s', 0.4).value)
         self._t_touch_ok = None
-        # Hard floor: never command the vehicle below the deck surface.  The
-        # descent target is the deck, and both the MPC and a stale cue can
-        # overshoot through it — which drove the vehicle underground, flipped
-        # the gimbal up to stare at its own frame, and diverged.  Clamp every
-        # setpoint z to this floor so that can never happen again.
+        # Hard floor for the vehicle reference point.  The margin is the
+        # landing-gear clearance above the deck; clamp position and downward
+        # feed-forward there so the controller cannot press through the deck.
         self.z_floor_margin = require_nonnegative(
             'z_floor_margin_m', p('z_floor_margin_m', 0.05).value)
         self.z_floor = self.deck_z + self.z_floor_margin
@@ -494,7 +503,8 @@ class MissionManagerNode(Node):
             # control timer responsive.
             self._planner_pool = ProcessPoolExecutor(
                 max_workers=1,
-                mp_context=multiprocessing.get_context('spawn'))
+                mp_context=multiprocessing.get_context('spawn'),
+                initializer=_planner_worker_init)
             self.get_logger().info(
                 f'CJU map-based global A* ready: {self._mission_speed:g} m/s')
 
@@ -518,6 +528,7 @@ class MissionManagerNode(Node):
         self._bias_res = 1e9                 # residual |vision - (cue + bias)|
         self._t_bias = 0.0                   # when the residual was last real
         self.k = 0
+        self._disarm_every = max(1, round(self.control_rate_hz / 5.0))
         self.engaged = False
         self.armed = None                    # from VehicleStatus; None = unknown
         self.contact = False                 # from VehicleLandDetected
@@ -724,10 +735,12 @@ class MissionManagerNode(Node):
         self.armed = m.arming_state == VehicleStatus.ARMING_STATE_ARMED
 
     def _on_land(self, m):
-        """PX4's own verdict on contact — the ONLY thing allowed to authorise a
-        forced disarm.  `ground_contact` is its first stage and is enough: it
-        means thrust has dropped and the vehicle is not moving, i.e. something
-        is holding it up other than the propellers."""
+        """PX4's contact verdict, used alongside the continuous geometry dwell.
+
+        `ground_contact` is its first stage and is enough: it means thrust has
+        dropped and the vehicle is not moving, i.e. something is holding it up
+        other than the propellers.
+        """
         self.contact = bool(m.ground_contact or m.maybe_landed or m.landed)
 
     # ---------------------------------------------------------------- helpers
@@ -815,14 +828,18 @@ class MissionManagerNode(Node):
         self.ocm_pub.publish(m)
 
     def _send(self, pos, vel=None, acc=None):
-        # HARD Z-FLOOR (ENU up): never command the vehicle below the deck.  This
-        # is the last line of defence against a descent overshoot or a stale cue
-        # driving the vehicle underground; it applies to every phase because a
-        # setpoint below the deck is never correct.  IDLE/TAKEOFF sit above the
-        # floor anyway, so this only ever bites the endgame.
+        # HARD Z-FLOOR (ENU up): keep the vehicle reference at or above its
+        # configured landing-gear clearance and remove downward feed-forward.
         pos = np.asarray(pos, float).copy()
-        if pos[2] < self.z_floor:
+        at_floor = pos[2] <= self.z_floor
+        if at_floor:
             pos[2] = self.z_floor
+            if vel is not None:
+                vel = np.asarray(vel, float).copy()
+                vel[2] = max(float(vel[2]), 0.0)
+            if acc is not None:
+                acc = np.asarray(acc, float).copy()
+                acc[2] = max(float(acc[2]), 0.0)
         pp = enu_to_ned(pos)
         s = TrajectorySetpoint()
         s.timestamp = int(self.get_clock().now().nanoseconds / 1000)
@@ -889,12 +906,10 @@ class MissionManagerNode(Node):
 
         rather than as a replacement.  Three things fall out of that:
 
-          * no step at handover.  The two sources disagree — `trailer_cue_node`
-            publishes gz world coordinates as if they were PX4-local, and that
-            offset DRIFTS (measured +27.3 down to +0.9 deg across runs) — so
-            switching between them would jump the target by metres and undo the
-            whole acceleration budget.  A filtered correction absorbs exactly
-            that offset instead of being surprised by it.
+          * no step at handover.  The two sources still disagree by their
+            independent measurement errors, so switching between them would
+            jump the target.  A filtered correction absorbs that disagreement
+            instead of being surprised by it.
           * a brief marker loss is no longer fatal.  The bias holds and the cue
             keeps horizontal tracking continuous.  At and below the lower
             vision gate, however, raw ArUco freshness stops further descent.
@@ -990,14 +1005,18 @@ class MissionManagerNode(Node):
             return 'correction still settling'
         return ''
 
-    def _touchdown_geometry(self, target, target_v):
+    def _descent_cone_k(self):
+        """End the camera reacquisition cone after the terminal commitment."""
+        return 0.0 if self._terminal_commit else self.cone_k
+
+    def _touchdown_geometry(self, target, target_v, tolerance_scale=1.0):
         """Return whether height, alignment and relative speed all say landed."""
         xy_error = self._xy_to(target)
         relative_speed = float(np.linalg.norm(self.v_d - target_v))
         height = float((self.p_d - target)[2])
-        ready = (height <= self.touch_h
-                 and xy_error < self.touch_xy
-                 and relative_speed < self.touch_v)
+        ready = (height <= tolerance_scale * self.touch_h
+                 and xy_error < tolerance_scale * self.touch_xy
+                 and relative_speed < tolerance_scale * self.touch_v)
         return ready, xy_error, relative_speed
 
     def _los_speed_cap(self, target):
@@ -1289,6 +1308,10 @@ class MissionManagerNode(Node):
                 # height converts "wait" into an ordinary tracking objective
                 # rather than an extra mode — the horizontal solve keeps
                 # closing on the marker the whole time it holds.
+                # After terminal commit, keeping this cone would turn a blind
+                # XY disturbance into the multi-metre reacquisition climb the
+                # commitment explicitly promises not to make.
+                self.mpc.cone_k = self._descent_cone_k()
                 self.mpc.z_ref = p_rel0[2] if blocked else 0.0
                 P, V, A = predict_const_vel(tgt, tgt_v, self.mpc_dt, self.N)
                 res = self.mpc.solve(p_rel0, v_rel0, P, V, A)
@@ -1320,19 +1343,19 @@ class MissionManagerNode(Node):
                 self._touchdown_geometry(tgt, tgt_v))
             if self._terminal_commit and touchdown_ready:
                 self._set_state('TOUCHDOWN',
-                                f'(xy {xy_error:.2f} m, '
+                                f'(final hold; xy {xy_error:.2f} m, '
                                 f'|v_rel| {relative_speed:.2f} m/s)')
             return
 
         if self.state == 'TOUCHDOWN':
-            # Sit on the deck and disarm — WITHOUT ever pushing below it.  The
+            # Hold final deck-capture geometry and disarm — WITHOUT ever
+            # pushing below the deck.  The
             # old handler drove the setpoint to tgt_z-0.5 and, when PX4 refused
             # to disarm on the moving deck, looped back to DESCEND; together
             # those buried the vehicle under the deck and it diverged.  Two
             # rules now:
-            #   * hold the setpoint at the deck surface (z_floor), tracking the
-            #     target horizontally so the moving deck does not slide out;
-            #     never command downward past it.
+            #   * hold at the configured landing-gear clearance (z_floor),
+            #     tracking horizontally so the moving deck does not slide out.
             #   * decide the disarm here rather than looping.  PX4's land
             #     detector never fires on a 3 m/s deck, so we own the call — but
             #     gated on a DWELL of sustained low height AND low relative
@@ -1344,7 +1367,11 @@ class MissionManagerNode(Node):
                 tgt, tgt_v = self._target()
                 self._send(np.array([tgt[0], tgt[1], self.z_floor]),
                            np.array([tgt_v[0], tgt_v[1], 0.0]))
-                on_deck, _, _ = self._touchdown_geometry(tgt, tgt_v)
+                # Strict geometry was already required to enter TOUCHDOWN.
+                # A small hysteresis keeps deck-motion noise from resetting the
+                # continuous disarm dwell forever while still rejecting a real
+                # departure from the 5 m deck.
+                on_deck, _, _ = self._touchdown_geometry(tgt, tgt_v, 1.5)
             else:
                 # Never follow an old moving-target position.  Hold here and
                 # require PX4 contact before a forced disarm.
@@ -1365,19 +1392,22 @@ class MissionManagerNode(Node):
             dwell = (self._now() - self._t_touch_ok) if self._t_touch_ok else 0.0
             confirmed = self.contact or dwell >= self.touch_dwell
 
-            # Always ask normally (PX4 takes it the moment it agrees); force
-            # only once the touchdown is confirmed — by PX4 contact or by dwell.
-            self._cmd(VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM, 0.0)
-            if confirmed:
-                self._cmd(VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM, 0.0,
-                          21196.0)
+            # Ask normally until touchdown is confirmed, then send only the
+            # forced form. Publishing both back-to-back can collapse into one
+            # uORB update and makes the result timing-dependent.
+            if self.k % self._disarm_every == 0:
+                force = 21196.0 if confirmed else 0.0
+                self._cmd(
+                    VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM,
+                    0.0, force)
 
             waited = self._now() - self._t_touch
             if self.armed is False:
                 self._set_state('DONE', f'(disarmed, dwell {dwell:.1f} s)')
             elif self.armed is None and waited > 5.0 and self.k % 50 == 0:
                 self.get_logger().error(
-                    'no VehicleStatus has EVER arrived — force disarm sent but '
+                    'no VehicleStatus has EVER arrived — disarm request sent '
+                    'but '
                     'unconfirmable. Keeping Offboard and retrying. The topic is '
                     'resolved '
                     'from the graph (see _resolve_px4), so this means PX4 is '
@@ -1401,12 +1431,15 @@ class MissionManagerNode(Node):
 
     def destroy_node(self):
         if self._solves:
-            self.get_logger().info(
-                f'MPC solves {self._solves}, failures {self._fails}')
+            summary = f'MPC solves {self._solves}, failures {self._fails}'
+            if rclpy.ok():
+                self.get_logger().info(summary)
+            else:
+                print(summary, flush=True)
         if self._plan_future is not None:
             self._plan_future.cancel()
         if self._planner_pool is not None:
-            self._planner_pool.shutdown(wait=False, cancel_futures=True)
+            self._planner_pool.shutdown(wait=True, cancel_futures=True)
         return super().destroy_node()
 
 
@@ -1415,7 +1448,7 @@ def main(args=None):
     node = MissionManagerNode()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         node.destroy_node()

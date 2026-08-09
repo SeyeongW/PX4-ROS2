@@ -19,7 +19,8 @@ attitude loop handles the quaternion dynamics (differential flatness, §2.1).
 | `reference.py` | MPC plan → 50 Hz interpolated setpoint stream |
 | `frame.py`     | ENU↔NED conversion + gimbal joint chain, unit-tested (§4) |
 
-Perception + mission nodes (the live stack, launched by `gazebo/run_gimbal.sh`):
+Perception + mission nodes (the live stack, launched by
+`simulation/gazebo/run_gimbal.sh`):
 
 | node | role |
 |------|------|
@@ -55,17 +56,8 @@ One command brings up Gazebo + PX4 + the perception chain + the mission, with
 every switch already set:
 
 ```bash
-./gazebo/run_gimbal.sh mission        # CJU: takeoff → mission → land
-./gazebo/run_gimbal.sh baseline       # CJU body-fixed camera comparison
-HEADLESS=1 ./gazebo/run_gimbal.sh mission
-LANDING_MAP=mpc-landing-moving ./gazebo/run_gimbal.sh mission  # legacy shuttle
+./simulation/gazebo/run_gimbal.sh mission        # CJU: takeoff → mission → land
+./simulation/gazebo/run_gimbal.sh baseline       # CJU body-fixed camera comparison
+HEADLESS=1 ./simulation/gazebo/run_gimbal.sh mission
+LANDING_MAP=mpc-landing-moving ./simulation/gazebo/run_gimbal.sh mission
 ```
-
-Score a run against Gazebo ground truth (not the mission's own estimate):
-
-```bash
-python3 scratchpad/landing_center_check.py
-```
-
-Measured: touches down on the 3 m/s deck every run, 0.42-0.78 m from the deck
-centre. See `docs/nodes.md` for the per-node derivations.
