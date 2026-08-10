@@ -211,7 +211,24 @@ class MissionManagerNode(Node):
         # a vehicle that is genuinely sitting on the deck stays there, one that
         # is not drifts out of the box within a second.
         self.touch_dwell = float(p('touchdown_dwell_s', 2.0).value)
-        self.touch_v = float(p('touchdown_vel_m_s', 0.4).value)
+        # Touchdown contact-speed gate, SPLIT by axis (vz vs vxy) instead of one
+        # combined norm.  The two failure modes are physically different and bind
+        # differently: vz is a landing-gear / frame IMPACT limit (PX4 already
+        # covers it and it ran with ~92% margin in Level 1), while vxy is a SKID
+        # / TIP-OVER limit on the moving deck that PX4 has no concept of and that
+        # sits right at its limit -- so vxy is the real constraint and a single
+        # norm hides that (the same reason the control side already separates
+        # v_max from vz_max).  Both default to the legacy `touchdown_vel_m_s`, so
+        # existing launches are unchanged; set the per-axis params to tune them
+        # apart.  PLACEHOLDERS: back-calculate touchdown_vxy_m_s from the
+        # platform's skid/tip-over limit and touchdown_vz_m_s from the X500
+        # landing-gear impact spec before a real flight (handoff Part D.1; Level
+        # 1 used vz=0.5, vxy=0.2 as sim placeholders).  The 2 s dwell above is
+        # the real filter -- a vehicle genuinely moving cannot hold the box that
+        # long -- so the exact per-axis value is not safety-critical by itself.
+        _touch_v = float(p('touchdown_vel_m_s', 0.4).value)
+        self.touch_vz = float(p('touchdown_vz_m_s', _touch_v).value)
+        self.touch_vxy = float(p('touchdown_vxy_m_s', _touch_v).value)
         self._t_touch_ok = None
         # Hard floor: never command the vehicle below the deck surface.  The
         # descent target is the deck, and both the MPC and a stale cue can
@@ -989,12 +1006,18 @@ class MissionManagerNode(Node):
             self._send(np.array([tgt[0], tgt[1], self.z_floor]),
                        np.array([tgt_v[0], tgt_v[1], 0.0]))
 
-            # Is the touchdown geometry still holding this instant?
+            # Is the touchdown geometry still holding this instant?  Contact
+            # speed is checked PER AXIS -- vertical (landing-gear impact) and
+            # horizontal (skid / tip-over on the moving deck) fail differently
+            # and carry separate tolerances (see the touchdown params).
             p_rel = self.p_d - tgt
-            v_rel = float(np.linalg.norm(self.v_d - tgt_v))
+            v_rel_vec = self.v_d - tgt_v
+            vz_rel = abs(float(v_rel_vec[2]))
+            vxy_rel = float(np.hypot(v_rel_vec[0], v_rel_vec[1]))
             on_deck = (p_rel[2] <= self.touch_h
                        and self._xy_to(tgt) < self.touch_xy
-                       and v_rel < self.touch_v)
+                       and vz_rel < self.touch_vz
+                       and vxy_rel < self.touch_vxy)
             if on_deck:
                 if self._t_touch_ok is None:
                     self._t_touch_ok = self._now()
