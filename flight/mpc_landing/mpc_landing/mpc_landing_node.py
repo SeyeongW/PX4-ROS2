@@ -152,6 +152,13 @@ class MpcLandingNode(Node):
         self._takeoff_xy: np.ndarray | None = None
         self._t_touch = None
         self._t_prestream = None
+        # SEARCH commits to the descent only after this many CONSECUTIVE fresh
+        # detections, so a single spurious ArUco hit cannot trip an irreversible
+        # descent (see the SEARCH phase).
+        self._acq_streak = 0
+        # Last time each throttled service call fired, keyed by name, so the
+        # TOUCHDOWN/ABORT handlers stop re-sending land/disarm every tick.
+        self._t_calls: dict[str, float] = {}
 
         # --- MAVROS
         self.create_subscription(State, '/mavros/state', self._on_state,
@@ -235,6 +242,11 @@ class MpcLandingNode(Node):
         p('marker_timeout_s', 1.5)          # older than this is not a fix
         p('marker_lost_abort_s', 5.0)       # gone this long mid-descent -> abort
         p('search_timeout_s', 60.0)         # no marker in SEARCH -> abort
+        # SEARCH -> DESCEND is automatic and irreversible, so require the marker
+        # to be seen this many CONSECUTIVE ticks before committing.  One frame is
+        # enough for a false positive to start a descent; 5 ticks (~0.25 s at
+        # rate_hz) is still immediate to a human but rejects a lone bad fix.
+        p('marker_acquire_frames', 5)
         # --- preflight thresholds
         p('min_battery_v', 14.0)            # 4S nominal; raise for 6S
         p('require_battery', True)          # false only for bench tests
@@ -290,6 +302,7 @@ class MpcLandingNode(Node):
         self.marker_timeout = float(g('marker_timeout_s').value)
         self.marker_lost_abort = float(g('marker_lost_abort_s').value)
         self.search_timeout = float(g('search_timeout_s').value)
+        self.acquire_frames = int(g('marker_acquire_frames').value)
         self.min_batt = float(g('min_battery_v').value)
         self.require_batt = bool(g('require_battery').value)
         self.mode_name = str(g('offboard_mode').value)
@@ -450,9 +463,36 @@ class MpcLandingNode(Node):
             lambda f, n=name: self.get_logger().info(f'{n} -> {f.result()}'))
         return True
 
+    def _call_throttled(self, client, request, name, period=1.0):
+        """Like `_call`, but at most once per `period` seconds.
+
+        The TOUCHDOWN/ABORT handlers run every tick; without this they would
+        re-send land/disarm at rate_hz, flooding the operator's log and
+        hammering the FCU with identical commands.  The first call after a gap
+        fires immediately.
+        """
+        if self._now() - self._t_calls.get(name, 0.0) < period:
+            return
+        self._t_calls[name] = self._now()
+        self._call(client, request, name)
+
     def _fresh_marker(self) -> bool:
         return (self.marker is not None
                 and (self._now() - self.marker_t) < self.marker_timeout)
+
+    def _on_ground(self) -> bool:
+        """True once the vehicle has actually settled on the ground.
+
+        Uses extended_state, which the FCU derives from its own land detector,
+        so the disarm in TOUCHDOWN/ABORT waits for real ground contact instead
+        of firing from a geometric gate that a bad fix could satisfy in mid-air.
+        An already-disarmed FCU counts too, so a LAND that auto-disarmed on the
+        ground still resolves even if extended_state never arrived.
+        """
+        if self.state and not self.state.armed:
+            return True
+        return (self.ext is not None
+                and self.ext.landed_state == ExtendedState.LANDED_STATE_ON_GROUND)
 
     def _alt(self) -> float:
         return float(self.pose.pose.position.z) if self.pose else float('nan')
@@ -476,11 +516,14 @@ class MpcLandingNode(Node):
         m.header.stamp = self.get_clock().now().to_msg()
         m.header.frame_id = 'map'
         m.coordinate_frame = PositionTarget.FRAME_LOCAL_NED
+        # Velocity + yaw only: ignore position and acceleration.  The FORCE bit
+        # is deliberately NOT set -- it reinterprets the (ignored) accel fields
+        # as a force, which PX4 does not support on this path and may reject.
         m.type_mask = (PositionTarget.IGNORE_PX | PositionTarget.IGNORE_PY
                        | PositionTarget.IGNORE_PZ
                        | PositionTarget.IGNORE_AFX | PositionTarget.IGNORE_AFY
                        | PositionTarget.IGNORE_AFZ
-                       | PositionTarget.FORCE | PositionTarget.IGNORE_YAW_RATE)
+                       | PositionTarget.IGNORE_YAW_RATE)
         m.velocity.x, m.velocity.y, m.velocity.z = float(vx), float(vy), float(vz)
         m.yaw = 0.0
         self.sp_pub.publish(m)
@@ -623,12 +666,21 @@ class MpcLandingNode(Node):
 
         if ph is Phase.SEARCH:
             self._send(0.0, 0.0, 0.0)
-            if self._fresh_marker():
+            # Commit only after several CONSECUTIVE fresh detections.  A live
+            # fix AND a currently-asserted `detected` flag both have to hold;
+            # a single spurious hit trips one tick and the streak resets, so it
+            # cannot start an irreversible descent on its own.
+            if self._fresh_marker() and self.detected:
+                self._acq_streak += 1
+            else:
+                self._acq_streak = 0
+            if self._acq_streak >= self.acquire_frames:
                 self._t_solve = None
                 self._ref = HorizonReference(lead_s=self.mpc_dt)
                 self.gate.marker_acquired()
                 self.get_logger().info(
-                    'marker acquired — descending automatically from here')
+                    f'marker acquired ({self._acq_streak} consecutive fixes) — '
+                    f'descending automatically from here')
                 return
             if self._now() - self._t_phase > self.search_timeout:
                 self.gate.abort(f'no marker within {self.search_timeout:.0f} s')
@@ -639,17 +691,33 @@ class MpcLandingNode(Node):
             return
 
         if ph is Phase.TOUCHDOWN:
-            self._call(self.land_cli, CommandTOL.Request(), 'land')
-            req = CommandBool.Request()
-            req.value = False
-            self._call(self.arm_cli, req, 'disarm')
+            # Hand to the autopilot's own landing, then disarm ONLY once it has
+            # actually settled -- confirmed by extended_state, never by the
+            # geometric gate -- so motors are never cut in the air.  AUTO.LAND
+            # normally auto-disarms on the ground; the explicit disarm is a
+            # gated backstop.  Both are throttled: this runs every tick.
+            self._call_throttled(self.land_cli, CommandTOL.Request(), 'land')
+            if self._on_ground():
+                req = CommandBool.Request()
+                req.value = False
+                self._call_throttled(self.arm_cli, req, 'disarm')
             if self.state and not self.state.armed:
                 self.gate.finished()
                 self.get_logger().info('disarmed — mission complete')
             return
 
         if ph is Phase.ABORT:
-            self._call(self.land_cli, CommandTOL.Request(), 'land')
+            # Same discipline as TOUCHDOWN: land, disarm once on the ground, and
+            # then finish, so an abort ends in a known DONE state instead of
+            # looping on the land command forever.
+            self._call_throttled(self.land_cli, CommandTOL.Request(), 'land')
+            if self._on_ground():
+                req = CommandBool.Request()
+                req.value = False
+                self._call_throttled(self.arm_cli, req, 'disarm')
+            if self.state and not self.state.armed:
+                self.gate.finished()
+                self.get_logger().info('disarmed after abort — safe on the ground')
             return
 
     def _descend(self) -> None:

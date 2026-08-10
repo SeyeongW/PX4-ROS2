@@ -140,7 +140,10 @@ class GateState:
             self._to(Phase.TOUCHDOWN, 'touchdown detected')
 
     def finished(self) -> None:
-        if self.phase is Phase.TOUCHDOWN:
+        """Reached a safe, disarmed end — from a normal touchdown OR from an
+        abort that has since landed and disarmed, so both terminate cleanly in
+        DONE instead of one of them looping on the land command forever."""
+        if self.phase in (Phase.TOUCHDOWN, Phase.ABORT):
             self._to(Phase.DONE, 'disarmed')
 
     def abort(self, reason: str) -> None:
