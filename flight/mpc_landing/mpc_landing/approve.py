@@ -13,9 +13,16 @@ is a lot to type correctly while standing next to an armed vehicle. So:
     ros2 run mpc_landing approve      # release the current gate
     ros2 run mpc_landing abort        # stop, land, disarm
 
-Both print what the mission said back, so you see WHICH step you just
-authorised rather than just "success: True". `approve` also refuses politely
-when no gate is pending, which is the node's answer, not this tool's.
+Both target `mpc_landing_node` by default. Pass a node name to talk to another
+node that offers the same `~/approve` / `~/abort` services (e.g. the naive
+takeoff/land node):
+
+    ros2 run mpc_landing approve naive_flight_node
+    ros2 run mpc_landing abort   naive_flight_node
+
+Both print what the node said back, so you see WHICH step you just authorised
+rather than just "success: True". `approve` also refuses politely when no gate
+is pending, which is the node's answer, not this tool's.
 """
 
 from __future__ import annotations
@@ -27,14 +34,28 @@ from rclpy.node import Node
 from std_srvs.srv import Trigger
 
 
+def _target_node() -> str:
+    """The node to talk to: the first non-ROS CLI argument, or the default.
+
+    `ros2 run mpc_landing approve naive_flight_node` passes the name through as
+    argv; anything starting with '-' (e.g. an injected --ros-args) is skipped so
+    a bare `approve` still hits mpc_landing_node.
+    """
+    for arg in sys.argv[1:]:
+        if not arg.startswith('-'):
+            return arg
+    return 'mpc_landing_node'
+
+
 def _call(service: str, timeout: float = 5.0) -> int:
+    node_name = _target_node()
     rclpy.init()
-    node = Node('mpc_landing_' + service)
-    client = node.create_client(Trigger, f'/mpc_landing_node/{service}')
+    node = Node(f'{node_name}_{service}_cli')
+    client = node.create_client(Trigger, f'/{node_name}/{service}')
     try:
         if not client.wait_for_service(timeout_sec=timeout):
-            print(f'  no /mpc_landing_node/{service} — is the mission node '
-                  f'running?', file=sys.stderr)
+            print(f'  no /{node_name}/{service} — is the node running?',
+                  file=sys.stderr)
             return 2
         future = client.call_async(Trigger.Request())
         rclpy.spin_until_future_complete(node, future, timeout_sec=timeout)
