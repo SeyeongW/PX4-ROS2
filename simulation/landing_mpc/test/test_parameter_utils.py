@@ -40,6 +40,25 @@ def test_mpc_reference_and_predictor_share_the_derived_mpc_period():
     assert predicted_position[0, 0] == pytest.approx(2.0 * mpc_dt)
 
 
+def test_receding_descent_respects_the_vertical_speed_limit():
+    mpc = LandingMPC(
+        dt_s=0.1, horizon=20, v_max=1.0, vz_max=0.35,
+        a_max=1.0, j_max=2.0)
+    position = np.array([0.02, 0.02, 5.25])
+    velocity = np.zeros(3)
+    target_p, target_v, target_a = predict_const_vel(
+        np.zeros(3), np.zeros(3), mpc.dt, mpc.N)
+
+    for _ in range(20):
+        result = mpc.solve(
+            position, velocity, target_p, target_v, target_a)
+        assert result.success
+        assert np.min(result.pred_rel_vel[:, 2]) >= -mpc.vz_max - 1.0e-6
+        position += velocity * mpc.dt + 0.5 * result.acc_cmd * mpc.dt ** 2
+        velocity += result.acc_cmd * mpc.dt
+        assert velocity[2] >= -mpc.vz_max - 1.0e-6
+
+
 @pytest.mark.parametrize(
     ('control_rate', 'mpc_rate'),
     [(0.0, 10.0), (50.0, 0.0), (10.0, 50.0), (50.0, 7.0)],

@@ -84,8 +84,9 @@ from gz.msgs10.model_pb2 import Model as GzModel
 from gz.transport13 import Node as GzNode
 from px4_msgs.msg import VehicleAttitude, VehicleLocalPosition
 
-from .frame import (enu_dir_to_flu, flu_dir_to_enu, gimbal_axis_flu,
-                    gimbal_joint_angles, gimbal_tf_chain, rot_to_quat)
+from .frame import (LOCAL_ENU_FRAME_ID, enu_dir_to_flu, flu_dir_to_enu,
+                    gimbal_axis_flu, gimbal_joint_angles, gimbal_tf_chain,
+                    rot_to_quat)
 from .parameter_utils import (
     DEFAULT_DECK_Z_M,
     require_between,
@@ -193,7 +194,7 @@ class GimbalControlNode(Node):
         # without this the gimbal chain would float unattached in RViz.  Turn
         # it off if another node owns map->base_link.
         self.publish_base_tf = bool(p('publish_base_tf', True).value)
-        self.map_frame = str(p('map_frame', 'map').value)
+        self.map_frame = str(p('map_frame', LOCAL_ENU_FRAME_ID).value)
         self.base_frame = str(p('base_frame', 'base_link').value)
         self.tf_rate_hz = float(p('tf_rate_hz', 30.0).value)
         if self.publish_tf:

@@ -141,12 +141,38 @@ class WorldModel:
         return free
 
     def segment_is_free(self, a, b, step_m: float = 0.5) -> bool:
-        """Sample the a->b segment and require every sample to be free."""
+        """Require the entire a->b segment to stay in bounds and miss every AABB.
+
+        ``step_m`` remains in the public signature for compatibility, but an
+        exact slab intersection is used.  Sampling can miss a thin obstacle or
+        a corner crossing between adjacent samples.
+        """
+        del step_m
         a = np.asarray(a, float)
         b = np.asarray(b, float)
-        n = max(2, int(np.ceil(np.linalg.norm(b - a) / step_m)) + 1)
-        samples = a[None, :] + np.linspace(0.0, 1.0, n)[:, None] * (b - a)[None, :]
-        return bool(np.all(self.is_free(samples)))
+        if (a.shape != (3,) or b.shape != (3,)
+                or not np.all(np.isfinite(a))
+                or not np.all(np.isfinite(b))
+                or not bool(np.all(self.in_bounds(np.vstack((a, b)))))):
+            return False
+
+        direction = b - a
+        for low, high in zip(self.boxes_min, self.boxes_max):
+            enter, leave = 0.0, 1.0
+            for axis in range(3):
+                if direction[axis] == 0.0:
+                    if a[axis] < low[axis] or a[axis] > high[axis]:
+                        break
+                    continue
+                first = (low[axis] - a[axis]) / direction[axis]
+                second = (high[axis] - a[axis]) / direction[axis]
+                enter = max(enter, min(first, second))
+                leave = min(leave, max(first, second))
+                if enter > leave:
+                    break
+            else:
+                return False
+        return True
 
     def clearance(self, point) -> float:
         """Euclidean distance from ``point`` to the nearest obstacle box (0 if inside).

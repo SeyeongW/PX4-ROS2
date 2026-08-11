@@ -506,29 +506,45 @@ h=0.12 m  fixes=0  KF_err=0.183  valid=False  ← 3 s 초과, 자동 무효
 이 노드가 존재하는 이유는 §2.2의 두 제약이다: 마커는 **~30 m 밖에서 해상되지 않고**,
 **원뿔 $r(h)$ 밖이면 화면에 없다.** 그래서 접근은 표적이 스스로 보고한 좌표
 (`/marker/cue`, 실기에선 트럭 텔레메트리)로 날고, 비전은 가까워진 뒤에만 쓴다.
+이 큐의 `px4_local_enu` 프레임은 PX4 local origin의 ENU 표현이며,
+YAML의 `stadium_endpoint` 좌표가 아니다.
 
 | 단계 | 목표 소스 | 하는 일 |
 |---|---|---|
-| `IDLE` | — | `takeoff` 대기 → arm + Offboard |
-| `TAKEOFF` | — | 이륙 |
-| `READY` | — | 이륙점 hover, `mission` 대기 |
-| `MISSION_PLAN` | YAML 장애물 | 별도 프로세스에서 현재 위치 기준 A* 계산 |
-| `MISSION` | A* waypoint | 장애물 회피 순찰, 구간 끝에서 반대편 재계획 |
-| `APPROACH` | **큐** | 접근고도에서 큐로 순항(속도 피드포워드), 하강 안 함 |
-| `ACQUIRE` | 큐 + 비전 보정 | 트레일러와 상대속도 정합 |
-| `DESCEND` | 큐 + 비전 보정 | MPC 상대좌표 랑데부 + corridor 하강 |
-| `TOUCHDOWN` | 큐 + final hold | 최종 데크 포획 유지 → contact/dwell 확인 후 disarm |
-| `ABORT` | 큐 | 접근 실패 시 상승·복귀 후 재시도 |
+| `PRECHECK` | PX4 상태 + 큐 + planner | 유효성·failsafe·preflight 확인, Offboard 승인 대기 |
+| `TAKEOFF` | — | PX4 `NAV_TAKEOFF`로 5 m 이륙 |
+| `READY` | — | 맵 planner가 없을 때의 fallback hover |
+| `MISSION_PLAN` | YAML 장애물 | 별도 프로세스에서 A*→geometry-only B-spline 생성·정확 충돌 검증 |
+| `MISSION` | B-spline 공간 경로 | PX4 Goto로 YAML `(50,50)`까지 장애물 회피 추종 |
+| `HOVER` | map goal | `(50,50)`, 고도 5 m 유지, `land` 대기 |
+| `RETURN_PLAN` | YAML 장애물 + 최신 큐 | direct 직선이 막혔을 때만 트레일러 스냅샷까지 A*→geometry-only B-spline 재계획 |
+| `RETURN` | B-spline 공간 경로 | PX4 Goto 추종, 15 m live 직선이 YAML-safe면 native landing으로 인계 |
+| `PRECLAND` | cue + ArUco 수평 보정 | `LandingTargetPose`만 갱신; PX4가 비행·하강·접촉판정·자동 disarm |
+| `ABORT` | 현재 XY hold | 접근 실패 시 상승 후 최신 큐로 A* 재진입 |
 
-**현재 전환 조건**: `APPROACH` → `ACQUIRE`는 큐 15 m 이내이고
-상대속도 1 m/s 미만, `ACQUIRE` → `DESCEND`는 0.5 m/s 미만이다.
-하강 중 3 m 이하에서는 최신 ArUco 검출과 수렴한 보정이 필수이고,
-1 m 이하 terminal commit 후에만 근거리 블라인드존에서 마지막 보정을 유지한다.
+Phase 0은 `PRECHECK`, Phase 1은 `TAKEOFF`, Phase 2는
+`MISSION_PLAN → MISSION → HOVER`로 그룹화된다. Phase 2의 B-spline은
+A* topology를 geometry-only로 보강할 뿐 속도나 P/V/A 시간표를
+만들지 않는다. mission manager는 spatial `GotoSetpoint`만 보내고, PX4
+Goto/PositionSmoothing이 `MPC_XY_CRUISE=3`, `MPC_ACC_HOR`,
+`MPC_JERK_AUTO`로 속도·가속도·jerk profile을 만든다.
+`MPC_XY_VEL_MAX=10`은 절대 수평 상한이다.
+6 m lookahead는 시간 기반 진행값이 아닌 공간 목표이며, exact 선분 검사가
+막힘을 찾으면 안전한 거리까지 줄이거나 현재 위치에서 재계획한다.
+
+**Phase 3 `land` 전환 조건**: live trailer까지 15 m보다 멀거나 직선이
+YAML 장애물에 막히면 `RETURN_PLAN → RETURN`의 A*→geometry-only
+B-spline을 사용한다. 15 m 이내에서 직선이 안전해지면 mission manager는
+`LandingTargetPose`를 갱신하고 PX4 `NAV_PRECLAND`를 요청한다. PX4가
+`AUTO_PRECLAND`를 확인하기 전까지만 현재 위치 Offboard hold를 유지하며,
+확인 뒤에는 OCM/Trajectory/Goto를 모두 중단한다. 이후 속도·가속·jerk·
+자세·하강·접촉판정·자동 disarm은 PX4 소유다. 앱의 ArUco 값은 target의
+수평 위치 보정일 뿐 직접 제어입력이 아니다.
 
 ### 과거 기준 실측 (3 m/s 원운동 트레일러, 실제 ArUco 인식)
 
 ```
-IDLE → TAKEOFF → APPROACH
+PRECHECK → TAKEOFF → APPROACH
 APPROACH → DESCEND (vision acquired at 1.0 m, cone r=2.2 m)
 DESCEND → APPROACH (drifted outside the vision cone)   ← 헌팅 2회
 APPROACH → DESCEND (1.6 m, cone r=1.7 m)

@@ -6,21 +6,21 @@ and jokgu court.
 Mission barriers, the moving trailer, and the drone remain because they are
 runtime experiment assets rather than stadium decoration.
 
-The canonical local frame is `stadium_endpoint`. Its `(0, 0)` is OSM node
-`12730808466`, the south-east running-track tangent at the bottom-right of a
-north-up photo/map, at WGS84 `36.6540480, 127.4964451`. Local +x points about
-`6.307 deg` north of east and +y follows the stadium long axis to the north.
-The map therefore extends mainly left (`-x`) and up (`+y`) from the origin.
-Mission anchors, facility centres, and the enlarged jokgu dimensions stay on
-integer metres; the smooth OSM-scale track retains its measured decimal values.
+The canonical local frame is `stadium_endpoint`. Its `(0, 0)` is the integer
+south-west staging point beside the running track, at approximately WGS84
+`36.653960886920, 127.495466874950`. Local +x points about `6.307 deg` north of
+east and +y follows the stadium long axis to the north. This puts the stadium
+centre at the simple positive coordinate `(44, 46)`, close to `(50, 50)`.
+Mission anchors and facility centres stay on integer metres; the smooth
+OSM-scale track retains its measured decimal dimensions.
 
 | Feature | Centre `(x, y)` m | Size / bounds m |
 | --- | ---: | ---: |
-| running track / route centre | `(-44, 46)` | `x=[-87.4,0]`, `y=[-43.35,135.35]` |
-| stadium field | `(-44, 48)` | `68 x 105` |
-| basketball court | `(-44, 113)` | `28 x 15` |
-| jokgu court | `(-44, -18)` | `10 x 20` |
-| support ground | `(-42, 49)` | `128 x 226` |
+| running track / route centre | `(44, 46)` | `x=[0.6,88]`, `y=[-43.35,135.35]` |
+| stadium field | `(44, 48)` | `68 x 105` |
+| basketball court | `(44, 113)` | `28 x 15` |
+| jokgu court | `(44, -18)` | `10 x 20` |
+| support ground | `(46, 49)` | `128 x 226` |
 
 The 48-segment-per-half-curve outline follows the measured scale of
 [OSM track way 1374978221](https://www.openstreetmap.org/way/1374978221) and
@@ -39,10 +39,32 @@ Run the integrated experiment:
 ./simulation/gazebo/run_gimbal.sh mission
 ```
 
-Enter `takeoff`, `mission`, and `land`. The drone patrols at 5 m around barriers
-centred at `(-47,2)`, `(-41,12)`, `(-47,22)`, and `(-41,32)`. A 1 m planner
-grid keeps mission waypoints integer-valued; the trailer moves at 3 m/s and
-the landing phase uses ArUco/MPC.
+Enter `takeoff`, then `land`. Phase 0 `PRECHECK` validates PX4 feedback, the
+live cue, planner, and Offboard readiness; Phase 1 requests PX4
+`NAV_TAKEOFF` to 5 m. In Phase 2, YAML A* provides obstacle topology, a validated
+geometry-only B-spline reinforces that spatial path, and PX4 Goto tracks it to
+`(50,50)` and `HOVER`. The `stadium_endpoint` remains `(0,0)`;
+the drone and trailer start together on the track centre at the integer map
+coordinate `(5,0)`, with the drone on the 2.051 m deck. The drone flies at
+0.5 m/s to 5 m, then uses 1 m-grid A* topology plus the geometry B-spline/PX4
+Goto route to `(50,50)` around twenty
+`0.45 x 0.35 x 10 m` barriers at fixed integer centres inside the
+`(0,0)` to `(40,40)` infield square: `(25,24)`, `(33,37)`, `(15,7)`,
+`(14,14)`, `(39,30)`, `(21,11)`, `(28,27)`, `(32,17)`, `(17,40)`,
+`(33,24)`, `(32,6)`, `(26,17)`, `(23,5)`, `(24,25)`, `(15,34)`,
+`(18,22)`, `(27,38)`, `(32,30)`, `(28,36)`, and `(23,34)`. The trailer moves
+50 m forward along the stadium long axis and 50 m backward at 1 m/s, repeating
+that fixed segment. The A* uses 2 m obstacle inflation and exact segment/AABB
+intersection tests. In Phase 3, `land` uses A* → geometry-only B-spline
+`RETURN` until a live 15 m direct segment is YAML-safe. It then supplies
+`LandingTargetPose`, requests PX4 `NAV_PRECLAND`, and stops Offboard control.
+PX4 owns speed, acceleration, attitude, descent, contact detection and
+auto-disarm. ArUco remains only a horizontal landing-target correction.
+
+The B-spline owns no flight speed or P/V/A schedule. PX4
+Goto/PositionSmoothing owns route speed, acceleration, and jerk through
+`MPC_XY_CRUISE=3`, `MPC_ACC_HOR`, and `MPC_JERK_AUTO`, with
+`MPC_XY_VEL_MAX=10` as the hard horizontal cap.
 
 Regenerate the runtime models after editing their generator:
 

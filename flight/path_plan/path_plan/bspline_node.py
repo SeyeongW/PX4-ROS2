@@ -66,7 +66,23 @@ class BSplineNode(Node):
         if len(wp) < 2:
             return
         result = self.optimizer.optimize(wp)
+        if not result.accepted:
+            self.get_logger().error(
+                "trajectory rejected: "
+                f"solver={result.solver_success} status={result.solver_status}, "
+                f"finite={result.solution_finite}, "
+                f"collision_free={result.collision_free}, "
+                f"free={result.free_fraction:.3f}: {result.solver_message}")
+            return
         t, pos, vel, _acc = result.spline.sample(self.samples)
+        if not np.all(np.isfinite(np.column_stack((t, pos, vel)))):
+            self.get_logger().error("trajectory rejected: non-finite samples")
+            return
+        if not all(self.optimizer.world.segment_is_free(a, b)
+                   for a, b in zip(pos[:-1], pos[1:])):
+            self.get_logger().error(
+                "trajectory rejected: published samples are not exact-safe")
+            return
         stamp = self.get_clock().now().to_msg()
         self.traj_pub.publish(trajectory_to_msg(t, pos, vel))
         self.path_pub.publish(positions_to_path(pos, stamp))

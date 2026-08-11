@@ -16,16 +16,15 @@
 gz 트레일러 ─► trailer_cue_node ────────────────────────► mission_manager_node
                (원거리 큐)                                   (단계 시퀀싱)
                                                                   │
-   ┌──────────────────────────────────────────────────────────────┤
-   ▼                        ▼                    ▼                ▼
-predictor              mpc(+model)          reference        PX4 setpoint
-(표적의 미래)          (최적 가속도)        (50 Hz 보간)
+   A* ─► geometry-only B-spline ─► PX4 Goto ─► PX4 PRECLAND      │
+              (공간 경로만)          (경로 동역학)  (착륙·판정)   │
                                                                   │
 gimbal_control_node ◄─────────────────────────────────────────────┘
 (렌즈 조준 + 관절 엔코더)
 ```
 
-**노드는 6개, 라이브러리는 5개.** 실행 파일로 뜨는 것은 노드 6개뿐입니다.
+`predictor.py`, `mpc.py`, `reference.py`는 연구/회귀용 legacy 라이브러리이며
+현재 CJU `run_gimbal.sh mission`의 비행 제어에는 연결되지 않습니다.
 
 ---
 
@@ -71,6 +70,9 @@ predictor가 없으면 MPC가 움직이는 표적을 놓치고, reference가 없
 ### 2.4 `trailer_cue_node` — 원거리 큐 (SITL 전용)
 - **입력** (gz) 트레일러 pose
 - **출력** `/marker/cue`, `/marker/cue_velocity`
+- 두 topic의 `px4_local_enu` 프레임은 PX4 local origin의 ENU 표현이며
+  YAML의 회전된 `stadium_endpoint` 좌표와 구분됩니다. 이 맵에서는 XY
+  origin만 드론 스폰과 같습니다. 위치·속도 stamp는 같습니다.
 - 90 m에서는 카메라가 마커를 못 봅니다. 실기체에서는 트럭의 GPS 텔레메트리가
   맡을 자리를 SITL에서 대신합니다. **이 노드만이 시뮬레이터 전용입니다.**
 
@@ -83,19 +85,33 @@ predictor가 없으면 MPC가 움직이는 표적을 놓치고, reference가 없
 ### 2.6 `mission_manager_node` — 단계 시퀀싱 + 유일한 setpoint 권한
 - **입력** `/mission/command`, `/marker/cue*`, `/marker/position`,
   `/marker/valid`, PX4 상태
-- **출력** `/fmu/in/trajectory_setpoint`, `/fmu/in/offboard_control_mode`,
-  `/fmu/in/vehicle_command`, `/mission/state`
-- 단계: `IDLE → TAKEOFF → READY → MISSION_PLAN ↔ MISSION → APPROACH →
-  ACQUIRE → DESCEND → TOUCHDOWN → DONE` (접근 복구 시 `ABORT`)
-- `MISSION_PLAN`은 별도 프로세스에서 실제 위치 기준 A*를 계산하므로 50 Hz
-  Offboard heartbeat를 막지 않습니다. 중앙과 이륙점을 매 구간 재계획해 순찰합니다.
+- **출력** `/fmu/in/goto_setpoint`, `/fmu/in/trajectory_setpoint`,
+  `/fmu/in/offboard_control_mode`, `/fmu/in/vehicle_command`, `/mission/state`
+- **Phase 0 `PRECHECK`**: PX4 상태·live cue·planner·Offboard 준비를
+  fail-closed로 검사합니다.
+- **Phase 1 `TAKEOFF`**: PX4 `NAV_TAKEOFF`로 5 m까지 이륙합니다.
+- **Phase 2 `MISSION_PLAN → MISSION → HOVER`**: 별도 프로세스의 A*가
+  YAML 장애물 topology를 만들고 geometry-only B-spline이 공간 경로를
+  보강·검증합니다. mission manager는 spatial Goto만 보내며 PX4
+  Goto/PositionSmoothing이 `MPC_XY_CRUISE=3`, `MPC_ACC_HOR`,
+  `MPC_JERK_AUTO`로 속도·가속도·jerk를 만듭니다.
+  `MPC_XY_VEL_MAX=10`은 절대 수평 상한입니다.
+- **Phase 3 `land`**: `RETURN_PLAN ↔ RETURN`에서 live trailer까지
+  A*→geometry-only B-spline을 사용합니다. 15 m 이내의 YAML-safe 직선이
+  확보되면 `LandingTargetPose`와 `NAV_PRECLAND`로 PX4에 인계하고
+  Offboard setpoint를 중단합니다. PX4가 이후 속도·가속·자세·하강·
+  접촉판정·자동 무장해제를 전부 담당합니다. ArUco는 target 위치만
+  보정합니다. `ABORT`는 stale cue 복구용이며 `READY`는 planner 미설정
+  fallback입니다.
+- B-spline은 속도나 P/V/A 시간표를 소유하지 않습니다.
 - **다른 setpoint 발행자와 절대 같이 띄우지 마세요.**
-- 원칙: **큐가 날고, 마커가 중심을 잡는다.** 미션 전체는 `/marker/cue`를 추종하고,
-  비전은 거기에 **천천히 필터링되는 수평 보정**으로만 들어갑니다.
+- 원칙: **큐가 날고, 마커가 중심을 잡는다.** `RETURN` 이후 착륙 구간은
+  `/marker/cue`를 추종하고, 비전은 거기에 **천천히 필터링되는 수평 보정**으로만
+  들어갑니다.
 
 ---
 
-## 3. 라이브러리 (실행 파일 아님)
+## 3. Legacy 연구 라이브러리 (현재 미션 비행 제어에 연결되지 않음)
 
 | 모듈 | 역할 |
 |---|---|
@@ -117,7 +133,9 @@ predictor가 없으면 MPC가 움직이는 표적을 놓치고, reference가 없
 HEADLESS=1 ./simulation/gazebo/run_gimbal.sh mission
 ```
 
-전체 미션에서는 `takeoff`, `mission`, `land`를 순서대로 입력합니다.
+전체 CJU 미션에서는 `takeoff`, `land`를 순서대로 입력합니다.
+이륙 안정 후 A*→geometry-only B-spline→PX4 Goto 지도 구간은
+자동으로 시작되고, `land`는 안전한 live 직선을 우선합니다.
 
 ---
 

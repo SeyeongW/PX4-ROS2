@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # sudo가 필요한 apt 설치만 모은 스크립트.
-# 사용법:  sudo bash gazebo/install_apt_deps.sh
+# 사용법:  sudo bash simulation/gazebo/install_apt_deps.sh
 #
 # 이 스크립트가 끝나면 sudo 없이 PX4·플러그인·ros_gz 빌드를 진행할 수 있습니다.
 set -euo pipefail
@@ -56,6 +56,9 @@ if [[ "$(lsb_release -cs)" == "jammy" ]] && dpkg-query -W gazebo11 >/dev/null 2>
     gazebo11 gz-harmonic libgz-sim8-dev libgazebo11-dev \
     ros-humble-gazebo-ros-pkgs ros-humble-gazebo-ros2-control
 fi
+
+echo "==> 논문용 ULog CSV 변환기 설치"
+python3 -m pip install --no-cache-dir 'pyulog==1.2.3'
 
 echo "==> 완료. 설치 버전:"
 gz sim --version || true

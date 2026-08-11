@@ -12,9 +12,9 @@ Publishes
     /marker/cue           geometry_msgs/PointStamped    target position, local ENU
     /marker/cue_velocity  geometry_msgs/Vector3Stamped  target velocity, local ENU
 
-Frame: gz reports world ENU; the drone's local frame is offset by its spawn, so
-the cue is (world - spawn).  Velocity is a least-squares slope over a short
-window, never a two-point difference.
+Frame: gz reports world ENU. Local x/y subtract the drone spawn (the PX4 local
+XY origin); z is the configured deck height in PX4 local ENU. Velocity is a
+least-squares slope over a short window, never a two-point difference.
 """
 
 from __future__ import annotations
@@ -31,6 +31,7 @@ from rclpy.node import Node
 from gz.transport13 import Node as GzNode
 from gz.msgs10.pose_v_pb2 import Pose_V
 
+from .frame import LOCAL_ENU_FRAME_ID
 from .parameter_utils import (
     DEFAULT_DECK_Z_M,
     require_finite,
@@ -62,6 +63,8 @@ class TrailerCueNode(Node):
         self._pos = None
         self._vel = np.zeros(2)
         self._updated = False
+        self._source_ns = None
+        self._last_report_t = -float('inf')
 
         self.pos_pub = self.create_publisher(PointStamped, '/marker/cue', 10)
         self.vel_pub = self.create_publisher(Vector3Stamped, '/marker/cue_velocity', 10)
@@ -78,7 +81,11 @@ class TrailerCueNode(Node):
                 continue
             loc = np.array([pose.position.x - self.spawn[0],
                             pose.position.y - self.spawn[1]])
-            t = self.get_clock().now().nanoseconds * 1e-9
+            source_ns = (int(msg.header.stamp.sec) * 1_000_000_000
+                         + int(msg.header.stamp.nsec))
+            if source_ns <= 0:
+                source_ns = self.get_clock().now().nanoseconds
+            t = source_ns * 1e-9
             with self._lock:
                 self._hist.append((t, loc))
                 while len(self._hist) > 2 and t - self._hist[0][0] > self.vel_window:
@@ -91,6 +98,7 @@ class TrailerCueNode(Node):
                     if den > 1e-6:
                         self._vel = (dt_ @ (ps - ps.mean(axis=0))) / den
                 self._pos = loc
+                self._source_ns = source_ns
                 self._updated = True
             return
 
@@ -100,20 +108,31 @@ class TrailerCueNode(Node):
                 return
             pos = None if self._pos is None else self._pos.copy()
             vel = self._vel.copy()
+            source_ns = self._source_ns
             self._updated = False
-        if pos is None:
+        if pos is None or source_ns is None:
             return
-        stamp = self.get_clock().now().to_msg()
+        stamp_s, stamp_ns = divmod(int(source_ns), 1_000_000_000)
         pm = PointStamped()
-        pm.header.stamp = stamp
-        pm.header.frame_id = 'map'
+        pm.header.stamp.sec = stamp_s
+        pm.header.stamp.nanosec = stamp_ns
+        pm.header.frame_id = LOCAL_ENU_FRAME_ID
         pm.point.x, pm.point.y, pm.point.z = float(pos[0]), float(pos[1]), self.deck_z
         self.pos_pub.publish(pm)
         vm = Vector3Stamped()
-        vm.header.stamp = stamp
-        vm.header.frame_id = 'map'
+        vm.header.stamp.sec = stamp_s
+        vm.header.stamp.nanosec = stamp_ns
+        vm.header.frame_id = LOCAL_ENU_FRAME_ID
         vm.vector.x, vm.vector.y, vm.vector.z = float(vel[0]), float(vel[1]), 0.0
         self.vel_pub.publish(vm)
+        now_s = self.get_clock().now().nanoseconds * 1e-9
+        if now_s - self._last_report_t >= 1.0:
+            self._last_report_t = now_s
+            self.get_logger().info(
+                f'cue frame={LOCAL_ENU_FRAME_ID} '
+                f'p=({pos[0]:.3f},{pos[1]:.3f},{self.deck_z:.3f}) m '
+                f'v=({vel[0]:.3f},{vel[1]:.3f},0.000) m/s '
+                f'publish_delay={max(0.0, now_s - source_ns * 1e-9):.3f} s')
 
 
 def main(args=None):

@@ -10,7 +10,7 @@ map:
     name: Cheongju University Main Complex Stadium (No. 40)
     horizontal_datum: WGS84
     horizontal_source: OpenStreetMap ways 1374978221 and 431113163
-    horizontal_accuracy: osm_scale_visual_with_integer_operational_anchors_not_survey_grade
+    horizontal_accuracy: osm_scale_visual_with_integer_southwest_origin_not_survey_grade
     source_track_center_wgs84: [36.654416832792, 127.495903519248]
     elevation_m_approx: 74.0
     spherical_origin_wgs84: [36.6533752165, 127.4955858675, 74.0]
@@ -22,10 +22,10 @@ map:
     # Physical long-axis x short-axis dimensions from OSM way 1374978221.
     track_footprint_m: [178.7, 87.4]
     track_bounds_stadium_endpoint_m:
-      x: [-87.4, 0]
+      x: [0.6, 88]
       y: [-43.35, 135.35]
     site_bounds_stadium_endpoint_m:
-      x: [-106, 22]
+      x: [-18, 110]
       y: [-64, 162]
     source_notes: gazebo/CJU_STADIUM_WORLD.md
   variant:
@@ -33,7 +33,7 @@ map:
     isolated_assets: true
     visual_changes:
       - integer_operational_anchors
-      - photo_bottom_right_origin
+      - positive_southwest_origin
       - stadium_field_only
       - red_running_track
       - eight_lane_markings
@@ -50,20 +50,19 @@ frames:
     units: m
   stadium_endpoint:
     convention: track_aligned_xy
-    # OSM node 12730808466: photo/map bottom-right (south-east) tangent.
-    # +x is approximately east and +y approximately north.
-    origin_track_center_local_m: [44, -46]
-    origin_wgs84: [36.6540480, 127.4964451, 74.0]
-    origin_enu_m: [76.827710406649, 74.660781359808, 0.0]
+    # Integer south-west staging origin; +x is east and +y is north.
+    origin_track_center_local_m: [-44, -46]
+    origin_wgs84: [36.653960886920, 127.495466874950, 74.0]
+    origin_enu_m: [-10.639652792208, 64.993290731978, 0.0]
     heading_deg_enu: 6.307121199814
-    track_center_m: [-44, 46]
+    track_center_m: [44, 46]
   stadium_center:
     parent: stadium_endpoint
-    origin_m: [-44, 46, 0]
+    origin_m: [44, 46, 0]
   mavros_local:
     convention: ENU
     # PX4 spawns the model root at the 2.051 m deck; base_link is 0.24 m higher.
-    origin_enu_m: [37.378484880918, 31.063090991854, 2.291]
+    origin_enu_m: [-5.669916246818, 65.542579972196, 2.291]
 
 px4_vehicle:
   airframe_autostart_id: 4001
@@ -76,45 +75,71 @@ px4_vehicle:
     runtime_entity_name: x500_gimbal_rgbd_lidar_0
     model_source: px4_models/x500_gimbal_rgbd_lidar/model.sdf
   sitl_parameter_overrides:
-    LNDMC_Z_VEL_MAX: 0.05
-    LNDMC_XY_VEL_MAX: 6.0
-    COM_DISARM_LAND: 10.0
+    # PX4 owns takeoff, route dynamics, precision landing and auto-disarm.
+    MIS_TAKEOFF_ALT: 5.0
+    MPC_TKO_SPEED: 0.5
+    MPC_XY_CRUISE: 3.0
+    MPC_XY_VEL_MAX: 10.0
+    MPC_ACC_HOR: 3.0
+    MPC_JERK_AUTO: 4.0
+    MPC_LAND_SPEED: 0.7
+    MPC_LAND_CRWL: 0.3
+    LNDMC_Z_VEL_MAX: 0.25
+    LNDMC_XY_VEL_MAX: 1.5
+    COM_DISARM_LAND: 2.0
+    PLD_BTOUT: 0.5
+    PLD_HACC_RAD: 0.5
+    PLD_VEL_THR: 0.3
+    PLD_FAPPR_ALT: 0.1
+    PLD_SRCH_ALT: 5.0
+    PLD_SRCH_TOUT: 10.0
+    PLD_MAX_SRCH: 3
 
 spawn:
   name: drone_cju_drone_spawn
+  # Canonical map spawn is the integer track-centre point (5, 0).
   gazebo_spawn_pose_enu:
-    x: 37.378484880918
-    y: 31.063090991854
+    x: -5.669916246818
+    y: 65.542579972196
     z: 2.051
     roll: 0.0
     pitch: 0.0
-    yaw: 0.110080031259
+    yaw: 1.680876358054
 
 trailer:
   entity_name: trailer
   model_uri: model://moving_platform_aruco_velocity
   spawn_pose_enu:
-    x: 37.378484880918
-    y: 31.063090991854
+    x: -5.669916246818
+    y: 65.542579972196
     z: 0.0
     roll: 0.0
     pitch: 0.0
     # Gazebo VelocityControl consumes horizontal commands in model axes.
-    yaw: 0.110080031259
+    yaw: 1.680876358054
   separation_m: 0.0
-  motion: stadium_track_at_3_m_s
+  motion: 50m_forward_then_50m_reverse_at_1_m_s
   command_topic: /model/trailer/cmd_vel
   pose_topic: /world/drone_cju/dynamic_pose/info
   odometry_topic: /model/trailer/odometry
-  route_type: stadium
-  stadium_center_enu_m: [28.040567797218, 115.548612263477]
-  stadium_straight_length_m: 92
-  stadium_curve_radius_m: 39
-  stadium_heading_deg: 96.307121199814
-  stadium_direction: counterclockwise
+  route_type: linear_shuttle
+  # Track-centre shuttle, expressed in world ENU: map (5,0) -> (5,50).
+  shuttle_endpoints_enu_m:
+    - [-5.669916246818, 65.542579972196]
+    - [-11.162808648995, 115.239945426092]
+  shuttle_leg_length_m: 50
+  route_length_m: 100
+  patrol_mode: repeat
   command_rate_hz: 50.0
-  cruise_speed_m_s: 3.0
+  cruise_speed_m_s: 1.0
   acceleration_m_s2: 3.0
+  turnaround_creep_speed_m_s: 0.1
+  turnaround_brake_margin_m: 0.05
+  shuttle_spawn_tolerance_m: 0.01
+  shuttle_yaw_tolerance_deg: 0.1
+  shuttle_max_cross_track_error_m: 0.05
+  shuttle_max_endpoint_excursion_m: 0.05
+  shuttle_min_cruise_ratio: 0.99
   waypoint_tolerance_m: 0.2
   body_footprint_m: [5.0, 5.0]
   deck_height_m: 2.05
@@ -130,29 +155,59 @@ trailer:
 terrain:
   type: flat_box
   coordinate_frame: stadium_endpoint
-  center_m: [-42, 49]
+  center_m: [46, 49]
   size_m: [128, 226]
   ground_z_m: 0.0
   source_model: inline_stadium_ground
 
 facilities:
   coordinate_frame: stadium_endpoint
-  stadium_field: {center_m: [-44, 48], size_m: [68, 105]}
-  basketball_court: {center_m: [-44, 113], size_m: [28, 15]}
-  jokgu_court: {center_m: [-44, -18], size_m: [10, 20]}
+  stadium_field: {center_m: [44, 48], size_m: [68, 105]}
+  basketball_court: {center_m: [44, 113], size_m: [28, 15]}
+  jokgu_court: {center_m: [44, -18], size_m: [10, 20]}
 
 mission:
   coordinate_frame: stadium_endpoint
   command_topic: /mission/command
-  command_sequence: [takeoff, mission, land]
+  command_sequence: [takeoff, land]
   cruise_altitude_m: 5.0
-  cruise_speed_m_s: 2.0
-  goal_m: [-44, 46]
+  goal_m: [50, 50]
   planner_resolution_m: 1
-  obstacle_clearance_m: 1
-  # Integer centres relative to the photo/map bottom-right endpoint (0, 0).
+  obstacle_clearance_m: 2
+  bspline_clearance_margin_m: 0.5
+  bspline_control_spacing_m: 2.0
+  bspline_sample_spacing_m: 0.1
+  # Spatial carrot only; PX4 Goto owns time/speed. Runtime collision checks
+  # shorten it near obstacles. Six metres permits the 3 m/s Goto profile to
+  # brake under the clean PX4 defaults (3 m/s^2 acceleration, 4 m/s^3 jerk).
+  mpc_path_lookahead_m: 6.0
+  mpc_path_cross_track_m: 0.25
+  # The inflated obstacles stay at least 6.775 m from the trailer route.
+  # Keep A*/B-spline authority until the vehicle is inside that corridor.
+  precland_handoff_m: 6.0
+  # Refresh the return A*/B-spline after this much live GPS/cue XY movement.
+  return_replan_distance_m: 3.0
+  # A rejected return plan remains fail-closed and retries at this cadence.
+  return_replan_min_period_s: 1.0
+  # Fixed reproducible pseudo-random integer centres inside the 0..40 m square.
   obstacles:
-    - {name: barrier_1, center_m: [-47, 2, 5], size_m: [4.5, 0.35, 10]}
-    - {name: barrier_2, center_m: [-41, 12, 5], size_m: [4.5, 0.35, 10]}
-    - {name: barrier_3, center_m: [-47, 22, 5], size_m: [4.5, 0.35, 10]}
-    - {name: barrier_4, center_m: [-41, 32, 5], size_m: [4.5, 0.35, 10]}
+    - {name: barrier_1, center_m: [25, 24, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_2, center_m: [33, 37, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_3, center_m: [15, 7, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_4, center_m: [14, 14, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_5, center_m: [39, 30, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_6, center_m: [21, 11, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_7, center_m: [28, 27, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_8, center_m: [32, 17, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_9, center_m: [17, 40, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_10, center_m: [33, 24, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_11, center_m: [32, 6, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_12, center_m: [26, 17, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_13, center_m: [23, 5, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_14, center_m: [24, 25, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_15, center_m: [15, 34, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_16, center_m: [18, 22, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_17, center_m: [27, 38, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_18, center_m: [32, 30, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_19, center_m: [28, 36, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_20, center_m: [23, 34, 5], size_m: [0.45, 0.35, 10]}

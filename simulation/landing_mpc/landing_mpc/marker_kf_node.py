@@ -45,6 +45,7 @@ from geometry_msgs.msg import PointStamped, Vector3Stamped
 from rclpy.node import Node
 from std_msgs.msg import Bool
 
+from .frame import LOCAL_ENU_FRAME_ID
 from .parameter_utils import (
     DEFAULT_DECK_Z_M,
     require_finite,
@@ -248,14 +249,14 @@ class MarkerKfNode(Node):
         stamp = self.get_clock().now().to_msg()
         pm = PointStamped()
         pm.header.stamp = stamp
-        pm.header.frame_id = 'map'
+        pm.header.frame_id = LOCAL_ENU_FRAME_ID
         pm.point.x, pm.point.y, pm.point.z = (float(self.x[0]), float(self.x[1]),
                                               float(self.deck_z))
         self.pos_pub.publish(pm)
 
         vm = Vector3Stamped()
         vm.header.stamp = stamp
-        vm.header.frame_id = 'map'
+        vm.header.frame_id = LOCAL_ENU_FRAME_ID
         vm.vector.x, vm.vector.y, vm.vector.z = (float(self.x[2]),
                                                  float(self.x[3]), 0.0)
         self.vel_pub.publish(vm)

@@ -17,6 +17,11 @@ import math
 import numpy as np
 
 
+# All target positions used by the controller use the PX4 local origin,
+# converted to ENU, not the rotated stadium YAML frame.
+LOCAL_ENU_FRAME_ID = 'px4_local_enu'
+
+
 def enu_to_ned(v):
     """Map an ENU 3-vector (position/velocity/accel) to NED. Self-inverse."""
     v = np.asarray(v, float)

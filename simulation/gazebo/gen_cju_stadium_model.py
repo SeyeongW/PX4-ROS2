@@ -21,9 +21,9 @@ LINE_HEIGHT_M = 0.004
 # its FIBA dimensions; the vertical jokgu court is enlarged for map visibility.
 # (name, centre x/y, horizontal size x/y, colour)
 FACILITIES = (
-    ("stadium_field", (-44, 48), (68, 105), DIRT_RGBA),
-    ("basketball_court", (-44, 113), (28, 15), BASKETBALL_RGBA),
-    ("jokgu_court", (-44, -18), (10, 20), JOKGU_RGBA),
+    ("stadium_field", (44, 48), (68, 105), DIRT_RGBA),
+    ("basketball_court", (44, 113), (28, 15), BASKETBALL_RGBA),
+    ("jokgu_court", (44, -18), (10, 20), JOKGU_RGBA),
 )
 
 

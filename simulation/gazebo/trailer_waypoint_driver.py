@@ -317,8 +317,8 @@ class LinearShuttleRoute:
             remaining_m = along_track_m
             endpoint_name = "start"
 
-        if remaining_m <= 0.0:
-            overshoot_m = -remaining_m
+        if remaining_m <= 1.0e-9:
+            overshoot_m = max(-remaining_m, 0.0)
             self.completed_legs += 1
             self.reached_endpoints += 1
             self.completed_loops = self.completed_legs // 2

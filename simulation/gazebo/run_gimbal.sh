@@ -11,6 +11,7 @@
 #                                      legacy 1 km shuttle mission
 #   FOLLOW_DRONE=1 ./simulation/gazebo/run_gimbal.sh   optional camera tracking
 #   ARUCO_VIEW=0 ./simulation/gazebo/run_gimbal.sh mission   disable the automatic viewer
+#   MISSION_VIEW=0 ./simulation/gazebo/run_gimbal.sh mission disable the live map viewer
 #   CJU_LOG_ROOT=/data/cju ./simulation/gazebo/run_gimbal.sh mission
 #                                      override the persistent artifact root
 #
@@ -35,34 +36,6 @@ case "$LANDING_MAP" in
     exit 2
     ;;
 esac
-
-# trailer_cue_node publishes Gazebo ENU relative to the drone's local origin.
-# Read that origin from the same coordinate contract used by run_px4_map.sh so
-# a map edit cannot silently leave the long-range target cue displaced.
-mapfile -t LANDING_CONFIG < <(
-  python3 - "$LANDING_COORDINATES" <<'PY'
-import json
-import pathlib
-import sys
-
-import yaml
-
-document = yaml.safe_load(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
-pose = document["spawn"]["gazebo_spawn_pose_enu"]
-print(json.dumps([float(pose["x"]), float(pose["y"])]))
-trailer = document["trailer"]
-marker_world_z = (float(trailer["spawn_pose_enu"]["z"])
-                  + float(trailer["marker_surface_height_m"]))
-local_origin_z = float(document["frames"]["mavros_local"]["origin_enu_m"][2])
-print(f"{marker_world_z - local_origin_z:.9f}")
-print(float(document.get("mission", {}).get("cruise_altitude_m", 6.0)))
-print(trailer["odometry_topic"])
-PY
-)
-LANDING_SPAWN_ENU="${LANDING_CONFIG[0]}"
-LANDING_DECK_Z="${LANDING_CONFIG[1]}"
-LANDING_TAKEOFF_ALT="${LANDING_CONFIG[2]}"
-LANDING_ODOMETRY_TOPIC="${LANDING_CONFIG[3]}"
 
 GIMBAL=1
 case "$MODE" in
@@ -92,15 +65,51 @@ else
   fi
 fi
 export PX4_MAP_RUNTIME_DIR
+LANDING_COORDINATES_SOURCE="$LANDING_COORDINATES"
+LANDING_COORDINATES="$PX4_MAP_RUNTIME_DIR/map.yaml"
+cp -- "$LANDING_COORDINATES_SOURCE" "$LANDING_COORDINATES"
+
+# trailer_cue_node publishes Gazebo ENU relative to the drone's local origin.
+# Read the run's immutable map snapshot so planning and postflight export use
+# exactly the same coordinate contract even if the source YAML later changes.
+mapfile -t LANDING_CONFIG < <(
+  python3 - "$LANDING_COORDINATES" <<'PY'
+import json
+import pathlib
+import sys
+
+import yaml
+
+document = yaml.safe_load(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+pose = document["spawn"]["gazebo_spawn_pose_enu"]
+print(json.dumps([float(pose["x"]), float(pose["y"])]))
+trailer = document["trailer"]
+marker_world_z = (float(trailer["spawn_pose_enu"]["z"])
+                  + float(trailer["marker_surface_height_m"]))
+local_origin_z = float(document["frames"]["mavros_local"]["origin_enu_m"][2])
+print(f"{marker_world_z - local_origin_z:.9f}")
+print(float(document.get("mission", {}).get("cruise_altitude_m", 6.0)))
+print(trailer["odometry_topic"])
+print(float(trailer["cruise_speed_m_s"]))
+PY
+)
+LANDING_SPAWN_ENU="${LANDING_CONFIG[0]}"
+LANDING_DECK_Z="${LANDING_CONFIG[1]}"
+LANDING_TAKEOFF_ALT="${LANDING_CONFIG[2]}"
+LANDING_ODOMETRY_TOPIC="${LANDING_CONFIG[3]}"
+LANDING_TRAILER_SPEED="${LANDING_CONFIG[4]}"
+
 XRCE_LOG="$PX4_MAP_RUNTIME_DIR/gimbal_xrce.log"
 SIM_LOG="$PX4_MAP_RUNTIME_DIR/gimbal_sim.log"
 STACK_LOG="$PX4_MAP_RUNTIME_DIR/gimbal_stack.log"
 VIEW_LOG="$PX4_MAP_RUNTIME_DIR/gimbal_aruco_view.log"
+MISSION_VIEW_LOG="$PX4_MAP_RUNTIME_DIR/gimbal_mission_view.log"
 CUE_LOG="$PX4_MAP_RUNTIME_DIR/gimbal_cue.log"
 MISSION_LOG="$PX4_MAP_RUNTIME_DIR/gimbal_mission.log"
 ODOMETRY_LOG="$PX4_MAP_RUNTIME_DIR/trailer_odometry.jsonl"
 ODOMETRY_ERROR_LOG="$PX4_MAP_RUNTIME_DIR/trailer_odometry.err"
 RUN_MANIFEST="$PX4_MAP_RUNTIME_DIR/manifest.tsv"
+CSV_EXPORT_LOG="$PX4_MAP_RUNTIME_DIR/flight_csv_export.log"
 echo "Run artifacts     : $PX4_MAP_RUNTIME_DIR"
 
 PIDS=()
@@ -111,10 +120,9 @@ TRAILER_GATE_DIR=""
 TRAILER_START_FILE=""
 SIM_PID=""
 DRIVE_TRAILER_FOR_RUN=1
-TRAILER_SPEED_FOR_RUN="${TRAILER_SPEED_M_S:-3.0}"
+TRAILER_SPEED_FOR_RUN="${TRAILER_SPEED_M_S:-$LANDING_TRAILER_SPEED}"
 if [[ "$LANDING_MAP" == "cju-track" ]]; then
   DRIVE_TRAILER_FOR_RUN=0
-  TRAILER_SPEED_FOR_RUN=3.0
 fi
 RUN_STARTED_UTC="$(date -u +%FT%TZ)"
 GIT_COMMIT="$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || printf unknown)"
@@ -131,12 +139,12 @@ GIT_DIRTY=0
   printf 'mode\t%s\n' "${MODE:-gimbal}"
   printf 'map\t%s\n' "$LANDING_MAP"
   printf 'world\t%s\n' "$LANDING_WORLD"
-  printf 'coordinates\t%s\n' "$LANDING_COORDINATES"
+  printf 'coordinates\t%s\n' 'map.yaml'
+  printf 'coordinates_source\t%s\n' "$LANDING_COORDINATES_SOURCE"
+  printf 'coordinates_sha256\t%s\n' "$(sha256sum "$LANDING_COORDINATES" | cut -d' ' -f1)"
   printf 'gimbal\t%s\n' "$GIMBAL"
   printf 'takeoff_alt_m\t%s\n' "$LANDING_TAKEOFF_ALT"
-  printf 'approach_alt_m\t%s\n' "${CJU_APPROACH_ALT_M:-8.0}"
-  printf 'touchdown_height_m\t%s\n' "${CJU_TOUCHDOWN_HEIGHT_M:-0.40}"
-  printf 'z_floor_margin_m\t%s\n' "${CJU_Z_FLOOR_MARGIN_M:-0.22}"
+  printf 'flight_control_owner\t%s\n' 'px4_native'
   printf 'trailer_speed_m_s\t%s\n' "$TRAILER_SPEED_FOR_RUN"
 } >"$RUN_MANIFEST"
 git -C "$REPO_DIR" status --short >"$PX4_MAP_RUNTIME_DIR/git_status.txt" || true
@@ -146,6 +154,8 @@ cleanup() {
   local sim_state=""
   local ulog_paths=()
   local ulog_source=""
+  local csv_export="missing"
+  local odometry_samples=0
   trap - EXIT INT TERM
   echo
   echo "stopping..."
@@ -179,19 +189,38 @@ cleanup() {
   else
     echo "WARNING: expected one PX4 ULog path, found ${#ulog_paths[@]}" >&2
   fi
-  if grep -q 'TOUCHDOWN -> DONE' "$MISSION_LOG" 2>/dev/null; then
+  if grep -q 'PRECLAND -> DONE' "$MISSION_LOG" 2>/dev/null; then
     run_result="done"
   elif [[ "$status" == "130" ]]; then
     run_result="interrupted"
   elif [[ "$status" == "0" ]]; then
     run_result="completed"
   fi
+  [[ -f "$ODOMETRY_LOG" ]] && odometry_samples="$(wc -l <"$ODOMETRY_LOG")"
   {
     printf 'finished_utc\t%s\n' "$(date -u +%FT%TZ)"
     printf 'exit_status\t%s\n' "$status"
     printf 'result\t%s\n' "$run_result"
     printf 'flight_ulg\t%s\n' "$([[ -s "$PX4_MAP_RUNTIME_DIR/flight.ulg" ]] && printf present || printf missing)"
-    printf 'odometry_samples\t%s\n' "$(wc -l <"$ODOMETRY_LOG" 2>/dev/null || printf 0)"
+    printf 'odometry_samples\t%s\n' "$odometry_samples"
+  } >>"$RUN_MANIFEST"
+  if [[ -s "$PX4_MAP_RUNTIME_DIR/flight.ulg" ]]; then
+    if python3 "$SCRIPT_DIR/tools/export_flight_1hz.py" \
+        "$PX4_MAP_RUNTIME_DIR" >"$CSV_EXPORT_LOG" 2>&1; then
+      csv_export="present"
+    else
+      echo "WARNING: 1 Hz flight CSV export failed; see $CSV_EXPORT_LOG" >&2
+    fi
+  fi
+  {
+    printf 'flight_csv_1hz\t%s\n' "$csv_export"
+    printf 'flight_summary_csv\t%s\n' "$csv_export"
+    if [[ "$csv_export" == "present" ]]; then
+      printf 'flight_csv_schema\t%s\n' 'cju_flight_1hz_v2'
+      printf 'flight_csv_rate_hz\t1\n'
+      printf 'flight_csv_contract\t%s\n' \
+        'one-second interval time-weighted means plus native-rate extrema'
+    fi
   } >>"$RUN_MANIFEST"
   if [[ -n "$TRAILER_GATE_DIR" ]]; then
     rm -f "$TRAILER_START_FILE"
@@ -230,7 +259,7 @@ echo "=== Gazebo + PX4 (GIMBAL=$GIMBAL) — log: $SIM_LOG ==="
 GIMBAL="$GIMBAL" FOLLOW_DRONE="${FOLLOW_DRONE:-0}" \
 START_XRCE=1 START_MAVROS="${START_MAVROS:-1}" PX4_DAEMON=1 \
 DRIVE_TRAILER="$DRIVE_TRAILER_FOR_RUN" TRAILER_SPEED_M_S="$TRAILER_SPEED_FOR_RUN" \
-TRAILER_START_FILE="$TRAILER_START_FILE" \
+TRAILER_START_FILE="$TRAILER_START_FILE" PX4_MAP_COORDINATES="$LANDING_COORDINATES" \
   setsid "$SCRIPT_DIR/run_px4_map.sh" "$LANDING_MAP" >"$SIM_LOG" 2>&1 &
 SIM_PID=$!
 PIDS+=("$SIM_PID")
@@ -304,8 +333,6 @@ if [[ "$GIMBAL" == "1" ]]; then
   PIDS+=("$STACK_PID")
   REQUIRED_NAMES+=(perception)
   REQUIRED_PIDS+=("$STACK_PID")
-  # The gimbal camera is wider than the body-fixed one this defaults to.
-  VFOV_ARG=(-p tan_vfov_half:=0.7722)
 else
   echo "=== baseline perception (body-fixed camera) ==="
   setsid ros2 run landing_mpc aruco_detector_node --ros-args -p use_sim_time:=true \
@@ -319,7 +346,6 @@ else
     -p deck_z:="$LANDING_DECK_Z" \
     >>"$STACK_LOG" 2>&1 &
   PIDS+=("$!"); REQUIRED_NAMES+=(marker_kf); REQUIRED_PIDS+=("$!")
-  VFOV_ARG=()
 fi
 sleep 5
 
@@ -377,19 +403,33 @@ if [[ "$RUN_MISSION" == "1" ]]; then
     MISSION_ARGS=(
       -p auto_start:=false
       -p takeoff_alt:="$LANDING_TAKEOFF_ALT"
-      -p approach_alt:="${CJU_APPROACH_ALT_M:-8.0}"
-      -p touchdown_height_m:="${CJU_TOUCHDOWN_HEIGHT_M:-0.40}"
-      -p z_floor_margin_m:="${CJU_Z_FLOOR_MARGIN_M:-0.22}"
       -p "mission_map_yaml:=$LANDING_COORDINATES"
     )
   fi
   setsid ros2 run landing_mpc mission_manager_node --ros-args -p use_sim_time:=true \
-    -p deck_z:="$LANDING_DECK_Z" "${VFOV_ARG[@]}" "${MISSION_ARGS[@]}" \
+    "${MISSION_ARGS[@]}" \
     >"$MISSION_LOG" 2>&1 &
   MISSION_PID=$!
   PIDS+=("$MISSION_PID")
   REQUIRED_NAMES+=(mission_manager)
   REQUIRED_PIDS+=("$MISSION_PID")
+
+  if [[ "$LANDING_MAP" == "cju-track" && "${HEADLESS:-0}" != "1" \
+      && "${MISSION_VIEW:-1}" == "1" ]]; then
+    if [[ -z "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]; then
+      echo "WARNING: live mission map skipped: no GUI display" >&2
+    else
+      setsid python3 -u "$SCRIPT_DIR/tools/cju_mission_ui.py" \
+        --live --map "$LANDING_COORDINATES" \
+        >"$MISSION_VIEW_LOG" 2>&1 &
+      MISSION_VIEW_PID=$!
+      PIDS+=("$MISSION_VIEW_PID")
+      sleep 1
+      if ! kill -0 "$MISSION_VIEW_PID" 2>/dev/null; then
+        echo "WARNING: live mission map failed; see $MISSION_VIEW_LOG" >&2
+      fi
+    fi
+  fi
 fi
 
 required_alive() {
@@ -422,7 +462,8 @@ cat <<EOF
                       JPEG topic, ~20 kB/frame instead of 1.4 MB raw
                       (marker outline, centre-to-centre dx/dy in px and m, and
                        the FILL gauge that shows the near-field blind zone)
-  watch the gimbal :  rviz2      (Fixed Frame: map, then Add -> TF)
+  watch the gimbal :  rviz2      (Fixed Frame: px4_local_enu, then Add -> TF)
+  live mission map :  opens automatically (MISSION_VIEW=0 disables it)
 EOF
 
 if [[ "$RUN_MISSION" == "1" && "$LANDING_MAP" == "cju-track" ]]; then
@@ -459,9 +500,9 @@ if [[ "$RUN_MISSION" == "1" && "$LANDING_MAP" == "cju-track" ]]; then
     return "$status"
   }
 
-  commands=(takeoff mission land)
+  commands=(takeoff land)
   step=0
-  echo '  명령 순서: takeoff → mission → land'
+  echo '  명령 순서: takeoff → 자동 A*/geometry B-spline/PX4 Goto → land'
   while (( step < ${#commands[@]} )); do
     IFS= read -r -p '  명령> ' command || break
     if [[ "$command" != "${commands[$step]}" ]]; then
@@ -470,31 +511,35 @@ if [[ "$RUN_MISSION" == "1" && "$LANDING_MAP" == "cju-track" ]]; then
     fi
     case "$command" in
       takeoff)
-        echo '  이륙 중...'
-        send_until_state takeoff 'TAKEOFF|READY' 10 || {
+        echo '  Phase 0: 상태/센서/PX4/경로계획기 PRECHECK 확인 중...'
+        echo "  Phase 1: PX4 native takeoff — 고도 ${LANDING_TAKEOFF_ALT} m..."
+        send_until_state takeoff 'TAKEOFF|MISSION_PLAN|MISSION|HOVER' 10 || {
           retry_command 'TAKEOFF 상태 확인'
           continue
         }
-        wait_for_states READY 90 || {
-          retry_command '이륙 완료 확인'
-          continue
-        }
-        echo '  이륙 완료'
-        ;;
-      mission)
-        send_until_state mission 'MISSION' 30 || {
-          retry_command 'A* 상태 확인'
+        wait_for_states 'MISSION|HOVER' 120 || {
+          retry_command 'geometry B-spline/PX4 Goto 상태 확인'
           continue
         }
         touch "$TRAILER_START_FILE"
-        echo '  지도 기반 전역 A* 반복 순찰 시작 — 구간별 재계획, 트레일러 3.0 m/s'
-        ;;
-      land)
-        send_until_state land 'APPROACH|ACQUIRE|DESCEND|TOUCHDOWN|DONE' 10 || {
-          retry_command '착륙 상태 확인'
+        echo '  Phase 2: YAML A*→geometry B-spline을 PX4 Goto로 추종 중...'
+        wait_for_states HOVER 180 || {
+          retry_command 'Phase 2 HOVER 확인'
           continue
         }
-        echo '  이동 트레일러 아루코 착륙 시작'
+        echo "  Phase 2 완료 — (50,50) 호버, 트레일러 ${TRAILER_SPEED_FOR_RUN} m/s"
+        ;;
+      land)
+        send_until_state land 'RETURN_PLAN|RETURN|PRECLAND|DONE' 30 || {
+          retry_command 'Phase 3 경로 계획 확인'
+          continue
+        }
+        echo '  Phase 3: A*→geometry B-spline으로 트레일러에 접근한 뒤 PX4 NAV_PRECLAND 수행 중...'
+        wait_for_states DONE 180 || {
+          retry_command '착륙 완료 확인'
+          continue
+        }
+        echo '  Phase 3 완료 — 이동 트레일러 착륙 및 무장해제'
         ;;
     esac
     printf 'command_accepted\t%s\n' "$command" >>"$RUN_MANIFEST"

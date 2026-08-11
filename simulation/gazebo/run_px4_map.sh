@@ -86,6 +86,8 @@ EOF
     ;;
 esac
 
+COORDINATES="${PX4_MAP_COORDINATES:-$COORDINATES}"
+
 for command in python3 gz timeout; do
   command -v "$command" >/dev/null 2>&1 || {
     echo "ERROR: required command is missing: $command" >&2
@@ -108,6 +110,8 @@ python3 -c 'import yaml' >/dev/null 2>&1 || {
 # simulation/ is what they actually mean.
 mapfile -t MAP_CONFIG < <(
   python3 - "$COORDINATES" "$REPO_DIR/simulation" <<'PY'
+import json
+import math
 import pathlib
 import sys
 import yaml
@@ -115,6 +119,45 @@ import yaml
 document = yaml.safe_load(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
 pose = document["spawn"]["gazebo_spawn_pose_enu"]
 keys = ("x", "y", "z", "roll", "pitch", "yaw")
+parameter_ranges = {
+    "MIS_TAKEOFF_ALT": (0.0, 100.0),
+    "MPC_TKO_SPEED": (0.1, 5.0),
+    "MPC_XY_CRUISE": (0.1, 20.0),
+    "MPC_XY_VEL_MAX": (0.1, 20.0),
+    "MPC_ACC_HOR": (0.1, 20.0),
+    "MPC_JERK_AUTO": (0.1, 50.0),
+    "MPC_LAND_SPEED": (0.1, 5.0),
+    "MPC_LAND_CRWL": (0.1, 5.0),
+    "LNDMC_Z_VEL_MAX": (0.01, 5.0),
+    "LNDMC_XY_VEL_MAX": (0.01, 20.0),
+    "COM_DISARM_LAND": (0.0, 60.0),
+    "PLD_BTOUT": (0.0, 50.0),
+    "PLD_HACC_RAD": (0.0, 10.0),
+    "PLD_VEL_THR": (0.0, 5.0),
+    "PLD_FAPPR_ALT": (0.0, 10.0),
+    "PLD_SRCH_ALT": (0.0, 100.0),
+    "PLD_SRCH_TOUT": (0.0, 100.0),
+    "PLD_MAX_SRCH": (0, 100),
+}
+declared = document["px4_vehicle"].get("sitl_parameter_overrides", {})
+overrides = {
+    name: declared[name] for name in parameter_ranges if name in declared
+}
+for name, value in overrides.items():
+    low, high = parameter_ranges[name]
+    if (isinstance(value, bool) or not isinstance(value, (int, float))
+            or not math.isfinite(float(value)) or not low <= value <= high):
+        raise ValueError(f"invalid PX4 SITL parameter {name}={value!r}")
+if "PLD_MAX_SRCH" in overrides and not isinstance(overrides["PLD_MAX_SRCH"], int):
+    raise ValueError("PLD_MAX_SRCH must be an integer")
+if overrides.get("MPC_XY_CRUISE", 0) > overrides.get("MPC_XY_VEL_MAX", math.inf):
+    raise ValueError("MPC_XY_CRUISE must not exceed MPC_XY_VEL_MAX")
+if overrides.get("MPC_LAND_CRWL", 0) > overrides.get("MPC_LAND_SPEED", math.inf):
+    raise ValueError("MPC_LAND_CRWL must not exceed MPC_LAND_SPEED")
+if ("LNDMC_Z_VEL_MAX" in overrides
+        and "MPC_LAND_CRWL" in overrides
+        and overrides["LNDMC_Z_VEL_MAX"] >= overrides["MPC_LAND_CRWL"]):
+    raise ValueError("LNDMC_Z_VEL_MAX must be below MPC_LAND_CRWL")
 print(document["map"]["gazebo_world_name"])
 print(pathlib.Path(sys.argv[2], document["map"]["world_file"]).resolve())
 print(",".join(str(pose[key]) for key in keys))
@@ -123,16 +166,13 @@ print(document["px4_vehicle"]["simulation_model"])
 print(document["px4_vehicle"]["runtime_entity_name"])
 trailer = document["trailer"]["spawn_pose_enu"]
 print(",".join(str(trailer[key]) for key in keys))
-overrides = document["px4_vehicle"].get("sitl_parameter_overrides", {})
-print(overrides.get("LNDMC_Z_VEL_MAX", ""))
-print(overrides.get("LNDMC_XY_VEL_MAX", ""))
-print(overrides.get("COM_DISARM_LAND", ""))
 gimbal = document["px4_vehicle"].get("gimbal_variant") or {}
 print(gimbal.get("simulation_model", ""))
 print(gimbal.get("runtime_entity_name", ""))
+print(json.dumps(overrides, separators=(",", ":")))
 PY
 )
-[[ ${#MAP_CONFIG[@]} -eq 12 ]] || {
+[[ ${#MAP_CONFIG[@]} -eq 10 ]] || {
   echo "ERROR: failed to read launch values from $COORDINATES" >&2
   exit 2
 }
@@ -143,11 +183,9 @@ AUTOSTART_ID="${MAP_CONFIG[3]}"
 SIM_MODEL="${MAP_CONFIG[4]}"
 ENTITY_NAME="${MAP_CONFIG[5]}"
 TRAILER_SPAWN_POSE="${MAP_CONFIG[6]}"
-PX4_LNDMC_Z_VEL_MAX="${MAP_CONFIG[7]}"
-PX4_LNDMC_XY_VEL_MAX="${MAP_CONFIG[8]}"
-PX4_COM_DISARM_LAND="${MAP_CONFIG[9]}"
-GIMBAL_SIM_MODEL="${MAP_CONFIG[10]}"
-GIMBAL_ENTITY_NAME="${MAP_CONFIG[11]}"
+GIMBAL_SIM_MODEL="${MAP_CONFIG[7]}"
+GIMBAL_ENTITY_NAME="${MAP_CONFIG[8]}"
+PX4_PARAM_OVERRIDES="${MAP_CONFIG[9]}"
 
 if [[ "${GIMBAL:-0}" == "1" ]]; then
   [[ -n "$GIMBAL_SIM_MODEL" && -n "$GIMBAL_ENTITY_NAME" ]] || {
@@ -156,37 +194,6 @@ if [[ "${GIMBAL:-0}" == "1" ]]; then
   }
   SIM_MODEL="$GIMBAL_SIM_MODEL"
   ENTITY_NAME="$GIMBAL_ENTITY_NAME"
-fi
-
-if [[ -n "$PX4_LNDMC_Z_VEL_MAX" || -n "$PX4_LNDMC_XY_VEL_MAX" || -n "$PX4_COM_DISARM_LAND" ]]; then
-  python3 - "$PX4_LNDMC_Z_VEL_MAX" "$PX4_LNDMC_XY_VEL_MAX" "$PX4_COM_DISARM_LAND" <<'PY' || {
-import math
-import sys
-
-vertical_threshold = float(sys.argv[1])
-horizontal_text = sys.argv[2].strip()
-horizontal_threshold = (
-    float(horizontal_text) if horizontal_text else None
-)
-auto_disarm_delay = float(sys.argv[3])
-valid = (
-    math.isfinite(vertical_threshold)
-    and 0.0 < vertical_threshold < 0.25
-    and (
-        horizontal_threshold is None
-        or (
-            math.isfinite(horizontal_threshold)
-            and 0.0 < horizontal_threshold <= 12.0
-        )
-    )
-    and math.isfinite(auto_disarm_delay)
-    and auto_disarm_delay >= 2.0
-)
-raise SystemExit(0 if valid else 1)
-PY
-    echo "ERROR: invalid mpc-landing PX4 runtime parameter contract." >&2
-    exit 2
-  }
 fi
 
 if [[ "$MAP" == "mpc-landing" && "${DRIVE_TRAILER:-0}" != "0" ]]; then
@@ -380,7 +387,7 @@ fi
 # user's PX4 source/build tree.  Fail closed if a future PX4 release changes
 # the expected rcS line instead of silently filtering the wrong command.
 MAVROS_RCS=""
-if [[ "${START_XRCE:-0}" != "1" || -n "$PX4_LNDMC_Z_VEL_MAX" || -n "$PX4_LNDMC_XY_VEL_MAX" ]]; then
+if [[ "${START_XRCE:-0}" != "1" || "$PX4_PARAM_OVERRIDES" != "{}" ]]; then
   PX4_STOCK_RCS="$PX4_BUILD/etc/init.d-posix/rcS"
   MAVROS_RCS="$RUNTIME_DIR/rcS.mavros_only"
   MAVROS_RCS_TMP="$MAVROS_RCS.tmp.$$"
@@ -399,21 +406,16 @@ if [[ "${START_XRCE:-0}" != "1" || -n "$PX4_LNDMC_Z_VEL_MAX" || -n "$PX4_LNDMC_X
   else
     awk '{ print }' "$PX4_STOCK_RCS" >"$MAVROS_RCS_TMP"
   fi
-  if [[ -n "$PX4_LNDMC_Z_VEL_MAX" || -n "$PX4_LNDMC_XY_VEL_MAX" ]]; then
+  if [[ "$PX4_PARAM_OVERRIDES" != "{}" ]]; then
     printf '\n# Precision-landing SITL safety calibration (runtime only).\n' \
       >>"$MAVROS_RCS_TMP"
-  fi
-  if [[ -n "$PX4_LNDMC_Z_VEL_MAX" ]]; then
-    printf 'param set LNDMC_Z_VEL_MAX %s\n' "$PX4_LNDMC_Z_VEL_MAX" \
-      >>"$MAVROS_RCS_TMP"
-  fi
-  if [[ -n "$PX4_LNDMC_XY_VEL_MAX" ]]; then
-    printf 'param set LNDMC_XY_VEL_MAX %s\n' "$PX4_LNDMC_XY_VEL_MAX" \
-      >>"$MAVROS_RCS_TMP"
-  fi
-  if [[ -n "$PX4_COM_DISARM_LAND" ]]; then
-    printf 'param set COM_DISARM_LAND %s\n' "$PX4_COM_DISARM_LAND" \
-      >>"$MAVROS_RCS_TMP"
+    python3 - "$PX4_PARAM_OVERRIDES" >>"$MAVROS_RCS_TMP" <<'PY'
+import json
+import sys
+
+for name, value in json.loads(sys.argv[1]).items():
+    print(f"param set {name} {value}")
+PY
   fi
   if ! /bin/sh -n "$MAVROS_RCS_TMP"; then
     rm -f "$MAVROS_RCS_TMP"
@@ -884,7 +886,8 @@ if [[ -n "$MAVROS_PID" ]]; then
     set +u
     # shellcheck disable=SC1090
     source "$ROS_SETUP"
-    timeout 10 ros2 topic echo --once /clock >/dev/null 2>&1
+    timeout 10 ros2 topic echo --qos-reliability best_effort \
+      --once /clock >/dev/null 2>&1
   ); then
     echo "ERROR: Gazebo /clock was not received; refusing to start PX4." >&2
     exit 5
@@ -909,9 +912,14 @@ if [[ "${START_XRCE:-0}" != "1" ]]; then
 else
   echo "PX4 transport     : MAVLink + Micro XRCE-DDS"
 fi
-if [[ -n "$PX4_LNDMC_Z_VEL_MAX" ]]; then
-  echo "PX4 land detector : LNDMC_Z_VEL_MAX=$PX4_LNDMC_Z_VEL_MAX m/s, LNDMC_XY_VEL_MAX=$PX4_LNDMC_XY_VEL_MAX m/s"
-  echo "PX4 auto-disarm   : COM_DISARM_LAND=$PX4_COM_DISARM_LAND s"
+if [[ "$PX4_PARAM_OVERRIDES" != "{}" ]]; then
+  echo "PX4 native params : $(python3 - "$PX4_PARAM_OVERRIDES" <<'PY'
+import json
+import sys
+
+print(" ".join(f"{name}={value}" for name, value in json.loads(sys.argv[1]).items()))
+PY
+)"
 fi
 LAUNCHER_PID=$$
 

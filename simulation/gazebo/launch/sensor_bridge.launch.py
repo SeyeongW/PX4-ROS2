@@ -243,7 +243,7 @@ def _launch_setup(context, *args, **kwargs):
         _static_tf("tf_down_depth_optical", "down_depth_link",
                    "down_depth_optical_frame", (0.0, 0.0, 0.0), optical_rpy),
         _static_tf("tf_down_lidar", base_frame, "lidar_sensor_link",
-                   (0.08, 0.0, -0.20), (0.0, 1.57079632679, 0.0)),
+                   (0.15, 0.0, -0.05), (0.0, 1.57079632679, 0.0)),
     ]
     return [*bridges, *transforms]
 

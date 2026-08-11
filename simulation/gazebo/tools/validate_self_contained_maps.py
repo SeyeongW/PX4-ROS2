@@ -602,6 +602,31 @@ def validate_px4_contracts() -> dict[str, object]:
         )
         if topic is not None:
             require(sensor.findtext("topic") == topic, f"{sensor_name} topic changed")
+        else:
+            link_pose = [float(value) for value in (pose.text or "").split()]
+            sensor_pose = [float(value) for value in (sensor.findtext("pose") or "").split()]
+            require(
+                len(link_pose) == 6
+                and abs(link_pose[0] - 0.15) < 1.0e-12
+                and abs(link_pose[1]) < 1.0e-12
+                and abs(link_pose[2] + 0.05) < 1.0e-12
+                and abs(link_pose[3]) < 1.0e-12
+                and abs(link_pose[4] - 1.57079632679) < 1.0e-12
+                and abs(link_pose[5]) < 1.0e-12,
+                "lidar must stay outside the gimbal footprint and point its local +X ray down",
+            )
+            require(
+                len(sensor_pose) == 6
+                and max(abs(sensor_pose[index]) for index in (0, 1, 2, 4, 5)) < 1.0e-12
+                and abs(sensor_pose[3] - 3.14) < 1.0e-12,
+                "lidar scan orientation must match PX4's downward-facing contract",
+            )
+            require(sensor.find("topic") is None, "lidar must keep its world-qualified default topic")
+            require(
+                sensor.findtext("./ray/scan/horizontal/samples") == "1"
+                and sensor.findtext("./ray/scan/vertical/samples") == "1",
+                "touchdown lidar must remain a single ray",
+            )
 
     launch_text = launch.read_text(encoding="utf-8")
     for marker in (
@@ -926,7 +951,7 @@ def main() -> None:
         [
             "PX4-ROS2 self-contained Gazebo map static validation",
             "result=PASS",
-            f"repository={REPO}",
+            "repository=simulation",
             "city_engine=Gazebo Harmonic",
             f"active_uav_city_size_m={active_city['size_m']}x{active_city['size_m']}",
             f"active_uav_city_centroid_spacing_scale={active_city['spacing_scale']}",

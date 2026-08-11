@@ -101,26 +101,18 @@ class LandingMPC:
         self.Fp, self.Fv, self.Gp, self.Gv = condense(self.dt, self.N)
         self._warm = np.zeros((3, self.N))
 
-    def _reachable_velocity(self, v0, a0, tk, sign):
-        """Extreme velocity reachable by t_k under |da/dt| <= j_max, |a| <= a_max.
-
-        The hardest braking (sign < 0) ramps the acceleration down at j_max
-        until it saturates at -a_max, then holds it:
-
-            t1   = (a0 + a_max) / j_max                  (ramp duration)
-            v(t) = v0 + a0*t - 1/2*j*t^2                 for t <= t1
-            v(t) = v(t1) - a_max*(t - t1)                for t >  t1
-
-        Used to keep the velocity limits FEASIBLE: a bound tighter than what the
-        jerk limit can physically deliver makes the QP unsolvable.
-        """
-        j = self.j_max if self.j_max > 0.0 else 1e9
+    def _reachable_velocity(self, v0, a0, tk, sign, target_accel):
+        """Extreme QP-knot velocity under its discrete jerk/accel limits."""
+        steps = np.arange(1, np.asarray(tk).size + 1, dtype=float)
         s = 1.0 if sign > 0 else -1.0
-        t1 = max(0.0, (self.a_max - s * a0) / j)
-        v_t1 = v0 + a0 * t1 + s * 0.5 * j * t1 * t1
-        return np.where(tk <= t1,
-                        v0 + a0 * tk + s * 0.5 * j * tk * tk,
-                        v_t1 + s * self.a_max * (tk - t1))
+        if self.j_max > 0.0:
+            accel = np.clip(
+                a0 + s * self.j_max * self.dt * steps,
+                -self.a_max, self.a_max)
+        else:
+            accel = np.full(steps.shape, s * self.a_max)
+        return v0 + self.dt * np.cumsum(
+            accel - np.asarray(target_accel, float))
 
     # -- single-axis QP -----------------------------------------------------
     def _solve_axis(self, p0, v0, at_axis, wp, wv, p_ref, warm,
@@ -165,8 +157,12 @@ class LandingMPC:
         # the bound is impossible at 0.2 m/s^2 per step, which is what kept
         # ~50% of the chase solves infeasible.
         tk = self.dt * np.arange(1, N + 1)
-        v_ub = np.maximum(v_hi, self._reachable_velocity(v0, a_prev, tk, -1))
-        v_lb = np.minimum(v_lo, self._reachable_velocity(v0, a_prev, tk, +1))
+        v_ub = np.maximum(
+            v_hi, self._reachable_velocity(
+                v0, a_prev, tk, -1, at_axis))
+        v_lb = np.minimum(
+            v_lo, self._reachable_velocity(
+                v0, a_prev, tk, +1, at_axis))
         cons = [LinearConstraint(Gv, v_lb - v_free, v_ub - v_free)]
         if p_lb is not None:
             cons.append(LinearConstraint(Gp, p_lb - p_free, np.full(N, _INF)))

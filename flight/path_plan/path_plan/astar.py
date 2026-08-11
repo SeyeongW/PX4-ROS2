@@ -184,7 +184,9 @@ class AStarPlanner3D:
             out = []
             for offset, step_cells in zip(_NEIGHBORS, _NEIGHBOR_COST):
                 nb = tuple(base + offset)
-                if not self._cell_free(nb):
+                if (not self._cell_free(nb)
+                        or not self.world.segment_is_free(
+                            cw, self._to_world(nb))):
                     continue
                 out.append((nb, self._edge_cost(cw, nb, clearance, step_cells)))
             return out

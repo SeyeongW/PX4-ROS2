@@ -70,7 +70,8 @@ from sensor_msgs.msg import JointState
 
 from px4_msgs.msg import VehicleAttitude, VehicleLocalPosition
 
-from .frame import camera_offset_to_enu, gimbal_joint_offset_to_enu
+from .frame import (LOCAL_ENU_FRAME_ID, camera_offset_to_enu,
+                    gimbal_joint_offset_to_enu)
 from .parameter_utils import (
     DEFAULT_DECK_Z_M,
     require_finite,
@@ -220,7 +221,7 @@ class MarkerTfNode(Node):
 
         pm = PointStamped()
         pm.header.stamp = msg.header.stamp
-        pm.header.frame_id = 'map'
+        pm.header.frame_id = LOCAL_ENU_FRAME_ID
         pm.point.x, pm.point.y, pm.point.z = (float(marker[0]), float(marker[1]),
                                               float(marker[2]))
         self.meas_pub.publish(pm)

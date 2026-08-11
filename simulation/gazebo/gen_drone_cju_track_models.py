@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Generate the CJU stadium track and its three requested facilities.
 
-The ``stadium_endpoint`` origin is the south-east track tangent visible at the
-bottom-right of a north-up map.  Local +x is approximately east and local +y
-is approximately north, so the stadium extends left/up from (0, 0).
+The ``stadium_endpoint`` origin is the integer south-west staging point beside
+the track. Local +x is approximately east and local +y is approximately north,
+so the stadium centre is near positive (50, 50) map coordinates.
 """
 
 import math
@@ -24,7 +24,8 @@ TRACK_MTL_PATH = Path("meshes/running_track_surface.mtl")
 # OSM way 1374978221 is approximately 178.7 m by 87.4 m.  The 92 m tangent
 # separation and 39 m trailer radius remain unchanged, keeping the moving
 # platform centred on the rendered track.
-TRACK_CENTER_M = (-44, 46)
+MAP_X_OFFSET_M = 88.0
+TRACK_CENTER_M = (44, 46)
 STRAIGHT_LENGTH_M = 92.0
 OUTER_HALF_WIDTH_M = 43.7
 OUTER_END_RADIUS_M = 43.35
@@ -68,9 +69,9 @@ def build_mtl():
 def stadium_outline(offset_m=0.0):
     """Return one smooth clockwise-free stadium contour.
 
-    ``offset_m`` moves the contour inward.  Every contour starts at the
-    south-east tangent, continues north on the east straight, then closes via
-    the north curve, west straight, and south curve.
+    ``offset_m`` moves the contour inward. Every contour starts at the east
+    tangent, continues north, then closes via the north curve, west straight,
+    and south curve.
     """
 
     radius_x = OUTER_HALF_WIDTH_M - offset_m
@@ -78,7 +79,7 @@ def stadium_outline(offset_m=0.0):
     if radius_x <= 0.0 or radius_y <= 0.0:
         raise ValueError("track offset is larger than the curve radius")
 
-    centre_x = -OUTER_HALF_WIDTH_M
+    centre_x = MAP_X_OFFSET_M - OUTER_HALF_WIDTH_M
     east_x = centre_x + radius_x
     west_x = centre_x - radius_x
     points = [(east_x, 0.0), (east_x, STRAIGHT_LENGTH_M)]
@@ -123,8 +124,8 @@ def _append_annulus(vertices, sections, name, material, outer, inner, z):
 
 def _validate_layout():
     outer = stadium_outline()
-    if outer[0] != (0.0, 0.0):
-        raise ValueError("photo bottom-right track tangent must be (0, 0)")
+    if outer[0] != (MAP_X_OFFSET_M, 0.0):
+        raise ValueError("east track tangent differs from the map contract")
     if len(outer) < 64:
         raise ValueError("track curve sampling is too coarse")
     values = (
@@ -143,6 +144,7 @@ def _validate_layout():
 
     inner_radius_x = OUTER_HALF_WIDTH_M - TRACK_WIDTH_M
     inner_radius_y = OUTER_END_RADIUS_M - TRACK_WIDTH_M
+    outline_center_x = MAP_X_OFFSET_M - OUTER_HALF_WIDTH_M
     for name, centre, size, _ in base_stadium.FACILITIES:
         if not name.endswith("_court"):
             continue
@@ -152,7 +154,7 @@ def _validate_layout():
             for y in (centre[1] - half_y, centre[1] + half_y):
                 curve_y = min(max(y, 0.0), STRAIGHT_LENGTH_M)
                 inside = (
-                    ((x + OUTER_HALF_WIDTH_M) / inner_radius_x) ** 2
+                    ((x - outline_center_x) / inner_radius_x) ** 2
                     + ((y - curve_y) / inner_radius_y) ** 2
                 ) <= 1.0
                 if not inside:

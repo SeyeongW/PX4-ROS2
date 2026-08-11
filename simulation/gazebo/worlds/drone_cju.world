@@ -75,13 +75,13 @@
       <heading_deg>0</heading_deg>
     </spherical_coordinates>
 
-    <!-- Canonical map coordinates: the photo/map bottom-right (south-east)
-         running-track tangent is (0, 0); +x is east-ish and +y north-ish. -->
+    <!-- Positive mission coordinates from the integer south-west staging
+         origin; +x is east-ish and +y north-ish. -->
     <frame name="stadium_endpoint">
-      <pose>76.827710406649 74.660781359808 0 0 0 0.110080031259</pose>
+      <pose>-10.639652792208 64.993290731978 0 0 0 0.110080031259</pose>
     </frame>
     <frame name="stadium_center">
-      <pose relative_to="stadium_endpoint">-44 46 0 0 0 0</pose>
+      <pose relative_to="stadium_endpoint">44 46 0 0 0 0</pose>
     </frame>
 
     <!-- One low grass/earth pad fills gaps between the requested facilities. -->
@@ -90,11 +90,11 @@
       <pose relative_to="stadium_endpoint">0 0 0 0 0 0</pose>
       <link name="ground">
         <collision name="collision">
-          <pose>-42 49 -1 0 0 0</pose>
+          <pose>46 49 -1 0 0 0</pose>
           <geometry><box><size>128 226 2</size></box></geometry>
         </collision>
         <visual name="stadium_ground_surface">
-          <pose>-42 49 -0.03 0 0 0</pose>
+          <pose>46 49 -0.03 0 0 0</pose>
           <cast_shadows>false</cast_shadows>
           <geometry><box><size>128 226 0.04</size></box></geometry>
           <material>
@@ -117,28 +117,60 @@
       <pose relative_to="stadium_endpoint">0 0 0 0 0 0</pose>
     </include>
 
-    <!-- Four integer-centre mission barriers measured from the SE (0, 0). -->
+    <!-- Twenty fixed integer-centre barriers inside the map's 0..40 m square. -->
     <model name="mission_obstacles">
       <static>true</static>
       <pose relative_to="stadium_endpoint">0 0 0 0 0 0</pose>
       <link name="barriers">
-        <collision name="barrier_1_collision"><pose>-47 2 5 0 0 0</pose><geometry><box><size>4.5 0.35 10</size></box></geometry></collision>
-        <collision name="barrier_2_collision"><pose>-41 12 5 0 0 0</pose><geometry><box><size>4.5 0.35 10</size></box></geometry></collision>
-        <collision name="barrier_3_collision"><pose>-47 22 5 0 0 0</pose><geometry><box><size>4.5 0.35 10</size></box></geometry></collision>
-        <collision name="barrier_4_collision"><pose>-41 32 5 0 0 0</pose><geometry><box><size>4.5 0.35 10</size></box></geometry></collision>
-        <visual name="barrier_1"><pose>-47 2 5 0 0 0</pose><geometry><box><size>4.5 0.35 10</size></box></geometry><material><ambient>0.95 0.32 0.05 1</ambient><diffuse>0.95 0.32 0.05 1</diffuse></material></visual>
-        <visual name="barrier_2"><pose>-41 12 5 0 0 0</pose><geometry><box><size>4.5 0.35 10</size></box></geometry><material><ambient>0.95 0.90 0.78 1</ambient><diffuse>0.95 0.90 0.78 1</diffuse></material></visual>
-        <visual name="barrier_3"><pose>-47 22 5 0 0 0</pose><geometry><box><size>4.5 0.35 10</size></box></geometry><material><ambient>0.95 0.32 0.05 1</ambient><diffuse>0.95 0.32 0.05 1</diffuse></material></visual>
-        <visual name="barrier_4"><pose>-41 32 5 0 0 0</pose><geometry><box><size>4.5 0.35 10</size></box></geometry><material><ambient>0.95 0.90 0.78 1</ambient><diffuse>0.95 0.90 0.78 1</diffuse></material></visual>
+        <collision name="barrier_1_collision"><pose>25 24 5 0 0 0</pose><geometry><box><size>0.45 0.35 10</size></box></geometry></collision>
+        <collision name="barrier_2_collision"><pose>33 37 5 0 0 0</pose><geometry><box><size>0.45 0.35 10</size></box></geometry></collision>
+        <collision name="barrier_3_collision"><pose>15 7 5 0 0 0</pose><geometry><box><size>0.45 0.35 10</size></box></geometry></collision>
+        <collision name="barrier_4_collision"><pose>14 14 5 0 0 0</pose><geometry><box><size>0.45 0.35 10</size></box></geometry></collision>
+        <collision name="barrier_5_collision"><pose>39 30 5 0 0 0</pose><geometry><box><size>0.45 0.35 10</size></box></geometry></collision>
+        <collision name="barrier_6_collision"><pose>21 11 5 0 0 0</pose><geometry><box><size>0.45 0.35 10</size></box></geometry></collision>
+        <collision name="barrier_7_collision"><pose>28 27 5 0 0 0</pose><geometry><box><size>0.45 0.35 10</size></box></geometry></collision>
+        <collision name="barrier_8_collision"><pose>32 17 5 0 0 0</pose><geometry><box><size>0.45 0.35 10</size></box></geometry></collision>
+        <collision name="barrier_9_collision"><pose>17 40 5 0 0 0</pose><geometry><box><size>0.45 0.35 10</size></box></geometry></collision>
+        <collision name="barrier_10_collision"><pose>33 24 5 0 0 0</pose><geometry><box><size>0.45 0.35 10</size></box></geometry></collision>
+        <collision name="barrier_11_collision"><pose>32 6 5 0 0 0</pose><geometry><box><size>0.45 0.35 10</size></box></geometry></collision>
+        <collision name="barrier_12_collision"><pose>26 17 5 0 0 0</pose><geometry><box><size>0.45 0.35 10</size></box></geometry></collision>
+        <collision name="barrier_13_collision"><pose>23 5 5 0 0 0</pose><geometry><box><size>0.45 0.35 10</size></box></geometry></collision>
+        <collision name="barrier_14_collision"><pose>24 25 5 0 0 0</pose><geometry><box><size>0.45 0.35 10</size></box></geometry></collision>
+        <collision name="barrier_15_collision"><pose>15 34 5 0 0 0</pose><geometry><box><size>0.45 0.35 10</size></box></geometry></collision>
+        <collision name="barrier_16_collision"><pose>18 22 5 0 0 0</pose><geometry><box><size>0.45 0.35 10</size></box></geometry></collision>
+        <collision name="barrier_17_collision"><pose>27 38 5 0 0 0</pose><geometry><box><size>0.45 0.35 10</size></box></geometry></collision>
+        <collision name="barrier_18_collision"><pose>32 30 5 0 0 0</pose><geometry><box><size>0.45 0.35 10</size></box></geometry></collision>
+        <collision name="barrier_19_collision"><pose>28 36 5 0 0 0</pose><geometry><box><size>0.45 0.35 10</size></box></geometry></collision>
+        <collision name="barrier_20_collision"><pose>23 34 5 0 0 0</pose><geometry><box><size>0.45 0.35 10</size></box></geometry></collision>
+        <visual name="barrier_1"><pose>25 24 5 0 0 0</pose><geometry><box><size>0.45 0.35 10</size></box></geometry><material><ambient>0.95 0.32 0.05 1</ambient><diffuse>0.95 0.32 0.05 1</diffuse></material></visual>
+        <visual name="barrier_2"><pose>33 37 5 0 0 0</pose><geometry><box><size>0.45 0.35 10</size></box></geometry><material><ambient>0.95 0.90 0.78 1</ambient><diffuse>0.95 0.90 0.78 1</diffuse></material></visual>
+        <visual name="barrier_3"><pose>15 7 5 0 0 0</pose><geometry><box><size>0.45 0.35 10</size></box></geometry><material><ambient>0.95 0.32 0.05 1</ambient><diffuse>0.95 0.32 0.05 1</diffuse></material></visual>
+        <visual name="barrier_4"><pose>14 14 5 0 0 0</pose><geometry><box><size>0.45 0.35 10</size></box></geometry><material><ambient>0.95 0.90 0.78 1</ambient><diffuse>0.95 0.90 0.78 1</diffuse></material></visual>
+        <visual name="barrier_5"><pose>39 30 5 0 0 0</pose><geometry><box><size>0.45 0.35 10</size></box></geometry><material><ambient>0.95 0.32 0.05 1</ambient><diffuse>0.95 0.32 0.05 1</diffuse></material></visual>
+        <visual name="barrier_6"><pose>21 11 5 0 0 0</pose><geometry><box><size>0.45 0.35 10</size></box></geometry><material><ambient>0.95 0.90 0.78 1</ambient><diffuse>0.95 0.90 0.78 1</diffuse></material></visual>
+        <visual name="barrier_7"><pose>28 27 5 0 0 0</pose><geometry><box><size>0.45 0.35 10</size></box></geometry><material><ambient>0.95 0.32 0.05 1</ambient><diffuse>0.95 0.32 0.05 1</diffuse></material></visual>
+        <visual name="barrier_8"><pose>32 17 5 0 0 0</pose><geometry><box><size>0.45 0.35 10</size></box></geometry><material><ambient>0.95 0.90 0.78 1</ambient><diffuse>0.95 0.90 0.78 1</diffuse></material></visual>
+        <visual name="barrier_9"><pose>17 40 5 0 0 0</pose><geometry><box><size>0.45 0.35 10</size></box></geometry><material><ambient>0.95 0.32 0.05 1</ambient><diffuse>0.95 0.32 0.05 1</diffuse></material></visual>
+        <visual name="barrier_10"><pose>33 24 5 0 0 0</pose><geometry><box><size>0.45 0.35 10</size></box></geometry><material><ambient>0.95 0.90 0.78 1</ambient><diffuse>0.95 0.90 0.78 1</diffuse></material></visual>
+        <visual name="barrier_11"><pose>32 6 5 0 0 0</pose><geometry><box><size>0.45 0.35 10</size></box></geometry><material><ambient>0.95 0.32 0.05 1</ambient><diffuse>0.95 0.32 0.05 1</diffuse></material></visual>
+        <visual name="barrier_12"><pose>26 17 5 0 0 0</pose><geometry><box><size>0.45 0.35 10</size></box></geometry><material><ambient>0.95 0.90 0.78 1</ambient><diffuse>0.95 0.90 0.78 1</diffuse></material></visual>
+        <visual name="barrier_13"><pose>23 5 5 0 0 0</pose><geometry><box><size>0.45 0.35 10</size></box></geometry><material><ambient>0.95 0.32 0.05 1</ambient><diffuse>0.95 0.32 0.05 1</diffuse></material></visual>
+        <visual name="barrier_14"><pose>24 25 5 0 0 0</pose><geometry><box><size>0.45 0.35 10</size></box></geometry><material><ambient>0.95 0.90 0.78 1</ambient><diffuse>0.95 0.90 0.78 1</diffuse></material></visual>
+        <visual name="barrier_15"><pose>15 34 5 0 0 0</pose><geometry><box><size>0.45 0.35 10</size></box></geometry><material><ambient>0.95 0.32 0.05 1</ambient><diffuse>0.95 0.32 0.05 1</diffuse></material></visual>
+        <visual name="barrier_16"><pose>18 22 5 0 0 0</pose><geometry><box><size>0.45 0.35 10</size></box></geometry><material><ambient>0.95 0.90 0.78 1</ambient><diffuse>0.95 0.90 0.78 1</diffuse></material></visual>
+        <visual name="barrier_17"><pose>27 38 5 0 0 0</pose><geometry><box><size>0.45 0.35 10</size></box></geometry><material><ambient>0.95 0.32 0.05 1</ambient><diffuse>0.95 0.32 0.05 1</diffuse></material></visual>
+        <visual name="barrier_18"><pose>32 30 5 0 0 0</pose><geometry><box><size>0.45 0.35 10</size></box></geometry><material><ambient>0.95 0.90 0.78 1</ambient><diffuse>0.95 0.90 0.78 1</diffuse></material></visual>
+        <visual name="barrier_19"><pose>28 36 5 0 0 0</pose><geometry><box><size>0.45 0.35 10</size></box></geometry><material><ambient>0.95 0.32 0.05 1</ambient><diffuse>0.95 0.32 0.05 1</diffuse></material></visual>
+        <visual name="barrier_20"><pose>23 34 5 0 0 0</pose><geometry><box><size>0.45 0.35 10</size></box></geometry><material><ambient>0.95 0.90 0.78 1</ambient><diffuse>0.95 0.90 0.78 1</diffuse></material></visual>
       </link>
     </model>
 
-    <frame name="drone_spawn"><pose relative_to="stadium_endpoint">-44 -39 2.051 0 0 0</pose></frame>
-    <frame name="trailer_spawn"><pose relative_to="stadium_endpoint">-44 -39 0 0 0 0</pose></frame>
+    <frame name="drone_spawn"><pose relative_to="stadium_endpoint">5 0 2.051 0 0 1.570796326795</pose></frame>
+    <frame name="trailer_spawn"><pose relative_to="stadium_endpoint">5 0 0 0 0 1.570796326795</pose></frame>
     <include>
       <uri>model://moving_platform_aruco_velocity</uri>
       <name>trailer</name>
-      <pose relative_to="stadium_endpoint">-44 -39 0 0 0 0</pose>
+      <pose relative_to="stadium_endpoint">5 0 0 0 0 1.570796326795</pose>
     </include>
 
     <!-- PX4 SITL dynamically creates the x500 on the trailer deck. -->

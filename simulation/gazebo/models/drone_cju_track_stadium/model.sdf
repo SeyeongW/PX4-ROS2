@@ -5,7 +5,7 @@
     <static>true</static>
     <link name="stadium_link">
       <visual name="stadium_field">
-        <pose>-44.0000 48.0000 0.0000 0 0 0.000000</pose>
+        <pose>44.0000 48.0000 0.0000 0 0 0.000000</pose>
         <cast_shadows>false</cast_shadows>
         <geometry><box><size>68.0000 105.0000 0.0200</size></box></geometry>
         <material>
@@ -15,7 +15,7 @@
         </material>
       </visual>
       <visual name="basketball_court">
-        <pose>-44.0000 113.0000 0.0000 0 0 0.000000</pose>
+        <pose>44.0000 113.0000 0.0000 0 0 0.000000</pose>
         <cast_shadows>false</cast_shadows>
         <geometry><box><size>28.0000 15.0000 0.0200</size></box></geometry>
         <material>
@@ -25,7 +25,7 @@
         </material>
       </visual>
       <visual name="jokgu_court">
-        <pose>-44.0000 -18.0000 0.0000 0 0 0.000000</pose>
+        <pose>44.0000 -18.0000 0.0000 0 0 0.000000</pose>
         <cast_shadows>false</cast_shadows>
         <geometry><box><size>10.0000 20.0000 0.0200</size></box></geometry>
         <material>
@@ -35,7 +35,7 @@
         </material>
       </visual>
       <visual name="stadium_field_line_east">
-        <pose>-10.0000 48.0000 0.0120 0 0 0.000000</pose>
+        <pose>78.0000 48.0000 0.0120 0 0 0.000000</pose>
         <cast_shadows>false</cast_shadows>
         <geometry><box><size>0.0800 105.0000 0.0040</size></box></geometry>
         <material>
@@ -45,7 +45,7 @@
         </material>
       </visual>
       <visual name="stadium_field_line_west">
-        <pose>-78.0000 48.0000 0.0120 0 0 0.000000</pose>
+        <pose>10.0000 48.0000 0.0120 0 0 0.000000</pose>
         <cast_shadows>false</cast_shadows>
         <geometry><box><size>0.0800 105.0000 0.0040</size></box></geometry>
         <material>
@@ -55,7 +55,7 @@
         </material>
       </visual>
       <visual name="stadium_field_line_north">
-        <pose>-44.0000 100.5000 0.0120 0 0 0.000000</pose>
+        <pose>44.0000 100.5000 0.0120 0 0 0.000000</pose>
         <cast_shadows>false</cast_shadows>
         <geometry><box><size>68.0000 0.0800 0.0040</size></box></geometry>
         <material>
@@ -65,7 +65,7 @@
         </material>
       </visual>
       <visual name="stadium_field_line_south">
-        <pose>-44.0000 -4.5000 0.0120 0 0 0.000000</pose>
+        <pose>44.0000 -4.5000 0.0120 0 0 0.000000</pose>
         <cast_shadows>false</cast_shadows>
         <geometry><box><size>68.0000 0.0800 0.0040</size></box></geometry>
         <material>
@@ -75,7 +75,7 @@
         </material>
       </visual>
       <visual name="stadium_field_line_halfway">
-        <pose>-44.0000 48.0000 0.0120 0 0 0.000000</pose>
+        <pose>44.0000 48.0000 0.0120 0 0 0.000000</pose>
         <cast_shadows>false</cast_shadows>
         <geometry><box><size>68.0000 0.0800 0.0040</size></box></geometry>
         <material>
@@ -85,7 +85,7 @@
         </material>
       </visual>
       <visual name="stadium_field_line_circle_0">
-        <pose>-34.9283 49.1943 0.0120 0 0 1.701696</pose>
+        <pose>53.0717 49.1943 0.0120 0 0 1.701696</pose>
         <cast_shadows>false</cast_shadows>
         <geometry><box><size>2.4603 0.0800 0.0040</size></box></geometry>
         <material>
@@ -95,7 +95,7 @@
         </material>
       </visual>
       <visual name="stadium_field_line_circle_1">
-        <pose>-35.5465 51.5016 0.0120 0 0 1.963495</pose>
+        <pose>52.4535 51.5016 0.0120 0 0 1.963495</pose>
         <cast_shadows>false</cast_shadows>
         <geometry><box><size>2.4603 0.0800 0.0040</size></box></geometry>
         <material>
@@ -105,7 +105,7 @@
         </material>
       </visual>
       <visual name="stadium_field_line_circle_2">
-        <pose>-36.7408 53.5702 0.0120 0 0 2.225295</pose>
+        <pose>51.2592 53.5702 0.0120 0 0 2.225295</pose>
         <cast_shadows>false</cast_shadows>
         <geometry><box><size>2.4603 0.0800 0.0040</size></box></geometry>
         <material>
@@ -115,7 +115,7 @@
         </material>
       </visual>
       <visual name="stadium_field_line_circle_3">
-        <pose>-38.4298 55.2592 0.0120 0 0 2.487094</pose>
+        <pose>49.5702 55.2592 0.0120 0 0 2.487094</pose>
         <cast_shadows>false</cast_shadows>
         <geometry><box><size>2.4603 0.0800 0.0040</size></box></geometry>
         <material>
@@ -125,7 +125,7 @@
         </material>
       </visual>
       <visual name="stadium_field_line_circle_4">
-        <pose>-40.4984 56.4535 0.0120 0 0 2.748894</pose>
+        <pose>47.5016 56.4535 0.0120 0 0 2.748894</pose>
         <cast_shadows>false</cast_shadows>
         <geometry><box><size>2.4603 0.0800 0.0040</size></box></geometry>
         <material>
@@ -135,7 +135,7 @@
         </material>
       </visual>
       <visual name="stadium_field_line_circle_5">
-        <pose>-42.8057 57.0717 0.0120 0 0 3.010693</pose>
+        <pose>45.1943 57.0717 0.0120 0 0 3.010693</pose>
         <cast_shadows>false</cast_shadows>
         <geometry><box><size>2.4603 0.0800 0.0040</size></box></geometry>
         <material>
@@ -145,7 +145,7 @@
         </material>
       </visual>
       <visual name="stadium_field_line_circle_6">
-        <pose>-45.1943 57.0717 0.0120 0 0 3.272492</pose>
+        <pose>42.8057 57.0717 0.0120 0 0 3.272492</pose>
         <cast_shadows>false</cast_shadows>
         <geometry><box><size>2.4603 0.0800 0.0040</size></box></geometry>
         <material>
@@ -155,7 +155,7 @@
         </material>
       </visual>
       <visual name="stadium_field_line_circle_7">
-        <pose>-47.5016 56.4535 0.0120 0 0 3.534292</pose>
+        <pose>40.4984 56.4535 0.0120 0 0 3.534292</pose>
         <cast_shadows>false</cast_shadows>
         <geometry><box><size>2.4603 0.0800 0.0040</size></box></geometry>
         <material>
@@ -165,7 +165,7 @@
         </material>
       </visual>
       <visual name="stadium_field_line_circle_8">
-        <pose>-49.5702 55.2592 0.0120 0 0 3.796091</pose>
+        <pose>38.4298 55.2592 0.0120 0 0 3.796091</pose>
         <cast_shadows>false</cast_shadows>
         <geometry><box><size>2.4603 0.0800 0.0040</size></box></geometry>
         <material>
@@ -175,7 +175,7 @@
         </material>
       </visual>
       <visual name="stadium_field_line_circle_9">
-        <pose>-51.2592 53.5702 0.0120 0 0 4.057891</pose>
+        <pose>36.7408 53.5702 0.0120 0 0 4.057891</pose>
         <cast_shadows>false</cast_shadows>
         <geometry><box><size>2.4603 0.0800 0.0040</size></box></geometry>
         <material>
@@ -185,7 +185,7 @@
         </material>
       </visual>
       <visual name="stadium_field_line_circle_10">
-        <pose>-52.4535 51.5016 0.0120 0 0 4.319690</pose>
+        <pose>35.5465 51.5016 0.0120 0 0 4.319690</pose>
         <cast_shadows>false</cast_shadows>
         <geometry><box><size>2.4603 0.0800 0.0040</size></box></geometry>
         <material>
@@ -195,7 +195,7 @@
         </material>
       </visual>
       <visual name="stadium_field_line_circle_11">
-        <pose>-53.0717 49.1943 0.0120 0 0 4.581489</pose>
+        <pose>34.9283 49.1943 0.0120 0 0 4.581489</pose>
         <cast_shadows>false</cast_shadows>
         <geometry><box><size>2.4603 0.0800 0.0040</size></box></geometry>
         <material>
@@ -205,7 +205,7 @@
         </material>
       </visual>
       <visual name="stadium_field_line_circle_12">
-        <pose>-53.0717 46.8057 0.0120 0 0 4.843289</pose>
+        <pose>34.9283 46.8057 0.0120 0 0 4.843289</pose>
         <cast_shadows>false</cast_shadows>
         <geometry><box><size>2.4603 0.0800 0.0040</size></box></geometry>
         <material>
@@ -215,7 +215,7 @@
         </material>
       </visual>
       <visual name="stadium_field_line_circle_13">
-        <pose>-52.4535 44.4984 0.0120 0 0 5.105088</pose>
+        <pose>35.5465 44.4984 0.0120 0 0 5.105088</pose>
         <cast_shadows>false</cast_shadows>
         <geometry><box><size>2.4603 0.0800 0.0040</size></box></geometry>
         <material>
@@ -225,7 +225,7 @@
         </material>
       </visual>
       <visual name="stadium_field_line_circle_14">
-        <pose>-51.2592 42.4298 0.0120 0 0 5.366887</pose>
+        <pose>36.7408 42.4298 0.0120 0 0 5.366887</pose>
         <cast_shadows>false</cast_shadows>
         <geometry><box><size>2.4603 0.0800 0.0040</size></box></geometry>
         <material>
@@ -235,7 +235,7 @@
         </material>
       </visual>
       <visual name="stadium_field_line_circle_15">
-        <pose>-49.5702 40.7408 0.0120 0 0 5.628687</pose>
+        <pose>38.4298 40.7408 0.0120 0 0 5.628687</pose>
         <cast_shadows>false</cast_shadows>
         <geometry><box><size>2.4603 0.0800 0.0040</size></box></geometry>
         <material>
@@ -245,7 +245,7 @@
         </material>
       </visual>
       <visual name="stadium_field_line_circle_16">
-        <pose>-47.5016 39.5465 0.0120 0 0 5.890486</pose>
+        <pose>40.4984 39.5465 0.0120 0 0 5.890486</pose>
         <cast_shadows>false</cast_shadows>
         <geometry><box><size>2.4603 0.0800 0.0040</size></box></geometry>
         <material>
@@ -255,7 +255,7 @@
         </material>
       </visual>
       <visual name="stadium_field_line_circle_17">
-        <pose>-45.1943 38.9283 0.0120 0 0 6.152286</pose>
+        <pose>42.8057 38.9283 0.0120 0 0 6.152286</pose>
         <cast_shadows>false</cast_shadows>
         <geometry><box><size>2.4603 0.0800 0.0040</size></box></geometry>
         <material>
@@ -265,7 +265,7 @@
         </material>
       </visual>
       <visual name="stadium_field_line_circle_18">
-        <pose>-42.8057 38.9283 0.0120 0 0 6.414085</pose>
+        <pose>45.1943 38.9283 0.0120 0 0 6.414085</pose>
         <cast_shadows>false</cast_shadows>
         <geometry><box><size>2.4603 0.0800 0.0040</size></box></geometry>
         <material>
@@ -275,7 +275,7 @@
         </material>
       </visual>
       <visual name="stadium_field_line_circle_19">
-        <pose>-40.4984 39.5465 0.0120 0 0 6.675884</pose>
+        <pose>47.5016 39.5465 0.0120 0 0 6.675884</pose>
         <cast_shadows>false</cast_shadows>
         <geometry><box><size>2.4603 0.0800 0.0040</size></box></geometry>
         <material>
@@ -285,7 +285,7 @@
         </material>
       </visual>
       <visual name="stadium_field_line_circle_20">
-        <pose>-38.4298 40.7408 0.0120 0 0 6.937684</pose>
+        <pose>49.5702 40.7408 0.0120 0 0 6.937684</pose>
         <cast_shadows>false</cast_shadows>
         <geometry><box><size>2.4603 0.0800 0.0040</size></box></geometry>
         <material>
@@ -295,7 +295,7 @@
         </material>
       </visual>
       <visual name="stadium_field_line_circle_21">
-        <pose>-36.7408 42.4298 0.0120 0 0 7.199483</pose>
+        <pose>51.2592 42.4298 0.0120 0 0 7.199483</pose>
         <cast_shadows>false</cast_shadows>
         <geometry><box><size>2.4603 0.0800 0.0040</size></box></geometry>
         <material>
@@ -305,7 +305,7 @@
         </material>
       </visual>
       <visual name="stadium_field_line_circle_22">
-        <pose>-35.5465 44.4984 0.0120 0 0 7.461283</pose>
+        <pose>52.4535 44.4984 0.0120 0 0 7.461283</pose>
         <cast_shadows>false</cast_shadows>
         <geometry><box><size>2.4603 0.0800 0.0040</size></box></geometry>
         <material>
@@ -315,7 +315,7 @@
         </material>
       </visual>
       <visual name="stadium_field_line_circle_23">
-        <pose>-34.9283 46.8057 0.0120 0 0 7.723082</pose>
+        <pose>53.0717 46.8057 0.0120 0 0 7.723082</pose>
         <cast_shadows>false</cast_shadows>
         <geometry><box><size>2.4603 0.0800 0.0040</size></box></geometry>
         <material>
@@ -325,7 +325,7 @@
         </material>
       </visual>
       <visual name="basketball_court_line_east">
-        <pose>-30.0000 113.0000 0.0120 0 0 0.000000</pose>
+        <pose>58.0000 113.0000 0.0120 0 0 0.000000</pose>
         <cast_shadows>false</cast_shadows>
         <geometry><box><size>0.0800 15.0000 0.0040</size></box></geometry>
         <material>
@@ -335,7 +335,7 @@
         </material>
       </visual>
       <visual name="basketball_court_line_west">
-        <pose>-58.0000 113.0000 0.0120 0 0 0.000000</pose>
+        <pose>30.0000 113.0000 0.0120 0 0 0.000000</pose>
         <cast_shadows>false</cast_shadows>
         <geometry><box><size>0.0800 15.0000 0.0040</size></box></geometry>
         <material>
@@ -345,7 +345,7 @@
         </material>
       </visual>
       <visual name="basketball_court_line_north">
-        <pose>-44.0000 120.5000 0.0120 0 0 0.000000</pose>
+        <pose>44.0000 120.5000 0.0120 0 0 0.000000</pose>
         <cast_shadows>false</cast_shadows>
         <geometry><box><size>28.0000 0.0800 0.0040</size></box></geometry>
         <material>
@@ -355,7 +355,7 @@
         </material>
       </visual>
       <visual name="basketball_court_line_south">
-        <pose>-44.0000 105.5000 0.0120 0 0 0.000000</pose>
+        <pose>44.0000 105.5000 0.0120 0 0 0.000000</pose>
         <cast_shadows>false</cast_shadows>
         <geometry><box><size>28.0000 0.0800 0.0040</size></box></geometry>
         <material>
@@ -365,7 +365,7 @@
         </material>
       </visual>
       <visual name="basketball_court_line_halfway">
-        <pose>-44.0000 113.0000 0.0120 0 0 0.000000</pose>
+        <pose>44.0000 113.0000 0.0120 0 0 0.000000</pose>
         <cast_shadows>false</cast_shadows>
         <geometry><box><size>0.0800 15.0000 0.0040</size></box></geometry>
         <material>
@@ -375,7 +375,7 @@
         </material>
       </visual>
       <visual name="basketball_court_line_circle_0">
-        <pose>-42.2346 113.3512 0.0120 0 0 1.767146</pose>
+        <pose>45.7654 113.3512 0.0120 0 0 1.767146</pose>
         <cast_shadows>false</cast_shadows>
         <geometry><box><size>0.7234 0.0800 0.0040</size></box></geometry>
         <material>
@@ -385,7 +385,7 @@
         </material>
       </visual>
       <visual name="basketball_court_line_circle_1">
-        <pose>-42.5034 114.0000 0.0120 0 0 2.159845</pose>
+        <pose>45.4966 114.0000 0.0120 0 0 2.159845</pose>
         <cast_shadows>false</cast_shadows>
         <geometry><box><size>0.7234 0.0800 0.0040</size></box></geometry>
         <material>
@@ -395,7 +395,7 @@
         </material>
       </visual>
       <visual name="basketball_court_line_circle_2">
-        <pose>-43.0000 114.4966 0.0120 0 0 2.552544</pose>
+        <pose>45.0000 114.4966 0.0120 0 0 2.552544</pose>
         <cast_shadows>false</cast_shadows>
         <geometry><box><size>0.7234 0.0800 0.0040</size></box></geometry>
         <material>
@@ -405,7 +405,7 @@
         </material>
       </visual>
       <visual name="basketball_court_line_circle_3">
-        <pose>-43.6488 114.7654 0.0120 0 0 2.945243</pose>
+        <pose>44.3512 114.7654 0.0120 0 0 2.945243</pose>
         <cast_shadows>false</cast_shadows>
         <geometry><box><size>0.7234 0.0800 0.0040</size></box></geometry>
         <material>
@@ -415,7 +415,7 @@
         </material>
       </visual>
       <visual name="basketball_court_line_circle_4">
-        <pose>-44.3512 114.7654 0.0120 0 0 3.337942</pose>
+        <pose>43.6488 114.7654 0.0120 0 0 3.337942</pose>
         <cast_shadows>false</cast_shadows>
         <geometry><box><size>0.7234 0.0800 0.0040</size></box></geometry>
         <material>
@@ -425,7 +425,7 @@
         </material>
       </visual>
       <visual name="basketball_court_line_circle_5">
-        <pose>-45.0000 114.4966 0.0120 0 0 3.730641</pose>
+        <pose>43.0000 114.4966 0.0120 0 0 3.730641</pose>
         <cast_shadows>false</cast_shadows>
         <geometry><box><size>0.7234 0.0800 0.0040</size></box></geometry>
         <material>
@@ -435,7 +435,7 @@
         </material>
       </visual>
       <visual name="basketball_court_line_circle_6">
-        <pose>-45.4966 114.0000 0.0120 0 0 4.123340</pose>
+        <pose>42.5034 114.0000 0.0120 0 0 4.123340</pose>
         <cast_shadows>false</cast_shadows>
         <geometry><box><size>0.7234 0.0800 0.0040</size></box></geometry>
         <material>
@@ -445,7 +445,7 @@
         </material>
       </visual>
       <visual name="basketball_court_line_circle_7">
-        <pose>-45.7654 113.3512 0.0120 0 0 4.516039</pose>
+        <pose>42.2346 113.3512 0.0120 0 0 4.516039</pose>
         <cast_shadows>false</cast_shadows>
         <geometry><box><size>0.7234 0.0800 0.0040</size></box></geometry>
         <material>
@@ -455,7 +455,7 @@
         </material>
       </visual>
       <visual name="basketball_court_line_circle_8">
-        <pose>-45.7654 112.6488 0.0120 0 0 4.908739</pose>
+        <pose>42.2346 112.6488 0.0120 0 0 4.908739</pose>
         <cast_shadows>false</cast_shadows>
         <geometry><box><size>0.7234 0.0800 0.0040</size></box></geometry>
         <material>
@@ -465,7 +465,7 @@
         </material>
       </visual>
       <visual name="basketball_court_line_circle_9">
-        <pose>-45.4966 112.0000 0.0120 0 0 5.301438</pose>
+        <pose>42.5034 112.0000 0.0120 0 0 5.301438</pose>
         <cast_shadows>false</cast_shadows>
         <geometry><box><size>0.7234 0.0800 0.0040</size></box></geometry>
         <material>
@@ -475,7 +475,7 @@
         </material>
       </visual>
       <visual name="basketball_court_line_circle_10">
-        <pose>-45.0000 111.5034 0.0120 0 0 5.694137</pose>
+        <pose>43.0000 111.5034 0.0120 0 0 5.694137</pose>
         <cast_shadows>false</cast_shadows>
         <geometry><box><size>0.7234 0.0800 0.0040</size></box></geometry>
         <material>
@@ -485,7 +485,7 @@
         </material>
       </visual>
       <visual name="basketball_court_line_circle_11">
-        <pose>-44.3512 111.2346 0.0120 0 0 6.086836</pose>
+        <pose>43.6488 111.2346 0.0120 0 0 6.086836</pose>
         <cast_shadows>false</cast_shadows>
         <geometry><box><size>0.7234 0.0800 0.0040</size></box></geometry>
         <material>
@@ -495,7 +495,7 @@
         </material>
       </visual>
       <visual name="basketball_court_line_circle_12">
-        <pose>-43.6488 111.2346 0.0120 0 0 6.479535</pose>
+        <pose>44.3512 111.2346 0.0120 0 0 6.479535</pose>
         <cast_shadows>false</cast_shadows>
         <geometry><box><size>0.7234 0.0800 0.0040</size></box></geometry>
         <material>
@@ -505,7 +505,7 @@
         </material>
       </visual>
       <visual name="basketball_court_line_circle_13">
-        <pose>-43.0000 111.5034 0.0120 0 0 6.872234</pose>
+        <pose>45.0000 111.5034 0.0120 0 0 6.872234</pose>
         <cast_shadows>false</cast_shadows>
         <geometry><box><size>0.7234 0.0800 0.0040</size></box></geometry>
         <material>
@@ -515,7 +515,7 @@
         </material>
       </visual>
       <visual name="basketball_court_line_circle_14">
-        <pose>-42.5034 112.0000 0.0120 0 0 7.264933</pose>
+        <pose>45.4966 112.0000 0.0120 0 0 7.264933</pose>
         <cast_shadows>false</cast_shadows>
         <geometry><box><size>0.7234 0.0800 0.0040</size></box></geometry>
         <material>
@@ -525,7 +525,7 @@
         </material>
       </visual>
       <visual name="basketball_court_line_circle_15">
-        <pose>-42.2346 112.6488 0.0120 0 0 7.657632</pose>
+        <pose>45.7654 112.6488 0.0120 0 0 7.657632</pose>
         <cast_shadows>false</cast_shadows>
         <geometry><box><size>0.7234 0.0800 0.0040</size></box></geometry>
         <material>
@@ -535,7 +535,7 @@
         </material>
       </visual>
       <visual name="jokgu_court_line_east">
-        <pose>-39.0000 -18.0000 0.0120 0 0 0.000000</pose>
+        <pose>49.0000 -18.0000 0.0120 0 0 0.000000</pose>
         <cast_shadows>false</cast_shadows>
         <geometry><box><size>0.0800 20.0000 0.0040</size></box></geometry>
         <material>
@@ -545,7 +545,7 @@
         </material>
       </visual>
       <visual name="jokgu_court_line_west">
-        <pose>-49.0000 -18.0000 0.0120 0 0 0.000000</pose>
+        <pose>39.0000 -18.0000 0.0120 0 0 0.000000</pose>
         <cast_shadows>false</cast_shadows>
         <geometry><box><size>0.0800 20.0000 0.0040</size></box></geometry>
         <material>
@@ -555,7 +555,7 @@
         </material>
       </visual>
       <visual name="jokgu_court_line_north">
-        <pose>-44.0000 -8.0000 0.0120 0 0 0.000000</pose>
+        <pose>44.0000 -8.0000 0.0120 0 0 0.000000</pose>
         <cast_shadows>false</cast_shadows>
         <geometry><box><size>10.0000 0.0800 0.0040</size></box></geometry>
         <material>
@@ -565,7 +565,7 @@
         </material>
       </visual>
       <visual name="jokgu_court_line_south">
-        <pose>-44.0000 -28.0000 0.0120 0 0 0.000000</pose>
+        <pose>44.0000 -28.0000 0.0120 0 0 0.000000</pose>
         <cast_shadows>false</cast_shadows>
         <geometry><box><size>10.0000 0.0800 0.0040</size></box></geometry>
         <material>
@@ -575,7 +575,7 @@
         </material>
       </visual>
       <visual name="jokgu_court_line_halfway">
-        <pose>-44.0000 -18.0000 0.0120 0 0 0.000000</pose>
+        <pose>44.0000 -18.0000 0.0120 0 0 0.000000</pose>
         <cast_shadows>false</cast_shadows>
         <geometry><box><size>10.0000 0.0800 0.0040</size></box></geometry>
         <material>
