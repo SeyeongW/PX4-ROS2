@@ -26,6 +26,7 @@ setup(
         'console_scripts': [
             'mpc_landing_node = mpc_landing.mpc_landing_node:main',
             'naive_flight_node = mpc_landing.naive_flight_node:main',
+            'aruco_landing_node = mpc_landing.aruco_landing_node:main',
             'approve = mpc_landing.approve:approve',
             'abort = mpc_landing.approve:abort',
         ],
