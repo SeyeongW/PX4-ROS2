@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+# One command to bring up the real-flight stack on the Jetson: MAVROS on the
+# PX4 USB link, then the perception + mission launch. Everything the operator
+# needs is started here; the one thing left to a second terminal is the
+# approval, because arming is a human decision.
+#
+#   ./run_px4                 ArUco precision landing  (aruco_landing.launch.py)
+#   ./run_px4 mpc             MPC precision landing     (fixed_marker_landing)
+#   ./run_px4 naive           just MAVROS + the naive takeoff/land (no camera)
+#
+#   FCU_URL=/dev/ttyACM0:57600 ./run_px4      override the flight-controller link
+#
+# Approve / abort from another terminal (under launch, ENTER does not reach the
+# node — see the launch docstrings):
+#
+#   ros2 run mpc_landing approve aruco_landing_node
+#   ros2 run mpc_landing abort   aruco_landing_node
+#
+# Ctrl-C stops everything it started.
+set -Eeuo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MODE="${1:-aruco}"
+
+case "$MODE" in
+  aruco) MISSION_LAUNCH="aruco_landing.launch.py";        NODE="aruco_landing_node" ;;
+  mpc)   MISSION_LAUNCH="fixed_marker_landing.launch.py"; NODE="mpc_landing_node" ;;
+  naive) MISSION_LAUNCH="";                               NODE="naive_flight_node" ;;
+  -h|--help|help)
+    sed -n '2,19p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    exit 0 ;;
+  *) echo "unknown mode '$MODE' (try: aruco | mpc | naive)" >&2; exit 2 ;;
+esac
+
+# The flight-controller link. ttyACM is USB CDC (baud is ignored, but MAVROS
+# still wants a number); change the device for a TELEM UART, e.g.
+# FCU_URL=/dev/ttyTHS1:921600.
+FCU_URL="${FCU_URL:-/dev/ttyACM0:57600}"
+# PX4 uses OFFBOARD, so the PX4 MAVROS config. ArduPilot would be apm.launch.
+MAVROS_LAUNCH="${MAVROS_LAUNCH:-px4.launch}"
+
+# The environment is normally already set by .bashrc; source it ourselves only
+# if it is not, so this also works from cron/systemd (see flight_env.sh).
+if ! command -v ros2 >/dev/null 2>&1; then
+  # shellcheck disable=SC1091
+  source "$SCRIPT_DIR/flight_env.sh"
+fi
+
+PIDS=()
+cleanup() {
+  trap - EXIT INT TERM
+  echo
+  echo "run_px4: stopping the stack..."
+  for pid in "${PIDS[@]:-}"; do kill "$pid" 2>/dev/null || true; done
+  # Sweep the nodes ros2 launch/run spawned in their own process groups, so a
+  # detached child cannot survive and break the next run.
+  for pat in mavros_node aruco_landing_node mpc_landing_node naive_flight_node \
+             aruco_pose_node gst_camera_node siyi_gimbal_node landing_tf_node; do
+    pkill -TERM -f "$pat" 2>/dev/null || true
+  done
+  sleep 1
+  for pat in mavros_node aruco_pose_node gst_camera_node siyi_gimbal_node \
+             landing_tf_node; do
+    pkill -KILL -f "$pat" 2>/dev/null || true
+  done
+  wait 2>/dev/null || true
+}
+trap cleanup EXIT INT TERM
+
+if [[ ! -e "${FCU_URL%%:*}" ]]; then
+  echo "run_px4: WARNING — ${FCU_URL%%:*} does not exist. Is the FCU plugged in?" >&2
+  echo "         (ls /dev/ttyACM* ; override with FCU_URL=...)" >&2
+fi
+
+# --- MAVROS -----------------------------------------------------------------
+echo "run_px4: starting MAVROS on $FCU_URL ($MAVROS_LAUNCH)"
+ros2 launch mavros "$MAVROS_LAUNCH" fcu_url:="$FCU_URL" \
+  >/tmp/run_px4_mavros.log 2>&1 &
+PIDS+=($!)
+
+# Wait for the link before starting the mission: the mission node's preflight
+# blocks on /mavros/state anyway, but waiting here gives one clear message
+# instead of a wall of "no FCU link" warnings.
+echo -n "run_px4: waiting for /mavros/state (link to the FCU)"
+linked=0
+for _ in $(seq 1 40); do
+  if timeout 2 ros2 topic echo /mavros/state --once >/dev/null 2>&1; then
+    linked=1; echo " — up"; break
+  fi
+  echo -n "."; sleep 1
+  if ! kill -0 "${PIDS[-1]}" 2>/dev/null; then
+    echo; echo "run_px4: MAVROS exited — see /tmp/run_px4_mavros.log" >&2; exit 1
+  fi
+done
+if [[ "$linked" -eq 0 ]]; then
+  echo; echo "run_px4: no /mavros/state after 40 s — check the cable, the" >&2
+  echo "         FCU_URL device, and /tmp/run_px4_mavros.log" >&2
+fi
+
+echo
+echo "run_px4: approve from another terminal —"
+echo "    ros2 run mpc_landing approve $NODE"
+echo "    ros2 run mpc_landing abort   $NODE"
+echo
+
+# --- perception + mission ---------------------------------------------------
+# naive has no camera; run the node directly. Others use the full-stack launch.
+if [[ -z "$MISSION_LAUNCH" ]]; then
+  echo "run_px4: starting $NODE (naive takeoff/land, no camera)"
+  exec ros2 run mpc_landing "$NODE"
+else
+  echo "run_px4: starting $MISSION_LAUNCH (camera + detector + gimbal + mission)"
+  exec ros2 launch mpc_landing "$MISSION_LAUNCH"
+fi
