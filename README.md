@@ -29,27 +29,33 @@ ROS 2 / PX4 연구 스택이다.
 
 ### 최신 Gazebo 검증
 
-최신 전체 실행은 `20260811T171441Z.rq1hDz`이다.
+최신 전체 실행은 clean `b7d4844`에서 수행한
+`20260811T231405Z.OariIF`이다.
 
 | 지표 | 결과 |
 |---|---:|
 | 상태 전이 | `TAKEOFF → MISSION → HOVER → RETURN → PRECLAND → DONE` |
-| A*/B-spline 승인 | 7/7 |
+| A*/B-spline 승인 | 5/5 |
 | planner failure / ABORT | 0 / 0 |
 | PX4 failsafe / ULog dropout | 0 / 0 |
 | 최대 수평속도 | 3.164 m/s |
-| 실제 장애물 표면 최소거리 | 3.04 m |
-| 각 축으로 2 m 팽창한 AABB 바깥 최소여유 | 0.271 m |
-| PX4 `landed` 순간 중심오차 / 상대 XY 속도 | 0.053 m / 0.008 m/s |
+| RETURN 재계획 경계 최대 body-rate | 16.338 deg/s (기존 112.627 deg/s) |
+| 전체 최대 body-rate | 81.206 deg/s (`PRECLAND`) |
+| touchdown 3D 가속도 | 9.828 m/s² (기존 29.224 m/s²) |
+| 실제 장애물 표면 최소거리 | 3.782 m |
+| 각 축으로 2 m 팽창한 AABB 바깥 연속 최소여유 | 1.500 m (기존 0.271 m) |
+| PX4 `landed` 순간 중심오차 / 상대 XY 속도 | 0.113 m / 0.014 m/s |
 | PX4 착륙판정 / 자동 disarm | 성공 / 성공 |
-| 전체 Python 회귀시험 | 110 passed |
+| quality v3 | `WARN (accel_spike)` |
+| 전체 Python 회귀시험 | 114 passed |
 
 장애물 거리와 착륙 오차는 원시 ULog와 트레일러 odometry를 별도로
-후처리한 값이다. CSV의 `quality=PASS`는 전체 안전 인증이 아니다. 이 run에는
-touchdown 3D 가속도 29.2 m/s²(`accel_spike_bins=1`)와 RETURN 재계획 경계의
-body-rate 최대 112.6 deg/s가 남아 있다. 또한 manifest 기준 `b812caf`의 dirty
-tree에서 실행되어 `paper_reproducible=0`이며, 현재 clean commit의 독립
-재현시험으로 간주하지 않는다.
+후처리한 값이다. quality v3는 실행 실패, failsafe, sample gap, speed jump,
+ULog dropout, planner failure, ABORT와 장애물 침범을 `FAIL`로 판정한다.
+이번 실행에는 실패 조건이 없었지만 3D 가속도가 엄격한 5 m/s² 경고 기준을
+넘어 `WARN (accel_spike)`이다. 이 판정은 실기 안전 인증을 의미하지 않으며,
+`paper_reproducible=1`도 이 저장소의 clean 상태만 뜻하고 저장소 밖 PX4 dirty
+patch까지 재현 가능하다는 의미는 아니다.
 
 ## 빠른 실행 — 현재 개발 PC
 
@@ -157,7 +163,7 @@ flowchart LR
 
 A*는 YAML 장애물을 기준으로 우회 topology를 찾는다. 현재 설정은 1 m 격자,
 장애물 표면 기준 2 m nominal clearance, B-spline 형상 최적화용 추가
-0.5 m margin이다. 장애물은 높이 10 m이므로 5 m 순항고도에서 위로 넘어가지
+1.0 m margin이다. 장애물은 높이 10 m이므로 5 m 순항고도에서 위로 넘어가지
 않는다.
 
 CJU 미션의 B-spline은 A* 경로의 모서리를 부드럽게 보강하는
@@ -192,7 +198,8 @@ Goto 메시지에는 위치만 유효하게 넣는다. 활성 CJU B-spline이나
 | `MPC_ACC_HOR` | 3.0 m/s² | 수평 가속도 |
 | `MPC_JERK_AUTO` | 4.0 m/s³ | 자동비행 jerk |
 | `MPC_LAND_SPEED` | 0.7 m/s | 일반 착륙 하강속도 |
-| `MPC_LAND_CRWL` | 0.3 m/s | 유효 HAGL 하의 지면 근처 crawl |
+| `MPC_LAND_CRWL` | 0.1 m/s | 유효 HAGL 하의 지면 근처 crawl |
+| `LNDMC_Z_VEL_MAX` | 0.08 m/s | PX4 착륙판정 수직속도 임계값 |
 | `COM_DISARM_LAND` | 2.0 s | PX4 착륙 후 자동 disarm |
 
 ### 이동 트레일러 재계획
@@ -284,7 +291,7 @@ ${XDG_STATE_HOME:-$HOME/.local/state}/px4-ros2-wang/cju/<run-id>/
 | `flight.ulg` | PX4 ULog |
 | `trailer_odometry.jsonl` | 트레일러 pose/velocity |
 | `flight_1hz.csv` | 논문/그래프용 1 Hz 데이터 |
-| `flight_summary.csv` | 자동 요약과 제한된 quality 판정 |
+| `flight_summary.csv` | 자동 요약과 v3 quality gate 판정 |
 
 `DONE` 뒤 `Ctrl-C`는 정상 정리 절차다. 이때 launcher 종료코드가 130일 수
 있지만, 비행 성공 여부는 `DONE`, PX4 `landed`, auto-disarm과 artifact를
@@ -306,7 +313,7 @@ python3 simulation/gazebo/tools/cju_mission_ui.py --check
 bash -n simulation/gazebo/run_gimbal.sh simulation/gazebo/run_px4_map.sh
 ~~~
 
-현재 전체 Python 결과는 `110 passed`다.
+현재 전체 Python 결과는 `114 passed`다.
 
 ## 저장소 구조
 
@@ -356,20 +363,12 @@ props-on 비행하면 안 된다.
 이륙 후 모든 airborne state에 공통 적용되는 feedback-loss guard가 부족하다.
 현재는 상당 부분 PX4 내부 failsafe에 의존한다.
 
-### P1. 재계획 경계 동역학
+### P1. touchdown 접촉 충격
 
-최신 run에서 RETURN 재계획 경계 body rate 112.6 deg/s가 관측됐다.
-`RETURN_PLAN` hold와 Goto 재개 사이의 authority 전환이 관련됐을 가능성은
-있지만 원인은 아직 확정하지 않았다. 실기 전 연속 target swap 또는 PX4-native
-전환 방식으로 검증해야 한다.
-
-### P1. 여유와 quality gate
-
-SITL에서 각 축으로 2 m 팽창한 장애물 AABB는 침범하지 않았지만 실제 궤적의
-추가 여유는 최소 0.271 m뿐이다. GPS·지도·추종 오차를 포함한 실기 여유로는
-부족하다.
-또한 exporter의 `quality=PASS`는 접촉 accel spike, body rate, planner ABORT,
-장애물 clearance와 touchdown error를 FAIL 조건으로 사용하지 않는다.
+PX4 crawl을 0.1 m/s로 낮춰 touchdown 3D 가속도를 29.224 m/s²에서
+9.828 m/s²로 줄였지만, quality v3의 5 m/s² 경고 기준은 여전히 넘는다.
+실기체 랜딩기어와 갑판에서 허용 가능한 충격인지 HIL과 단계별 실험으로
+검증해야 한다.
 
 ## 2026-08-03 이후 변경 이력
 
@@ -385,6 +384,11 @@ SITL에서 각 축으로 2 m 팽창한 장애물 AABB는 침범하지 않았지�
   - live cue 3 m rolling RETURN 재계획
   - 정수 장애물 재배치, 하향 LiDAR/HAGL, live UI와 artifact exporter
   - 전체 Python 회귀시험 110개 통과
+- **2026-08-11 — `b7d4844`**
+  - rolling RETURN 재계획 중 exact-safe Goto를 유지해 PX4 smoother reset 제거
+  - 착륙 crawl 0.1 m/s와 B-spline 추가 margin 1.0 m 적용
+  - body-rate·접촉 충격·장애물 여유·planner/ABORT를 판정하는 quality v3 추가
+  - clean Gazebo 전체 미션과 PX4 자동 disarm, 전체 회귀시험 114개 통과
 
 ## 실기체 적용 전 최소 완료 조건
 
