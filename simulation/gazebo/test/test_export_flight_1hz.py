@@ -113,6 +113,43 @@ def test_descent_warning_distinguishes_command_and_actual_excess():
         "TAKEOFF", 1, 1.0, 2, 1.0, threshold) == (False, "")
 
 
+def test_aabb_residual_is_euclidean_outside_and_signed_inside():
+    obstacles = [{"center_m": [0.0, 0.0, 5.0],
+                  "size_m": [2.0, 2.0, 10.0]}]
+
+    outside, sample, obstacle = EXPORT._minimum_aabb_residual(
+        [[3.0, 3.0]], obstacles, 1.0)
+    inside, _, _ = EXPORT._minimum_aabb_residual(
+        [[0.5, 0.0]], obstacles, 0.0)
+    boundary, _, _ = EXPORT._minimum_aabb_residual(
+        [[2.0, 0.0]], obstacles, 1.0)
+
+    assert outside == pytest.approx(2.0 ** 0.5)
+    assert (sample, obstacle) == (0, 0)
+    assert inside == pytest.approx(-0.5)
+    assert boundary == pytest.approx(0.0)
+
+
+def test_quality_classification_is_fail_first_and_explains_reasons():
+    assert EXPORT.classify_quality([], []) == ("PASS", "")
+    assert EXPORT.classify_quality([], ["accel_spike"]) == (
+        "WARN", "accel_spike")
+    assert EXPORT.classify_quality(
+        ["mission_abort"], ["body_rate"]) == (
+            "FAIL", "mission_abort|body_rate")
+
+
+def test_planner_failure_counter_uses_explicit_log_message(tmp_path):
+    path = tmp_path / "mission.log"
+    path.write_text(
+        "global A*/B-spline replan failed: one\n"
+        "unrelated planner text\n"
+        "global A*/B-spline replan failed: two\n",
+        encoding="utf-8")
+
+    assert EXPORT._planner_failure_events(path) == 2
+
+
 def test_groundtruth_height_uses_one_world_frame():
     groundtruth = {
         "timestamp": np.array([1_000_000, 2_000_000]),
@@ -130,6 +167,7 @@ def test_launcher_runs_best_effort_postflight_export():
     assert 'tools/export_flight_1hz.py' in launcher
     assert 'flight_csv_1hz' in launcher
     assert 'flight_summary_csv' in launcher
+    assert "flight_csv_schema\\t%s\\n' 'cju_flight_1hz_v3'" in launcher
     assert 'map.yaml' in launcher
     assert 'coordinates_source' in launcher
     assert 'coordinates_sha256' in launcher

@@ -216,7 +216,7 @@ cleanup() {
     printf 'flight_csv_1hz\t%s\n' "$csv_export"
     printf 'flight_summary_csv\t%s\n' "$csv_export"
     if [[ "$csv_export" == "present" ]]; then
-      printf 'flight_csv_schema\t%s\n' 'cju_flight_1hz_v2'
+      printf 'flight_csv_schema\t%s\n' 'cju_flight_1hz_v3'
       printf 'flight_csv_rate_hz\t1\n'
       printf 'flight_csv_contract\t%s\n' \
         'one-second interval time-weighted means plus native-rate extrema'

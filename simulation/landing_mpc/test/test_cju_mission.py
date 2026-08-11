@@ -272,7 +272,7 @@ def test_cju_yaml_astar_avoids_configured_barriers_outbound_and_return():
     assert document['mission']['goal_m'] == [50, 50]
     assert 'takeoff_speed_m_s' not in document['mission']
     assert document['mission']['obstacle_clearance_m'] == 2
-    assert document['mission']['bspline_clearance_margin_m'] == 0.5
+    assert document['mission']['bspline_clearance_margin_m'] == 1.0
     assert document['mission']['bspline_control_spacing_m'] == 2.0
     assert document['mission']['bspline_sample_spacing_m'] == 0.1
     assert document['mission']['mpc_path_lookahead_m'] == 6.0
@@ -291,8 +291,8 @@ def test_cju_yaml_astar_avoids_configured_barriers_outbound_and_return():
     assert px4['MPC_ACC_HOR'] == 3.0
     assert px4['MPC_JERK_AUTO'] == 4.0
     assert px4['MPC_LAND_SPEED'] == 0.7
-    assert px4['MPC_LAND_CRWL'] == 0.3
-    assert px4['LNDMC_Z_VEL_MAX'] == 0.25
+    assert px4['MPC_LAND_CRWL'] == 0.1
+    assert px4['LNDMC_Z_VEL_MAX'] == 0.08
     assert px4['LNDMC_XY_VEL_MAX'] == 1.5
     assert px4['COM_DISARM_LAND'] == 2.0
     assert px4['PLD_BTOUT'] == 0.5
@@ -845,6 +845,52 @@ def test_planning_state_keeps_offboard_heartbeat_and_hold_setpoint():
     for _ in range(50):
         MissionManagerNode._tick(node)
     assert counts == {'state': 50, 'ocm': 50, 'send': 50}
+
+
+def test_rolling_return_plan_keeps_only_an_exact_safe_goto(monkeypatch):
+    safe = [True]
+    goto = []
+    holds = []
+    pending = SimpleNamespace(done=lambda: False)
+    state = SimpleNamespace(
+        k=0,
+        state='RETURN',
+        state_pub=SimpleNamespace(publish=lambda _: None),
+        _ocm=lambda: None,
+        _send=lambda target: holds.append(np.asarray(target).copy()),
+        _send_goto=lambda target: goto.append(np.asarray(target).copy()),
+        p_d=np.array([10.0, 2.0, 5.0]),
+        _last_safe_goto=np.array([15.0, 2.0, 5.0]),
+        _planning_goto=None,
+        _planner_pool=SimpleNamespace(submit=lambda *_: pending),
+        _plan_future=None,
+        _publish_planned_path=lambda _: None,
+        _status=SimpleNamespace(
+            nav_state=VehicleStatus.NAVIGATION_STATE_OFFBOARD),
+        _cue_fresh=lambda: True,
+        mission_map_yaml=str(MAP),
+        _now=lambda: 0.0,
+    )
+    state._set_state = lambda new, why='': setattr(state, 'state', new)
+    monkeypatch.setattr(
+        mission_module, '_mission_segment_is_free',
+        lambda *_: safe[0])
+
+    MissionManagerNode._start_global_plan(
+        state, np.array([20.0, 2.0, 0.0]), return_route=True)
+    assert state.state == 'RETURN_PLAN'
+    assert np.allclose(state._planning_goto, state._last_safe_goto)
+
+    MissionManagerNode._tick(state)
+    assert len(goto) == 1 and holds == []
+    assert np.allclose(goto[0], state._planning_goto)
+
+    safe[0] = False
+    state.p_d = np.array([10.2, 2.0, 5.0])
+    MissionManagerNode._tick(state)
+    assert len(goto) == 1 and len(holds) == 1
+    assert state._planning_goto is None
+    assert np.allclose(holds[0], state.p_d)
 
 
 def test_failed_return_plan_holds_in_abort_for_automatic_retry():

@@ -467,6 +467,8 @@ class MissionManagerNode(Node):
         self._launch_ground = None
         self._plan_start = None
         self._plan_goal = None
+        self._last_safe_goto = None
+        self._planning_goto = None
         self._return_plan_goal = None
         self._last_return_plan_t = None
         self.p_d = None
@@ -959,6 +961,13 @@ class MissionManagerNode(Node):
         """Start a map-goal or trailer A*/B-spline leg while holding."""
         if self._planner_pool is None or self.p_d is None:
             raise RuntimeError('global planner is unavailable')
+        rolling_return = return_route and (
+            self.state == 'RETURN'
+            or (self.state == 'RETURN_PLAN'
+                and self._planning_goto is not None))
+        self._planning_goto = (
+            self._last_safe_goto.copy()
+            if rolling_return and self._last_safe_goto is not None else None)
         start = self.p_d.copy()
         self._hold_pos = start.copy()
         goal = (None if goal_local_enu is None
@@ -1134,7 +1143,19 @@ class MissionManagerNode(Node):
 
         if self.state in ('MISSION_PLAN', 'RETURN_PLAN'):
             return_route = self.state == 'RETURN_PLAN'
-            self._send(self._hold_pos)
+            planning_goto = getattr(self, '_planning_goto', None)
+            if (return_route and planning_goto is not None
+                    and _mission_segment_is_free(
+                        self.mission_map_yaml, self.p_d, planning_goto)):
+                # Keep PX4's jerk-limited Goto smoother alive while the
+                # replacement route is computed. This target was accepted by
+                # the previous exact segment check and is checked again here.
+                self._send_goto(planning_goto)
+            else:
+                if planning_goto is not None:
+                    self._planning_goto = None
+                    self._hold_pos = self.p_d.copy()
+                self._send(self._hold_pos)
             now = self._now()
             if nav_state != VehicleStatus.NAVIGATION_STATE_OFFBOARD:
                 if (self._last_offboard_cmd is None
@@ -1220,6 +1241,7 @@ class MissionManagerNode(Node):
                 self._start_global_plan(goal, return_route=return_route)
                 return
             self._mission_progress_m = progress
+            self._last_safe_goto = np.asarray(safe_target, float).copy()
             self._send_goto(safe_target)
 
             at_end = (

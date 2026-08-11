@@ -83,8 +83,8 @@ px4_vehicle:
     MPC_ACC_HOR: 3.0
     MPC_JERK_AUTO: 4.0
     MPC_LAND_SPEED: 0.7
-    MPC_LAND_CRWL: 0.3
-    LNDMC_Z_VEL_MAX: 0.25
+    MPC_LAND_CRWL: 0.1
+    LNDMC_Z_VEL_MAX: 0.08
     LNDMC_XY_VEL_MAX: 1.5
     COM_DISARM_LAND: 2.0
     PLD_BTOUT: 0.5
@@ -174,7 +174,7 @@ mission:
   goal_m: [50, 50]
   planner_resolution_m: 1
   obstacle_clearance_m: 2
-  bspline_clearance_margin_m: 0.5
+  bspline_clearance_margin_m: 1.0
   bspline_control_spacing_m: 2.0
   bspline_sample_spacing_m: 0.1
   # Spatial carrot only; PX4 Goto owns time/speed. Runtime collision checks

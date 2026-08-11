@@ -24,9 +24,11 @@ import yaml
 from pyulog import ULog
 
 
-SCHEMA_VERSION = "cju_flight_1hz_v2"
+SCHEMA_VERSION = "cju_flight_1hz_v3"
 SPEED_STEP_LIMIT_M_S = 0.5
 ACCEL_SPIKE_LIMIT_M_S2 = 5.0
+BODY_RATE_WARN_DEG_S = 90.0
+OBSTACLE_RESERVE_WARN_M = 0.5
 DESCENT_WARN_MARGIN_M_S = 0.05
 _TRANSITION = re.compile(
     r"\[(\d+(?:\.\d+)?)\].*?\b([A-Z_]+) -> ([A-Z_]+)\b")
@@ -166,6 +168,38 @@ def _phase_events(path: Path):
     return events
 
 
+def _planner_failure_events(path: Path) -> int:
+    if not path.exists():
+        return 0
+    return path.read_text(
+        encoding="utf-8", errors="replace").count(
+            "global A*/B-spline replan failed:")
+
+
+def _minimum_aabb_residual(points, obstacles, inflation_m):
+    """Return signed XY distance to the closest inflated obstacle AABB."""
+    points = np.asarray(points, float)
+    centers = np.asarray([item["center_m"][:2] for item in obstacles], float)
+    half_sizes = 0.5 * np.asarray(
+        [item["size_m"][:2] for item in obstacles], float)
+    delta = (np.abs(points[:, None, :2] - centers[None, :, :])
+             - half_sizes[None, :, :] - float(inflation_m))
+    outside = np.linalg.norm(np.maximum(delta, 0.0), axis=2)
+    residual = np.where(np.all(delta <= 0.0, axis=2),
+                        np.max(delta, axis=2), outside)
+    sample_index, obstacle_index = np.unravel_index(
+        int(np.argmin(residual)), residual.shape)
+    return (float(residual[sample_index, obstacle_index]),
+            int(sample_index), int(obstacle_index))
+
+
+def classify_quality(fail_reasons, warn_reasons):
+    fail_reasons = list(fail_reasons)
+    warn_reasons = list(warn_reasons)
+    quality = "FAIL" if fail_reasons else "WARN" if warn_reasons else "PASS"
+    return quality, "|".join(fail_reasons + warn_reasons)
+
+
 def phase_interval(events, start: float, end: float):
     if not events or not np.isfinite(start) or not np.isfinite(end):
         return "UNKNOWN", 0.0, 0
@@ -259,7 +293,8 @@ def export_run(run_dir: Path) -> tuple[Path, Path]:
     document = yaml.safe_load(coordinate_path.read_text(encoding="utf-8"))
     spawn_pose = document["spawn"]["gazebo_spawn_pose_enu"]
     spawn_xy = np.array([float(spawn_pose["x"]), float(spawn_pose["y"])])
-    frame_name = document.get("mission", {}).get("coordinate_frame")
+    mission = document["mission"]
+    frame_name = mission.get("coordinate_frame")
     frame = document.get("frames", {}).get(frame_name, {})
     frame_origin = np.asarray(frame.get("origin_enu_m", [0.0, 0.0])[:2], float)
     heading = math.radians(float(frame.get("heading_deg_enu", 0.0)))
@@ -277,18 +312,22 @@ def export_run(run_dir: Path) -> tuple[Path, Path]:
     descent_warn = land_speed + DESCENT_WARN_MARGIN_M_S
 
     wanted = ["vehicle_local_position", "vehicle_local_position_groundtruth",
+              "vehicle_angular_velocity",
               "trajectory_setpoint", "vehicle_status", "vehicle_land_detected",
               "timesync_status"]
     ulog = ULog(str(ulog_path), message_name_filter_list=wanted)
     actual = _topic(ulog, "vehicle_local_position")
     groundtruth = _topic(ulog, "vehicle_local_position_groundtruth")
+    angular_velocity = _topic(ulog, "vehicle_angular_velocity")
     setpoint = _topic(ulog, "trajectory_setpoint")
     status = _topic(ulog, "vehicle_status")
     landed = _topic(ulog, "vehicle_land_detected")
-    if actual is None or groundtruth is None or status is None:
+    if (actual is None or groundtruth is None or angular_velocity is None
+            or status is None):
         raise RuntimeError(
             "ULog lacks vehicle_local_position, "
-            "vehicle_local_position_groundtruth, or vehicle_status")
+            "vehicle_local_position_groundtruth, vehicle_angular_velocity, "
+            "or vehicle_status")
 
     at = np.asarray(actual["timestamp"], float) * 1e-6
     ae, an, au = (np.asarray(actual["y"], float),
@@ -306,6 +345,10 @@ def export_run(run_dir: Path) -> tuple[Path, Path]:
     speed_step = np.abs(np.diff(speed_3d))
     speed_step[np.diff(at) > 0.1] = np.nan
     map_xy = (np.column_stack((ae, an)) + spawn_xy - frame_origin) @ rotation
+    body_rate_t = np.asarray(angular_velocity["timestamp"], float) * 1e-6
+    body_rate_deg_s = np.linalg.norm(np.column_stack([
+        angular_velocity[f"xyz[{axis}]"] for axis in range(3)]), axis=1
+    ) * 180.0 / math.pi
     gt_t, height_deck_groundtruth = _groundtruth_height(
         groundtruth, deck_world_z)
     height_deck_estimated = au - deck_local_z
@@ -358,7 +401,10 @@ def export_run(run_dir: Path) -> tuple[Path, Path]:
         track_t = track_xy = track_u = np.array([], dtype=float)
 
     clock = _clock_mapper(ulog)
-    events = _phase_events(run_dir / "gimbal_mission.log")
+    mission_log = run_dir / "gimbal_mission.log"
+    events = _phase_events(mission_log)
+    abort_events = sum(state == "ABORT" for _, state in events)
+    planner_failure_events = _planner_failure_events(mission_log)
     # Keep only complete one-second windows; extrapolating a partial first or
     # last bin would bias its mean while pretending it had full coverage.
     start = math.ceil(float(at[0]))
@@ -512,10 +558,63 @@ def export_run(run_dir: Path) -> tuple[Path, Path]:
                        else np.ones(status_t.shape, dtype=bool))
     failsafe_seen = int(bool(np.any(
         np.asarray(status["failsafe"])[status_analysis])))
+    body_rate_armed = ((body_rate_t >= arm_time)
+                       & (body_rate_t <= disarm_time
+                          if np.isfinite(disarm_time) else True)
+                       if np.isfinite(arm_time)
+                       else np.ones(body_rate_t.shape, dtype=bool))
+    body_rate_indices = np.flatnonzero(body_rate_armed)
+    max_body_rate_i = body_rate_indices[
+        np.nanargmax(body_rate_deg_s[body_rate_armed])]
+    clearance = float(mission["obstacle_clearance_m"])
+    armed_map_xy = map_xy[armed_indices_actual]
+    physical_distance, _, _ = _minimum_aabb_residual(
+        armed_map_xy, mission["obstacles"], 0.0)
+    clearance_residual, clearance_sample_i, clearance_obstacle_i = (
+        _minimum_aabb_residual(
+            armed_map_xy, mission["obstacles"], clearance))
+    clearance_actual_i = armed_indices_actual[clearance_sample_i]
+    obstacle_name = mission["obstacles"][clearance_obstacle_i]["name"]
+    actual_max_gap = float(np.nanmax(np.diff(at)))
+    speed_jump_bins = sum(int(row["speed_jump_flag"]) for row in rows)
+    accel_spike_bins = sum(int(row["accel_spike_flag"]) for row in rows)
+    descent_spike_bins = sum(int(row["descent_spike_flag"]) for row in rows)
+    ulog_dropouts = len(ulog.dropouts)
+    paper_reproducible = int(manifest.get("git_dirty") == "0")
+    result = manifest.get("result", "unknown")
+    fail_reasons = []
+    warn_reasons = []
+    if result != "done":
+        fail_reasons.append("result_not_done")
+    if failsafe_seen:
+        fail_reasons.append("failsafe")
+    if actual_max_gap > 0.1:
+        fail_reasons.append("actual_sample_gap")
+    if speed_jump_bins:
+        fail_reasons.append("speed_jump")
+    if ulog_dropouts:
+        fail_reasons.append("ulog_dropout")
+    if planner_failure_events:
+        fail_reasons.append("planner_failure")
+    if abort_events:
+        fail_reasons.append("mission_abort")
+    if clearance_residual <= 0.0:
+        fail_reasons.append("obstacle_clearance_violation")
+    if accel_spike_bins:
+        warn_reasons.append("accel_spike")
+    if body_rate_deg_s[max_body_rate_i] > BODY_RATE_WARN_DEG_S:
+        warn_reasons.append("body_rate")
+    if 0.0 < clearance_residual < OBSTACLE_RESERVE_WARN_M:
+        warn_reasons.append("low_obstacle_reserve")
+    if descent_spike_bins:
+        warn_reasons.append("descent_spike")
+    if not paper_reproducible:
+        warn_reasons.append("dirty_tree")
+    quality, quality_reasons = classify_quality(fail_reasons, warn_reasons)
     summary = {
         "schema_version": SCHEMA_VERSION,
         "run_id": run_id,
-        "result": manifest.get("result", "unknown"),
+        "result": result,
         "csv_rows": len(rows),
         "arm_time_sim_s": arm_time,
         "disarm_time_sim_s": disarm_time,
@@ -533,21 +632,34 @@ def export_run(run_dir: Path) -> tuple[Path, Path]:
         "max_descent_time_sim_s": at[max_down_i],
         "max_descent_phase": _at_phase(events, clock, at[max_down_i]),
         "max_commanded_descent_rate_m_s": max_sp_down,
-        "speed_jump_bins": sum(int(row["speed_jump_flag"]) for row in rows),
-        "accel_spike_bins": sum(int(row["accel_spike_flag"]) for row in rows),
-        "descent_spike_bins": sum(int(row["descent_spike_flag"]) for row in rows),
+        "speed_jump_bins": speed_jump_bins,
+        "accel_spike_bins": accel_spike_bins,
+        "descent_spike_bins": descent_spike_bins,
         "speed_step_limit_m_s": SPEED_STEP_LIMIT_M_S,
         "accel_spike_limit_m_s2": ACCEL_SPIKE_LIMIT_M_S2,
+        "max_body_rate_deg_s": body_rate_deg_s[max_body_rate_i],
+        "max_body_rate_time_sim_s": body_rate_t[max_body_rate_i],
+        "max_body_rate_phase": _at_phase(
+            events, clock, body_rate_t[max_body_rate_i]),
+        "body_rate_warn_deg_s": BODY_RATE_WARN_DEG_S,
+        "min_physical_obstacle_distance_m": physical_distance,
+        "min_obstacle_clearance_residual_m": clearance_residual,
+        "min_obstacle_clearance_time_sim_s": at[clearance_actual_i],
+        "min_obstacle_clearance_phase": _at_phase(
+            events, clock, at[clearance_actual_i]),
+        "closest_obstacle": obstacle_name,
+        "obstacle_clearance_m": clearance,
+        "obstacle_reserve_warn_m": OBSTACLE_RESERVE_WARN_M,
+        "planner_failure_events": planner_failure_events,
+        "abort_events": abort_events,
         "mpc_land_speed_m_s": land_speed,
         "descent_warn_m_s": descent_warn,
         "failsafe_seen": failsafe_seen,
-        "ulog_dropouts": len(ulog.dropouts),
-        "actual_max_sample_gap_s": float(np.nanmax(np.diff(at))),
-        "paper_reproducible": int(manifest.get("git_dirty") == "0"),
-        "quality": ("FAIL" if failsafe_seen or np.nanmax(np.diff(at)) > 0.1
-                    or any(int(row["speed_jump_flag"]) for row in rows)
-                    else "WARN" if any(int(row["descent_spike_flag"]) for row in rows)
-                    else "PASS"),
+        "ulog_dropouts": ulog_dropouts,
+        "actual_max_sample_gap_s": actual_max_gap,
+        "paper_reproducible": paper_reproducible,
+        "quality": quality,
+        "quality_reasons": quality_reasons,
         "flight_ulg_sha256": _sha256(ulog_path),
         "coordinate_yaml_sha256": _sha256(coordinate_path),
         "flight_1hz_sha256": "filled_after_write",
