@@ -89,11 +89,18 @@ now in gst_camera_node.
 """
 
 from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
+from launch.conditions import IfCondition
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
 def generate_launch_description():
+    mission = LaunchConfiguration('mission')
     return LaunchDescription([
+        # mission:=false starts only the perception stack, so the mission node
+        # can be run from `ros2 run` where its ENTER-to-approve prompt works.
+        DeclareLaunchArgument('mission', default_value='true'),
         # --- camera: hardware JPEG decode on the Jetson's NVJPG block -------
         Node(
             package='aruco_landing',
@@ -126,12 +133,13 @@ def generate_launch_description():
             output='screen',
         ),
 
-        # --- the gated mission ---------------------------------------------
+        # --- the gated mission (mission:=false omits it) -------------------
         Node(
             package='mpc_landing',
             executable='mpc_landing_node',
             name='mpc_landing_node',
             output='screen',
             emulate_tty=True,
+            condition=IfCondition(mission),
         ),
     ])

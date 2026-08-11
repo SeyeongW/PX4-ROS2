@@ -40,11 +40,20 @@ own `_declare()`.
 """
 
 from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
+from launch.conditions import IfCondition
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
 def generate_launch_description():
+    mission = LaunchConfiguration('mission')
     return LaunchDescription([
+        # Set mission:=false to start ONLY the perception stack, and drive the
+        # mission node separately with `ros2 run` so its ENTER-to-approve prompt
+        # works (ros2 launch does not forward stdin to a child). run_px4 does
+        # exactly this.
+        DeclareLaunchArgument('mission', default_value='true'),
         # --- camera: hardware JPEG decode on the Jetson's NVJPG block --------
         Node(
             package='aruco_landing',
@@ -77,12 +86,13 @@ def generate_launch_description():
             output='screen',
         ),
 
-        # --- the gated ArUco landing mission --------------------------------
+        # --- the gated ArUco landing mission (mission:=false omits it) ------
         Node(
             package='mpc_landing',
             executable='aruco_landing_node',
             name='aruco_landing_node',
             output='screen',
             emulate_tty=True,
+            condition=IfCondition(mission),
         ),
     ])

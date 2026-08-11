@@ -97,18 +97,22 @@ if [[ "$linked" -eq 0 ]]; then
   echo "         FCU_URL device, and /tmp/run_px4_mavros.log" >&2
 fi
 
-echo
-echo "run_px4: approve from another terminal —"
-echo "    ros2 run mpc_landing approve $NODE"
-echo "    ros2 run mpc_landing abort   $NODE"
-echo
-
-# --- perception + mission ---------------------------------------------------
-# naive has no camera; run the node directly. Others use the full-stack launch.
-if [[ -z "$MISSION_LAUNCH" ]]; then
-  echo "run_px4: starting $NODE (naive takeoff/land, no camera)"
-  exec ros2 run mpc_landing "$NODE"
-else
-  echo "run_px4: starting $MISSION_LAUNCH (camera + detector + gimbal + mission)"
-  exec ros2 launch mpc_landing "$MISSION_LAUNCH"
+# --- perception (background) + mission (foreground, so ENTER approves) ------
+# The mission node runs in the FOREGROUND under `ros2 run`, not under
+# `ros2 launch`, so it inherits this terminal's stdin and its ENTER-to-approve
+# prompt works. The perception stack (camera + detector + gimbal + tf) goes to
+# the background via the launch with mission:=false. NOT `exec`, so the cleanup
+# trap still fires on Ctrl-C and takes MAVROS and the perception nodes with it.
+if [[ -n "$MISSION_LAUNCH" ]]; then
+  echo "run_px4: starting $MISSION_LAUNCH perception (camera + detector + gimbal + tf)"
+  ros2 launch mpc_landing "$MISSION_LAUNCH" mission:=false \
+    >/tmp/run_px4_stack.log 2>&1 &
+  PIDS+=($!)
+  sleep 2   # let the detector advertise before the node's preflight looks for it
 fi
+
+echo
+echo "run_px4: starting $NODE — approve HERE by pressing ENTER (n aborts),"
+echo "         or from another terminal: ros2 run mpc_landing approve $NODE"
+echo
+ros2 run mpc_landing "$NODE"
