@@ -176,17 +176,16 @@ def _planner_failure_events(path: Path) -> int:
             "global A*/B-spline replan failed:")
 
 
-def _minimum_aabb_residual(points, obstacles, inflation_m):
-    """Return signed XY distance to the closest inflated obstacle AABB."""
+def _minimum_aabb_residual(points, obstacles, clearance_m):
+    """Return physical-AABB XY distance minus the required clearance."""
     points = np.asarray(points, float)
     centers = np.asarray([item["center_m"][:2] for item in obstacles], float)
     half_sizes = 0.5 * np.asarray(
         [item["size_m"][:2] for item in obstacles], float)
     delta = (np.abs(points[:, None, :2] - centers[None, :, :])
-             - half_sizes[None, :, :] - float(inflation_m))
-    outside = np.linalg.norm(np.maximum(delta, 0.0), axis=2)
-    residual = np.where(np.all(delta <= 0.0, axis=2),
-                        np.max(delta, axis=2), outside)
+             - half_sizes[None, :, :])
+    residual = (np.linalg.norm(np.maximum(delta, 0.0), axis=2)
+                - float(clearance_m))
     sample_index, obstacle_index = np.unravel_index(
         int(np.argmin(residual)), residual.shape)
     return (float(residual[sample_index, obstacle_index]),

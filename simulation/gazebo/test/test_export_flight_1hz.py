@@ -113,20 +113,20 @@ def test_descent_warning_distinguishes_command_and_actual_excess():
         "TAKEOFF", 1, 1.0, 2, 1.0, threshold) == (False, "")
 
 
-def test_aabb_residual_is_euclidean_outside_and_signed_inside():
+def test_aabb_residual_is_physical_euclidean_distance_minus_clearance():
     obstacles = [{"center_m": [0.0, 0.0, 5.0],
                   "size_m": [2.0, 2.0, 10.0]}]
 
     outside, sample, obstacle = EXPORT._minimum_aabb_residual(
         [[3.0, 3.0]], obstacles, 1.0)
     inside, _, _ = EXPORT._minimum_aabb_residual(
-        [[0.5, 0.0]], obstacles, 0.0)
+        [[0.5, 0.0]], obstacles, 1.0)
     boundary, _, _ = EXPORT._minimum_aabb_residual(
         [[2.0, 0.0]], obstacles, 1.0)
 
-    assert outside == pytest.approx(2.0 ** 0.5)
+    assert outside == pytest.approx(8.0 ** 0.5 - 1.0)
     assert (sample, obstacle) == (0, 0)
-    assert inside == pytest.approx(-0.5)
+    assert inside == pytest.approx(-1.0)
     assert boundary == pytest.approx(0.0)
 
 

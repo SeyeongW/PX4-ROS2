@@ -38,8 +38,10 @@ sys.path[:0] = [
 try:
     from landing_mpc.frame import LOCAL_ENU_FRAME_ID
     from landing_mpc.mission_manager_node import (
+        _mission_planning_segment_is_free,
         _mission_segment_is_free,
         _plan_global_path,
+        _retarget_path_tail,
     )
 except ModuleNotFoundError as exc:
     if exc.name == "px4_msgs":
@@ -142,8 +144,12 @@ def build_preview(map_path, dt_s=0.1):
     preview_speed = float(
         document["px4_vehicle"]["sitl_parameter_overrides"]["MPC_XY_CRUISE"])
     handoff_m = float(mission["precland_handoff_m"])
-    replan_m = float(mission["return_replan_distance_m"])
-    if min(dt_s, trailer_speed, preview_speed, handoff_m, replan_m) <= 0.0:
+    replan_s = float(mission["return_replan_min_period_s"])
+    lookahead_m = float(mission["mpc_path_lookahead_m"])
+    cross_track_m = float(mission["mpc_path_cross_track_m"])
+    sample_spacing_m = float(mission["bspline_sample_spacing_m"])
+    if min(dt_s, trailer_speed, preview_speed, handoff_m, replan_s,
+           lookahead_m, cross_track_m, sample_spacing_m) <= 0.0:
         raise ValueError("preview and YAML motion values must be positive")
 
     arc, path, expanded = _plan_map_leg(map_path)
@@ -160,6 +166,7 @@ def build_preview(map_path, dt_s=0.1):
     progress = 0.0
     drone = path[0].copy()
     time_s = 0.0
+    last_return_update_s = None
     frames = []
     for _ in range(10_000):
         trailer = _trailer_position(route, trailer_speed, time_s)
@@ -184,8 +191,8 @@ def build_preview(map_path, dt_s=0.1):
                 frames[-1]["phase"] = "PRECLAND HANDOFF"
                 break
             refresh_return = (
-                float(np.linalg.norm(trailer - plans[plan_index]["target"]))
-                >= replan_m)
+                last_return_update_s is None
+                or time_s - last_return_update_s >= replan_s)
 
         if not refresh_return:
             progress = min(progress + preview_speed * dt_s, float(arc[-1]))
@@ -195,23 +202,88 @@ def build_preview(map_path, dt_s=0.1):
                 continue
             if phase == "MISSION":
                 phase = "RETURN"
+            else:
+                refresh_return = True
 
         trailer = _trailer_position(route, trailer_speed, time_s)
-        arc, path, expanded = _plan_map_leg(map_path, drone, trailer)
+        if refresh_return:
+            def planning_segment_is_free(start, goal):
+                local = _map_to_local(
+                    np.vstack((start, goal)), rotation, origin, spawn,
+                    altitude)
+                return _mission_planning_segment_is_free(
+                    str(map_path), local[0], local[1])
+
+            replacement = _retarget_path_tail(
+                planning_segment_is_free, arc, path, progress, trailer,
+                lookahead_m, cross_track_m, sample_spacing_m)
+            last_return_update_s = time_s
+            if replacement is not None:
+                arc, path = replacement
+                plan_index = len(plans)
+                plans.append({
+                    "phase": "RETURN",
+                    "start_frame": len(frames),
+                    "planned_at_s": time_s,
+                    "arc": arc,
+                    "path": path,
+                    "expanded": None,
+                    "target": trailer.copy(),
+                })
+                progress = min(
+                    progress + preview_speed * dt_s, float(arc[-1]))
+                drone = _path_position(arc, path, progress)[:2]
+                time_s += dt_s
+                continue
+        try:
+            arc, path, expanded = _plan_map_leg(map_path, drone, trailer)
+        except RuntimeError:
+            if not refresh_return or phase != "RETURN":
+                raise
+            # A failed fallback keeps the prior exact-safe route.
+            progress = min(
+                progress + preview_speed * dt_s, float(arc[-1]))
+            drone = _path_position(arc, path, progress)[:2]
+            time_s += dt_s
+            continue
         progress = 0.0
         plan_index = len(plans)
         plans.append({
             "phase": "RETURN",
             "start_frame": len(frames),
+            "planned_at_s": time_s,
             "arc": arc,
             "path": path,
             "expanded": expanded,
             "target": trailer.copy(),
         })
+        last_return_update_s = time_s
     else:
         raise RuntimeError("CJU mission preview exceeded its finite step budget")
 
     return document, route, frames, plans, preview_speed
+
+
+def _draw_obstacles(ax, mission):
+    """Draw physical AABBs and their Euclidean XY clearance zones."""
+    from matplotlib.patches import FancyBboxPatch, Rectangle
+
+    clearance = float(mission["obstacle_clearance_m"])
+    for index, obstacle in enumerate(mission["obstacles"], 1):
+        center = np.asarray(obstacle["center_m"][:2], float)
+        size = np.asarray(obstacle["size_m"][:2], float)
+        corner = center - size / 2.0
+        ax.add_patch(FancyBboxPatch(
+            corner, *size,
+            boxstyle=(f"round,pad={clearance},"
+                      f"rounding_size={clearance}"),
+            facecolor="#f8d7da", edgecolor="#dc3545", alpha=0.25,
+            linewidth=0.8))
+        ax.add_patch(Rectangle(
+            corner, *size,
+            facecolor="#343a40", edgecolor="black", linewidth=0.8))
+        ax.text(center[0] + 0.35, center[1] + 0.35, str(index),
+                fontsize=7, color="#343a40")
 
 
 def _make_figure(document, route, frames, plans, preview_speed):
@@ -222,21 +294,7 @@ def _make_figure(document, route, frames, plans, preview_speed):
     fig, ax = plt.subplots(figsize=(9, 8))
     fig.subplots_adjust(bottom=0.14)
     mission = document["mission"]
-    clearance = float(mission["obstacle_clearance_m"])
-
-    for index, obstacle in enumerate(mission["obstacles"], 1):
-        center = np.asarray(obstacle["center_m"][:2], float)
-        size = np.asarray(obstacle["size_m"][:2], float)
-        safe_size = size + 2.0 * clearance
-        ax.add_patch(Rectangle(
-            center - safe_size / 2.0, *safe_size,
-            facecolor="#f8d7da", edgecolor="#dc3545", alpha=0.25,
-            linewidth=0.8))
-        ax.add_patch(Rectangle(
-            center - size / 2.0, *size,
-            facecolor="#343a40", edgecolor="black", linewidth=0.8))
-        ax.text(center[0] + 0.35, center[1] + 0.35, str(index),
-                fontsize=7, color="#343a40")
+    _draw_obstacles(ax, mission)
 
     ax.plot(route[:, 0], route[:, 1], "--", color="#e8590c", linewidth=1.5,
             label="trailer shuttle (YAML)")
@@ -246,13 +304,11 @@ def _make_figure(document, route, frames, plans, preview_speed):
     ax.scatter(*goal, marker="*", s=150, color="#fcc419", edgecolor="black",
                label="goal (50, 50)", zorder=8)
 
-    path_lines = []
-    for plan in plans:
-        color = "#2f9e44" if plan["phase"] == "MISSION" else "#7048e8"
-        line, = ax.plot([], [], color=color, linewidth=2.2,
-                        label=("A* -> geometry B-spline" if not path_lines
-                               else "return replan"))
-        path_lines.append(line)
+    mission_line, = ax.plot([], [], color="#2f9e44", linewidth=2.2,
+                            label="A* -> geometry B-spline")
+    return_line, = ax.plot([], [], color="#7048e8", linewidth=2.2,
+                           label="active return replan")
+    path_lines = [mission_line, return_line]
 
     drone_trace, = ax.plot([], [], color="#1971c2", linewidth=1.5,
                            label="drone preview")
@@ -283,13 +339,15 @@ def _make_figure(document, route, frames, plans, preview_speed):
     def update(frame_index):
         frame = frames[frame_index]
         active = frame["plan_index"]
-        for index, (plan, line) in enumerate(zip(plans, path_lines)):
-            if frame_index < plan["start_frame"]:
-                line.set_data([], [])
-            else:
-                line.set_data(plan["path"][:, 0], plan["path"][:, 1])
-                line.set_alpha(1.0 if index == active else 0.3)
-                line.set_linewidth(2.8 if index == active else 1.2)
+        mission_path = plans[0]["path"]
+        mission_line.set_data(mission_path[:, 0], mission_path[:, 1])
+        mission_line.set_alpha(1.0 if active == 0 else 0.3)
+        mission_line.set_linewidth(2.8 if active == 0 else 1.2)
+        if active:
+            return_path = plans[active]["path"]
+            return_line.set_data(return_path[:, 0], return_path[:, 1])
+        else:
+            return_line.set_data([], [])
         drone_history = np.asarray([item["drone"] for item in frames[:frame_index + 1]])
         trailer_history = np.asarray([item["trailer"] for item in frames[:frame_index + 1]])
         drone_trace.set_data(drone_history[:, 0], drone_history[:, 1])
@@ -303,10 +361,12 @@ def _make_figure(document, route, frames, plans, preview_speed):
         else:
             handoff_line.set_data([], [])
         plan = plans[active]
+        plan_kind = ("tail retarget" if plan["expanded"] is None else
+                     f"A* expansions: {plan['expanded']}")
         status.set_text(
             f"phase: {frame['phase']}\n"
             f"t: {frame['time_s']:.1f} s   trailer distance: {frame['distance_m']:.1f} m\n"
-            f"plan: {plan['arc'][-1]:.1f} m   A* expansions: {plan['expanded']}\n"
+            f"plan: {plan['arc'][-1]:.1f} m   {plan_kind}\n"
             f"PX4 speed preview: {preview_speed:.1f} m/s (not a B-spline input)")
         return [*path_lines, drone_trace, trailer_trace, drone_dot,
                 trailer_box, handoff_line, status]
@@ -324,6 +384,12 @@ def _check(document, route, frames, plans):
     assert np.allclose(plans[0]["path"][0], [5.0, 0.0], atol=1.0e-6)
     assert np.allclose(plans[0]["path"][-1], [50.0, 50.0], atol=1.0e-6)
     assert len(plans) >= 3 and plans[1]["phase"] == "RETURN"
+    full_plans = [plan for plan in plans if plan["expanded"] is not None]
+    assert len(full_plans) == 2  # outbound + initial return
+    return_times = [plan["planned_at_s"] for plan in plans[1:]]
+    cadence = float(document["mission"]["return_replan_min_period_s"])
+    assert all(cadence <= right - left <= cadence + 0.11
+               for left, right in zip(return_times, return_times[1:]))
     assert frames[-1]["phase"] == "PRECLAND HANDOFF"
     assert all(np.all(np.isfinite(plan["path"])) for plan in plans)
     print(
@@ -336,7 +402,6 @@ def _run_live(map_path):
     import rclpy
     from geometry_msgs.msg import PointStamped, PoseArray
     from matplotlib.animation import FuncAnimation
-    from matplotlib.patches import Rectangle
     from rclpy.qos import (DurabilityPolicy, HistoryPolicy, QoSProfile,
                            ReliabilityPolicy)
     from std_msgs.msg import String
@@ -383,20 +448,7 @@ def _run_live(map_path):
 
     fig, ax = plt.subplots(figsize=(9, 8))
     mission = document["mission"]
-    clearance = float(mission["obstacle_clearance_m"])
-    for index, obstacle in enumerate(mission["obstacles"], 1):
-        center = np.asarray(obstacle["center_m"][:2], float)
-        size = np.asarray(obstacle["size_m"][:2], float)
-        safe_size = size + 2.0 * clearance
-        ax.add_patch(Rectangle(
-            center - safe_size / 2.0, *safe_size,
-            facecolor="#f8d7da", edgecolor="#dc3545", alpha=0.25,
-            linewidth=0.8))
-        ax.add_patch(Rectangle(
-            center - size / 2.0, *size,
-            facecolor="#343a40", edgecolor="black", linewidth=0.8))
-        ax.text(center[0] + 0.35, center[1] + 0.35, str(index),
-                fontsize=7, color="#343a40")
+    _draw_obstacles(ax, mission)
 
     ax.plot(route[:, 0], route[:, 1], "--", color="#e8590c",
             linewidth=1.5, label="trailer shuttle (YAML)")

@@ -13,7 +13,7 @@ This node is the single Offboard setpoint authority — never run it alongside
 another setpoint publisher.
 
 Subscribes
-    /mission/command     String          takeoff → land (CJU planner mode)
+    /mission/command     String          takeoff → mission → land
     /marker/cue          PointStamped    long-range target position (ENU)
     /marker/cue_velocity Vector3Stamped  long-range target velocity
     /marker/position     PointStamped    vision/KF target position (ENU)
@@ -31,7 +31,7 @@ Phases
     PRECHECK  validate PX4 feedback, cue, planner and Offboard readiness
   Phase 1
     TAKEOFF   PX4 NAV_TAKEOFF to takeoff_alt
-    READY     fallback hold when no map planner is configured
+    READY     hold after takeoff until the explicit mission command
   Phase 2
     MISSION_PLAN plan A* and a geometry-only B-spline without blocking Offboard
     MISSION   follow that spatial path with PX4 Goto control to the map goal
@@ -138,7 +138,7 @@ def _plan_global_path(map_yaml, start_local_enu=None, goal_local_enu=None):
         goal_xy = ((spawn + goal_local[:2]) - frame_origin) @ rotation
     goal = np.r_[goal_xy, altitude]
     clearance = float(mission['obstacle_clearance_m'])
-    spline_margin = float(mission.get('bspline_clearance_margin_m', 0.25))
+    spline_margin = float(mission.get('bspline_clearance_margin_m', 0.5))
     control_spacing = float(mission.get('bspline_control_spacing_m', 2.0))
     sample_spacing = float(mission.get('bspline_sample_spacing_m', 0.1))
     values = (clearance, control_spacing, sample_spacing)
@@ -169,24 +169,19 @@ def _plan_global_path(map_yaml, start_local_enu=None, goal_local_enu=None):
         raise ValueError('terrain.center_m must contain two finite values')
     half_terrain = 0.5 * terrain_size
 
-    def make_world(inflation, z_half_width):
-        lows = np.asarray(obstacle_lows, float).copy()
-        highs = np.asarray(obstacle_highs, float).copy()
-        lows[:, :2] -= inflation
-        highs[:, :2] += inflation
+    def make_world(clearance_xy_m, z_half_width):
         return WorldModel.from_boxes(
-            lows, highs,
+            obstacle_lows, obstacle_highs,
             [*(terrain_center - half_terrain), altitude - z_half_width],
-            [*(terrain_center + half_terrain), altitude + z_half_width])
+            [*(terrain_center + half_terrain), altitude + z_half_width],
+            xy_clearance_m=clearance_xy_m)
 
-    # A* and the optimizer receive a little extra shaping room. Acceptance is
-    # still checked against the YAML's nominal clearance below. The optimizer
-    # needs non-zero z thickness for its 3-D SFC seeds; the final spline is
-    # projected back onto the configured cruise-altitude plane.
+    # A* and the optimizer receive the same planning reserve used by final
+    # acceptance. The optimizer needs non-zero z thickness for its 3-D SFC
+    # seeds; the final spline is projected onto the cruise-altitude plane.
     planning_clearance = clearance + spline_margin
     planner_world = make_world(planning_clearance, 0.0)
     spline_world = make_world(planning_clearance, 0.5)
-    nominal_world = make_world(clearance, 0.5)
     if not bool(planner_world.is_free(start)[0]):
         raise RuntimeError('CJU A* exact start is blocked or out of bounds')
     if not bool(planner_world.is_free(goal)[0]):
@@ -260,9 +255,10 @@ def _plan_global_path(map_yaml, start_local_enu=None, goal_local_enu=None):
             and np.allclose(positions[0], start, atol=1.0e-6)
             and np.allclose(positions[-1], goal, atol=1.0e-6)):
         raise RuntimeError('CJU B-spline spatial contract failed')
-    if not all(nominal_world.segment_is_free(a, b)
+    if not all(spline_world.segment_is_free(a, b)
                for a, b in zip(positions[:-1], positions[1:])):
-        raise RuntimeError('CJU B-spline failed exact obstacle validation')
+        raise RuntimeError(
+            'CJU B-spline failed exact planning-clearance validation')
     world_xy = positions[:, :2] @ rotation.T + frame_origin
     local_positions = np.column_stack((world_xy - spawn, positions[:, 2]))
     return arc, local_positions, result.expanded
@@ -272,6 +268,79 @@ def _path_position(arc_m, path, distance_m):
     distance = float(np.clip(distance_m, arc_m[0], arc_m[-1]))
     return np.array([
         np.interp(distance, arc_m, path[:, axis]) for axis in range(3)])
+
+
+def _splice_path_from_current(segment_is_free, arc_m, path, current,
+                              lookahead_m):
+    """Join a completed rolling path from the vehicle's current position."""
+    arc = np.asarray(arc_m, float)
+    points = np.asarray(path, float)
+    current = np.asarray(current, float)
+    projection_s, _, _ = _spatial_path_target(
+        arc, points, current, 0.0, float(arc[-1]), 1.0)
+    # Half a normal carrot avoids both a near-perpendicular projection join
+    # and a long corner-cut. One failed connector keeps the prior safe route.
+    join_s = min(projection_s + 0.5 * lookahead_m, float(arc[-1]))
+    join = _path_position(arc, points, join_s)
+    if not segment_is_free(current, join):
+        return None
+    tail = points[arc > join_s + 1.0e-9]
+    joined = np.vstack((current, join, tail))
+    keep = np.r_[True, np.linalg.norm(
+        np.diff(joined, axis=0), axis=1) > 1.0e-9]
+    joined = joined[keep]
+    if len(joined) < 2:
+        return None
+    joined_arc = np.r_[0.0, np.cumsum(np.linalg.norm(
+        np.diff(joined, axis=0), axis=1))]
+    if not (np.all(np.isfinite(joined))
+            and np.all(np.diff(joined_arc) > 0.0)):
+        return None
+    return joined_arc, joined
+
+
+def _retarget_path_tail(segment_is_free, arc_m, path, progress_m, goal,
+                        lookahead_m, cross_track_limit_m, sample_spacing_m):
+    """Replace only the unflown tail with one exact-safe live-goal segment."""
+    arc = np.asarray(arc_m, float)
+    points = np.asarray(path, float)
+    target = np.asarray(goal, float)
+    if (points.ndim != 2 or len(points) != len(arc) or len(points) < 2
+            or target.shape != (points.shape[1],)
+            or not np.all(np.isfinite(np.column_stack((arc, points))))
+            or not np.all(np.isfinite(target))
+            or not math.isfinite(sample_spacing_m)
+            or sample_spacing_m <= 0.0):
+        return None
+
+    progress = float(np.clip(progress_m, 0.0, arc[-1]))
+    # Preserve every segment the follower can currently project onto.  Scanning
+    # from the old endpoint backwards then changes the smallest possible tail.
+    projection_window = max(2.0 * lookahead_m, 2.0 * cross_track_limit_m)
+    first_join = min(
+        len(points) - 1,
+        int(np.searchsorted(
+            arc, min(arc[-1], progress + projection_window), side='right')))
+    for index in range(len(points) - 1, first_join - 1, -1):
+        join = points[index]
+        if not segment_is_free(join, target):
+            continue
+        distance = float(np.linalg.norm(target - join))
+        count = max(1, int(math.ceil(distance / sample_spacing_m)))
+        connector = join + np.linspace(0.0, 1.0, count + 1)[:, None] * (
+            target - join)
+        candidate = np.vstack((points[:index + 1], connector[1:]))
+        keep = np.r_[True, np.linalg.norm(
+            np.diff(candidate, axis=0), axis=1) > 1.0e-9]
+        candidate = candidate[keep]
+        if len(candidate) < 2:
+            continue
+        candidate_arc = np.r_[0.0, np.cumsum(np.linalg.norm(
+            np.diff(candidate, axis=0), axis=1))]
+        if (np.all(np.isfinite(candidate_arc))
+                and np.all(np.diff(candidate_arc) > 0.0)):
+            return candidate_arc, candidate
+    return None
 
 
 def _spatial_path_target(arc_m, path, position, progress_m, lookahead_m,
@@ -308,17 +377,36 @@ def _spatial_path_target(arc_m, path, position, progress_m, lookahead_m,
                 progress,
                 float(arc[index] + fraction * (arc[index + 1] - arc[index])))
     cross_track = best_distance
-    # Keep the spatial carrot continuous.  The old hard switch sent
-    # ``progress + lookahead`` inside the cross-track limit and ``progress``
-    # just outside it, so a millimetre of error could reverse the Goto target
-    # by six metres.  Collision/backoff remains the caller's fail-closed gate.
+    # Keep the carrot long on-track, then shorten it continuously as the
+    # vehicle approaches the configured cross-track limit. At the limit the
+    # target is the route projection, so PX4 rejoins instead of cutting the
+    # obstacle reserve or receiving a discontinuous six-metre reversal.
     progress = candidate
-    target_s = min(progress + lookahead_m, float(arc[-1]))
+    tracking_fraction = float(np.clip(
+        1.0 - cross_track / cross_track_limit_m, 0.0, 1.0))
+    target_s = min(
+        progress + lookahead_m * tracking_fraction, float(arc[-1]))
     return progress, _path_position(arc, points, target_s), cross_track
 
 
-@lru_cache(maxsize=4)
-def _mission_collision_contract(map_yaml):
+def _safe_spatial_path_target(map_yaml, arc_m, path, position, progress_m,
+                              lookahead_m, cross_track_limit_m):
+    """Return the furthest exact-safe carrot on an accepted spatial path."""
+    progress, target, _ = _spatial_path_target(
+        arc_m, path, position, progress_m, lookahead_m,
+        cross_track_limit_m)
+    if _mission_segment_is_free(map_yaml, position, target):
+        return progress, target
+    for offset in np.linspace(lookahead_m, 0.0, 21)[1:]:
+        candidate = _path_position(
+            arc_m, path, min(progress + offset, arc_m[-1]))
+        if _mission_segment_is_free(map_yaml, position, candidate):
+            return progress, candidate
+    return progress, None
+
+
+@lru_cache(maxsize=8)
+def _mission_collision_contract(map_yaml, planning=False):
     """Load the immutable per-run map snapshot once for 50 Hz checks."""
     from path_plan.world_model import WorldModel
 
@@ -336,10 +424,12 @@ def _mission_collision_contract(map_yaml):
     terrain_center = np.asarray(document['terrain']['center_m'], float)
     terrain_half = 0.5 * np.asarray(document['terrain']['size_m'], float)
     clearance = float(mission['obstacle_clearance_m'])
+    if planning:
+        clearance += float(mission.get('bspline_clearance_margin_m', 0.5))
     lows, highs = [], []
     for obstacle in mission['obstacles']:
         center = np.asarray(obstacle['center_m'][:2], float)
-        half = 0.5 * np.asarray(obstacle['size_m'][:2], float) + clearance
+        half = 0.5 * np.asarray(obstacle['size_m'][:2], float)
         lows.append([*(center - half), -1.0e4])
         highs.append([*(center + half), 1.0e4])
     altitude = float(mission['cruise_altitude_m'])
@@ -348,6 +438,7 @@ def _mission_collision_contract(map_yaml):
         highs,
         [*(terrain_center - terrain_half), altitude],
         [*(terrain_center + terrain_half), altitude],
+        xy_clearance_m=clearance,
     )
     return rotation, spawn, origin, altitude, world
 
@@ -360,6 +451,20 @@ def _mission_segment_is_free(map_yaml, start_local_enu, goal_local_enu):
         return False
     rotation, spawn, origin, altitude, world = (
         _mission_collision_contract(str(map_yaml)))
+    map_xy = (np.vstack((start, goal)) + spawn - origin) @ rotation
+    return world.segment_is_free(
+        [*map_xy[0], altitude], [*map_xy[1], altitude])
+
+
+def _mission_planning_segment_is_free(
+        map_yaml, start_local_enu, goal_local_enu):
+    """Check one local segment against clearance plus the planning reserve."""
+    start = np.asarray(start_local_enu, float)[:2]
+    goal = np.asarray(goal_local_enu, float)[:2]
+    if not (np.all(np.isfinite(start)) and np.all(np.isfinite(goal))):
+        return False
+    rotation, spawn, origin, altitude, world = (
+        _mission_collision_contract(str(map_yaml), True))
     map_xy = (np.vstack((start, goal)) + spawn - origin) @ rotation
     return world.segment_is_free(
         [*map_xy[0], altitude], [*map_xy[1], altitude])
@@ -421,9 +526,9 @@ class MissionManagerNode(Node):
         self._mission_progress_m = 0.0
         self._mission_lookahead = 6.0
         self._mission_cross_track = 0.25
+        self._mission_sample_spacing = 0.1
         self._precland_handoff = 6.0
-        self._return_replan_distance = 3.0
-        self._return_replan_min_period = 1.0
+        self._return_replan_min_period = 2.0
         self._precland_target_timeout = 0.5
         self._planner_pool = None
         self._plan_future = None
@@ -437,15 +542,15 @@ class MissionManagerNode(Node):
             self._mission_cross_track = require_positive(
                 'mission.mpc_path_cross_track_m',
                 mission_config.get('mpc_path_cross_track_m', 0.25))
+            self._mission_sample_spacing = require_positive(
+                'mission.bspline_sample_spacing_m',
+                mission_config.get('bspline_sample_spacing_m', 0.1))
             self._precland_handoff = require_positive(
                 'mission.precland_handoff_m',
                 mission_config.get('precland_handoff_m', 6.0))
-            self._return_replan_distance = require_positive(
-                'mission.return_replan_distance_m',
-                mission_config.get('return_replan_distance_m', 3.0))
             self._return_replan_min_period = require_positive(
                 'mission.return_replan_min_period_s',
-                mission_config.get('return_replan_min_period_s', 1.0))
+                mission_config.get('return_replan_min_period_s', 2.0))
             self._precland_target_timeout = require_positive(
                 'px4_vehicle.sitl_parameter_overrides.PLD_BTOUT',
                 mission_document.get('px4_vehicle', {}).get(
@@ -468,9 +573,7 @@ class MissionManagerNode(Node):
         self._plan_start = None
         self._plan_goal = None
         self._last_safe_goto = None
-        self._planning_goto = None
         self._precland_goto = None
-        self._return_plan_goal = None
         self._last_return_plan_t = None
         self.p_d = None
         self.v_d = np.zeros(3)
@@ -966,23 +1069,20 @@ class MissionManagerNode(Node):
                 self._native_precland_accepted = False
 
     def _start_global_plan(self, goal_local_enu, *, return_route):
-        """Start a map-goal or trailer A*/B-spline leg while holding."""
+        """Start one serialized map-goal or trailer A*/B-spline leg."""
         if self._planner_pool is None or self.p_d is None:
             raise RuntimeError('global planner is unavailable')
-        rolling_return = return_route and (
-            self.state == 'RETURN'
-            or (self.state == 'RETURN_PLAN'
-                and self._planning_goto is not None))
-        self._planning_goto = (
-            self._last_safe_goto.copy()
-            if rolling_return and self._last_safe_goto is not None else None)
+        rolling_return = (
+            return_route and self.state == 'RETURN'
+            and self._mission_path is not None)
         start = self.p_d.copy()
         self._hold_pos = start.copy()
         goal = (None if goal_local_enu is None
                 else np.asarray(goal_local_enu, float).copy())
         if goal is not None and not np.all(np.isfinite(goal)):
             raise ValueError('global plan goal must be finite')
-        self._publish_planned_path(None)
+        if not rolling_return:
+            self._publish_planned_path(None)
         if self._plan_future is not None:
             self._plan_future.cancel()
         self._plan_future = self._planner_pool.submit(
@@ -992,9 +1092,10 @@ class MissionManagerNode(Node):
         self._plan_goal = goal
         if return_route:
             self._last_return_plan_t = self._now()
-        self._mission_arc_m = None
-        self._mission_path = None
-        self._mission_progress_m = 0.0
+        if not rolling_return:
+            self._mission_arc_m = None
+            self._mission_path = None
+            self._mission_progress_m = 0.0
         if return_route:
             state, destination = 'RETURN_PLAN', 'moving trailer'
         else:
@@ -1134,7 +1235,7 @@ class MissionManagerNode(Node):
             if (self.armed is True
                     and abs(self.p_d[2] - self.takeoff_alt) <= 0.15
                     and abs(self.v_d[2]) <= 0.15):
-                if self._planner_pool is not None:
+                if self.auto_start and self._planner_pool is not None:
                     self._start_global_plan(None, return_route=False)
                 elif self.auto_start and self._cue_fresh():
                     distance = float(np.linalg.norm(
@@ -1151,18 +1252,35 @@ class MissionManagerNode(Node):
 
         if self.state in ('MISSION_PLAN', 'RETURN_PLAN'):
             return_route = self.state == 'RETURN_PLAN'
-            planning_goto = getattr(self, '_planning_goto', None)
-            if (return_route and planning_goto is not None
-                    and _mission_segment_is_free(
-                        self.mission_map_yaml, self.p_d, planning_goto)):
-                # Keep PX4's jerk-limited Goto smoother alive while the
-                # replacement route is computed. This target was accepted by
-                # the previous exact segment check and is checked again here.
-                self._send_goto(planning_goto)
-            else:
-                if planning_goto is not None:
-                    self._planning_goto = None
+            rolling_path = (
+                return_route
+                and getattr(self, '_mission_path', None) is not None)
+            rolling_path_safe = False
+            if rolling_path:
+                live_distance = float(np.linalg.norm(
+                    self.p_d[:2] - self.cue[:2]))
+                if (live_distance <= self._precland_handoff
+                        and _mission_segment_is_free(
+                            self.mission_map_yaml, self.p_d, self.cue)
+                        and self._enter_precland(live_distance)):
+                    self._plan_future.cancel()
+                    self._plan_future = None
+                    return
+                progress, safe_target = _safe_spatial_path_target(
+                    self.mission_map_yaml, self._mission_arc_m,
+                    self._mission_path, self.p_d,
+                    self._mission_progress_m, self._mission_lookahead,
+                    self._mission_cross_track)
+                if safe_target is not None:
+                    self._mission_progress_m = progress
+                    self._last_safe_goto = np.asarray(
+                        safe_target, float).copy()
+                    self._send_goto(safe_target)
+                    rolling_path_safe = True
+                else:
                     self._hold_pos = self.p_d.copy()
+                    self._send(self._hold_pos)
+            else:
                 self._send(self._hold_pos)
             now = self._now()
             if nav_state != VehicleStatus.NAVIGATION_STATE_OFFBOARD:
@@ -1179,12 +1297,18 @@ class MissionManagerNode(Node):
                 self._plan_future = None
                 self.get_logger().error(
                     f'global A*/B-spline replan failed: {exc}')
+                if rolling_path and rolling_path_safe:
+                    self._set_state(
+                        'RETURN', '(planner failure; keep prior safe route)')
+                    return
                 fallback = 'ABORT' if return_route else 'READY'
                 self._hold_pos = self.p_d.copy()
-                self._set_state(fallback, '(planner failure; wait and retry)')
+                self._set_state(fallback, '(planner failure; hold)')
                 return
             self._plan_future = None
-            if (float(np.linalg.norm(self.p_d[:2] - self._plan_start[:2]))
+            if (not rolling_path
+                    and float(np.linalg.norm(
+                        self.p_d[:2] - self._plan_start[:2]))
                     > self.mission_tolerance):
                 if return_route and not self._cue_fresh():
                     self._hold_pos = self.p_d.copy()
@@ -1193,12 +1317,47 @@ class MissionManagerNode(Node):
                     goal = self.cue if return_route else None
                     self._start_global_plan(goal, return_route=return_route)
                 return
+            replacement_progress = 0.0
+            if rolling_path:
+                replacement = _splice_path_from_current(
+                    lambda start, goal: _mission_planning_segment_is_free(
+                        self.mission_map_yaml, start, goal),
+                    arc_m, path, self.p_d,
+                    self._mission_lookahead)
+                if replacement is None:
+                    self.get_logger().error(
+                        'global A*/B-spline replan failed: '
+                        'replacement route has no exact-safe splice')
+                    if rolling_path_safe:
+                        self._set_state(
+                            'RETURN', '(keep prior exact-safe route)')
+                    else:
+                        self._hold_pos = self.p_d.copy()
+                        self._set_state(
+                            'ABORT', '(replacement route is unreachable)')
+                    return
+                arc_m, path = replacement
+                replacement_progress, replacement_target = (
+                    _safe_spatial_path_target(
+                        self.mission_map_yaml, arc_m, path, self.p_d, 0.0,
+                        self._mission_lookahead,
+                        self._mission_cross_track))
+                if replacement_target is None:
+                    self.get_logger().error(
+                        'global A*/B-spline replan failed: '
+                        'replacement route has no exact-safe splice')
+                    if rolling_path_safe:
+                        self._set_state(
+                            'RETURN', '(keep prior exact-safe route)')
+                    else:
+                        self._hold_pos = self.p_d.copy()
+                        self._set_state(
+                            'ABORT', '(replacement route is unreachable)')
+                    return
             self._mission_arc_m = arc_m
             self._mission_path = path
-            self._mission_progress_m = 0.0
+            self._mission_progress_m = replacement_progress
             self._publish_planned_path(path)
-            self._return_plan_goal = (
-                self._plan_goal.copy() if return_route else None)
             self.get_logger().info(
                 f'global A*/B-spline: {len(path)} samples, '
                 f'{arc_m[-1]:.1f} m, {expanded} A* expansions')
@@ -1217,30 +1376,11 @@ class MissionManagerNode(Node):
                             self.mission_map_yaml, self.p_d, self.cue)):
                     self._enter_precland(live_distance)
                     return
-                if (self._return_plan_goal is not None
-                        and float(np.linalg.norm(
-                            self.cue[:2] - self._return_plan_goal[:2]))
-                        >= self._return_replan_distance):
-                    self._start_global_plan(self.cue, return_route=True)
-                    return
-            progress, target, _ = _spatial_path_target(
-                self._mission_arc_m, self._mission_path, self.p_d,
+            progress, safe_target = _safe_spatial_path_target(
+                self.mission_map_yaml, self._mission_arc_m,
+                self._mission_path, self.p_d,
                 self._mission_progress_m, self._mission_lookahead,
                 self._mission_cross_track)
-            safe_target = None
-            if _mission_segment_is_free(
-                    self.mission_map_yaml, self.p_d, target):
-                safe_target = target
-            else:
-                for offset in np.linspace(
-                        self._mission_lookahead, 0.0, 21)[1:]:
-                    candidate = _path_position(
-                        self._mission_arc_m, self._mission_path,
-                        min(progress + offset, self._mission_arc_m[-1]))
-                    if _mission_segment_is_free(
-                            self.mission_map_yaml, self.p_d, candidate):
-                        safe_target = candidate
-                        break
             if safe_target is None:
                 hold = self.p_d.copy()
                 hold[2] = self.takeoff_alt
@@ -1251,11 +1391,40 @@ class MissionManagerNode(Node):
             self._mission_progress_m = progress
             self._last_safe_goto = np.asarray(safe_target, float).copy()
             self._send_goto(safe_target)
-
             at_end = (
                 self._mission_arc_m[-1] - self._mission_progress_m
                 <= self.mission_tolerance
             )
+            if return_route:
+                now = self._now()
+                retarget_due = (
+                    self._last_return_plan_t is None
+                    or now - self._last_return_plan_t
+                    >= self._return_replan_min_period)
+            if return_route and (retarget_due or at_end):
+                self._last_return_plan_t = now
+                target = np.asarray(self.cue, float).copy()
+                target[2] = self._mission_path[-1, 2]
+                replacement = _retarget_path_tail(
+                    lambda start, goal: _mission_planning_segment_is_free(
+                        self.mission_map_yaml, start, goal),
+                    self._mission_arc_m, self._mission_path,
+                    self._mission_progress_m, target,
+                    self._mission_lookahead, self._mission_cross_track,
+                    self._mission_sample_spacing)
+                if replacement is not None:
+                    self._mission_arc_m, self._mission_path = replacement
+                    self._publish_planned_path(self._mission_path)
+                    self.get_logger().info(
+                        'return tail retarget accepted: '
+                        f'goal=({target[0]:.3f},{target[1]:.3f})')
+                    return
+                self.get_logger().warn(
+                    'return tail retarget rejected; '
+                    'keep prior route while full planner runs')
+                self._start_global_plan(self.cue, return_route=True)
+                return
+
             settled = (
                 float(np.linalg.norm(
                     self.p_d - self._mission_path[-1]))
@@ -1267,8 +1436,6 @@ class MissionManagerNode(Node):
                 if not return_route:
                     self._set_state(
                         'HOVER', '(B-spline goal (50,50), altitude 5 m)')
-                else:
-                    self._start_global_plan(self.cue, return_route=True)
             return
 
         if self.state == 'PRECLAND':
@@ -1301,18 +1468,11 @@ class MissionManagerNode(Node):
         if self.state == 'ABORT':
             self._send(np.array([
                 self._hold_pos[0], self._hold_pos[1], self.takeoff_alt]))
-            retry_due = (
-                self._last_return_plan_t is None
-                or self._now() - self._last_return_plan_t
-                >= self._return_replan_min_period)
-            if (retry_due and self._cue_fresh()
+            if (self._planner_pool is None and self._cue_fresh()
                     and self.p_d[2] >= self.takeoff_alt - 0.5):
-                if self._planner_pool is not None:
-                    self._start_global_plan(self.cue, return_route=True)
-                else:
-                    distance = float(np.linalg.norm(
-                        self.p_d[:2] - self.cue[:2]))
-                    self._enter_precland(distance)
+                distance = float(np.linalg.norm(
+                    self.p_d[:2] - self.cue[:2]))
+                self._enter_precland(distance)
             return
 
     def destroy_node(self):

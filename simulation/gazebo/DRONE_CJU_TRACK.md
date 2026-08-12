@@ -10,8 +10,9 @@ launcher key remains `cju-track`.
 ./simulation/gazebo/run_gimbal.sh mission        # full mission
 ```
 
-For the full mission, enter exactly `takeoff → land`. After takeoff settles at
-5 m, the node automatically plans and flies the map leg. The canonical
+For the full mission, enter exactly `takeoff → mission → land`. After
+`takeoff` settles at 5 m, the node holds `READY`; `mission` plans and flies the
+map leg. The canonical
 stadium endpoint remains `(0,0)`. The trailer and drone spawn together on the
 track centre at the integer coordinate `(5,0)`, then the trailer repeats the
 straight `(5,0) → (5,50) → (5,0)` route at 1.0 m/s without turning its body. It becomes
@@ -24,9 +25,10 @@ The mission groups are:
 - Phase 1 `TAKEOFF`: PX4 `NAV_TAKEOFF` to 5 m; PX4 owns the climb profile.
 - Phase 2: A* supplies obstacle topology, a geometry-only B-spline reinforces
   that spatial route, and PX4 Goto flies it to map `(50,50)` and `HOVER`.
-- Phase 3: `land` uses A* → geometry-only B-spline `RETURN`, refreshing the
-  route after every 3 m of live GPS/cue movement, until the trailer is within
-  the 6 m YAML-safe handoff corridor. The companion then
+- Phase 3: `land` builds one A* → geometry-only B-spline `RETURN`, then
+  atomically retargets only its 2.5 m-safe tail every two seconds from the
+  latest live GPS/cue. Full replanning is used only when no safe tail connector
+  exists. Inside the 6 m YAML-safe handoff corridor the companion then
   publishes `LandingTargetPose`, requests PX4 `NAV_PRECLAND`, and stops all
   Offboard setpoints. PX4 owns the remaining dynamics, touchdown verdict and
   auto-disarm; ArUco only corrects the target position.

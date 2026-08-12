@@ -8,17 +8,18 @@ we take the xy bounding box of the footprint and the ``[foundation_z, roof_z]``
 span.  This is a conservative over-approximation that keeps A* occupancy checks
 and SFC box tests fast and easy to reason about.
 
-Occupancy is queried against *inflated* obstacles so a point/segment is treated
-as the vehicle centre.  Inflation is the Minkowski sum of the obstacle with the
-vehicle radius:
+Occupancy is queried against obstacles so a point/segment is treated as the
+vehicle centre.  Callers may supply already-inflated AABBs, or keep the
+physical AABBs and set ``xy_clearance_m`` for an exact horizontal Euclidean
+clearance:
 
     free(p)  <=>  p in world bounds
                   and  p_z >= ground_z + ground_clearance
                   and  p_z <= ceiling_z
                   and  for every obstacle B:  p not in  B (+) inflation
 
-where ``(+) inflation`` grows B by ``inflation_xy`` horizontally, by
-``vertical_margin`` downward and by ``vertical_margin + roof_clearance`` upward.
+where ``(+) inflation`` is a rectangle with rounded corners in XY, extruded
+over the obstacle's existing Z span.
 """
 
 from __future__ import annotations
@@ -44,21 +45,37 @@ def _find_buildings(node):
 
 @dataclass(frozen=True)
 class WorldModel:
-    """Inflated AABB obstacle field with O(N) vectorised free-space queries.
+    """AABB obstacle field with O(N) vectorised free-space queries.
 
     Attributes
     ----------
     boxes_min, boxes_max : (N, 3) float arrays
-        Lower / upper corners of the *already inflated* obstacle AABBs.
+        Lower / upper corners of the base obstacle AABBs. They may already be
+        inflated by the caller.
     bounds_min, bounds_max : (3,) float arrays
         Planning geofence corners (ENU).  ``bounds_min[2]`` encodes the ground
         clearance floor and ``bounds_max[2]`` the ceiling.
+    xy_clearance_m : float
+        Optional exact Euclidean XY dilation around each base AABB. The default
+        zero preserves the historical AABB contract.
     """
 
     boxes_min: np.ndarray
     boxes_max: np.ndarray
     bounds_min: np.ndarray
     bounds_max: np.ndarray
+    xy_clearance_m: float = 0.0
+
+    def __post_init__(self):
+        try:
+            clearance = float(self.xy_clearance_m)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "xy_clearance_m must be a finite non-negative scalar") from exc
+        if not np.isfinite(clearance) or clearance < 0.0:
+            raise ValueError(
+                "xy_clearance_m must be a finite non-negative scalar")
+        object.__setattr__(self, "xy_clearance_m", clearance)
 
     # ---------------------------------------------------------------- builders
     @staticmethod
@@ -74,11 +91,11 @@ class WorldModel:
     ) -> "WorldModel":
         """Load building AABB obstacles from a city coordinate YAML.
 
-        ``inflation_xy_m`` is the horizontal wall clearance (path-centre keeps at
-        least this far from any wall).  When ``overfly_allowed`` is False every
-        building is treated as a full-height no-fly column (top set well above the
-        ceiling), so the vehicle must route around *all* buildings laterally
-        regardless of their height instead of flying over short ones.
+        ``inflation_xy_m`` is the horizontal wall clearance (path-centre keeps
+        at least this far from any wall).  When ``overfly_allowed`` is False
+        every building is treated as a full-height no-fly column (top set well
+        above the ceiling), so the vehicle must route around *all* buildings
+        laterally regardless of their height instead of flying over short ones.
         """
         document = yaml.safe_load(Path(yaml_path).read_text(encoding="utf-8"))
         buildings = _find_buildings(document) or []
@@ -92,7 +109,8 @@ class WorldModel:
             z1 = float(b["roof_z_m"])
             top = (z1 + vertical_margin_m + roof_clearance_m if overfly_allowed
                    else ceiling_m + 1.0e4)               # full-height column
-            lows.append((x0 - inflation_xy_m, y0 - inflation_xy_m, z0 - vertical_margin_m))
+            lows.append((x0 - inflation_xy_m, y0 - inflation_xy_m,
+                         z0 - vertical_margin_m))
             highs.append((x1 + inflation_xy_m, y1 + inflation_xy_m, top))
         bounds = document.get("map", {}).get("bounds_enu_m", {})
         xb = bounds.get("x", [-1e4, 1e4])
@@ -102,7 +120,8 @@ class WorldModel:
         return WorldModel(
             boxes_min=np.asarray(lows, dtype=float).reshape(-1, 3),
             boxes_max=np.asarray(highs, dtype=float).reshape(-1, 3),
-            bounds_min=np.asarray([xb[0], yb[0], ground + ground_clearance_m], float),
+            bounds_min=np.asarray(
+                [xb[0], yb[0], ground + ground_clearance_m], float),
             bounds_max=np.asarray([xb[1], yb[1], ceiling_m], float),
         )
 
@@ -112,31 +131,37 @@ class WorldModel:
         boxes_max: np.ndarray,
         bounds_min,
         bounds_max,
+        *,
+        xy_clearance_m: float = 0.0,
     ) -> "WorldModel":
         return WorldModel(
             np.asarray(boxes_min, float).reshape(-1, 3),
             np.asarray(boxes_max, float).reshape(-1, 3),
             np.asarray(bounds_min, float),
             np.asarray(bounds_max, float),
+            xy_clearance_m,
         )
 
-    # ------------------------------------------------------------- free queries
+    # ------------------------------------------------------------ free queries
     def in_bounds(self, points: np.ndarray) -> np.ndarray:
         p = np.atleast_2d(points)
-        return np.all((p >= self.bounds_min) & (p <= self.bounds_max), axis=1)
+        return np.all(
+            (p >= self.bounds_min) & (p <= self.bounds_max), axis=1)
 
     def is_free(self, points: np.ndarray) -> np.ndarray:
         """Vectorised point-in-free-space test.  Returns a boolean array."""
         p = np.atleast_2d(np.asarray(points, dtype=float))
         free = self.in_bounds(p)
         if self.boxes_min.size:
-            # inside box i  <=>  all axes:  min_i <= p <= max_i
-            # p: (P,1,3), boxes: (1,N,3)  ->  (P,N)
-            inside = np.all(
-                (p[:, None, :] >= self.boxes_min[None, :, :])
-                & (p[:, None, :] <= self.boxes_max[None, :, :]),
-                axis=2,
-            )
+            xy_gap = (np.maximum(
+                self.boxes_min[None, :, :2] - p[:, None, :2], 0.0)
+                + np.maximum(
+                    p[:, None, :2] - self.boxes_max[None, :, :2], 0.0))
+            inside_xy = np.einsum("pni,pni->pn", xy_gap, xy_gap) \
+                <= self.xy_clearance_m ** 2
+            inside_z = ((p[:, None, 2] >= self.boxes_min[None, :, 2])
+                        & (p[:, None, 2] <= self.boxes_max[None, :, 2]))
+            inside = inside_xy & inside_z
             free &= ~np.any(inside, axis=1)
         return free
 
@@ -158,19 +183,14 @@ class WorldModel:
 
         direction = b - a
         for low, high in zip(self.boxes_min, self.boxes_max):
-            enter, leave = 0.0, 1.0
-            for axis in range(3):
-                if direction[axis] == 0.0:
-                    if a[axis] < low[axis] or a[axis] > high[axis]:
-                        break
-                    continue
-                first = (low[axis] - a[axis]) / direction[axis]
-                second = (high[axis] - a[axis]) / direction[axis]
-                enter = max(enter, min(first, second))
-                leave = min(leave, max(first, second))
-                if enter > leave:
-                    break
-            else:
+            clipped = _clip_segment_to_z_span(a, direction, low[2], high[2])
+            if clipped is None:
+                continue
+            start_xy = a[:2] + clipped[0] * direction[:2]
+            end_xy = a[:2] + clipped[1] * direction[:2]
+            if (_segment_aabb_distance_squared_xy(
+                    start_xy, end_xy, low[:2], high[:2])
+                    <= self.xy_clearance_m ** 2):
                 return False
         return True
 
@@ -185,8 +205,13 @@ class WorldModel:
         p = np.asarray(point, dtype=float)
         if not self.boxes_min.size:
             return float("inf")
-        gap = np.maximum(self.boxes_min - p, 0.0) + np.maximum(p - self.boxes_max, 0.0)
-        return float(np.sqrt(np.einsum("ij,ij->i", gap, gap)).min())
+        xy_gap = (np.maximum(self.boxes_min[:, :2] - p[:2], 0.0)
+                  + np.maximum(p[:2] - self.boxes_max[:, :2], 0.0))
+        xy_distance = np.sqrt(np.einsum("ij,ij->i", xy_gap, xy_gap))
+        xy_distance = np.maximum(xy_distance - self.xy_clearance_m, 0.0)
+        z_gap = (np.maximum(self.boxes_min[:, 2] - p[2], 0.0)
+                 + np.maximum(p[2] - self.boxes_max[:, 2], 0.0))
+        return float(np.hypot(xy_distance, z_gap).min())
 
     def box_is_free(self, lo: np.ndarray, hi: np.ndarray) -> bool:
         """True iff the query AABB [lo, hi] overlaps no obstacle and stays in bounds.
@@ -200,8 +225,72 @@ class WorldModel:
             return False
         if not self.boxes_min.size:
             return True
-        overlap = np.all(
-            (lo[None, :] <= self.boxes_max) & (hi[None, :] >= self.boxes_min),
-            axis=1,
-        )
+        z_overlap = ((lo[2] <= self.boxes_max[:, 2])
+                     & (hi[2] >= self.boxes_min[:, 2]))
+        xy_gap = (np.maximum(self.boxes_min[:, :2] - hi[:2], 0.0)
+                  + np.maximum(lo[:2] - self.boxes_max[:, :2], 0.0))
+        xy_overlap = np.einsum("ij,ij->i", xy_gap, xy_gap) \
+            <= self.xy_clearance_m ** 2
+        overlap = z_overlap & xy_overlap
         return not bool(np.any(overlap))
+
+
+def _clip_segment_to_z_span(a, direction, low_z, high_z):
+    """Return the segment parameter interval inside an inclusive Z span."""
+    if direction[2] == 0.0:
+        return (0.0, 1.0) if low_z <= a[2] <= high_z else None
+    first = (low_z - a[2]) / direction[2]
+    second = (high_z - a[2]) / direction[2]
+    enter = max(0.0, min(first, second))
+    leave = min(1.0, max(first, second))
+    return None if enter > leave else (enter, leave)
+
+
+def _point_segment_distance_squared_xy(point, a, b):
+    direction = b - a
+    length_squared = float(direction @ direction)
+    if length_squared == 0.0:
+        delta = point - a
+        return float(delta @ delta)
+    fraction = float(np.clip(
+        (point - a) @ direction / length_squared, 0.0, 1.0))
+    delta = point - (a + fraction * direction)
+    return float(delta @ delta)
+
+
+def _point_aabb_distance_squared_xy(point, low, high):
+    gap = np.maximum(low - point, 0.0) + np.maximum(point - high, 0.0)
+    return float(gap @ gap)
+
+
+def _segment_aabb_distance_squared_xy(a, b, low, high):
+    """Exact squared distance between a 2-D segment and an AABB rectangle."""
+    direction = b - a
+    enter, leave = 0.0, 1.0
+    for axis in range(2):
+        if direction[axis] == 0.0:
+            if a[axis] < low[axis] or a[axis] > high[axis]:
+                break
+            continue
+        first = (low[axis] - a[axis]) / direction[axis]
+        second = (high[axis] - a[axis]) / direction[axis]
+        enter = max(enter, min(first, second))
+        leave = min(leave, max(first, second))
+        if enter > leave:
+            break
+    else:
+        return 0.0
+
+    distance_squared = min(
+        _point_aabb_distance_squared_xy(a, low, high),
+        _point_aabb_distance_squared_xy(b, low, high),
+    )
+    for corner in (
+            np.array([low[0], low[1]]),
+            np.array([low[0], high[1]]),
+            np.array([high[0], low[1]]),
+            np.array([high[0], high[1]])):
+        distance_squared = min(
+            distance_squared,
+            _point_segment_distance_squared_xy(corner, a, b))
+    return distance_squared

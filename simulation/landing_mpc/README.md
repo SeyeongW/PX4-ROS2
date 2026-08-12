@@ -46,9 +46,10 @@ Perception + mission nodes (the live stack, launched by
   Goto/PositionSmoothing owns the temporal profile through
   `MPC_XY_CRUISE=3`, `MPC_ACC_HOR`, and `MPC_JERK_AUTO`, with
   `MPC_XY_VEL_MAX=10` as the hard horizontal cap.
-- **Phase 3 — landing**: `land` uses A* → geometry-only B-spline `RETURN` while
-  the live trailer is not directly reachable, replanning after each 3 m of
-  live GPS/cue movement. Within the validated 6 m
+- **Phase 3 — landing**: `land` builds one A* → geometry-only B-spline
+  `RETURN`, then replaces only a validated 2.5 m-safe tail every two seconds
+  from the latest live GPS/cue. A full replan is the fallback only when no safe
+  tail connector exists; the prior route remains active throughout. Within the validated 6 m
   handoff corridor it publishes `LandingTargetPose`, requests PX4
   `NAV_PRECLAND`, and stops all Offboard setpoints. PX4 owns speed,
   acceleration, attitude, descent, contact detection and auto-disarm. ArUco
@@ -79,7 +80,7 @@ One command brings up Gazebo + PX4 + the perception chain + the mission, with
 every switch already set:
 
 ```bash
-./simulation/gazebo/run_gimbal.sh mission        # CJU: takeoff → land
+./simulation/gazebo/run_gimbal.sh mission        # CJU: takeoff → mission → land
 ./simulation/gazebo/run_gimbal.sh baseline       # CJU body-fixed camera comparison
 HEADLESS=1 ./simulation/gazebo/run_gimbal.sh mission
 LANDING_MAP=mpc-landing-moving ./simulation/gazebo/run_gimbal.sh mission

@@ -46,12 +46,15 @@ def _wait_for_service(client, deadline: float, service_name: str) -> None:
 
 
 def _call(node: Node, client, request, deadline: float):
-    future = client.call_async(request)
-    remaining = max(0.0, deadline - time.monotonic())
-    rclpy.spin_until_future_complete(node, future, timeout_sec=remaining)
-    if not future.done() or future.result() is None:
-        raise RuntimeError(f"parameter request timed out: {client.srv_name}")
-    return future.result()
+    while time.monotonic() < deadline:
+        future = client.call_async(request)
+        remaining = max(0.0, deadline - time.monotonic())
+        rclpy.spin_until_future_complete(
+            node, future, timeout_sec=min(2.0, remaining))
+        if future.done() and future.result() is not None:
+            return future.result()
+        future.cancel()
+    raise RuntimeError(f"parameter request timed out: {client.srv_name}")
 
 
 def _require_sim_time(node: Node, remote_node: str, deadline: float) -> None:

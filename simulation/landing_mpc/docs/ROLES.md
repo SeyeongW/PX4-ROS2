@@ -96,13 +96,14 @@ predictor가 없으면 MPC가 움직이는 표적을 놓치고, reference가 없
   Goto/PositionSmoothing이 `MPC_XY_CRUISE=3`, `MPC_ACC_HOR`,
   `MPC_JERK_AUTO`로 속도·가속도·jerk를 만듭니다.
   `MPC_XY_VEL_MAX=10`은 절대 수평 상한입니다.
-- **Phase 3 `land`**: `RETURN_PLAN ↔ RETURN`에서 live trailer까지
-  A*→geometry-only B-spline을 사용합니다. 15 m 이내의 YAML-safe 직선이
+- **Phase 3 `land`**: 최초 `RETURN_PLAN`에서 A*→geometry-only B-spline을
+  만들고 `RETURN`에서는 2초마다 검증된 tail만 live trailer로 갱신합니다.
+  tail 연결이 막힐 때만 전체 플래너를 다시 사용합니다. 6 m 이내의 YAML-safe 직선이
   확보되면 `LandingTargetPose`와 `NAV_PRECLAND`로 PX4에 인계하고
   Offboard setpoint를 중단합니다. PX4가 이후 속도·가속·자세·하강·
   접촉판정·자동 무장해제를 전부 담당합니다. ArUco는 target 위치만
-  보정합니다. `ABORT`는 stale cue 복구용이며 `READY`는 planner 미설정
-  fallback입니다.
+  보정합니다. `ABORT`는 fail-closed hold이며 `READY`는
+  `takeoff` 후 `mission` 명령을 기다리는 호버입니다.
 - B-spline은 속도나 P/V/A 시간표를 소유하지 않습니다.
 - **다른 setpoint 발행자와 절대 같이 띄우지 마세요.**
 - 원칙: **큐가 날고, 마커가 중심을 잡는다.** `RETURN` 이후 착륙 구간은
@@ -133,9 +134,10 @@ predictor가 없으면 MPC가 움직이는 표적을 놓치고, reference가 없
 HEADLESS=1 ./simulation/gazebo/run_gimbal.sh mission
 ```
 
-전체 CJU 미션에서는 `takeoff`, `land`를 순서대로 입력합니다.
-이륙 안정 후 A*→geometry-only B-spline→PX4 Goto 지도 구간은
-자동으로 시작되고, `land`는 안전한 live 직선을 우선합니다.
+전체 CJU 미션에서는 `takeoff`, `mission`, `land`를 순서대로 입력합니다.
+`takeoff` 후 `READY`에서 호버하고, `mission`이
+A*→geometry-only B-spline→PX4 Goto 지도 구간을 시작합니다.
+`land`는 안전한 live 직선을 우선합니다.
 
 ---
 

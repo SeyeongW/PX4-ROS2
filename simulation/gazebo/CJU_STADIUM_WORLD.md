@@ -39,24 +39,25 @@ Run the integrated experiment:
 ./simulation/gazebo/run_gimbal.sh mission
 ```
 
-Enter `takeoff`, then `land`. Phase 0 `PRECHECK` validates PX4 feedback, the
+Enter `takeoff`, `mission`, then `land`. Phase 0 `PRECHECK` validates PX4 feedback, the
 live cue, planner, and Offboard readiness; Phase 1 requests PX4
-`NAV_TAKEOFF` to 5 m. In Phase 2, YAML A* provides obstacle topology, a validated
+`NAV_TAKEOFF` to 5 m and holds `READY`. In Phase 2, `mission` makes YAML A* provide obstacle topology, a validated
 geometry-only B-spline reinforces that spatial path, and PX4 Goto tracks it to
 `(50,50)` and `HOVER`. The `stadium_endpoint` remains `(0,0)`;
 the drone and trailer start together on the track centre at the integer map
 coordinate `(5,0)`, with the drone on the 2.051 m deck. The drone flies at
 0.5 m/s to 5 m, then uses 1 m-grid A* topology plus the geometry B-spline/PX4
 Goto route to `(50,50)` around twenty
-`0.45 x 0.35 x 10 m` barriers at fixed integer centres inside the
-`(0,0)` to `(40,40)` infield square: `(25,24)`, `(33,37)`, `(15,7)`,
-`(14,14)`, `(39,30)`, `(21,11)`, `(28,27)`, `(32,17)`, `(17,40)`,
-`(33,24)`, `(32,6)`, `(26,17)`, `(23,5)`, `(24,25)`, `(15,34)`,
-`(18,22)`, `(27,38)`, `(32,30)`, `(28,36)`, and `(23,34)`. The trailer moves
+`0.45 x 0.35 x 10 m` barriers at seed-5053-based integer centres sampled from
+`(0,0)` to `(50,50)` and filtered inside the infield, with barrier 2 manually
+placed above barrier 17: `(33,10)`, `(18,39)`,
+`(21,25)`, `(49,41)`, `(31,36)`, `(45,11)`, `(39,21)`, `(42,50)`, `(17,18)`,
+`(22,33)`, `(44,33)`, `(24,12)`, `(39,0)`, `(30,23)`, `(49,1)`, `(21,3)`,
+`(15,34)`, `(42,41)`, `(35,49)`, and `(28,46)`. The trailer moves
 50 m forward along the stadium long axis and 50 m backward at 1 m/s, repeating
-that fixed segment. The A* uses 2 m obstacle inflation and exact segment/AABB
-intersection tests. In Phase 3, `land` uses A* → geometry-only B-spline
-`RETURN` until a live 15 m direct segment is YAML-safe. It then supplies
+that fixed segment. The A* and exact segment checks use a 2 m Euclidean XY
+radius around each physical obstacle AABB. In Phase 3, `land` uses A* → geometry-only B-spline
+`RETURN` until a live 6 m direct segment is YAML-safe. It then supplies
 `LandingTargetPose`, requests PX4 `NAV_PRECLAND`, and stops Offboard control.
 PX4 owns speed, acceleration, attitude, descent, contact detection and
 auto-disarm. ArUco remains only a horizontal landing-target correction.

@@ -169,12 +169,14 @@ facilities:
 mission:
   coordinate_frame: stadium_endpoint
   command_topic: /mission/command
-  command_sequence: [takeoff, land]
+  command_sequence: [takeoff, mission, land]
   cruise_altitude_m: 5.0
   goal_m: [50, 50]
   planner_resolution_m: 1
   obstacle_clearance_m: 2
-  bspline_clearance_margin_m: 1.0
+  # Planning reserve for PX4 tracking error; the hard/runtime clearance below
+  # remains the exact Euclidean 2 m contract.
+  bspline_clearance_margin_m: 0.5
   bspline_control_spacing_m: 2.0
   bspline_sample_spacing_m: 0.1
   # Spatial carrot only; PX4 Goto owns time/speed. Runtime collision checks
@@ -185,29 +187,31 @@ mission:
   # The inflated obstacles stay at least 6.775 m from the trailer route.
   # Keep A*/B-spline authority until the vehicle is inside that corridor.
   precland_handoff_m: 6.0
-  # Refresh the return A*/B-spline after this much live GPS/cue XY movement.
-  return_replan_distance_m: 3.0
-  # A rejected return plan remains fail-closed and retries at this cadence.
-  return_replan_min_period_s: 1.0
-  # Fixed reproducible pseudo-random integer centres inside the 0..40 m square.
+  # Retarget only the validated return path tail every two seconds. Full
+  # A*/B-spline is a fallback only when no 2.5 m-safe tail connector exists.
+  return_replan_min_period_s: 2.0
+  obstacle_layout_seed: 5053
+  obstacle_generation_bounds_m: {x: [0, 50], y: [0, 50]}
+  # Seed-5053 integer centres with barrier_2 manually placed directly above
+  # barrier_17. All centres remain inside x=14..50, y=0..50.
   obstacles:
-    - {name: barrier_1, center_m: [25, 24, 5], size_m: [0.45, 0.35, 10]}
-    - {name: barrier_2, center_m: [33, 37, 5], size_m: [0.45, 0.35, 10]}
-    - {name: barrier_3, center_m: [15, 7, 5], size_m: [0.45, 0.35, 10]}
-    - {name: barrier_4, center_m: [14, 14, 5], size_m: [0.45, 0.35, 10]}
-    - {name: barrier_5, center_m: [39, 30, 5], size_m: [0.45, 0.35, 10]}
-    - {name: barrier_6, center_m: [21, 11, 5], size_m: [0.45, 0.35, 10]}
-    - {name: barrier_7, center_m: [28, 27, 5], size_m: [0.45, 0.35, 10]}
-    - {name: barrier_8, center_m: [32, 17, 5], size_m: [0.45, 0.35, 10]}
-    - {name: barrier_9, center_m: [17, 40, 5], size_m: [0.45, 0.35, 10]}
-    - {name: barrier_10, center_m: [33, 24, 5], size_m: [0.45, 0.35, 10]}
-    - {name: barrier_11, center_m: [32, 6, 5], size_m: [0.45, 0.35, 10]}
-    - {name: barrier_12, center_m: [26, 17, 5], size_m: [0.45, 0.35, 10]}
-    - {name: barrier_13, center_m: [23, 5, 5], size_m: [0.45, 0.35, 10]}
-    - {name: barrier_14, center_m: [24, 25, 5], size_m: [0.45, 0.35, 10]}
-    - {name: barrier_15, center_m: [15, 34, 5], size_m: [0.45, 0.35, 10]}
-    - {name: barrier_16, center_m: [18, 22, 5], size_m: [0.45, 0.35, 10]}
-    - {name: barrier_17, center_m: [27, 38, 5], size_m: [0.45, 0.35, 10]}
-    - {name: barrier_18, center_m: [32, 30, 5], size_m: [0.45, 0.35, 10]}
-    - {name: barrier_19, center_m: [28, 36, 5], size_m: [0.45, 0.35, 10]}
-    - {name: barrier_20, center_m: [23, 34, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_1, center_m: [33, 10, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_2, center_m: [18, 39, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_3, center_m: [21, 25, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_4, center_m: [49, 41, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_5, center_m: [31, 36, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_6, center_m: [45, 11, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_7, center_m: [39, 21, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_8, center_m: [42, 50, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_9, center_m: [17, 18, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_10, center_m: [22, 33, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_11, center_m: [44, 33, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_12, center_m: [24, 12, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_13, center_m: [39, 0, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_14, center_m: [30, 23, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_15, center_m: [49, 1, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_16, center_m: [21, 3, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_17, center_m: [15, 34, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_18, center_m: [42, 41, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_19, center_m: [35, 49, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_20, center_m: [28, 46, 5], size_m: [0.45, 0.35, 10]}

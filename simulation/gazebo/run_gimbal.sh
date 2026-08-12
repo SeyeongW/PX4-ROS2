@@ -91,6 +91,7 @@ print(f"{marker_world_z - local_origin_z:.9f}")
 print(float(document.get("mission", {}).get("cruise_altitude_m", 6.0)))
 print(trailer["odometry_topic"])
 print(float(trailer["cruise_speed_m_s"]))
+print(float(trailer["command_rate_hz"]))
 PY
 )
 LANDING_SPAWN_ENU="${LANDING_CONFIG[0]}"
@@ -98,6 +99,7 @@ LANDING_DECK_Z="${LANDING_CONFIG[1]}"
 LANDING_TAKEOFF_ALT="${LANDING_CONFIG[2]}"
 LANDING_ODOMETRY_TOPIC="${LANDING_CONFIG[3]}"
 LANDING_TRAILER_SPEED="${LANDING_CONFIG[4]}"
+LANDING_CUE_RATE="${LANDING_CONFIG[5]}"
 
 XRCE_LOG="$PX4_MAP_RUNTIME_DIR/gimbal_xrce.log"
 SIM_LOG="$PX4_MAP_RUNTIME_DIR/gimbal_sim.log"
@@ -392,6 +394,7 @@ if [[ "$RUN_MISSION" == "1" ]]; then
   setsid ros2 run landing_mpc trailer_cue_node --ros-args \
     -p use_sim_time:=true -p world:="$LANDING_WORLD" \
     -p "spawn_enu:=$LANDING_SPAWN_ENU" -p deck_z:="$LANDING_DECK_Z" \
+    -p rate_hz:="$LANDING_CUE_RATE" \
     >"$CUE_LOG" 2>&1 &
   CUE_PID=$!
   PIDS+=("$CUE_PID")
@@ -500,9 +503,9 @@ if [[ "$RUN_MISSION" == "1" && "$LANDING_MAP" == "cju-track" ]]; then
     return "$status"
   }
 
-  commands=(takeoff land)
+  commands=(takeoff mission land)
   step=0
-  echo '  명령 순서: takeoff → 자동 A*/geometry B-spline/PX4 Goto → land'
+  echo '  명령 순서: takeoff → mission → land'
   while (( step < ${#commands[@]} )); do
     IFS= read -r -p '  명령> ' command || break
     if [[ "$command" != "${commands[$step]}" ]]; then
@@ -513,8 +516,19 @@ if [[ "$RUN_MISSION" == "1" && "$LANDING_MAP" == "cju-track" ]]; then
       takeoff)
         echo '  Phase 0: 상태/센서/PX4/경로계획기 PRECHECK 확인 중...'
         echo "  Phase 1: PX4 native takeoff — 고도 ${LANDING_TAKEOFF_ALT} m..."
-        send_until_state takeoff 'TAKEOFF|MISSION_PLAN|MISSION|HOVER' 10 || {
+        send_until_state takeoff 'TAKEOFF|READY' 10 || {
           retry_command 'TAKEOFF 상태 확인'
+          continue
+        }
+        wait_for_states READY 120 || {
+          retry_command 'READY 호버 확인'
+          continue
+        }
+        echo "  Phase 1 완료 — ${LANDING_TAKEOFF_ALT} m READY, mission 명령 대기"
+        ;;
+      mission)
+        send_until_state mission 'MISSION_PLAN|MISSION|HOVER' 10 || {
+          retry_command 'Phase 2 경로 계획 확인'
           continue
         }
         wait_for_states 'MISSION|HOVER' 120 || {

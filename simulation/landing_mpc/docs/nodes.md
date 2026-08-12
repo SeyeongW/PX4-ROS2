@@ -513,14 +513,14 @@ YAML의 `stadium_endpoint` 좌표가 아니다.
 |---|---|---|
 | `PRECHECK` | PX4 상태 + 큐 + planner | 유효성·failsafe·preflight 확인, Offboard 승인 대기 |
 | `TAKEOFF` | — | PX4 `NAV_TAKEOFF`로 5 m 이륙 |
-| `READY` | — | 맵 planner가 없을 때의 fallback hover |
+| `READY` | — | 5 m 호버, `mission` 명령 대기 |
 | `MISSION_PLAN` | YAML 장애물 | 별도 프로세스에서 A*→geometry-only B-spline 생성·정확 충돌 검증 |
 | `MISSION` | B-spline 공간 경로 | PX4 Goto로 YAML `(50,50)`까지 장애물 회피 추종 |
 | `HOVER` | map goal | `(50,50)`, 고도 5 m 유지, `land` 대기 |
-| `RETURN_PLAN` | YAML 장애물 + 최신 큐 | direct 직선이 막혔을 때만 트레일러 스냅샷까지 A*→geometry-only B-spline 재계획 |
-| `RETURN` | B-spline 공간 경로 | PX4 Goto 추종, 15 m live 직선이 YAML-safe면 native landing으로 인계 |
+| `RETURN_PLAN` | YAML 장애물 + 최신 큐 | 최초 복귀 또는 tail 연결 실패 때만 A*→geometry-only B-spline 생성 |
+| `RETURN` | B-spline + live cue | 기존 prefix 추종, 2초마다 2.5 m-safe tail만 교체, 6 m safe 직선에서 native landing 인계 |
 | `PRECLAND` | cue + ArUco 수평 보정 | `LandingTargetPose`만 갱신; PX4가 비행·하강·접촉판정·자동 disarm |
-| `ABORT` | 현재 XY hold | 접근 실패 시 상승 후 최신 큐로 A* 재진입 |
+| `ABORT` | 현재 XY hold | cue/안전경로 상실 시 fail-closed 정지 |
 
 Phase 0은 `PRECHECK`, Phase 1은 `TAKEOFF`, Phase 2는
 `MISSION_PLAN → MISSION → HOVER`로 그룹화된다. Phase 2의 B-spline은
@@ -532,9 +532,10 @@ Goto/PositionSmoothing이 `MPC_XY_CRUISE=3`, `MPC_ACC_HOR`,
 6 m lookahead는 시간 기반 진행값이 아닌 공간 목표이며, exact 선분 검사가
 막힘을 찾으면 안전한 거리까지 줄이거나 현재 위치에서 재계획한다.
 
-**Phase 3 `land` 전환 조건**: live trailer까지 15 m보다 멀거나 직선이
-YAML 장애물에 막히면 `RETURN_PLAN → RETURN`의 A*→geometry-only
-B-spline을 사용한다. 15 m 이내에서 직선이 안전해지면 mission manager는
+**Phase 3 `land` 전환 조건**: live trailer까지 6 m보다 멀거나 직선이
+YAML 장애물에 막히면 최초 `RETURN_PLAN → RETURN`에서 A*→geometry-only
+B-spline을 만들고 이후 2초마다 tail만 갱신한다. tail 연결 실패 때만 전체
+플래너를 다시 사용한다. 6 m 이내에서 직선이 안전해지면 mission manager는
 `LandingTargetPose`를 갱신하고 PX4 `NAV_PRECLAND`를 요청한다. PX4가
 `AUTO_PRECLAND`를 확인하기 전까지만 현재 위치 Offboard hold를 유지하며,
 확인 뒤에는 OCM/Trajectory/Goto를 모두 중단한다. 이후 속도·가속·jerk·
