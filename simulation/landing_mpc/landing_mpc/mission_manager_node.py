@@ -469,6 +469,7 @@ class MissionManagerNode(Node):
         self._plan_goal = None
         self._last_safe_goto = None
         self._planning_goto = None
+        self._precland_goto = None
         self._return_plan_goal = None
         self._last_return_plan_t = None
         self.p_d = None
@@ -935,6 +936,13 @@ class MissionManagerNode(Node):
         """End Offboard authority and let PX4 own the complete landing."""
         if not self._publish_landing_target():
             return False
+        candidate = getattr(self, '_last_safe_goto', None)
+        self._precland_goto = (
+            np.asarray(candidate, float).copy()
+            if candidate is not None
+            and _mission_segment_is_free(
+                self.mission_map_yaml, self.p_d, candidate)
+            else None)
         self._hold_pos = self.p_d.copy()
         self._publish_planned_path(None)
         self._set_state(
@@ -1270,7 +1278,16 @@ class MissionManagerNode(Node):
                 self._set_state('DONE', '(PX4 landed and auto-disarmed)')
                 return
             if not native_precland:
-                self._send(self._hold_pos)
+                # Preserve PX4's Goto smoother until the native-mode handoff.
+                bridge_goto = getattr(self, '_precland_goto', None)
+                if (published and bridge_goto is not None
+                        and _mission_segment_is_free(
+                            self.mission_map_yaml, self.p_d, bridge_goto)):
+                    self._send_goto(bridge_goto)
+                else:
+                    self._precland_goto = None
+                    self._hold_pos = self.p_d.copy()
+                    self._send(self._hold_pos)
                 if (published and now - self._precland_since >= 0.1
                         and (self._last_precland_cmd is None
                              or now - self._last_precland_cmd >= 1.0)):

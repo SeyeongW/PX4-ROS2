@@ -1253,12 +1253,19 @@ def test_landing_target_pose_maps_fresh_local_enu_to_px4_ned():
     assert len(published) == 1
 
 
-def test_precland_handoff_sends_one_native_px4_command():
+def test_precland_handoff_sends_one_native_px4_command(monkeypatch):
     commands = []
     targets = []
+    goto = []
+    segment_safe = [True]
+    monkeypatch.setattr(
+        mission_module, '_mission_segment_is_free',
+        lambda *_: segment_safe[0])
     state = SimpleNamespace(
         state='RETURN',
-        p_d=np.zeros(3),
+        p_d=np.array([0.0, 0.0, 5.0]),
+        _last_safe_goto=np.array([0.5, 0.0, 5.0]),
+        mission_map_yaml=str(MAP),
         _cmd=lambda *args: commands.append(args),
         _publish_landing_target=lambda: targets.append(True) or True,
         _publish_planned_path=lambda path: targets.append(path),
@@ -1275,23 +1282,40 @@ def test_precland_handoff_sends_one_native_px4_command():
     assert state.state == 'PRECLAND'
     assert targets == [True, None] and commands == []
 
-    handoff = {'ocm': 0, 'hold': 0}
+    handoff = {'ocm': 0, 'hold': []}
     forbidden = lambda *_: (_ for _ in ()).throw(
-        AssertionError('Goto used during PRECLAND handoff'))
+        AssertionError('application flight control used after PRECLAND handoff'))
     state.k = 0
     state.state_pub = SimpleNamespace(publish=lambda _: None)
-    state.p_d = np.zeros(3)
+    state.p_d = np.array([0.0, 0.0, 5.0])
     state._status = SimpleNamespace(
         nav_state=VehicleStatus.NAVIGATION_STATE_OFFBOARD)
     state._ocm = lambda: handoff.__setitem__('ocm', handoff['ocm'] + 1)
-    state._send = lambda *_: handoff.__setitem__('hold', handoff['hold'] + 1)
-    state._send_goto = forbidden
+    state._send = lambda target: handoff['hold'].append(
+        np.asarray(target).copy())
+    state._send_goto = lambda target: goto.append(np.asarray(target).copy())
     state._now = lambda: 10.2
     state.landed = False
     state.armed = True
     MissionManagerNode._tick(state)
     assert commands == [(VehicleCommand.VEHICLE_CMD_NAV_PRECLAND,)]
-    assert handoff == {'ocm': 1, 'hold': 1}
+    assert handoff == {'ocm': 1, 'hold': []}
+    assert len(goto) == 1
+    assert np.allclose(goto[0], state._last_safe_goto)
+
+    segment_safe[0] = False
+    MissionManagerNode._tick(state)
+    assert handoff['ocm'] == 2 and len(handoff['hold']) == 1
+    assert np.allclose(handoff['hold'][-1], state.p_d)
+    assert len(goto) == 1 and state._precland_goto is None
+
+    segment_safe[0] = True
+    state._precland_goto = state._last_safe_goto.copy()
+    state._publish_landing_target = lambda: False
+    MissionManagerNode._tick(state)
+    assert handoff['ocm'] == 3 and len(handoff['hold']) == 2
+    assert np.allclose(handoff['hold'][-1], state.p_d)
+    assert state._precland_goto is None
 
     state._status.nav_state = VehicleStatus.NAVIGATION_STATE_AUTO_PRECLAND
     state._ocm = state._send = state._send_goto = state._cmd = forbidden
