@@ -46,6 +46,8 @@ Subscribes
     /mavros/local_position/pose            geometry_msgs/PoseStamped
     /mavros/extended_state                 mavros_msgs/ExtendedState
     /mavros/battery                        sensor_msgs/BatteryState
+    /mavros/estimator_status               mavros_msgs/EstimatorStatus
+    /mavros/gpsstatus/gps1/raw             mavros_msgs/GPSRAW
     /perception/down/marker_pose           geometry_msgs/PoseStamped
     /perception/down/aruco_detected        std_msgs/Bool
 Publishes
@@ -79,8 +81,11 @@ from sensor_msgs.msg import BatteryState
 from std_msgs.msg import Bool, String
 from std_srvs.srv import Trigger
 
-from mavros_msgs.msg import ExtendedState, PositionTarget, State
+from mavros_msgs.msg import (EstimatorStatus, ExtendedState, GPSRAW,
+                             PositionTarget, State)
 from mavros_msgs.srv import CommandBool, CommandTOL, SetMode
+
+from .estimator import DEFAULT_SPEED_ACC_MAX, EstimatorHealth
 
 
 class Phase(str, Enum):
@@ -147,6 +152,11 @@ class ArucoLandingNode(Node):
         self._prompted = ''
         self._checks_logged = False
         self._waived: set[str] = set()
+        self._warned: set[str] = set()
+        self.ekf = EstimatorHealth(speed_acc_max=self.speed_acc_max)
+        # The ground the vehicle armed on, in EKF local z. Captured at arm
+        # rather than assumed to be 0 — see `_takeoff_target`.
+        self._z_ground: float | None = None
 
         self.create_subscription(State, '/mavros/state', self._on_state,
                                  _sensor_qos())
@@ -156,6 +166,13 @@ class ArucoLandingNode(Node):
                                  self._on_ext, _sensor_qos())
         self.create_subscription(BatteryState, '/mavros/battery',
                                  self._on_batt, _sensor_qos())
+        # Whether the EKF is actually being aided. A pose alone does not say so
+        # — see estimator.py, and the reason this node once prompted for an arm
+        # PX4 was always going to refuse.
+        self.create_subscription(EstimatorStatus, '/mavros/estimator_status',
+                                 self._on_est, _sensor_qos())
+        self.create_subscription(GPSRAW, '/mavros/gpsstatus/gps1/raw',
+                                 self._on_gps, _sensor_qos())
         # BEST_EFFORT to match the detector: aruco_pose_node publishes its
         # perception topics sensor-style, and a RELIABLE subscriber is
         # INCOMPATIBLE with a BEST_EFFORT publisher — DDS delivers nothing.
@@ -232,6 +249,12 @@ class ArucoLandingNode(Node):
         # --- preflight thresholds
         p('min_battery_v', 14.0)            # 4S nominal; raise for 6S
         p('require_battery', True)          # false only for bench tests
+        # Refuse the arm prompt while the EKF has no position aiding. Match this
+        # to the vehicle's EKF2_REQ_SACC so the message quotes the real limit —
+        # the default is the RAISED 1.0 m/s, not PX4's 0.5 (see estimator.py),
+        # so a vehicle still at 0.5 will refuse arms this check waved through.
+        p('require_gnss_aiding', True)
+        p('gps_speed_acc_max_m_s', DEFAULT_SPEED_ACC_MAX)
         p('skip_preflight', False)
         # --- flight controller. PX4 assumed (OFFBOARD); ArduPilot works too.
         p('offboard_mode', 'OFFBOARD')
@@ -259,6 +282,8 @@ class ArucoLandingNode(Node):
         self.touch_xy = float(g('touchdown_xy_m').value)
         self.min_batt = float(g('min_battery_v').value)
         self.require_batt = bool(g('require_battery').value)
+        self.require_gnss = bool(g('require_gnss_aiding').value)
+        self.speed_acc_max = float(g('gps_speed_acc_max_m_s').value)
         self.skip_preflight = bool(g('skip_preflight').value)
         self.mode_name = str(g('offboard_mode').value)
         self.prestream_s = float(g('offboard_prestream_s').value)
@@ -276,6 +301,21 @@ class ArucoLandingNode(Node):
     def _on_ext(self, m): self.ext = m
 
     def _on_batt(self, m): self.batt = m
+
+    def _on_est(self, m: EstimatorStatus) -> None:
+        self.ekf.on_status(
+            self._now(),
+            const_pos_mode=m.const_pos_mode_status_flag,
+            velocity_horiz=m.velocity_horiz_status_flag,
+            pos_horiz_abs=m.pos_horiz_abs_status_flag,
+            gps_glitch=m.gps_glitch_status_flag)
+
+    def _on_gps(self, m: GPSRAW) -> None:
+        # GPSRAW carries accuracies in mm and mm/s; EstimatorHealth works in
+        # metres, so the thresholds read like the PX4 parameters they mirror.
+        self.ekf.on_gps(self._now(), fix_type=m.fix_type,
+                        satellites=m.satellites_visible,
+                        h_acc_m=m.h_acc * 1e-3, vel_acc_m_s=m.vel_acc * 1e-3)
 
     def _on_detected(self, m):
         self.detected = bool(m.data)
@@ -383,6 +423,19 @@ class ArucoLandingNode(Node):
     def _alt(self) -> float:
         return float(self.pose.pose.position.z) if self.pose else float('nan')
 
+    def _takeoff_target(self) -> float:
+        """`takeoff_alt` above the GROUND, in EKF local z.
+
+        Not `takeoff_alt` itself. The EKF's z datum is wherever the estimator
+        happened to start, and it drifts: on the pad, disarmed, this airframe
+        has been seen reporting z = -5.98 m while standing still. Climbing to an
+        absolute z of `takeoff_alt` from there is an eleven-metre climb when
+        five were asked for. So the ground is measured at the moment of arming —
+        the vehicle is provably on it then — and the target is relative to that.
+        """
+        base = self._z_ground if self._z_ground is not None else 0.0
+        return base + self.takeoff_alt
+
     def _fresh_marker(self) -> bool:
         return (self.marker is not None
                 and (self._now() - self.marker_t) < self.marker_timeout)
@@ -417,18 +470,30 @@ class ArucoLandingNode(Node):
 
     # ------------------------------------------------------------- preflight
     def _preflight_ok(self) -> bool:
-        """Minimal: link up, EKF ready, disarmed, (opt) battery, detector alive.
+        """Minimal: link up, EKF aided, disarmed, (opt) battery, detector alive.
 
         `skip_preflight` waives every check EXCEPT local position (TAKEOFF
         regulates on `pose.z`; without it the climb setpoint is NaN and PX4
         discards it). The marker-pipeline check is ALIVE, not SEEING: the
         detector must be publishing, but the marker is not expected from the pad.
+
+        A POSE IS NOT AN ESTIMATE. MAVROS keeps publishing local_position even
+        when the EKF has fallen back to constant-position mode with no GNSS
+        fusion at all, so `pose is not None` says nothing about whether the
+        vehicle can hold position — and PX4 will refuse the OFFBOARD arm anyway.
+        The aiding check is what turns that into a message the operator can act
+        on instead of a rejection they never see (estimator.py has the numbers
+        from the day this was found).
         """
         reasons, waived = [], []
         if self.pose is None:
             reasons.append('no local position — EKF not ready')
 
         overridable = []
+        if self.require_gnss:
+            blocked = self.ekf.blocking_reason(self._now())
+            if blocked:
+                overridable.append(blocked)
         if not (self.state and self.state.connected):
             overridable.append('no FCU link (/mavros/state)')
         if self.state is None:
@@ -456,9 +521,16 @@ class ArucoLandingNode(Node):
                 for r in reasons:
                     self.get_logger().warn(f'preflight blocked: {r}')
             return False
+        # Anything that will not stop the flight but will shape it. Said once,
+        # before the gate, so it is a decision rather than a surprise.
+        warn = self.ekf.warning(self._now())
+        if warn and warn not in self._warned:
+            self._warned.add(warn)
+            self.get_logger().warn(f'preflight WARNING: {warn}')
         if not self._checks_logged:
             self._checks_logged = True
-            self.get_logger().info('preflight PASSED')
+            self.get_logger().info(
+                f'preflight PASSED — {self.ekf.summary(self._now())}')
         return True
 
     # ------------------------------------------------------------------- loop
@@ -499,6 +571,14 @@ class ArucoLandingNode(Node):
                 self._call_throttled(self.mode_cli, req, 'set_mode')
                 return
             if self.state and self.state.armed:
+                # Armed but still on the ground: the one moment the vehicle's
+                # true height is known, so this is where the climb datum comes
+                # from (`_takeoff_target`).
+                self._z_ground = self._alt()
+                self.get_logger().info(
+                    f'armed on the ground at local z={self._z_ground:.2f} m — '
+                    f'climbing to z={self._takeoff_target():.2f} m '
+                    f'({self.takeoff_alt:.1f} m above it)')
                 self._to(Phase.TAKEOFF)
                 return
             req = CommandBool.Request()
@@ -507,7 +587,7 @@ class ArucoLandingNode(Node):
             return
 
         if self.phase is Phase.TAKEOFF:
-            err = self.takeoff_alt - self._alt()
+            err = self._takeoff_target() - self._alt()
             if abs(err) <= self.alt_tol:
                 self._send(0.0, 0.0, 0.0)
                 self._to(Phase.SEARCH)

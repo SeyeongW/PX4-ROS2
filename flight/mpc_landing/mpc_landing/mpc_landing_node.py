@@ -57,7 +57,6 @@ Services (called)
 
 from __future__ import annotations
 
-import math
 import sys
 import threading
 
@@ -71,39 +70,17 @@ from sensor_msgs.msg import BatteryState
 from std_msgs.msg import Bool, String
 from std_srvs.srv import Trigger
 
-from mavros_msgs.msg import ExtendedState, PositionTarget, State
+from mavros_msgs.msg import (EstimatorStatus, ExtendedState, GPSRAW,
+                             PositionTarget, State)
 from mavros_msgs.srv import CommandBool, CommandTOL, SetMode
 
 from landing_mpc.mpc import LandingMPC
 from landing_mpc.predictor import predict_const_vel
 from landing_mpc.reference import HorizonReference
 
+from .estimator import DEFAULT_SPEED_ACC_MAX, EstimatorHealth
+from .marker import enu_yaw_from_quaternion, marker_enu_from_nadir_camera
 from .mission import CheckResult, GateState, Phase
-
-
-def enu_yaw_from_quaternion(x: float, y: float, z: float, w: float) -> float:
-    """Heading of an ENU body frame, radians CCW from East."""
-    return math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
-
-
-def marker_enu_from_nadir_camera(tvec, vehicle_enu, yaw_rad: float) -> np.ndarray:
-    """Marker in the camera's optical frame -> marker in map ENU.
-
-    Assumes the gimbal is holding nadir, so the only unknown is where the
-    vehicle is pointing. Optical is X right, Y down the image, Z along the
-    lens; at nadir the top of the image is the nose, which makes forward -y,
-    left -x, and the marker -z below. Kept a plain function so the geometry can
-    be tested without a running node — a sign error here is a landing that
-    misses in a believable direction.
-    """
-    x, y, z = float(tvec[0]), float(tvec[1]), float(tvec[2])
-    fwd, left, up = -y, -x, -z
-    c, s = math.cos(yaw_rad), math.sin(yaw_rad)
-    return np.array([
-        float(vehicle_enu[0]) + c * fwd - s * left,
-        float(vehicle_enu[1]) + s * fwd + c * left,
-        float(vehicle_enu[2]) + up,
-    ])
 
 
 def _sensor_qos() -> QoSProfile:
@@ -150,6 +127,9 @@ class MpcLandingNode(Node):
         self._t_phase = self._now()
         self._announced = ''
         self._takeoff_xy: np.ndarray | None = None
+        self.ekf = EstimatorHealth(speed_acc_max=self.speed_acc_max)
+        # The ground the vehicle armed on, in EKF local z — see `_takeoff_target`.
+        self._z_ground: float | None = None
         self._t_touch = None
         self._t_prestream = None
         # SEARCH commits to the descent only after this many CONSECUTIVE fresh
@@ -172,6 +152,12 @@ class MpcLandingNode(Node):
                                  self._on_ext, _sensor_qos())
         self.create_subscription(BatteryState, '/mavros/battery',
                                  self._on_batt, _sensor_qos())
+        # Whether the EKF is actually being aided. A pose alone does not say so
+        # — see estimator.py.
+        self.create_subscription(EstimatorStatus, '/mavros/estimator_status',
+                                 self._on_est, _sensor_qos())
+        self.create_subscription(GPSRAW, '/mavros/gpsstatus/gps1/raw',
+                                 self._on_gps, _sensor_qos())
         # BEST_EFFORT to match the detector. aruco_pose_node publishes its
         # perception topics BEST_EFFORT (sensor-style), and a RELIABLE
         # subscriber is INCOMPATIBLE with a BEST_EFFORT publisher — DDS
@@ -250,6 +236,12 @@ class MpcLandingNode(Node):
         # --- preflight thresholds
         p('min_battery_v', 14.0)            # 4S nominal; raise for 6S
         p('require_battery', True)          # false only for bench tests
+        # Refuse to pass preflight while the EKF has no position aiding. Match
+        # this to the vehicle's EKF2_REQ_SACC so the check quotes the real limit
+        # — the default is the RAISED 1.0 m/s, not PX4's 0.5 (see estimator.py),
+        # so a vehicle still at 0.5 will refuse arms this check waved through.
+        p('require_gnss_aiding', True)
+        p('gps_speed_acc_max_m_s', DEFAULT_SPEED_ACC_MAX)
         # --- flight controller. PX4 ONLY — see the module docstring.
         p('offboard_mode', 'OFFBOARD')
         # How long to stream setpoints before asking PX4 for offboard. PX4 wants
@@ -305,6 +297,8 @@ class MpcLandingNode(Node):
         self.acquire_frames = int(g('marker_acquire_frames').value)
         self.min_batt = float(g('min_battery_v').value)
         self.require_batt = bool(g('require_battery').value)
+        self.require_gnss = bool(g('require_gnss_aiding').value)
+        self.speed_acc_max = float(g('gps_speed_acc_max_m_s').value)
         self.mode_name = str(g('offboard_mode').value)
         self.prestream_s = float(g('offboard_prestream_s').value)
         self.interactive = bool(g('interactive_approval').value)
@@ -339,6 +333,21 @@ class MpcLandingNode(Node):
     def _on_ext(self, m): self.ext = m
 
     def _on_batt(self, m): self.batt = m
+
+    def _on_est(self, m: EstimatorStatus) -> None:
+        self.ekf.on_status(
+            self._now(),
+            const_pos_mode=m.const_pos_mode_status_flag,
+            velocity_horiz=m.velocity_horiz_status_flag,
+            pos_horiz_abs=m.pos_horiz_abs_status_flag,
+            gps_glitch=m.gps_glitch_status_flag)
+
+    def _on_gps(self, m: GPSRAW) -> None:
+        # GPSRAW carries accuracies in mm and mm/s; EstimatorHealth works in
+        # metres, so the thresholds read like the PX4 parameters they mirror.
+        self.ekf.on_gps(self._now(), fix_type=m.fix_type,
+                        satellites=m.satellites_visible,
+                        h_acc_m=m.h_acc * 1e-3, vel_acc_m_s=m.vel_acc * 1e-3)
 
     def _on_detected(self, m):
         self.detected = bool(m.data)
@@ -494,6 +503,21 @@ class MpcLandingNode(Node):
         return (self.ext is not None
                 and self.ext.landed_state == ExtendedState.LANDED_STATE_ON_GROUND)
 
+    def _takeoff_target(self) -> float:
+        """`takeoff_alt` above the GROUND, in EKF local z.
+
+        Not `takeoff_alt` itself. The EKF's z datum is wherever the estimator
+        happened to start, and it drifts: on the pad, disarmed, this airframe
+        has been seen reporting z = -5.98 m while standing still. Climbing to an
+        absolute z of `takeoff_alt` from there is an eleven-metre climb when
+        five were asked for. So the ground is measured at the moment of arming —
+        the vehicle is provably on it then — and the target is relative to that.
+        The same reasoning already applies to `_takeoff_xy`, which is captured
+        rather than assumed to be the origin.
+        """
+        base = self._z_ground if self._z_ground is not None else 0.0
+        return base + self.takeoff_alt
+
     def _alt(self) -> float:
         return float(self.pose.pose.position.z) if self.pose else float('nan')
 
@@ -542,6 +566,18 @@ class MpcLandingNode(Node):
         c.append(CheckResult(
             'velocity estimate', self.vel is not None,
             'ok' if self.vel is not None else 'no local velocity'))
+        # A POSE IS NOT AN ESTIMATE. MAVROS keeps publishing local_position even
+        # when the EKF has fallen back to constant-position mode with no GNSS
+        # fusion at all, so the check above says nothing about whether the
+        # vehicle can hold position — and PX4 refuses the OFFBOARD arm anyway,
+        # over an event MAVROS cannot decode. estimator.py has the numbers from
+        # the day this was found.
+        if self.require_gnss:
+            now = self._now()
+            blocked = self.ekf.blocking_reason(now)
+            c.append(CheckResult(
+                'EKF position aiding', blocked is None,
+                blocked or self.ekf.warning(now) or self.ekf.summary(now)))
         # There is deliberately NO altitude check here. It used to refuse to
         # start above max_start_alt_m, but a disarmed vehicle is not flying and
         # 'disarmed at start' below already refuses a live one — so the only
@@ -637,6 +673,14 @@ class MpcLandingNode(Node):
                 self._call(self.mode_cli, req, 'set_mode')
                 return
             if self.state and self.state.armed:
+                # Armed but still on the ground: the one moment the vehicle's
+                # true height is known, so this is where the climb datum comes
+                # from (`_takeoff_target`).
+                self._z_ground = self._alt()
+                self.get_logger().info(
+                    f'armed on the ground at local z={self._z_ground:.2f} m — '
+                    f'climbing to z={self._takeoff_target():.2f} m '
+                    f'({self.takeoff_alt:.1f} m above it)')
                 self.gate.armed_confirmed()
                 self._announce()
                 return
@@ -652,7 +696,7 @@ class MpcLandingNode(Node):
             if self._takeoff_xy is None and self.pose is not None:
                 self._takeoff_xy = np.array([self.pose.pose.position.x,
                                              self.pose.pose.position.y])
-            err = self.takeoff_alt - self._alt()
+            err = self._takeoff_target() - self._alt()
             if abs(err) <= self.alt_tol:
                 self._send(0.0, 0.0, 0.0)
                 self.gate.altitude_reached()
