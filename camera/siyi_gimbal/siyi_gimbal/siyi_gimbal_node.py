@@ -27,9 +27,23 @@ The A8 mini can be wired either way and speaks the same protocol on both:
 Only the pipe differs; see `transport.py`. Default is serial, because that is
 how the aircraft is actually wired.
 
+POINTING IT SOMEWHERE ELSE
+--------------------------
+Nadir is the default, not the only thing this node can do. `~/aim` takes an
+absolute (pitch, yaw) in degrees and holds THAT instead — the same re-assert
+discipline, just around a different angle — which is what lets a mission sweep
+the gimbal to look for a marker that is not underneath the vehicle, and then
+keep the camera on it while flying there (`mpc_landing_node`'s SEARCH).
+
+An aim REPLACES the nadir hold until it is released: `~/look_down` clears it,
+and so does the vehicle arming, because arming means a flight is starting and
+the flight starts from nadir. Publish a NaN to clear it without moving.
+
 Interfaces
 ----------
 Subscribes  /mavros/state                mavros_msgs/State
+            ~/aim                        geometry_msgs/Vector3Stamped
+                                         (y = pitch deg, z = yaw deg; NaN = release)
 Publishes   ~/attitude                   geometry_msgs/Vector3Stamped  (r,p,y deg)
             ~/status                     std_msgs/String
 Services    ~/look_down, ~/center        std_srvs/Trigger   (manual override)
@@ -37,6 +51,8 @@ Talks to    the gimbal over serial or UDP — see `transport`
 """
 
 from __future__ import annotations
+
+import math
 
 import rclpy
 from geometry_msgs.msg import Vector3Stamped
@@ -79,11 +95,15 @@ class SiyiGimbalNode(Node):
         self.poll_attitude = bool(g('poll_attitude').value)
         self.poll_s = float(g('attitude_poll_period_s').value)
         self.nadir_on_start = bool(g('nadir_on_start').value)
+        self.aim_deadband = float(g('aim_deadband_deg').value)
         self.disarm_centers = bool(g('center_on_disarm').value)
 
         self._seq = 0
         self._armed: bool | None = None
         self._want_nadir = False
+        # An externally commanded look direction (yaw, pitch) that stands in
+        # for nadir while it is set — see `~/aim` and `_target`.
+        self._aim: tuple[float, float] | None = None
         self._attitude: tuple[float, float, float] | None = None
         self._sent = 0
         self._rx_bad = 0
@@ -102,6 +122,10 @@ class SiyiGimbalNode(Node):
         self.status_pub = self.create_publisher(String, '~/status', 10)
         self.create_subscription(State, '/mavros/state', self._on_state,
                                  _sensor_qos())
+        # RELIABLE (the default), unlike the MAVROS subscriptions: an aim is a
+        # command, not a sample. A scan step that goes missing leaves the
+        # camera staring at the last sector for the whole dwell.
+        self.create_subscription(Vector3Stamped, '~/aim', self._on_aim, 10)
         self.create_service(Trigger, '~/look_down', self._on_look_down)
         self.create_service(Trigger, '~/center', self._on_center)
 
@@ -152,13 +176,23 @@ class SiyiGimbalNode(Node):
         # Attitude feedback. Without it the node still works, it just cannot
         # tell whether the command landed, so it re-sends unconditionally.
         p('poll_attitude', True)
-        p('attitude_poll_period_s', 0.5)
+        # RAISED from 0.5 s to 5 Hz. This report stopped being a status line
+        # the day a mission started placing marker fixes with it: off nadir the
+        # camera angle is half of the position estimate, and an angle that is
+        # up to half a second old on a gimbal that is slewing is an estimate
+        # that is metres out. The packet is 10 bytes on a 115200 link.
+        p('attitude_poll_period_s', 0.2)
         # Look down AS SOON AS THIS NODE STARTS, not only once armed.
         # Preflight is when you want to see whether the camera can actually
         # find the marker — checking that after arming is checking it too late.
         # The arm trigger still fires and still re-asserts; this only moves the
         # first command earlier.
         p('nadir_on_start', True)
+        # How far an `~/aim` has to move before it is put on the wire. A
+        # mission tracking a marker republishes its aim every tick; without a
+        # dead-band that is a SET_ANGLE every tick on a 115200 baud link that
+        # also has to carry the attitude replies this node steers by.
+        p('aim_deadband_deg', 0.5)
         # Recentre when the vehicle disarms. Ignored while nadir_on_start is
         # set: recentring after a landing would leave the next preflight
         # looking at the horizon, which is the problem nadir_on_start exists to
@@ -180,19 +214,37 @@ class SiyiGimbalNode(Node):
         self._seq = (self._seq + 1) % 0xFFFF
         return self._seq
 
+    def _target(self) -> tuple[float, float]:
+        """The (yaw, pitch) currently being held — an aim if one is set, else nadir."""
+        return self._aim if self._aim is not None else (self.nadir_yaw,
+                                                        self.nadir_pitch)
+
     def _command_nadir(self, why: str) -> None:
+        """Command nadir, releasing any aim: this is a return to the default."""
+        self._aim = None
         self._send(siyi.set_angle(self.nadir_yaw, self.nadir_pitch,
                                   self._next_seq()), 'look_down')
         self.get_logger().info(
             f'-> gimbal: look down (yaw {self.nadir_yaw:.0f}, '
             f'pitch {self.nadir_pitch:.0f} deg) [{why}]')
 
-    def _at_nadir(self) -> bool:
+    def _command_target(self, why: str) -> None:
+        yaw, pitch = self._target()
+        self._send(siyi.set_angle(yaw, pitch, self._next_seq()), 'aim')
+        self.get_logger().debug(
+            f'-> gimbal: aim (yaw {yaw:+.1f}, pitch {pitch:+.1f} deg) [{why}]')
+
+    def _at_target(self) -> bool:
         if self._attitude is None:
             return False
+        want_yaw, want_pitch = self._target()
         _roll, pitch, yaw = self._attitude
-        return (abs(pitch - self.nadir_pitch) <= self.attitude_tol
-                and abs(yaw - self.nadir_yaw) <= self.attitude_tol)
+        return (abs(pitch - want_pitch) <= self.attitude_tol
+                and abs(yaw - want_yaw) <= self.attitude_tol)
+
+    def _at_nadir(self) -> bool:
+        """Kept for readers and tests: `_at_target` with no aim set."""
+        return self._aim is None and self._at_target()
 
     # -------------------------------------------------------------- callbacks
     def _on_state(self, msg: State) -> None:
@@ -214,13 +266,53 @@ class SiyiGimbalNode(Node):
                            'center')
                 self.get_logger().info('-> gimbal: centre [vehicle DISARMED]')
 
+    def _on_aim(self, msg: Vector3Stamped) -> None:
+        """Hold an absolute (pitch, yaw) instead of nadir. NaN releases it.
+
+        Deliberately a topic and not a service: a mission sweeping the gimbal
+        or tracking a marker issues these continuously from its own control
+        loop, and a service call would make that loop wait on a UDP round trip
+        to a device that is allowed to be slow.
+        """
+        pitch, yaw = float(msg.vector.y), float(msg.vector.z)
+        if math.isnan(pitch) or math.isnan(yaw):
+            if self._aim is not None:
+                self._command_nadir('aim released')
+            return
+        ok, why = siyi.clamped(yaw, pitch)
+        if not ok:
+            self.get_logger().warn(f'aim is outside the A8 mini travel and '
+                                   f'will be clamped: {why}',
+                                   throttle_duration_sec=5.0)
+        previous = self._aim
+        self._aim = (yaw, pitch)
+        # An aim is also a request to HOLD it, which is what _want_nadir gates.
+        # (The flag predates aiming; it means "keep re-asserting where we are
+        # supposed to be looking", and that is still exactly what it does.)
+        first = not self._want_nadir
+        self._want_nadir = True
+        if previous is not None and not first \
+                and abs(yaw - previous[0]) < self.aim_deadband \
+                and abs(pitch - previous[1]) < self.aim_deadband:
+            return          # same aim, already commanded — let _reassert do it
+        self._command_target('aim')
+
     def _reassert(self) -> None:
-        """Re-send while armed, unless feedback says it is already there."""
+        """Re-send the held angle, unless feedback says it is already there.
+
+        The angle is `_target()`, not nadir: while a mission is aiming the
+        gimbal, THIS is what has to survive a dropped datagram. Re-asserting
+        nadir here instead would drag the camera back out of the sector the
+        mission is searching, once every `reassert_period_s`.
+        """
         if not self._want_nadir:
             return
-        if self.poll_attitude and self._at_nadir():
+        if self.poll_attitude and self._at_target():
             return
-        self._command_nadir('re-assert')
+        if self._aim is None:
+            self._command_nadir('re-assert')
+        else:
+            self._command_target('re-assert')
 
     def _poll(self) -> None:
         self._send(siyi.request_attitude(self._next_seq()), 'attitude request')
@@ -258,6 +350,7 @@ class SiyiGimbalNode(Node):
 
     def _on_center(self, _req, res):
         self._want_nadir = False
+        self._aim = None
         self._send(siyi.encode(siyi.CENTER, bytes([cmds.TRIGGER]), self._next_seq()), 'center')
         res.success = True
         res.message = 'commanded centre; nadir hold released until next ARM'
@@ -273,7 +366,12 @@ class SiyiGimbalNode(Node):
         else:
             r, pi, y = self._attitude
             att = f'r{r:+.1f} p{pi:+.1f} y{y:+.1f}'
-        holding = 'holding nadir' if self._want_nadir else 'idle'
+        if not self._want_nadir:
+            holding = 'idle'
+        elif self._aim is None:
+            holding = 'holding nadir'
+        else:
+            holding = f'aiming y{self._aim[0]:+.1f} p{self._aim[1]:+.1f}'
         self.status_pub.publish(String(
             data=f'{holding} | {self.link.description} | vehicle {armed} | '
                  f'gimbal {att} | sent {self._sent} | bad_rx {self._rx_bad}'))

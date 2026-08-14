@@ -40,24 +40,149 @@ def enu_yaw_from_quaternion(x: float, y: float, z: float, w: float) -> float:
     return math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
 
 
-def marker_enu_from_nadir_camera(tvec, vehicle_enu, yaw_rad: float) -> np.ndarray:
-    """Marker in the camera's optical frame -> marker in map ENU.
+#: Gimbal pitch that means "straight down", in degrees. The A8 mini's travel
+#: limit, and the angle siyi_gimbal_node holds by default.
+NADIR_PITCH_DEG = -90.0
 
-    Assumes the gimbal is holding nadir, so the only unknown is where the
-    vehicle is pointing. Optical is X right, Y down the image, Z along the
-    lens; at nadir the top of the image is the nose, which makes forward -y,
-    left -x, and the marker -z below. Kept a plain function so the geometry can
-    be tested without a running node — a sign error here is a landing that
-    misses in a believable direction.
+
+def marker_enu_from_gimbal_camera(tvec, vehicle_enu, yaw_rad: float, *,
+                                  gimbal_yaw_rad: float = 0.0,
+                                  gimbal_pitch_rad: float = -math.pi / 2
+                                  ) -> np.ndarray:
+    """Marker in the camera's optical frame -> marker in map ENU, at ANY aim.
+
+    This is the nadir conversion generalised to a camera that is looking
+    somewhere else, which is what makes a gimbal SEARCH worth doing: a marker
+    spotted 40 deg off to one side is a position fix, not just a sighting,
+    because solvePnP gives the RANGE along that line and the gimbal gives the
+    line. Fix = vehicle position + range * direction, and both halves are
+    measured rather than assumed.
+
+    The frames, in order:
+
+    * OPTICAL, what solvePnP returns: X right, Y down the image, Z along the
+      lens. Rewritten as a camera-forward triple (`fwd`, `left`, `up`) so the
+      rotations below read as aircraft angles rather than as image axes.
+    * CAMERA -> BODY, by the gimbal's own aim: elevate by `gimbal_pitch_rad`
+      (negative is down, -90 deg is nadir) and rotate by `gimbal_yaw_rad`
+      (CCW/left positive, i.e. the NEGATED SIYI yaw — SIYI counts yaw
+      positive to the right).
+    * BODY -> ENU, by the vehicle heading, exactly as before. The two yaw
+      rotations compose into one, so the total azimuth is simply
+      `yaw_rad + gimbal_yaw_rad` — the heading the camera is looking along.
+
+    At `gimbal_pitch_rad = -pi/2, gimbal_yaw_rad = 0` this reduces term for
+    term to the nadir conversion that flew, which `test_marker_frame.py` pins.
+
+    THE ASSUMPTION IS THE SAME ONE, WIDENED. The vehicle's own roll and pitch
+    are still ignored: a stabilized gimbal holds its pitch against gravity, so
+    `gimbal_pitch_rad` is already an earth-referenced elevation (this is
+    `landing_tf_node`'s 'stabilized' convention, and it is the one the aircraft
+    is set to), while its yaw is a joint angle off the mount and therefore
+    composes with the airframe heading. What the nadir version could treat as
+    negligible and this one cannot is the LEVER: off nadir, an angle error is
+    multiplied by the slant range, not by the height. At 5 m and 45 deg the
+    range is 7 m, so one degree of gimbal error is 12 cm of position error.
+    That is fine for deciding where to fly next, which is all a SEARCH fix is
+    used for — the descent re-measures from directly overhead.
     """
     x, y, z = float(tvec[0]), float(tvec[1]), float(tvec[2])
-    fwd, left, up = -y, -x, -z
-    c, s = math.cos(yaw_rad), math.sin(yaw_rad)
+    # Optical -> camera-forward. At nadir this is the old (-y, -x, -z) triple
+    # in a frame that has not yet been rotated: see the reduction above.
+    fwd, left, up = z, -x, -y
+    # Elevate. Rotating about the camera's LEFT axis by -pitch takes the lens
+    # axis down for a negative pitch, which is why nadir is -90 and not +90.
+    cp, sp = math.cos(-gimbal_pitch_rad), math.sin(-gimbal_pitch_rad)
+    b_fwd = cp * fwd + sp * up
+    b_left = left
+    b_up = -sp * fwd + cp * up
+    # One yaw for both rotations: vehicle heading plus where the gimbal is
+    # pointing relative to the airframe.
+    az = yaw_rad + gimbal_yaw_rad
+    c, s = math.cos(az), math.sin(az)
     return np.array([
-        float(vehicle_enu[0]) + c * fwd - s * left,
-        float(vehicle_enu[1]) + s * fwd + c * left,
-        float(vehicle_enu[2]) + up,
+        float(vehicle_enu[0]) + c * b_fwd - s * b_left,
+        float(vehicle_enu[1]) + s * b_fwd + c * b_left,
+        float(vehicle_enu[2]) + b_up,
     ])
+
+
+def marker_enu_from_nadir_camera(tvec, vehicle_enu, yaw_rad: float) -> np.ndarray:
+    """Marker in the camera's optical frame -> map ENU, gimbal at nadir.
+
+    The case the aircraft flies once it is over the marker, kept as its own
+    name because that is how the descent reads. It is
+    `marker_enu_from_gimbal_camera` with the gimbal where it normally is.
+    """
+    return marker_enu_from_gimbal_camera(tvec, vehicle_enu, yaw_rad)
+
+
+def gimbal_aim_for(vehicle_enu, yaw_rad: float, target_enu, *,
+                   nadir_deadzone_deg: float = 5.0) -> tuple[float, float]:
+    """Where to point the gimbal to look at `target_enu`. Returns (yaw, pitch) DEG.
+
+    The inverse of the conversion above, and it exists for the half of the job
+    that comes after a sighting: having found the marker off to one side, the
+    vehicle has to fly to it WITHOUT losing sight of it, or the descent aborts
+    on a lost marker before it has begun. Re-aiming at the last fix each tick
+    keeps it in frame, and the aim walks itself back to nadir as the vehicle
+    arrives overhead — no special case for "we are there now".
+
+    Angles come back in SIYI's convention, ready for `protocol.set_angle`: yaw
+    positive to the RIGHT of the airframe, pitch negative DOWN. Yaw is wrapped
+    to (-180, 180]; clamping to the gimbal's travel is left to the protocol
+    layer, which owns those limits.
+
+    NEAR STRAIGHT DOWN THERE IS NO AZIMUTH TO POINT AT. Overhead the target,
+    the horizontal offset is a couple of centimetres of estimator noise and its
+    bearing is whatever that noise happens to be — a gimbal asked to follow it
+    yaws through large angles while the camera looks at the same patch of
+    ground, which spins the image at the worst possible moment. So inside
+    `nadir_deadzone_deg` of the vertical the answer is plain nadir, yaw
+    airframe-aligned: the same thing the mission holds when nobody is aiming.
+    """
+    d_e = float(target_enu[0]) - float(vehicle_enu[0])
+    d_n = float(target_enu[1]) - float(vehicle_enu[1])
+    d_u = float(target_enu[2]) - float(vehicle_enu[2])
+    horiz = math.hypot(d_e, d_n)
+    pitch_deg = math.degrees(math.atan2(d_u, horiz))
+    if pitch_deg <= -90.0 + abs(nadir_deadzone_deg):
+        return 0.0, -90.0
+    # Azimuth of the target CCW from East, minus where the nose points, gives
+    # the aim relative to the airframe; negate for SIYI's right-positive yaw.
+    rel = math.atan2(d_n, d_e) - yaw_rad
+    yaw_deg = -math.degrees(math.atan2(math.sin(rel), math.cos(rel)))
+    return yaw_deg, pitch_deg
+
+
+def sweep_plan(pitch_deg, yaw_step_deg: float, yaw_limit_deg: float
+               ) -> list[tuple[float, float]]:
+    """The gimbal search pattern, as a list of (yaw, pitch) looks in degrees.
+
+    One ring per entry in `pitch_deg`, each swept end to end within the yaw
+    travel, and rings ALTERNATE DIRECTION so the camera starts the next ring
+    from where it finished the last instead of slewing the full width to begin
+    again. A ring at (or below) -89 deg is a single look: there is no azimuth
+    to sweep at the pole, and sweeping one would spin the image for nothing.
+
+    Angles are SIYI's, ready for `protocol.set_angle`. Kept a plain function so
+    the pattern can be printed, argued about and tested on the ground rather
+    than emerging from a loop at altitude.
+    """
+    step = abs(float(yaw_step_deg))
+    limit = abs(float(yaw_limit_deg))
+    plan: list[tuple[float, float]] = []
+    forward = True
+    for pitch in (float(p) for p in pitch_deg):
+        if pitch <= -89.0:
+            plan.append((0.0, pitch))
+            continue
+        n = int(limit // step) if step > 0 else 0
+        yaws = [i * step for i in range(-n, n + 1)]
+        plan.extend((y, pitch) for y in (yaws if forward
+                                         else list(reversed(yaws))))
+        forward = not forward
+    return plan or [(0.0, NADIR_PITCH_DEG)]
 
 
 @dataclass

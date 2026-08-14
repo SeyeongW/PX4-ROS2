@@ -201,6 +201,9 @@ class NaiveFlightNode(Node):
         self.ekf = EstimatorHealth(speed_acc_max=self.speed_acc_max)
         # The ground the vehicle armed on, in EKF local z — see `_takeoff_target`.
         self._z_ground: float | None = None
+        # The heading to hold for the whole flight, captured at the same moment
+        # and for the same reason — see `_send`.
+        self._yaw_hold: float | None = None
 
         self.create_subscription(State, '/mavros/state', self._on_state,
                                  _sensor_qos())
@@ -485,6 +488,13 @@ class NaiveFlightNode(Node):
     def _alt(self) -> float:
         return float(self.pose.pose.position.z) if self.pose else float('nan')
 
+    def _yaw_now(self) -> float | None:
+        """The vehicle's current heading in ENU, or None with no pose yet."""
+        if self.pose is None:
+            return None
+        q = self.pose.pose.orientation
+        return enu_yaw_from_quaternion(q.x, q.y, q.z, q.w)
+
     def _takeoff_target(self) -> float:
         """`takeoff_alt` above the GROUND, in EKF local z.
 
@@ -519,6 +529,13 @@ class NaiveFlightNode(Node):
         deliberately NOT set — it would reinterpret the (ignored) acceleration
         fields as a force, which PX4 does not support on this path and may
         reject.
+
+        YAW IS AN ABSOLUTE HEADING, NOT AN OFFSET. This field used to be a
+        hard-coded 0.0, which does not mean "keep the current heading" — it
+        commands ENU yaw 0 (due East), and the vehicle obeyed it by spinning on
+        the spot before it would climb. So the heading is captured on the pad at
+        arming and re-sent unchanged; before that, each setpoint carries the
+        vehicle's own live heading, which is a no-op.
         """
         m = PositionTarget()
         m.header.stamp = self.get_clock().now().to_msg()
@@ -530,7 +547,15 @@ class NaiveFlightNode(Node):
                        | PositionTarget.IGNORE_AFZ
                        | PositionTarget.IGNORE_YAW_RATE)
         m.velocity.x, m.velocity.y, m.velocity.z = float(vx), float(vy), float(vz)
-        m.yaw = 0.0
+        yaw = self._yaw_hold if self._yaw_hold is not None else self._yaw_now()
+        if yaw is None:
+            # No pose yet: "do not rotate" is the only honest instruction when
+            # we cannot say where the vehicle is pointing.
+            m.type_mask = ((m.type_mask & ~PositionTarget.IGNORE_YAW_RATE)
+                           | PositionTarget.IGNORE_YAW)
+            m.yaw_rate = 0.0
+        else:
+            m.yaw = float(yaw)
         self.sp_pub.publish(m)
 
     # ------------------------------------------------------------- preflight
@@ -647,10 +672,18 @@ class NaiveFlightNode(Node):
                 # true height is known, so this is where the climb datum comes
                 # from (`_takeoff_target`).
                 self._z_ground = self._alt()
+                # ...and the heading it is sitting at, for the same reason: it
+                # is the one moment the vehicle is provably where the operator
+                # placed it. Every setpoint from here on re-sends this, so the
+                # climb goes straight up instead of yawing first (see `_send`).
+                self._yaw_hold = self._yaw_now()
+                heading = ('' if self._yaw_hold is None else
+                           f', holding heading {np.degrees(self._yaw_hold):.0f}'
+                           f' deg ENU')
                 self.get_logger().info(
                     f'armed on the ground at local z={self._z_ground:.2f} m — '
                     f'climbing to z={self._takeoff_target():.2f} m '
-                    f'({self.takeoff_alt:.1f} m above it)')
+                    f'({self.takeoff_alt:.1f} m above it){heading}')
                 self._to(Phase.TAKEOFF)
                 return
             req = CommandBool.Request()

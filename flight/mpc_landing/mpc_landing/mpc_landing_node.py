@@ -20,6 +20,18 @@ human:
 
 Only the last step is automatic. See `mission.py` for why.
 
+SEARCH LOOKS AROUND WITH THE GIMBAL, NOT WITH THE VEHICLE
+---------------------------------------------------------
+The marker is not always under the vehicle when it gets to altitude. SEARCH
+therefore sweeps the camera — nadir first, then rings at progressively shallower
+pitch, a dwell at each look — and because the gimbal ANGLE is known at the
+moment of the sighting, a marker spotted off to one side is a POSITION, not just
+a direction: solvePnP supplies the range along the line the gimbal defines
+(`marker.marker_enu_from_gimbal_camera`). The camera then stays on the marker
+for the whole approach (`gimbal_aim_for`), so the fix that started the descent
+is not lost the instant the vehicle begins to move, and the aim returns to nadir
+on its own as the vehicle arrives overhead.
+
 Operating it
 ------------
     ros2 launch mpc_landing mpc_landing.launch.py
@@ -46,8 +58,10 @@ Subscribes
     /mavros/battery                        sensor_msgs/BatteryState
     /perception/down/marker_pose           geometry_msgs/PoseStamped
     /perception/down/aruco_detected        std_msgs/Bool
+    /siyi_gimbal_node/attitude             geometry_msgs/Vector3Stamped
 Publishes
     /mavros/setpoint_raw/local             mavros_msgs/PositionTarget
+    /siyi_gimbal_node/aim                  geometry_msgs/Vector3Stamped
     /mpc_landing/state                     std_msgs/String
 Services (offered)
     ~/approve, ~/abort                     std_srvs/Trigger
@@ -62,7 +76,7 @@ import threading
 
 import numpy as np
 import rclpy
-from geometry_msgs.msg import PoseStamped, TwistStamped
+from geometry_msgs.msg import PoseStamped, TwistStamped, Vector3Stamped
 from rclpy.node import Node
 from rclpy.qos import (DurabilityPolicy, HistoryPolicy, QoSProfile,
                        ReliabilityPolicy)
@@ -79,7 +93,8 @@ from landing_mpc.predictor import predict_const_vel
 from landing_mpc.reference import HorizonReference
 
 from .estimator import DEFAULT_SPEED_ACC_MAX, EstimatorHealth
-from .marker import enu_yaw_from_quaternion, marker_enu_from_nadir_camera
+from .marker import (NADIR_PITCH_DEG, enu_yaw_from_quaternion, gimbal_aim_for,
+                     marker_enu_from_gimbal_camera, sweep_plan)
 from .mission import CheckResult, GateState, Phase
 
 
@@ -96,7 +111,10 @@ class MpcLandingNode(Node):
         self._declare()
         self._read_params()
 
-        self.gate = GateState()
+        # A bench run starts where the thing being rehearsed starts. It cannot
+        # reach SEARCH the normal way — that road goes through arming — and
+        # faking the phases it skipped would rehearse those too.
+        self.gate = GateState(phase=Phase.SEARCH) if self.bench else GateState()
         # THE controller under test — imported, not reimplemented.  This node
         # exists to fly the MPC that simulation/landing_mpc validated in SITL;
         # a lookalike written here would only ever validate the lookalike.
@@ -130,6 +148,10 @@ class MpcLandingNode(Node):
         self.ekf = EstimatorHealth(speed_acc_max=self.speed_acc_max)
         # The ground the vehicle armed on, in EKF local z — see `_takeoff_target`.
         self._z_ground: float | None = None
+        # The heading to hold for the whole flight, captured at arming — see
+        # `_send`. None until then, which makes every setpoint hold whatever
+        # heading the vehicle currently has.
+        self._yaw_hold: float | None = None
         self._t_touch = None
         self._t_prestream = None
         # SEARCH commits to the descent only after this many CONSECUTIVE fresh
@@ -139,6 +161,20 @@ class MpcLandingNode(Node):
         # Last time each throttled service call fired, keyed by name, so the
         # TOUCHDOWN/ABORT handlers stop re-sending land/disarm every tick.
         self._t_calls: dict[str, float] = {}
+
+        # --- gimbal: where the camera is looking, and where we asked it to
+        # look. SEARCH sweeps it (see `_scan_plan`) and DESCEND tracks the
+        # marker with it, so "straight down" is no longer an assumption this
+        # node may make — it has to know the angle to place a fix at all.
+        self._scan = self._scan_plan()
+        self._scan_i = 0
+        self._t_look = self._now()      # when the current look was commanded
+        self._t_settled: float | None = None    # ...and when it arrived
+        self._aim_cmd: tuple[float, float] | None = None   # (yaw, pitch) deg
+        self._scanning = False          # is a sweep in progress right now?
+        self._gimbal: tuple[float, float, float] | None = None  # r, p, y deg
+        self._t_gimbal = 0.0
+        self._found_at: tuple[float, float] | None = None
 
         # --- MAVROS
         self.create_subscription(State, '/mavros/state', self._on_state,
@@ -168,9 +204,17 @@ class MpcLandingNode(Node):
                                  self._on_marker, _sensor_qos())
         self.create_subscription(Bool, self.marker_detected_topic,
                                  self._on_detected, _sensor_qos())
+        # Where the camera is ACTUALLY pointing. The commanded angle is what we
+        # asked for; this is what we got, and off nadir the difference is
+        # multiplied by the slant range — so fixes are placed with this and
+        # dropped while it disagrees with the command (`_gimbal_settled`).
+        self.create_subscription(Vector3Stamped, self.gimbal_attitude_topic,
+                                 self._on_gimbal, 10)
 
         self.sp_pub = self.create_publisher(PositionTarget,
                                             '/mavros/setpoint_raw/local', 10)
+        self.aim_pub = self.create_publisher(Vector3Stamped,
+                                             self.gimbal_aim_topic, 10)
         self.state_pub = self.create_publisher(String, '~/state', 10)
 
         self.mode_cli = self.create_client(SetMode, '/mavros/set_mode')
@@ -190,12 +234,27 @@ class MpcLandingNode(Node):
             threading.Thread(target=self._stdin_loop, daemon=True).start()
 
         self.create_timer(1.0 / self.rate_hz, self._tick)
+        if self.bench:
+            self.get_logger().warn(
+                'BENCH_SEARCH — starting in SEARCH on the ground. No setpoint '
+                'and no arm/mode/land call will be made; the gimbal WILL move. '
+                'Every fix is reported, none is flown. Ctrl-C to stop.')
         # Say the mode FIRST — it is the one thing you want confirmed before a
         # real vehicle is armed in front of you.
         self.get_logger().info(
             f'mpc_landing_node: PX4 mode={self.mode_name} | '
-            f'takeoff {self.takeoff_alt:.1f} m | '
+            f'takeoff {self.takeoff_alt:.1f} m at {self.climb_speed:.1f} m/s | '
             f'descend on {self.marker_pose_topic}')
+        if self.gimbal_scan and len(self._scan) > 1:
+            self.get_logger().info(
+                f'SEARCH sweeps the gimbal: {len(self._scan)} looks, '
+                f'pitch {self.scan_pitch} deg, yaw +/-{self.scan_yaw_limit:.0f} '
+                f'in {self.scan_yaw_step:.0f} deg steps, {self.scan_view:.1f} s '
+                f'SETTLED at each (~{len(self._scan) * (self.scan_view + 1.0):.0f} s '
+                f'per sweep incl. slew, search_timeout_s {self.search_timeout:.0f})')
+        else:
+            self.get_logger().info(
+                'SEARCH holds the gimbal at nadir (gimbal_scan=false)')
         if self._stdin_ok:
             self.get_logger().info(
                 'each step will ask on this terminal — ENTER approves, n aborts')
@@ -212,8 +271,21 @@ class MpcLandingNode(Node):
         # --- mission geometry
         p('takeoff_alt_m', 5.0)             # target altitude above takeoff point
         p('alt_tolerance_m', 0.3)           # counts as "reached" within this
-        p('climb_speed_m_s', 0.7)           # TAKEOFF climb cap; the descent
-                                            # rate is the MPC's mpc_vz_max_m_s
+        # TAKEOFF climb rate. RAISED from 0.7: at 0.7 the climb was a laboured
+        # crawl that spent most of a minute in ground effect, which is neither
+        # comfortable to watch nor good for the vehicle — a multirotor is more
+        # stable climbing away decisively than hanging just above its own
+        # downwash. PX4's own MPC_Z_VEL_MAX_UP (3.0 default) is still the
+        # ceiling above this. The descent rate is NOT this number; it is the
+        # MPC's mpc_vz_max_m_s and it stays slow on purpose.
+        p('climb_speed_m_s', 1.5)
+        # Climb at the FULL rate until this close to the target, then ease off
+        # linearly. Without it the climb is a pure P law on altitude error, so
+        # raising climb_speed also moved the point where it starts backing off
+        # (at 1.5 m/s it would begin slowing 1.5 m below target) — the vehicle
+        # would go up faster and still finish with the same long float. This
+        # separates "how fast" from "how gently it arrives".
+        p('climb_ease_m', 0.8)
         # Touchdown gate ONLY. Descent is gated by the MPC's own corridor
         # (mpc_cone_k); this is how close counts as 'on the marker'.
         p('touchdown_xy_m', 0.35)
@@ -227,12 +299,96 @@ class MpcLandingNode(Node):
         p('marker_detected_topic', '/perception/down/aruco_detected')
         p('marker_timeout_s', 1.5)          # older than this is not a fix
         p('marker_lost_abort_s', 5.0)       # gone this long mid-descent -> abort
-        p('search_timeout_s', 60.0)         # no marker in SEARCH -> abort
+        # No marker in SEARCH -> abort. RAISED from 60 s with the sweep: a
+        # measured sweep is ~35 s, and the number that matters is how many
+        # COMPLETE sweeps fit before giving up. One is not enough — the marker
+        # can sit on the boundary between two looks and be missed by a lap that
+        # was otherwise fine. This is an upper bound on hovering, not a plan:
+        # the mission commits the moment it sees the marker.
+        p('search_timeout_s', 90.0)
         # SEARCH -> DESCEND is automatic and irreversible, so require the marker
         # to be seen this many CONSECUTIVE ticks before committing.  One frame is
         # enough for a false positive to start a descent; 5 ticks (~0.25 s at
         # rate_hz) is still immediate to a human but rejects a lone bad fix.
         p('marker_acquire_frames', 5)
+        # --- gimbal search
+        # SEARCH used to hold the vehicle still with the camera at nadir and
+        # hope the marker was in the ~40 deg cone underneath it. If it was not,
+        # the mission timed out having looked at one patch of ground for a
+        # minute. Sweeping the gimbal instead turns those 60 s into a search of
+        # a circle roughly 2*tan(50 deg) ~ 2.4 vehicle-heights across, without
+        # moving the vehicle at all — and because the gimbal ANGLE is known at
+        # the moment of the sighting, what comes back is a position fix and not
+        # merely "it is somewhere over there" (see marker.py).
+        p('gimbal_aim_topic', '/siyi_gimbal_node/aim')
+        p('gimbal_attitude_topic', '/siyi_gimbal_node/attitude')
+        p('gimbal_scan', True)
+        # The rings to sweep, in gimbal pitch (negative is down). Nadir first,
+        # because the marker is usually under the vehicle and the cheapest look
+        # is the one the camera is already pointing at. Then wider rings.
+        # Do not add a ring shallower than about -25 deg: the slant range grows
+        # as 1/sin(elevation), so a shallow look sees a long way and places the
+        # marker very badly when it does.
+        p('scan_pitch_deg', [-90.0, -60.0, -40.0])
+        # Azimuth step within a ring, and how far round it goes. 135 deg is the
+        # A8 mini's YAW TRAVEL LIMIT, not a choice — the gimbal cannot look
+        # behind the tail, so a 90 deg sector back there stays blind and is the
+        # one direction a search may have to be flown rather than looked at.
+        p('scan_yaw_step_deg', 45.0)
+        p('scan_yaw_limit_deg', 135.0)
+        # How long to LOOK at each look — settled time, not wall-clock time.
+        #
+        # This was a fixed 1.5 s dwell, and the bench measured what that really
+        # bought: 36% of the sweep settled, 64% slewing. A 45 deg step lands in
+        # ~0.5 s but the 135 deg swing into each new ring takes ~1.5 s, and a
+        # fixed dwell pays both the same, so the big swings arrived just as
+        # their turn ended. Three of fifteen looks got a single settled sample.
+        #
+        # Timing the dwell from the moment the gimbal SETTLES gives every look
+        # the same real viewing time whatever it cost to get there, and removes
+        # a knob whose right value depended on the slew rate of the hardware.
+        # 1.0 s is ~12 detector frames, against the 5 consecutive that
+        # `marker_acquire_frames` needs.
+        p('scan_view_s', 1.0)
+        # ...but never wait forever. With no attitude feedback, or a gimbal
+        # that cannot reach a commanded angle, "settled" may never arrive and
+        # the sweep would stop dead at one look. This is the guarantee that it
+        # keeps moving: worst observed slew (135 deg) plus settle plus view,
+        # with margin.
+        p('scan_look_max_s', 4.0)
+        # A fix taken while the gimbal is still slewing is placed at the wrong
+        # angle, and off nadir that error is multiplied by the slant range. So
+        # detections are ignored until the gimbal has been settled this long
+        # AND its feedback agrees with the commanded angle.
+        p('scan_settle_s', 0.5)
+        # RAISED from 4.0 after the bench: settled yaw error came in at 1.5 deg
+        # mean but 3.9 deg peak, which is the threshold itself — a marginally
+        # slower gimbal, or one fighting a breeze, would have been judged to be
+        # slewing for the whole sweep and every fix thrown away. The cost of
+        # the wider band is bounded: 6 deg at a 7 m slant is 0.7 m, and it only
+        # applies to whether a fix is ACCEPTED, never to where it is placed —
+        # placement uses the measured angle either way.
+        p('gimbal_settled_deg', 6.0)
+        p('gimbal_attitude_timeout_s', 2.0)
+        # Keep the camera on the marker while flying to it. Without this a
+        # marker found 40 deg off to one side leaves the frame the moment the
+        # gimbal snaps back to nadir, and the descent aborts on a lost marker
+        # before the vehicle has covered any ground. The aim walks itself back
+        # to nadir as the vehicle arrives overhead, so there is no handover.
+        p('gimbal_track', True)
+        # GROUND REHEARSAL. Start in SEARCH, on the bench, and never touch the
+        # flight controller: no setpoint reaches /mavros/setpoint_raw/local and
+        # no arm, mode or land service is called (`_send` and `_call` are the
+        # two chokepoints, and both refuse). The sweep runs, the detector runs,
+        # and every fix is REPORTED instead of being flown — so the half of
+        # SEARCH that is new can be checked with the props off, which is the
+        # only sane place to find out that the gimbal is not talking or that
+        # the marker lands 3 m from where it is.
+        #
+        # It cannot check what only altitude provides: on the ground the whole
+        # sweep points at the floor within a metre or two of the airframe.
+        # Prop the vehicle up and put the marker close.
+        p('bench_search', False)
         # --- preflight thresholds
         p('min_battery_v', 14.0)            # 4S nominal; raise for 6S
         p('require_battery', True)          # false only for bench tests
@@ -285,6 +441,7 @@ class MpcLandingNode(Node):
         self.takeoff_alt = float(g('takeoff_alt_m').value)
         self.alt_tol = float(g('alt_tolerance_m').value)
         self.climb_speed = float(g('climb_speed_m_s').value)
+        self.climb_ease = max(float(g('climb_ease_m').value), 1e-3)
         self.touch_xy = float(g('touchdown_xy_m').value)
         self.touch_alt = float(g('touchdown_alt_m').value)
         self.touch_dwell = float(g('touchdown_dwell_s').value)
@@ -295,6 +452,19 @@ class MpcLandingNode(Node):
         self.marker_lost_abort = float(g('marker_lost_abort_s').value)
         self.search_timeout = float(g('search_timeout_s').value)
         self.acquire_frames = int(g('marker_acquire_frames').value)
+        self.gimbal_aim_topic = str(g('gimbal_aim_topic').value)
+        self.gimbal_attitude_topic = str(g('gimbal_attitude_topic').value)
+        self.gimbal_scan = bool(g('gimbal_scan').value)
+        self.scan_pitch = [float(v) for v in g('scan_pitch_deg').value]
+        self.scan_yaw_step = abs(float(g('scan_yaw_step_deg').value))
+        self.scan_yaw_limit = abs(float(g('scan_yaw_limit_deg').value))
+        self.scan_view = float(g('scan_view_s').value)
+        self.scan_look_max = float(g('scan_look_max_s').value)
+        self.scan_settle = float(g('scan_settle_s').value)
+        self.gimbal_settled_deg = float(g('gimbal_settled_deg').value)
+        self.gimbal_timeout = float(g('gimbal_attitude_timeout_s').value)
+        self.gimbal_track = bool(g('gimbal_track').value)
+        self.bench = bool(g('bench_search').value)
         self.min_batt = float(g('min_battery_v').value)
         self.require_batt = bool(g('require_battery').value)
         self.require_gnss = bool(g('require_gnss_aiding').value)
@@ -369,35 +539,206 @@ class MpcLandingNode(Node):
         self.marker_t = self._now()
 
     def _marker_enu_from_camera(self, tvec):
-        """Camera-optical marker -> ENU, on the gimbal's nadir hold alone.
+        """Camera-optical marker -> ENU, from where the gimbal is looking.
 
         No tf2, and deliberately so: the transforms are published correctly but
         this process cannot drain them fast enough to look one up at capture
         time, so the whole chain resolves to nothing. What is actually needed is
-        one angle — where the camera is pointing in the world — and a gimbal
-        commanded to nadir supplies all of it but the heading, which MAVROS
-        already gives us on the pose we are differencing against anyway.
+        one angle — where the camera is pointing in the world — and that is the
+        gimbal's own attitude plus the heading MAVROS already puts on the pose
+        we are differencing against anyway.
 
-        The cost is the assumption: roll and pitch off the gimbal are ignored.
-        A 3-axis gimbal holds nadir to well under a degree, and at a 5 m search
-        height one degree is 9 cm — but if it is ever knocked off, this reads
-        the error as marker offset and flies toward it. Watch the debug view.
+        This used to assume nadir, which was true because nothing ever moved the
+        gimbal. Now SEARCH sweeps it, so the angle is READ (`_gimbal_angles`)
+        rather than assumed, and a fix taken while the gimbal is still slewing
+        is thrown away rather than placed at an angle it no longer has
+        (`_gimbal_settled`) — off nadir that error is multiplied by the slant
+        range, not by the height.
 
-        Optical is X right, Y down the image, Z along the lens. At nadir the
-        top of the image is the nose, so forward is -y and left is -x, and the
-        marker is -z below. Range comes straight from solvePnP, which makes the
-        descent gate measure height above the MARKER instead of above whatever
-        datum the EKF started at.
+        The vehicle's own roll and pitch are still ignored; see
+        `marker_enu_from_gimbal_camera` for exactly what that costs. Range comes
+        straight from solvePnP, which makes the descent gate measure height
+        above the MARKER instead of above whatever datum the EKF started at.
         """
         if self.pose is None:
             return None
+        if not self._gimbal_settled():
+            return None
         q = self.pose.pose.orientation
-        return marker_enu_from_nadir_camera(
+        yaw_deg, pitch_deg = self._gimbal_angles()
+        return marker_enu_from_gimbal_camera(
             tvec,
             (self.pose.pose.position.x, self.pose.pose.position.y,
              self.pose.pose.position.z),
             enu_yaw_from_quaternion(q.x, q.y, q.z, q.w),
+            # SIYI counts yaw positive to the RIGHT; the geometry is written in
+            # the usual CCW-positive convention, so the sign flips here and in
+            # exactly one other place (`_aim`, on the way out).
+            gimbal_yaw_rad=np.radians(-yaw_deg),
+            gimbal_pitch_rad=np.radians(pitch_deg),
         )
+
+    # ------------------------------------------------------------------ gimbal
+    def _on_gimbal(self, m: Vector3Stamped) -> None:
+        self._gimbal = (float(m.vector.x), float(m.vector.y),
+                        float(m.vector.z))          # roll, pitch, yaw (deg)
+        self._t_gimbal = self._now()
+
+    def _gimbal_fresh(self) -> bool:
+        return (self._gimbal is not None
+                and (self._now() - self._t_gimbal) <= self.gimbal_timeout)
+
+    def _gimbal_angles(self) -> tuple[float, float]:
+        """Where the camera is pointing, (yaw, pitch) in degrees, SIYI signs.
+
+        Feedback first, because that is the measurement; the last commanded
+        angle second, because a gimbal with no telemetry is still obeying; and
+        nadir last, because that is what siyi_gimbal_node holds when nobody has
+        asked for anything else.
+        """
+        if self._gimbal_fresh():
+            _roll, pitch, yaw = self._gimbal
+            return yaw, pitch
+        if self._aim_cmd is not None:
+            return self._aim_cmd
+        return 0.0, NADIR_PITCH_DEG
+
+    def _gimbal_settled(self) -> bool:
+        """Is the camera pointing somewhere we can trust a fix from?
+
+        Enough time since the aim last MOVED, always. Plus, while SCANNING,
+        feedback that agrees with the command: a sweep steps 45 deg at a time
+        and the attitude poll is a few Hz, so between the slew and the poll the
+        reported angle can be a whole sector out of date, and a fix placed with
+        it lands somewhere the marker never was.
+
+        That second test is deliberately NOT applied while tracking. There the
+        aim moves at a few degrees a second — the MPC caps the vehicle at
+        `mpc_v_max_m_s` — so command and feedback are never far apart, but they
+        are never exactly equal either, and demanding agreement would throw away
+        every fix during the approach and abort the descent on a marker the
+        camera can see perfectly well.
+        """
+        if self._now() - self._t_look < self.scan_settle:
+            return False
+        if not self._scanning or self._aim_cmd is None \
+                or not self._gimbal_fresh():
+            return True
+        want_yaw, want_pitch = self._aim_cmd
+        _roll, pitch, yaw = self._gimbal
+        return (abs(yaw - want_yaw) <= self.gimbal_settled_deg
+                and abs(pitch - want_pitch) <= self.gimbal_settled_deg)
+
+    def _aim(self, yaw_deg: float, pitch_deg: float) -> None:
+        """Point the gimbal. Restarts the settle timer when it actually moves."""
+        if (self._aim_cmd is None
+                or abs(yaw_deg - self._aim_cmd[0]) > self.gimbal_settled_deg
+                or abs(pitch_deg - self._aim_cmd[1]) > self.gimbal_settled_deg):
+            self._t_look = self._now()
+        self._aim_cmd = (float(yaw_deg), float(pitch_deg))
+        m = Vector3Stamped()
+        m.header.stamp = self.get_clock().now().to_msg()
+        m.vector.y, m.vector.z = float(pitch_deg), float(yaw_deg)
+        self.aim_pub.publish(m)
+
+    def _release_aim(self) -> None:
+        """Hand the gimbal back to its own nadir hold. NaN is the release."""
+        if self._aim_cmd is None:
+            return
+        self._aim_cmd = None
+        self._t_look = self._now()
+        m = Vector3Stamped()
+        m.header.stamp = self.get_clock().now().to_msg()
+        m.vector.y = m.vector.z = float('nan')
+        self.aim_pub.publish(m)
+
+    def _scan_plan(self) -> list[tuple[float, float]]:
+        """The sweep this flight will fly. `gimbal_scan=false` is nadir only."""
+        if not self.gimbal_scan:
+            return [(0.0, NADIR_PITCH_DEG)]
+        return sweep_plan(self.scan_pitch, self.scan_yaw_step,
+                          self.scan_yaw_limit)
+
+    def _scan_tick(self) -> None:
+        """Hold the current look, and move on when its dwell is up.
+
+        The sweep RESTARTS each time SEARCH is entered, rather than resuming
+        where a previous search left off: the first look is nadir, and after a
+        climb — or after an abort and a second attempt — under the vehicle is
+        again the first place worth looking. Without the restart the dwell
+        timer would still be running from whenever the gimbal was last moved
+        and the first look would be skipped before the camera ever saw it.
+        """
+        now = self._now()
+        if not self._scanning:
+            self._scanning = True
+            self._scan_i = 0
+            self._t_look = now
+            self._t_settled = None
+        elif len(self._scan) > 1:
+            # Count the dwell from when the camera actually ARRIVED, so a look
+            # that took a long swing to reach still gets its full `scan_view_s`
+            # of looking. `scan_look_max_s` is the backstop for a gimbal that
+            # never reports arriving at all.
+            if self._gimbal_settled():
+                self._t_settled = self._t_settled or now
+                seen_enough = (now - self._t_settled) >= self.scan_view
+            else:
+                # CONTINUOUS settled time, so a gimbal that arrives, gets
+                # knocked off by a gust and comes back has to serve the full
+                # view again rather than banking the two halves. Same rule as
+                # `marker_acquire_frames` and for the same reason.
+                self._t_settled = None
+                seen_enough = False
+            if seen_enough or (now - self._t_look) >= self.scan_look_max:
+                self._scan_i = (self._scan_i + 1) % len(self._scan)
+                self._t_settled = None
+        yaw, pitch = self._scan[self._scan_i]
+        self._aim(yaw, pitch)
+
+    def _bench_report(self) -> None:
+        """One line a second: what the camera is doing and what it concluded.
+
+        Everything an operator standing over the airframe needs to tell the
+        three failures apart — the gimbal is not moving, the detector is not
+        seeing, or the fix is being placed in the wrong spot — without reading
+        four topics at once.
+        """
+        if self._now() - self._t_calls.get('bench', 0.0) < 1.0:
+            return
+        self._t_calls['bench'] = self._now()
+        want_yaw, want_pitch = self._aim_cmd or (0.0, NADIR_PITCH_DEG)
+        if self._gimbal_fresh():
+            _r, pitch, yaw = self._gimbal
+            att = f'at y{yaw:+6.1f} p{pitch:+6.1f}'
+        else:
+            att = 'NO FEEDBACK   '
+        if self._fresh_marker() and self.pose is not None:
+            off = self.marker - np.array([self.pose.pose.position.x,
+                                          self.pose.pose.position.y,
+                                          self.pose.pose.position.z])
+            fix = (f'MARKER {np.linalg.norm(off):.2f} m away '
+                   f'(E{off[0]:+.2f} N{off[1]:+.2f} U{off[2]:+.2f})')
+        elif self.detected:
+            fix = 'seen, but no usable fix (gimbal still moving?)'
+        else:
+            fix = 'no marker'
+        self.get_logger().info(
+            f'BENCH look {self._scan_i + 1}/{len(self._scan)} '
+            f'want y{want_yaw:+6.1f} p{want_pitch:+6.1f} | {att} | '
+            f'{"settled" if self._gimbal_settled() else "SLEWING"} | {fix}')
+
+    def _track_marker(self) -> None:
+        """Keep the camera on the last marker fix while flying to it."""
+        if not self.gimbal_track or self.pose is None or self.marker is None:
+            return
+        q = self.pose.pose.orientation
+        yaw, pitch = gimbal_aim_for(
+            (self.pose.pose.position.x, self.pose.pose.position.y,
+             self.pose.pose.position.z),
+            enu_yaw_from_quaternion(q.x, q.y, q.z, q.w),
+            self.marker)
+        self._aim(yaw, pitch)
 
     # ------------------------------------------------------------ terminal UI
     def _stdin_loop(self) -> None:
@@ -458,6 +799,13 @@ class MpcLandingNode(Node):
         future here would stall the setpoint stream that keeps the vehicle in
         offboard control — which the flight controller reads as loss of link.
         """
+        if self.bench:
+            # The bench never commands the vehicle. This is the chokepoint for
+            # arm / set_mode / land, so an abort on the bench also stops here
+            # rather than telling a parked airframe to land.
+            self.get_logger().warn(f'bench_search: NOT calling {name}',
+                                   throttle_duration_sec=5.0)
+            return False
         if not client.service_is_ready():
             # Throttled hard. This is checked at rate_hz, so an unthrottled
             # message floods 20 lines a second and buries the approval prompt
@@ -521,6 +869,13 @@ class MpcLandingNode(Node):
     def _alt(self) -> float:
         return float(self.pose.pose.position.z) if self.pose else float('nan')
 
+    def _yaw_now(self) -> float | None:
+        """The vehicle's current heading in ENU, or None with no pose yet."""
+        if self.pose is None:
+            return None
+        q = self.pose.pose.orientation
+        return enu_yaw_from_quaternion(q.x, q.y, q.z, q.w)
+
     def _rel_to_marker(self):
         """Vehicle position/velocity relative to the marker, horizontal plane."""
         p = np.array([self.pose.pose.position.x, self.pose.pose.position.y])
@@ -535,7 +890,17 @@ class MpcLandingNode(Node):
         against a marker whose absolute position we only know through the same
         estimator that is moving, and a position setpoint would re-inject that
         estimate's drift as a command.
+
+        YAW IS AN ABSOLUTE HEADING, NOT AN OFFSET. This field used to be a
+        hard-coded 0.0, which is not "keep the current heading" — it is a
+        command to point at ENU yaw 0 (due East), and the vehicle obeyed it:
+        on the first flight it spun on the spot to that heading before it would
+        climb. So the heading is captured on the pad at arming and re-sent
+        unchanged for the rest of the flight; before it is captured, each
+        setpoint carries the vehicle's own live heading, which is a no-op.
         """
+        if self.bench:
+            return          # the bench never streams setpoints — see _declare
         m = PositionTarget()
         m.header.stamp = self.get_clock().now().to_msg()
         m.header.frame_id = 'map'
@@ -549,7 +914,17 @@ class MpcLandingNode(Node):
                        | PositionTarget.IGNORE_AFZ
                        | PositionTarget.IGNORE_YAW_RATE)
         m.velocity.x, m.velocity.y, m.velocity.z = float(vx), float(vy), float(vz)
-        m.yaw = 0.0
+        yaw = self._yaw_hold if self._yaw_hold is not None else self._yaw_now()
+        if yaw is None:
+            # No pose yet, so there is no heading to hold and none to command.
+            # Ask for zero yaw RATE instead of an absolute heading: "do not
+            # rotate" is the only honest instruction when we cannot say where
+            # the vehicle is pointing.
+            m.type_mask = ((m.type_mask & ~PositionTarget.IGNORE_YAW_RATE)
+                           | PositionTarget.IGNORE_YAW)
+            m.yaw_rate = 0.0
+        else:
+            m.yaw = float(yaw)
         self.sp_pub.publish(m)
 
     # ------------------------------------------------------------- preflight
@@ -572,12 +947,20 @@ class MpcLandingNode(Node):
         # vehicle can hold position — and PX4 refuses the OFFBOARD arm anyway,
         # over an event MAVROS cannot decode. estimator.py has the numbers from
         # the day this was found.
+        now = self._now()
+        blocked = self.ekf.blocking_reason(now)
+        detail = blocked or self.ekf.warning(now) or self.ekf.summary(now)
         if self.require_gnss:
-            now = self._now()
-            blocked = self.ekf.blocking_reason(now)
-            c.append(CheckResult(
-                'EKF position aiding', blocked is None,
-                blocked or self.ekf.warning(now) or self.ekf.summary(now)))
+            c.append(CheckResult('EKF position aiding', blocked is None, detail))
+        elif blocked:
+            # Waived, but never silent: the operator turned this gate off (see
+            # run_px4), so the EKF state becomes information they read instead
+            # of a condition that holds the mission — PX4's own arm check is
+            # still there, and it is the one that decides.
+            self.get_logger().warn(
+                f'EKF position aiding is NOT gating this flight '
+                f'(require_gnss_aiding=false): {detail}',
+                throttle_duration_sec=10.0)
         # There is deliberately NO altitude check here. It used to refuse to
         # start above max_start_alt_m, but a disarmed vehicle is not flying and
         # 'disarmed at start' below already refuses a live one — so the only
@@ -630,6 +1013,15 @@ class MpcLandingNode(Node):
         if self.gate.needs_setpoint_stream:
             self._send(0.0, 0.0, 0.0)
 
+        # The gimbal belongs to SEARCH (sweeping) and DESCEND (tracking) only.
+        # Anywhere else it goes back to siyi_gimbal_node's own nadir hold —
+        # including after an abort, so the camera is not left staring off at
+        # some search sector while the vehicle comes down.
+        if ph not in (Phase.SEARCH, Phase.DESCEND):
+            self._release_aim()
+        if ph is not Phase.SEARCH:
+            self._scanning = False
+
         if ph is Phase.PRECHECK:
             self._checks = self._run_checks()
             if all(x.passed for x in self._checks):
@@ -677,10 +1069,18 @@ class MpcLandingNode(Node):
                 # true height is known, so this is where the climb datum comes
                 # from (`_takeoff_target`).
                 self._z_ground = self._alt()
+                # ...and the heading it is sitting at, for the same reason: it
+                # is the one moment the vehicle is provably where the operator
+                # placed it. Every setpoint from here on re-sends this, so the
+                # climb goes straight up instead of yawing first (see `_send`).
+                self._yaw_hold = self._yaw_now()
+                heading = ('' if self._yaw_hold is None else
+                           f', holding heading {np.degrees(self._yaw_hold):.0f}'
+                           f' deg ENU')
                 self.get_logger().info(
                     f'armed on the ground at local z={self._z_ground:.2f} m — '
                     f'climbing to z={self._takeoff_target():.2f} m '
-                    f'({self.takeoff_alt:.1f} m above it)')
+                    f'({self.takeoff_alt:.1f} m above it){heading}')
                 self.gate.armed_confirmed()
                 self._announce()
                 return
@@ -702,14 +1102,25 @@ class MpcLandingNode(Node):
                 self.gate.altitude_reached()
                 self._announce()
                 return
-            # Climb at a capped rate, easing off near the target so the vehicle
-            # settles instead of overshooting into the gate.
-            vz = float(np.clip(err, -self.climb_speed, self.climb_speed))
+            # FULL climb rate until `climb_ease` from the target, then linear
+            # to zero. The old rule was `clip(err, ±climb_speed)` — a pure P
+            # law with a gain of 1 — which meant the vehicle was already
+            # backing off `climb_speed` metres out and spent the last stretch
+            # drifting up. Braking distance and climb rate are separate
+            # decisions, so they are separate numbers.
+            vz = self.climb_speed * float(np.clip(err / self.climb_ease,
+                                                  -1.0, 1.0))
             self._send(0.0, 0.0, vz)
             return
 
         if ph is Phase.SEARCH:
             self._send(0.0, 0.0, 0.0)
+            # THE VEHICLE HOLDS STILL AND THE CAMERA LOOKS AROUND. Sweeping the
+            # gimbal searches a circle a couple of vehicle-heights across from a
+            # stationary hover; flying a search pattern to cover the same ground
+            # would put a moving vehicle over unsurveyed terrain to find out
+            # something a 20 gram gimbal can find out from where it already is.
+            self._scan_tick()
             # Commit only after several CONSECUTIVE fresh detections.  A live
             # fix AND a currently-asserted `detected` flag both have to hold;
             # a single spurious hit trips one tick and the streak resets, so it
@@ -718,12 +1129,38 @@ class MpcLandingNode(Node):
                 self._acq_streak += 1
             else:
                 self._acq_streak = 0
+            if self.bench:
+                # Report and keep sweeping. Committing here would be a descent
+                # command from a vehicle standing on the ground; and stopping
+                # at the first sighting would end the rehearsal before the
+                # sweep it exists to watch has finished a lap.
+                self._bench_report()
+                if self._acq_streak == self.acquire_frames:
+                    self.get_logger().info(
+                        f'BENCH: this is where the flight would COMMIT to a '
+                        f'descent — {self._acq_streak} consecutive fixes, '
+                        f'gimbal at yaw {self._gimbal_angles()[0]:+.0f} pitch '
+                        f'{self._gimbal_angles()[1]:+.0f} deg')
+                return
             if self._acq_streak >= self.acquire_frames:
                 self._t_solve = None
                 self._ref = HorizonReference(lead_s=self.mpc_dt)
+                self._found_at = self._gimbal_angles()
                 self.gate.marker_acquired()
+                # Say WHERE it was found, in both the angle it was seen at and
+                # the position that angle put it at: off nadir those are the two
+                # halves of the fix, and if the descent then flies somewhere
+                # unexpected this line is what says which half was wrong.
+                offset = (self.marker[:2] - np.array(
+                    [self.pose.pose.position.x, self.pose.pose.position.y])
+                ) if self.pose is not None and self.marker is not None else None
+                where = ('' if offset is None else
+                         f' at {np.linalg.norm(offset):.1f} m '
+                         f'(E{offset[0]:+.1f} N{offset[1]:+.1f})')
                 self.get_logger().info(
-                    f'marker acquired ({self._acq_streak} consecutive fixes) — '
+                    f'marker acquired ({self._acq_streak} consecutive fixes) '
+                    f'with the gimbal at yaw {self._found_at[0]:+.0f} '
+                    f'pitch {self._found_at[1]:+.0f} deg{where} — '
                     f'descending automatically from here')
                 return
             if self._now() - self._t_phase > self.search_timeout:
@@ -731,6 +1168,9 @@ class MpcLandingNode(Node):
             return
 
         if ph is Phase.DESCEND:
+            # Keep the camera on the marker while closing on it. The aim walks
+            # back to nadir on its own as the vehicle arrives overhead.
+            self._track_marker()
             self._descend()
             return
 

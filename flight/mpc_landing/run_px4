@@ -7,8 +7,12 @@
 #   ./run_px4                 ArUco precision landing  (aruco_landing.launch.py)
 #   ./run_px4 mpc             MPC precision landing     (fixed_marker_landing)
 #   ./run_px4 naive           just MAVROS + the naive takeoff/land (no camera)
+#   ./run_px4 bench           GROUND REHEARSAL of the MPC mission's SEARCH:
+#                             the gimbal sweep and the marker fixes it produces,
+#                             with the FCU never commanded. Props off.
 #
 #   FCU_URL=/dev/ttyACM0:57600 ./run_px4      override the flight-controller link
+#   GNSS_CHECK=on ./run_px4 mpc               put the GNSS preflight gate back
 #
 # Approve / abort from another terminal (under launch, ENTER does not reach the
 # node — see the launch docstrings):
@@ -26,11 +30,18 @@ case "$MODE" in
   aruco) MISSION_LAUNCH="aruco_landing.launch.py";        NODE="aruco_landing_node" ;;
   mpc)   MISSION_LAUNCH="fixed_marker_landing.launch.py"; NODE="mpc_landing_node" ;;
   naive) MISSION_LAUNCH="";                               NODE="naive_flight_node" ;;
+  # The mpc stack exactly, with the mission node started in SEARCH and forbidden
+  # to touch the flight controller (see bench_search in mpc_landing_node). Same
+  # camera, same detector, same gimbal, same geometry — the only thing missing
+  # is the flying, which is the point.
+  bench) MISSION_LAUNCH="fixed_marker_landing.launch.py"; NODE="mpc_landing_node"
+         BENCH=1 ;;
   -h|--help|help)
-    sed -n '2,19p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    sed -n '2,23p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
     exit 0 ;;
-  *) echo "unknown mode '$MODE' (try: aruco | mpc | naive)" >&2; exit 2 ;;
+  *) echo "unknown mode '$MODE' (try: aruco | mpc | naive | bench)" >&2; exit 2 ;;
 esac
+BENCH="${BENCH:-0}"
 
 # The flight-controller link. ttyACM is USB CDC (baud is ignored, but MAVROS
 # still wants a number); change the device for a TELEM UART, e.g.
@@ -38,6 +49,37 @@ esac
 FCU_URL="${FCU_URL:-/dev/ttyACM0:57600}"
 # PX4 uses OFFBOARD, so the PX4 MAVROS config. ArduPilot would be apm.launch.
 MAVROS_LAUNCH="${MAVROS_LAUNCH:-px4.launch}"
+
+# --- the GNSS preflight gate is OFF here, on purpose ------------------------
+# The mission node's 'EKF position aiding' check refuses to prompt for an arm
+# while the EKF has no GNSS aiding. On the pad it does not measure what it
+# claims to: when it blocks, arming once from the RC in POSITION mode and
+# disarming again makes it PASS — the vehicle is no more aided than it was a
+# minute earlier, the check simply saw a different moment. A gate whose verdict
+# can be flipped by an unrelated action is not a safety check; it is a delay
+# that teaches the operator to work around it, and working around a preflight
+# is the habit that must not be trained.
+#
+# What is NOT lost by turning it off: PX4 still refuses to arm without its own
+# EKF/GNSS conditions, and that refusal is the authoritative one. What IS lost:
+# the early, readable explanation of WHY PX4 will refuse. So the node keeps
+# reporting the EKF state — it just no longer holds the mission on it.
+#
+# GNSS_CHECK=on restores the gate for a flight where you want it.
+GNSS_CHECK="${GNSS_CHECK:-off}"
+MISSION_ARGS=()
+if [[ "$GNSS_CHECK" == "on" ]]; then
+  echo "run_px4: GNSS preflight gate ENABLED (GNSS_CHECK=on)"
+else
+  MISSION_ARGS+=(--ros-args -p require_gnss_aiding:=false)
+fi
+# The bench rehearses SEARCH and nothing else: the node starts there and is
+# barred from commanding the FCU. --ros-args may appear only once, so this
+# reuses the block above rather than opening a second one.
+if [[ "$BENCH" == "1" ]]; then
+  [[ ${#MISSION_ARGS[@]} -gt 0 ]] || MISSION_ARGS+=(--ros-args)
+  MISSION_ARGS+=(-p bench_search:=true)
+fi
 
 # The environment is normally already set by .bashrc; source it ourselves only
 # if it is not, so this also works from cron/systemd (see flight_env.sh).
@@ -112,7 +154,15 @@ if [[ -n "$MISSION_LAUNCH" ]]; then
 fi
 
 echo
-echo "run_px4: starting $NODE — approve HERE by pressing ENTER (n aborts),"
-echo "         or from another terminal: ros2 run mpc_landing approve $NODE"
+if [[ "$BENCH" == "1" ]]; then
+  echo "run_px4: starting $NODE in BENCH SEARCH — no arm, no setpoint, no gate."
+  echo "         The GIMBAL WILL MOVE. Props off. Ctrl-C stops everything."
+else
+  echo "run_px4: starting $NODE — approve HERE by pressing ENTER (n aborts),"
+  echo "         or from another terminal: ros2 run mpc_landing approve $NODE"
+  if [[ "$GNSS_CHECK" != "on" ]]; then
+    echo "         GNSS preflight gate is OFF — PX4's own arm check still applies."
+  fi
+fi
 echo
-ros2 run mpc_landing "$NODE"
+ros2 run mpc_landing "$NODE" "${MISSION_ARGS[@]}"
