@@ -26,7 +26,7 @@ marker_tf_node      ──► /marker/measured     (로컬 ENU, 검출 시에만
    ▼
 marker_kf_node      ──► /marker/position     (연속 추정 + coast)
    │                    /marker/velocity
-   │                    /marker/valid
+   │                    /marker/valid, /marker/entry_valid
    ▼
 mission_manager_node ─ predictor ─ mpc ─ reference ─► /fmu/in/trajectory_setpoint
                         (표적 미래)  (최적 입력)  (조밀 보간)
@@ -488,7 +488,10 @@ $\sigma_m$은 추측이 아니라 **§2.3에서 실제로 잰 값**이다.
 ### coast 동작 (SITL 실측)
 
 측정이 끊겨도 predict만 계속 → 연속 추정 유지. `max_coast` 초과 시 `/marker/valid`가
-False로 바뀌어 "지금부터 추측 중"임을 상위에 알린다.
+False로 바뀌어 "지금부터 추측 중"임을 상위에 알린다. 별도의
+`/marker/entry_valid`는 서로 다른 촬영시각의 KF 승인 측정 3개가 0.5 s 안에
+들어온 경우에만 True이다. 최초 진입뿐 아니라 하강 중 소실 뒤 재진입에도
+같은 조건을 다시 요구한다.
 
 ```
 h=1.60 m  fixes=1  KF_err=0.183  valid=True   ← 마지막 검출
@@ -515,32 +518,41 @@ YAML의 `stadium_endpoint` 좌표가 아니다.
 | `TAKEOFF` | — | PX4 `NAV_TAKEOFF`로 5 m 이륙 |
 | `READY` | — | 5 m 호버, `mission` 명령 대기 |
 | `MISSION_PLAN` | YAML 장애물 | 별도 프로세스에서 A*→geometry-only B-spline 생성·정확 충돌 검증 |
-| `MISSION` | B-spline 공간 경로 | PX4 Goto로 YAML `(50,50)`까지 장애물 회피 추종 |
+| `MISSION` | B-spline 공간 경로 | TrackingMPC로 YAML `(50,50)`까지 장애물 회피 추종 |
 | `HOVER` | map goal | `(50,50)`, 고도 5 m 유지, `land` 대기 |
 | `RETURN_PLAN` | YAML 장애물 + 최신 큐 | 최초 복귀 또는 tail 연결 실패 때만 A*→geometry-only B-spline 생성 |
-| `RETURN` | B-spline + live cue | 기존 prefix 추종, 2초마다 2.5 m-safe tail만 교체, 6 m safe 직선에서 native landing 인계 |
-| `PRECLAND` | cue + ArUco 수평 보정 | `LandingTargetPose`만 갱신; PX4가 비행·하강·접촉판정·자동 disarm |
+| `RETURN` | B-spline + live cue | 기존 prefix 추종, 2초마다 1.5 m-safe tail만 교체, 관측·계획안전 gate까지 추종 |
+| `LANDING_ACQUIRE` | cue + fresh ArUco | 고도를 고정하고 LandingMPC로 수평 위치·상대속도·비전 보정 수렴 |
+| `LANDING_DESCEND` | cue + fresh ArUco | LandingMPC 안전콘으로 정렬을 유지하며 저고도까지 하강 |
+| `PRECLAND` | cue + ArUco 수평 보정 | 비전 소실 시 Offboard acquire로 회수; 정렬된 카메라 사각구간만 최대 8 s 커밋; PX4가 접촉판정·자동 disarm |
 | `ABORT` | 현재 XY hold | cue/안전경로 상실 시 fail-closed 정지 |
 
 Phase 0은 `PRECHECK`, Phase 1은 `TAKEOFF`, Phase 2는
 `MISSION_PLAN → MISSION → HOVER`로 그룹화된다. Phase 2의 B-spline은
 A* topology를 geometry-only로 보강할 뿐 속도나 P/V/A 시간표를
-만들지 않는다. mission manager는 spatial `GotoSetpoint`만 보내고, PX4
-Goto/PositionSmoothing이 `MPC_XY_CRUISE=3`, `MPC_ACC_HOR`,
-`MPC_JERK_AUTO`로 속도·가속도·jerk profile을 만든다.
-`MPC_XY_VEL_MAX=10`은 절대 수평 상한이다.
+만들지 않는다. mission manager의 TrackingMPC가 승인된 공간 경로에서
+제동 가능한 P/V/A 참조를 만들고, PX4는 그 아래의 위치·속도·자세 제어를
+담당한다. MPC horizon이 안전검사에 실패하면 기존 exact-safe Goto만 사용한다.
 6 m lookahead는 시간 기반 진행값이 아닌 공간 목표이며, exact 선분 검사가
 막힘을 찾으면 안전한 거리까지 줄이거나 현재 위치에서 재계획한다.
 
-**Phase 3 `land` 전환 조건**: live trailer까지 6 m보다 멀거나 직선이
-YAML 장애물에 막히면 최초 `RETURN_PLAN → RETURN`에서 A*→geometry-only
-B-spline을 만들고 이후 2초마다 tail만 갱신한다. tail 연결 실패 때만 전체
-플래너를 다시 사용한다. 6 m 이내에서 직선이 안전해지면 mission manager는
-`LandingTargetPose`를 갱신하고 PX4 `NAV_PRECLAND`를 요청한다. PX4가
-`AUTO_PRECLAND`를 확인하기 전까지만 현재 위치 Offboard hold를 유지하며,
-확인 뒤에는 OCM/Trajectory/Goto를 모두 중단한다. 이후 속도·가속·jerk·
-자세·하강·접촉판정·자동 disarm은 PX4 소유다. 앱의 ArUco 값은 target의
-수평 위치 보정일 뿐 직접 제어입력이 아니다.
+**Phase 3 `land` 전환 조건**: 최초 `RETURN_PLAN → RETURN`에서
+A*→geometry-only B-spline을 만들고 이후 2초마다 tail만 갱신한다. tail 연결
+실패 때만 전체 플래너를 다시 사용한다. 짐벌은 cue 기준 수평거리 10 m 밖에서
+관절 yaw 0°/pitch -90°를 고정하고, 10→9 m에서 연속 전환, 9 m 안에서 직접
+조준한다. 서로 다른 KF 승인
+ArUco 3개가 0.5 s 안에 들어오고 live cue 직선이 1.5 m planning-safe일 때만
+`LANDING_ACQUIRE`로 들어간다. 여기서는 고도를 고정한 채 LandingMPC가 정렬하고,
+비전 보정·수평오차·상대속도 gate가 수렴해야 `LANDING_DESCEND`로 넘어간다.
+1.5 m는 LandingMPC 하강 시작 기준으로만 유지한다. LandingMPC가 0.65 m까지
+직접 하강한 뒤 fresh ArUco·정렬과 다음 셔틀 반전 전 runway를 다시 확인해야
+`LandingTargetPose`와 `NAV_PRECLAND`를 PX4에 인계한다. `AUTO_PRECLAND` 확인 뒤에는
+OCM/Trajectory/Goto를 중단한다. ArUco가 사라지면 Offboard를 회수해 하강을
+멈추고, 새 승인 측정 3개/0.5 s 뒤에만 다시 정렬·하강한다. 단, 추정 상대고도
+0.65 m 이하에서 XY 0.5 m·상대속도 0.3 m/s를 만족한 카메라 사각구간은
+실측한 접촉판정 지연을 포함해 최대 8 s만 제한적으로 커밋한다. 최종
+접촉판정·자동 disarm은 PX4 소유다. 짐벌 관절 명령은 `land` 전과 최종
+`DONE` 뒤에는 발행하지 않으며 encoder/TF만 계속 제공한다.
 
 ### 과거 기준 실측 (3 m/s 원운동 트레일러, 실제 ArUco 인식)
 

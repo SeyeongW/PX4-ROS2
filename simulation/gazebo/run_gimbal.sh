@@ -146,7 +146,7 @@ GIT_DIRTY=0
   printf 'coordinates_sha256\t%s\n' "$(sha256sum "$LANDING_COORDINATES" | cut -d' ' -f1)"
   printf 'gimbal\t%s\n' "$GIMBAL"
   printf 'takeoff_alt_m\t%s\n' "$LANDING_TAKEOFF_ALT"
-  printf 'flight_control_owner\t%s\n' 'px4_native'
+  printf 'flight_control_owner\t%s\n' 'mission_manager_mpc_then_px4_precland'
   printf 'trailer_speed_m_s\t%s\n' "$TRAILER_SPEED_FOR_RUN"
 } >"$RUN_MANIFEST"
 git -C "$REPO_DIR" status --short >"$PX4_MAP_RUNTIME_DIR/git_status.txt" || true
@@ -217,6 +217,7 @@ cleanup() {
   {
     printf 'flight_csv_1hz\t%s\n' "$csv_export"
     printf 'flight_summary_csv\t%s\n' "$csv_export"
+    printf 'experiment_metrics_csv\t%s\n' "$csv_export"
     if [[ "$csv_export" == "present" ]]; then
       printf 'flight_csv_schema\t%s\n' 'cju_flight_1hz_v3'
       printf 'flight_csv_rate_hz\t1\n'
@@ -532,11 +533,11 @@ if [[ "$RUN_MISSION" == "1" && "$LANDING_MAP" == "cju-track" ]]; then
           continue
         }
         wait_for_states 'MISSION|HOVER' 120 || {
-          retry_command 'geometry B-spline/PX4 Goto 상태 확인'
+          retry_command 'geometry B-spline/TrackingMPC 상태 확인'
           continue
         }
         touch "$TRAILER_START_FILE"
-        echo '  Phase 2: YAML A*→geometry B-spline을 PX4 Goto로 추종 중...'
+        echo '  Phase 2: YAML A*→geometry B-spline을 TrackingMPC로 추종 중...'
         wait_for_states HOVER 180 || {
           retry_command 'Phase 2 HOVER 확인'
           continue
@@ -544,11 +545,11 @@ if [[ "$RUN_MISSION" == "1" && "$LANDING_MAP" == "cju-track" ]]; then
         echo "  Phase 2 완료 — (50,50) 호버, 트레일러 ${TRAILER_SPEED_FOR_RUN} m/s"
         ;;
       land)
-        send_until_state land 'RETURN_PLAN|RETURN|PRECLAND|DONE' 30 || {
+        send_until_state land 'RETURN_PLAN|RETURN|LANDING_ACQUIRE|LANDING_DESCEND|PRECLAND|DONE' 30 || {
           retry_command 'Phase 3 경로 계획 확인'
           continue
         }
-        echo '  Phase 3: A*→geometry B-spline으로 트레일러에 접근한 뒤 PX4 NAV_PRECLAND 수행 중...'
+        echo '  Phase 3: TrackingMPC 접근 → LandingMPC 정렬·하강 → PX4 NAV_PRECLAND 수행 중...'
         wait_for_states DONE 180 || {
           retry_command '착륙 완료 확인'
           continue

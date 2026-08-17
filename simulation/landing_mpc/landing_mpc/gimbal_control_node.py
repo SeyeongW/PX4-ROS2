@@ -23,6 +23,7 @@ Subscribes
     /marker/cue                         PointStamped  long-range target (ENU)
     /marker/position                    PointStamped  vision/KF target (ENU)
     /marker/valid                       Bool          is the vision fix usable
+    /mission/state                      String        unlocks aiming after land
     (gz) /world/<world>/model/<model>/joint_state       gz.msgs.Model
 Publishes
     (gz) /model/<model>/command/gimbal_yaw|roll|pitch   gz.msgs.Double
@@ -76,7 +77,7 @@ from rclpy.qos import (DurabilityPolicy, HistoryPolicy, QoSProfile,
                        ReliabilityPolicy)
 from geometry_msgs.msg import TransformStamped
 from sensor_msgs.msg import JointState
-from std_msgs.msg import Bool, Float32
+from std_msgs.msg import Bool, Float32, String
 from tf2_ros import TransformBroadcaster
 
 from gz.msgs10.double_pb2 import Double
@@ -89,16 +90,17 @@ from .frame import (LOCAL_ENU_FRAME_ID, enu_dir_to_flu, flu_dir_to_enu,
                     rot_to_quat)
 from .parameter_utils import (
     DEFAULT_DECK_Z_M,
-    require_between,
     require_finite,
     require_nonempty,
-    require_nonnegative,
     require_positive,
 )
 
 # gimbal_down's joint names, in the (yaw, roll, pitch) order this node uses.
 JOINT_NAMES = ('cgo3_vertical_arm_joint', 'cgo3_horizontal_arm_joint',
                'cgo3_camera_joint')
+LANDING_STATES = frozenset((
+    'RETURN_PLAN', 'RETURN', 'LANDING_ACQUIRE', 'LANDING_DESCEND',
+    'PRECLAND', 'ABORT', 'DONE'))
 
 
 def _px4_qos():
@@ -108,32 +110,25 @@ def _px4_qos():
 
 
 def _rate_limit(current, desired, max_step):
-    """Move `current` toward `desired` by at most `max_step`, shortest way."""
+    """Move one continuous joint coordinate toward its target."""
     delta = desired - current
-    # yaw is an angle: never take the long way round
-    delta = (delta + math.pi) % (2.0 * math.pi) - math.pi
     return current + max(-max_step, min(max_step, delta))
 
 
-def _nadir_handoff(direction, start_depression):
-    """Blend continuously from nadir to a shallow target direction."""
+def _range_handoff(direction, relative_enu, start_m, full_m):
+    """Blend a body-frame aim from joint-nadir by horizontal ENU range."""
     down = np.array([0.0, 0.0, -1.0])
     target = np.asarray(direction, float)
     norm = float(np.linalg.norm(target))
     if norm < 1e-9:
         return down
     target /= norm
-    if start_depression <= 0.0:
-        return target
-    depression = math.atan2(max(0.0, -target[2]),
-                            max(float(np.hypot(target[0], target[1])), 1e-6))
-    end_depression = min(2.0 * start_depression, math.pi / 2.0)
-    if depression <= start_depression:
+    distance = float(np.linalg.norm(np.asarray(relative_enu, float)[:2]))
+    if distance >= start_m:
         return down
-    if depression >= end_depression:
+    if distance <= full_m:
         return target
-    weight = (depression - start_depression) / (
-        end_depression - start_depression)
+    weight = (start_m - distance) / (start_m - full_m)
     blended = (1.0 - weight) * down + weight * target
     return blended / np.linalg.norm(blended)
 
@@ -161,27 +156,16 @@ class GimbalControlNode(Node):
             'vision_timeout_s', p('vision_timeout_s', 1.0).value)
         self.cue_timeout_s = require_positive(
             'cue_timeout_s', p('cue_timeout_s', 2.0).value)
-        # Below this height the target fills the frame and pointing off-nadir
-        # buys nothing, so stop chasing and hold nadir for a clean touchdown.
-        self.nadir_below_m = require_nonnegative(
-            'nadir_below_m', p('nadir_below_m', 2.0).value)
-        # Do not aim at a target until the look-down angle is steep enough to be
-        # worth it.  Chasing a cue 57 m out and 14 m below is a ~14 deg
-        # depression: the 1.3 m marker is unresolvable at that range AND lies
-        # edge-on (measured 0% detection during the whole approach), so aiming
-        # there sees nothing — and because the cue is nearly on the horizon,
-        # its AZIMUTH swings as the vehicle chases, which slews the gimbal yaw
-        # up to 180 deg (measured slew_sat 43-90%) and rolls the image so hard
-        # it looks like the drone flipped (it did not — the flight log holds
-        # the airframe at <=5 deg tilt throughout).  So hold nadir until the
-        # geometry is steep; the image stays stable and the yaw stops thrashing.
-        # 25 deg starts a continuous nadir-to-target handoff; it reaches the
-        # target direction at 50 deg.  Applying the same handoff to cue and
-        # vision prevents either source from creating a 65–80 deg aim step.
-        self.min_cue_depression = math.radians(require_between(
-            'min_cue_depression_deg',
-            p('min_cue_depression_deg', 25.0).value,
-            0.0, 90.0, upper_inclusive=False))
+        # Use horizontal drone-to-trailer range from the shared GPS/cue frame:
+        # remain stable outside 10 m, blend for one metre, then point directly.
+        # Both distances remain parameters because camera/FOV hardware may change.
+        self.aim_start_m = require_positive(
+            'aim_start_range_m', p('aim_start_range_m', 10.0).value)
+        self.aim_full_m = require_positive(
+            'aim_full_range_m', p('aim_full_range_m', 9.0).value)
+        if self.aim_full_m >= self.aim_start_m:
+            raise ValueError('aim_full_range_m must be less than '
+                             'aim_start_range_m')
         self.report_s = require_positive(
             'report_period_s', p('report_period_s', 5.0).value)
         self.local_pos_topic = require_nonempty(
@@ -219,6 +203,8 @@ class GimbalControlNode(Node):
         self._lag_max = 0.0
         self._sat_n = 0
         self._source = 'nadir'
+        self._mission_state = 'PRECHECK'
+        self._landing_started = False
 
         self.gz = GzNode()
         base = f'/model/{self.model}/command/gimbal_'
@@ -240,6 +226,8 @@ class GimbalControlNode(Node):
         self.create_subscription(PointStamped, '/marker/position',
                                  self._on_vis, 10)
         self.create_subscription(Bool, '/marker/valid', self._on_valid, 10)
+        self.create_subscription(String, '/mission/state',
+                                 self._on_mission_state, 10)
 
         self.tf_pub = TransformBroadcaster(self) if self.publish_tf else None
 
@@ -274,6 +262,11 @@ class GimbalControlNode(Node):
 
     def _on_valid(self, m):
         self._valid = bool(m.data)
+
+    def _on_mission_state(self, m):
+        self._mission_state = str(m.data)
+        if self._mission_state in LANDING_STATES:
+            self._landing_started = True
 
     def _on_joint_state(self, msg: GzModel):
         """Gazebo joint encoders (gz-transport callback, NOT the ROS thread)."""
@@ -320,30 +313,62 @@ class GimbalControlNode(Node):
         """Where the lens should point, as a body-FLU unit vector."""
         target = self._look_at()
         if target is None or self._p_d is None:
-            d_enu = np.array([0.0, 0.0, -1.0])
+            return np.array([0.0, 0.0, -1.0])
         else:
             d_enu = target - self._p_d
-            height = self._p_d[2] - self.deck_z
-            hold_nadir = height < self.nadir_below_m or np.linalg.norm(d_enu) < 1e-3
-            if hold_nadir:
-                d_enu = np.array([0.0, 0.0, -1.0])
+            if np.linalg.norm(d_enu) < 1e-3:
                 self._source = 'nadir'
+                return np.array([0.0, 0.0, -1.0])
             else:
-                target_axis = d_enu / np.linalg.norm(d_enu)
-                d_enu = _nadir_handoff(d_enu, self.min_cue_depression)
-                if np.allclose(d_enu, [0.0, 0.0, -1.0]):
-                    self._source = f'nadir ({self._source} too shallow)'
-                elif not np.allclose(d_enu, target_axis):
+                target_axis = enu_dir_to_flu(d_enu, self._q)
+                now = self._now()
+                range_target = (
+                    self._cue
+                    if (self._cue is not None and self._cue_t is not None
+                        and now - self._cue_t < self.cue_timeout_s)
+                    else target)
+                d_flu = _range_handoff(
+                    target_axis, range_target - self._p_d,
+                    self.aim_start_m, self.aim_full_m)
+                if np.allclose(d_flu, [0.0, 0.0, -1.0]):
+                    self._source = f'joint lock ({self._source} beyond 10 m)'
+                elif not np.allclose(d_flu, target_axis):
                     self._source += ' handoff'
-        return enu_dir_to_flu(d_enu, self._q)
+                return d_flu
+
+    def _desired_joint_angles(self):
+        """Command only between the accepted land request and mission DONE."""
+        mission_state = getattr(self, '_mission_state', 'PRECHECK')
+        if not self._landing_started or mission_state == 'DONE':
+            self._source = ('uncommanded (landed)' if mission_state == 'DONE'
+                            else 'uncommanded (waiting for land)')
+            return None
+        if self._q is None:
+            return None
+        desired_axis = self._desired_axis_flu()
+        if np.allclose(desired_axis, [0.0, 0.0, -1.0]):
+            if not self._source.startswith('joint lock'):
+                self._source = f'joint lock ({self._source})'
+            return 0.0, 0.0, -math.pi / 2.0
+        return gimbal_joint_angles(
+            desired_axis, yaw_hold=self._yaw,
+            pitch_hold=self._pitch)
 
     # ----------------------------------------------------------------- loop
     def _tick(self):
-        if self._q is None:
+        # Always wait for the real encoders; before land they are observed but
+        # deliberately not commanded.
+        if self._measured is None:
             return
-        yaw_d, roll_d, pitch_d = gimbal_joint_angles(self._desired_axis_flu(),
-                                                     yaw_hold=self._yaw,
-                                                     pitch_hold=self._pitch)
+        desired = self._desired_joint_angles()
+        if desired is None:
+            # No Gazebo command before land or after DONE.  Mirror the encoders
+            # so any later commanded slew starts from the actual joint pose.
+            self._yaw, self._roll, self._pitch = self._measured
+            self._desired = None
+            self._publish_joints()
+            return
+        yaw_d, roll_d, pitch_d = desired
         step = self.max_rate / self.rate_hz
         yaw_next = _rate_limit(self._yaw, yaw_d, step)
         roll_next = _rate_limit(self._roll, roll_d, step)

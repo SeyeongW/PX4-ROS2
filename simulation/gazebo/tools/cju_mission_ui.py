@@ -2,8 +2,8 @@
 """Preview the CJU YAML mission or display its live ROS execution.
 
 The UI uses the same fail-closed A* -> geometry-only B-spline planner as the
-mission manager.  Motion along that geometry is only a visual preview: PX4,
-not the B-spline, owns speed and acceleration in the real mission.
+mission manager. Motion along that geometry is a deterministic preview of the
+TrackingMPC leg, not a vehicle-dynamics simulation.
 
 Run after sourcing ROS 2 and the matching px4_msgs workspace::
 
@@ -30,6 +30,7 @@ import yaml
 
 REPO = Path(__file__).resolve().parents[3]
 DEFAULT_MAP = REPO / "simulation/gazebo/maps/drone_cju_track.yaml"
+GIMBAL_AIM_FULL_RANGE_M = 9.0
 sys.path[:0] = [
     str(REPO / "flight/path_plan"),
     str(REPO / "simulation/landing_mpc"),
@@ -39,7 +40,6 @@ try:
     from landing_mpc.frame import LOCAL_ENU_FRAME_ID
     from landing_mpc.mission_manager_node import (
         _mission_planning_segment_is_free,
-        _mission_segment_is_free,
         _plan_global_path,
         _retarget_path_tail,
     )
@@ -143,14 +143,14 @@ def build_preview(map_path, dt_s=0.1):
     # This controls preview progress only.  It is never passed to the B-spline.
     preview_speed = float(
         document["px4_vehicle"]["sitl_parameter_overrides"]["MPC_XY_CRUISE"])
-    handoff_m = float(mission["precland_handoff_m"])
     replan_s = float(mission["return_replan_min_period_s"])
     lookahead_m = float(mission["mpc_path_lookahead_m"])
     cross_track_m = float(mission["mpc_path_cross_track_m"])
     sample_spacing_m = float(mission["bspline_sample_spacing_m"])
-    if min(dt_s, trailer_speed, preview_speed, handoff_m, replan_s,
+    if min(dt_s, trailer_speed, preview_speed, replan_s,
            lookahead_m, cross_track_m, sample_spacing_m) <= 0.0:
         raise ValueError("preview and YAML motion values must be positive")
+    ideal_vision_range_m = GIMBAL_AIM_FULL_RANGE_M
 
     arc, path, expanded = _plan_map_leg(map_path)
     plans = [{
@@ -186,9 +186,13 @@ def build_preview(map_path, dt_s=0.1):
                 drone, rotation, origin, spawn, altitude)[0]
             trailer_local = _map_to_local(
                 trailer, rotation, origin, spawn, altitude)[0]
-            if (distance <= handoff_m and _mission_segment_is_free(
-                    str(map_path), drone_local, trailer_local)):
-                frames[-1]["phase"] = "PRECLAND HANDOFF"
+            # Offline preview cannot synthesize camera detections. Mark the
+            # earliest conservative *ideal* observation gate at full gimbal
+            # aim; a real run additionally needs 3 KF-accepted fixes/0.5 s.
+            if (distance <= ideal_vision_range_m
+                    and _mission_planning_segment_is_free(
+                        str(map_path), drone_local, trailer_local)):
+                frames[-1]["phase"] = "LANDING MPC ENTRY (ideal 3-fix)"
                 break
             refresh_return = (
                 last_return_update_s is None
@@ -354,7 +358,7 @@ def _make_figure(document, route, frames, plans, preview_speed):
         trailer_trace.set_data(trailer_history[:, 0], trailer_history[:, 1])
         drone_dot.set_data([frame["drone"][0]], [frame["drone"][1]])
         trailer_box.set_xy(frame["trailer"] - trailer_size / 2.0)
-        if frame["phase"] == "PRECLAND HANDOFF":
+        if frame["phase"].startswith("LANDING MPC ENTRY"):
             handoff_line.set_data(
                 [frame["drone"][0], frame["trailer"][0]],
                 [frame["drone"][1], frame["trailer"][1]])
@@ -390,11 +394,11 @@ def _check(document, route, frames, plans):
     cadence = float(document["mission"]["return_replan_min_period_s"])
     assert all(cadence <= right - left <= cadence + 0.11
                for left, right in zip(return_times, return_times[1:]))
-    assert frames[-1]["phase"] == "PRECLAND HANDOFF"
+    assert frames[-1]["phase"] == "LANDING MPC ENTRY (ideal 3-fix)"
     assert all(np.all(np.isfinite(plan["path"])) for plan in plans)
     print(
         f"PASS obstacles={len(obstacles)} outbound={plans[0]['arc'][-1]:.3f}m "
-        f"plans={len(plans)} handoff={frames[-1]['distance_m']:.3f}m")
+        f"plans={len(plans)} ideal_3fix={frames[-1]['distance_m']:.3f}m")
 
 
 def _run_live(map_path):
@@ -412,7 +416,8 @@ def _run_live(map_path):
     rotation, origin, spawn = _frame_contract(document)
     route = _trailer_route(document, rotation, origin)
     data = {"state": "WAITING", "vehicle": None, "cue": None,
-            "path": np.empty((0, 3))}
+            "path": np.empty((0, 3)),
+            "landing": "landing data: waiting"}
     vehicle_history, cue_history = deque(maxlen=5000), deque(maxlen=5000)
 
     rclpy.init()
@@ -445,6 +450,9 @@ def _run_live(map_path):
     node.create_subscription(
         String, "/mission/state",
         lambda message: data.__setitem__("state", message.data), 10)
+    node.create_subscription(
+        String, "/mission/landing_diagnostics",
+        lambda message: data.__setitem__("landing", message.data), 10)
 
     fig, ax = plt.subplots(figsize=(9, 8))
     mission = document["mission"]
@@ -509,7 +517,8 @@ def _run_live(map_path):
                     if vehicle is not None and cue is not None else float("nan"))
         status.set_text(
             f"state: {data['state']}\n"
-            f"vehicle-trailer: {distance:.1f} m\n"
+            f"horizontal range: {distance:.1f} m\n"
+            f"{data['landing']}\n"
             f"active path samples: {len(path)}\n"
             "read-only: no flight commands")
         return (planned_line, vehicle_trace, cue_trace,

@@ -25,6 +25,11 @@ def test_one_hz_interval_keeps_native_rate_spike():
     assert result["mean"] < 1.0
 
 
+def test_experiment_csv_contract_has_exactly_eleven_metrics():
+    assert len(EXPORT.EXPERIMENT_METRIC_FIELDS) == 11
+    assert len(set(EXPORT.EXPERIMENT_METRIC_FIELDS)) == 11
+
+
 def test_phase_interval_marks_mixed_transition_bin():
     events = [(10.0, "PRECHECK"), (12.25, "TAKEOFF"), (14.0, "READY")]
 
@@ -150,6 +155,59 @@ def test_planner_failure_counter_uses_explicit_log_message(tmp_path):
     assert EXPORT._planner_failure_events(path) == 2
 
 
+def test_precision_landing_retry_counter_does_not_hide_recovery(tmp_path):
+    path = tmp_path / "mission.log"
+    path.write_text(
+        "[1.0] LANDING_DESCEND -> PRECLAND\n"
+        "[2.0] PRECLAND -> LANDING_ACQUIRE\n"
+        "[3.0] LANDING_ACQUIRE -> LANDING_DESCEND\n"
+        "[4.0] LANDING_DESCEND -> LANDING_ACQUIRE\n"
+        "[5.0] LANDING_ACQUIRE -> LANDING_DESCEND\n"
+        "[6.0] LANDING_DESCEND -> PRECLAND\n",
+        encoding="utf-8")
+
+    assert EXPORT._precision_landing_retries(path) == (2, 1, 1)
+
+
+def test_experiment_log_parser_and_battery_energy_are_fail_closed(tmp_path):
+    path = tmp_path / "mission.log"
+    path.write_text(
+        "[INFO] old line\n"
+        "[INFO] EXPERIMENT_METRICS marker_hits=8 marker_frames=10 "
+        "mpc_count=4 mpc_total_ms=12 mpc_max_ms=5 "
+        "landing_xy_error_m=0.2\n",
+        encoding="utf-8")
+
+    metrics = EXPORT._experiment_metrics(path)
+    assert metrics["marker_hits"] == 8
+    assert metrics["mpc_total_ms"] == 12
+    assert metrics["landing_xy_error_m"] == pytest.approx(0.2)
+
+    battery = {
+        "timestamp": np.arange(11, dtype=float) * 1_000_000,
+        "voltage_v": np.full(11, 10.0),
+        "current_a": np.full(11, 2.0),
+    }
+    assert EXPORT._battery_energy_wh(battery, 0.0, 10.0) == pytest.approx(
+        20.0 * 10.0 / 3600.0)
+    battery["current_a"][:] = -1.0
+    assert np.isnan(EXPORT._battery_energy_wh(battery, 0.0, 10.0))
+
+
+def test_path_tracking_metrics_use_only_mission_and_return():
+    events = [
+        (0.0, "PRECHECK"), (1.0, "MISSION"), (3.0, "HOVER"),
+        (4.0, "RETURN"), (6.0, "PRECLAND")]
+    timestamps = np.array([0.5, 1.5, 2.5, 3.5, 4.5, 5.5])
+    errors = np.array([100.0, 3.0, 4.0, 100.0, 0.0, 12.0])
+
+    rmse, maximum = EXPORT._path_tracking_metrics(
+        timestamps, errors, events, lambda value: value, 0.0, 6.0)
+
+    assert rmse == pytest.approx(6.5)
+    assert maximum == pytest.approx(12.0)
+
+
 def test_groundtruth_height_uses_one_world_frame():
     groundtruth = {
         "timestamp": np.array([1_000_000, 2_000_000]),
@@ -167,6 +225,7 @@ def test_launcher_runs_best_effort_postflight_export():
     assert 'tools/export_flight_1hz.py' in launcher
     assert 'flight_csv_1hz' in launcher
     assert 'flight_summary_csv' in launcher
+    assert 'experiment_metrics_csv' in launcher
     assert "flight_csv_schema\\t%s\\n' 'cju_flight_1hz_v3'" in launcher
     assert 'map.yaml' in launcher
     assert 'coordinates_source' in launcher

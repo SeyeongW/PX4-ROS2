@@ -6,6 +6,7 @@ Same nodes as the body-fixed chain, repointed at the gimbal payload, plus the
     /gimbal_camera/image -> aruco_detector_node -> /aruco/pose_cam
     /aruco/pose_cam + /gimbal_camera/imu -> marker_tf_node -> /marker/measured
     /marker/measured -> marker_kf_node -> /marker/position + /marker/velocity
+                                      + /marker/{valid,entry_valid}
     /marker/{cue,position} + airframe attitude -> gimbal_control_node -> joints
 
 Two settings are load-bearing and are set here rather than left to defaults:

@@ -24,18 +24,24 @@ The mission groups are:
   Offboard readiness.
 - Phase 1 `TAKEOFF`: PX4 `NAV_TAKEOFF` to 5 m; PX4 owns the climb profile.
 - Phase 2: A* supplies obstacle topology, a geometry-only B-spline reinforces
-  that spatial route, and PX4 Goto flies it to map `(50,50)` and `HOVER`.
+  that spatial route, and TrackingMPC flies it to map `(50,50)` and `HOVER`.
 - Phase 3: `land` builds one A* → geometry-only B-spline `RETURN`, then
-  atomically retargets only its 2.5 m-safe tail every two seconds from the
+  atomically retargets only its 1.5 m-safe tail every two seconds from the
   latest live GPS/cue. Full replanning is used only when no safe tail connector
-  exists. Inside the 6 m YAML-safe handoff corridor the companion then
-  publishes `LandingTargetPose`, requests PX4 `NAV_PRECLAND`, and stops all
-  Offboard setpoints. PX4 owns the remaining dynamics, touchdown verdict and
-  auto-disarm; ArUco only corrects the target position.
+  exists. The gimbal holds a literal yaw-0/pitch--90 joint lock beyond 10 m of
+  horizontal GPS/cue range, blends toward the trailer over 10→9 m, and points
+  directly inside 9 m. LandingMPC entry requires
+  three distinct KF-accepted ArUco fixes within 0.5 s and a live cue segment
+  that passes the 1.5 m planning-clearance check. LandingMPC holds altitude while
+  acquiring, descends to 0.65 m only after alignment, then verifies fresh
+  alignment and enough runway before the next shuttle reversal before handing
+  final approach to PX4 `NAV_PRECLAND`. PX4 owns
+  contact and auto-disarm. The gimbal is uncommanded before `land` and after
+  terminal `DONE`; encoder state and TF remain available.
 
-The B-spline has no flight speed or P/V/A schedule. PX4 Goto/PositionSmoothing
-owns the route timing through `MPC_XY_CRUISE=3`, `MPC_ACC_HOR`, and
-`MPC_JERK_AUTO`; `MPC_XY_VEL_MAX=10` is the hard horizontal cap.
+The B-spline has no flight speed or P/V/A schedule. TrackingMPC derives a
+braking reference from its accepted spatial samples and publishes a validated
+P/V/A stream; PX4 retains the lower-level position, velocity and attitude loops.
 The 6 m lookahead is a spatial path target, not a spline time/speed schedule;
 exact segment checks shorten it near obstacles.
 `mission_manager_node` remains the only PX4 Offboard setpoint publisher.

@@ -1,11 +1,12 @@
 # landing_mpc
 
-PX4-native precision landing on a moving ArUco target. The active CJU stack
-plans obstacle topology with A*, reinforces only the spatial geometry with a
-B-spline, and hands flight dynamics and landing verdicts to PX4.
+Precision landing on a moving ArUco target. The active CJU stack plans obstacle
+topology with A*, tracks its geometry-only B-spline with a dedicated TrackingMPC,
+then uses LandingMPC for observed target acquisition and low-altitude descent.
+PX4 PRECLAND retains final contact and auto-disarm authority.
 
-`mpc.py`, `predictor.py`, and `reference.py` are retained legacy/research
-modules; `run_gimbal.sh mission` does not use them for active vehicle control.
+`mpc.py`, `predictor.py`, and `reference.py` form the active LandingMPC path;
+the B-spline TrackingMPC remains a separate controller.
 
 Built from `MPC_동적착륙_설계문서.docx` / `LANDING_MPC_SPEC.md`. The core idea:
 precision landing on a mover is a **relative-frame rendezvous (docking)** — drive
@@ -33,7 +34,7 @@ Perception + mission nodes (the live stack, launched by
 | `marker_kf_node`      | const-velocity KF + coast |
 | `trailer_cue_node`    | long-range target cue (gz trailer pose) |
 | `gimbal_control_node` | aims the gimbal, publishes joint encoders + TF |
-| `mission_manager_node`| A* + geometry-only B-spline route, PX4 Goto and native PRECLAND handoff |
+| `mission_manager_node`| A*/B-spline + separate route/landing MPC authority, then native PRECLAND handoff |
 
 ## CJU mission phases
 
@@ -41,19 +42,24 @@ Perception + mission nodes (the live stack, launched by
   planner, and Offboard readiness before arming.
 - **Phase 1 — `TAKEOFF`**: request PX4 `NAV_TAKEOFF` to 5 m; PX4 owns the climb profile.
 - **Phase 2 — map route**: A* supplies obstacle topology, a geometry-only
-  B-spline reinforces the spatial path, and PX4 Goto flies it to `(50,50)` and
-  `HOVER`. The spline publishes no speed or P/V/A schedule. PX4
-  Goto/PositionSmoothing owns the temporal profile through
-  `MPC_XY_CRUISE=3`, `MPC_ACC_HOR`, and `MPC_JERK_AUTO`, with
-  `MPC_XY_VEL_MAX=10` as the hard horizontal cap.
+  B-spline reinforces the spatial path, and TrackingMPC flies it to `(50,50)`
+  and `HOVER`. The spline itself publishes no speed or P/V/A schedule;
+  TrackingMPC derives a braking reference and PX4 retains the lower-level
+  position, velocity, attitude, and motor-control loops.
 - **Phase 3 — landing**: `land` builds one A* → geometry-only B-spline
-  `RETURN`, then replaces only a validated 2.5 m-safe tail every two seconds
+  `RETURN`, then replaces only a validated 1.5 m-safe tail every two seconds
   from the latest live GPS/cue. A full replan is the fallback only when no safe
-  tail connector exists; the prior route remains active throughout. Within the validated 6 m
-  handoff corridor it publishes `LandingTargetPose`, requests PX4
-  `NAV_PRECLAND`, and stops all Offboard setpoints. PX4 owns speed,
-  acceleration, attitude, descent, contact detection and auto-disarm. ArUco
-  only corrects the reported target position.
+  tail connector exists; the prior route remains active throughout. There is no
+  angle-only handoff: the gimbal holds literal yaw 0/pitch -90 outside 10 m
+  and blends toward the trailer over 10→9 m
+  of horizontal GPS/cue range, and entry requires three distinct KF-accepted ArUco fixes within
+  0.5 s plus a live cue segment safe under the 1.5 m planning envelope.
+  LandingMPC first acquires at fixed altitude, then descends after alignment.
+  LandingMPC descends to 0.65 m, then hands final approach, contact detection
+  and auto-disarm to PX4 `NAV_PRECLAND` only with fresh alignment and enough
+  straight runway before the shuttle's next reversal.
+  Before `land` and again after terminal `DONE`, the gimbal publishes encoder
+  state/TF but no joint-position commands.
 
 ## Design notes (do not "improve" without rebutting the rationale — spec §2)
 

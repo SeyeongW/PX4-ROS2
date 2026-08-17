@@ -16,15 +16,19 @@
 gz 트레일러 ─► trailer_cue_node ────────────────────────► mission_manager_node
                (원거리 큐)                                   (단계 시퀀싱)
                                                                   │
-   A* ─► geometry-only B-spline ─► PX4 Goto ─► PX4 PRECLAND      │
-              (공간 경로만)          (경로 동역학)  (착륙·판정)   │
+   A* ─► geometry-only B-spline ─► TrackingMPC ─► LandingMPC     │
+              (공간 경로만)          (경로 추종)     (정렬·하강)   │
+                                                        │
+                                                        ▼
+                                                  PX4 PRECLAND
+                                                  (접촉·disarm)
                                                                   │
 gimbal_control_node ◄─────────────────────────────────────────────┘
 (렌즈 조준 + 관절 엔코더)
 ```
 
-`predictor.py`, `mpc.py`, `reference.py`는 연구/회귀용 legacy 라이브러리이며
-현재 CJU `run_gimbal.sh mission`의 비행 제어에는 연결되지 않습니다.
+`predictor.py`, `mpc.py`, `reference.py`는 LandingMPC의 활성 제어 경로이며,
+B-spline TrackingMPC와는 별도 인스턴스로 동작합니다.
 
 ---
 
@@ -64,7 +68,8 @@ predictor가 없으면 MPC가 움직이는 표적을 놓치고, reference가 없
 
 ### 2.3 `marker_kf_node` — 간헐적 관측 → 연속 추정
 - **입력** `/marker/measured`
-- **출력** `/marker/position`, `/marker/velocity`, `/marker/valid`
+- **출력** `/marker/position`, `/marker/velocity`, `/marker/valid`,
+  `/marker/entry_valid`
 - 등속 KF + coast(최대 3 s). 검출이 끊겨도 추정을 이어갑니다.
 
 ### 2.4 `trailer_cue_node` — 원거리 큐 (SITL 전용)
@@ -81,10 +86,12 @@ predictor가 없으면 MPC가 움직이는 표적을 놓치고, reference가 없
 - **출력** (gz) 관절 명령, `/gimbal/joint_state`, `/gimbal/aim_error_deg`, TF
 - 기체 자세와 카메라 지향을 분리합니다. 관절 엔코더를 함께 내보내는 것이
   `marker_tf_node`가 프레임 오프셋에 면역이 되는 이유입니다.
+- cue 기준 수평거리 10 m 밖에서는 nadir, 10→9 m에서는 연속 전환, 9 m
+  안에서는 트레일러를 직접 조준합니다.
 
 ### 2.6 `mission_manager_node` — 단계 시퀀싱 + 유일한 setpoint 권한
 - **입력** `/mission/command`, `/marker/cue*`, `/marker/position`,
-  `/marker/valid`, PX4 상태
+  `/marker/valid`, `/marker/entry_valid`, PX4 상태
 - **출력** `/fmu/in/goto_setpoint`, `/fmu/in/trajectory_setpoint`,
   `/fmu/in/offboard_control_mode`, `/fmu/in/vehicle_command`, `/mission/state`
 - **Phase 0 `PRECHECK`**: PX4 상태·live cue·planner·Offboard 준비를
@@ -92,17 +99,15 @@ predictor가 없으면 MPC가 움직이는 표적을 놓치고, reference가 없
 - **Phase 1 `TAKEOFF`**: PX4 `NAV_TAKEOFF`로 5 m까지 이륙합니다.
 - **Phase 2 `MISSION_PLAN → MISSION → HOVER`**: 별도 프로세스의 A*가
   YAML 장애물 topology를 만들고 geometry-only B-spline이 공간 경로를
-  보강·검증합니다. mission manager는 spatial Goto만 보내며 PX4
-  Goto/PositionSmoothing이 `MPC_XY_CRUISE=3`, `MPC_ACC_HOR`,
-  `MPC_JERK_AUTO`로 속도·가속도·jerk를 만듭니다.
-  `MPC_XY_VEL_MAX=10`은 절대 수평 상한입니다.
+  보강·검증합니다. mission manager의 TrackingMPC가 제동 가능한 P/V/A
+  참조를 만들고, PX4는 그 아래의 위치·속도·자세 제어를 담당합니다.
 - **Phase 3 `land`**: 최초 `RETURN_PLAN`에서 A*→geometry-only B-spline을
   만들고 `RETURN`에서는 2초마다 검증된 tail만 live trailer로 갱신합니다.
-  tail 연결이 막힐 때만 전체 플래너를 다시 사용합니다. 6 m 이내의 YAML-safe 직선이
-  확보되면 `LandingTargetPose`와 `NAV_PRECLAND`로 PX4에 인계하고
-  Offboard setpoint를 중단합니다. PX4가 이후 속도·가속·자세·하강·
-  접촉판정·자동 무장해제를 전부 담당합니다. ArUco는 target 위치만
-  보정합니다. `ABORT`는 fail-closed hold이며 `READY`는
+  tail 연결이 막힐 때만 전체 플래너를 다시 사용합니다. 서로 다른 KF 승인
+  ArUco 3개/0.5 s와 1.5 m planning-safe live cue 직선을 모두 확인해야
+  `LANDING_ACQUIRE`로 전환합니다. LandingMPC는 고정고도 정렬 뒤
+  `LANDING_DESCEND`로 하강하고, 저고도에서 `NAV_PRECLAND`로 최종 접촉·
+  자동 무장해제를 PX4에 인계합니다. `ABORT`는 fail-closed hold이며 `READY`는
   `takeoff` 후 `mission` 명령을 기다리는 호버입니다.
 - B-spline은 속도나 P/V/A 시간표를 소유하지 않습니다.
 - **다른 setpoint 발행자와 절대 같이 띄우지 마세요.**
@@ -112,7 +117,7 @@ predictor가 없으면 MPC가 움직이는 표적을 놓치고, reference가 없
 
 ---
 
-## 3. Legacy 연구 라이브러리 (현재 미션 비행 제어에 연결되지 않음)
+## 3. LandingMPC 활성 라이브러리
 
 | 모듈 | 역할 |
 |---|---|
@@ -136,7 +141,7 @@ HEADLESS=1 ./simulation/gazebo/run_gimbal.sh mission
 
 전체 CJU 미션에서는 `takeoff`, `mission`, `land`를 순서대로 입력합니다.
 `takeoff` 후 `READY`에서 호버하고, `mission`이
-A*→geometry-only B-spline→PX4 Goto 지도 구간을 시작합니다.
+A*→geometry-only B-spline→TrackingMPC 지도 구간을 시작합니다.
 `land`는 안전한 live 직선을 우선합니다.
 
 ---

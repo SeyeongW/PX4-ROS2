@@ -1,13 +1,9 @@
-"""mission_manager_node — ONE job: sequence the landing mission and decide
-WHICH target source the controller should believe.
+"""Sequence the CJU mission as its only companion-side PX4 setpoint authority.
 
-The reason this node exists: even the 1.3 m long-range markers are unresolved
-at long range (at 90 m they are ~1 px per ArUco cell), so vision cannot fly
-the approach.  The approach is flown to the target's REPORTED coordinates
-(`/marker/cue`), and
-vision (`/marker/position`, from the KF) takes over only once the vehicle is
-close enough for the camera to actually see the marker.  Measured detection
-rate: 0.3% while chasing at 50-90 m, 60-80% hovering overhead.
+Long-range motion follows the target's reported coordinates (``/marker/cue``)
+because the 1.3 m ArUco marker is unresolved at tens of metres. A fresh, valid
+vision/KF position slowly corrects the cue. Three distinct KF-accepted camera
+fixes within 0.5 s qualify terminal control.
 
 This node is the single Offboard setpoint authority — never run it alongside
 another setpoint publisher.
@@ -18,12 +14,14 @@ Subscribes
     /marker/cue_velocity Vector3Stamped  long-range target velocity
     /marker/position     PointStamped    vision/KF target position (ENU)
     /marker/valid        Bool            vision usable (KF not over-coasting)
+    /marker/entry_valid  Bool            3 accepted fixes within 0.5 s
     /fmu/out/vehicle_local_position_v1
 Publishes
     /fmu/in/goto_setpoint, /fmu/in/trajectory_setpoint,
     /fmu/in/offboard_control_mode,
     /fmu/in/vehicle_command
     /mission/state       String          current phase (observability)
+    /mission/landing_diagnostics String  range/speed/vision/commit/turnaround
 
 Phases
 
@@ -34,22 +32,19 @@ Phases
     READY     hold after takeoff until the explicit mission command
   Phase 2
     MISSION_PLAN plan A* and a geometry-only B-spline without blocking Offboard
-    MISSION   follow that spatial path with PX4 Goto control to the map goal
+    MISSION   follow the accepted B-spline with TrackingMPC to the map goal
     HOVER     hold over the map goal and wait for land
   Phase 3
     RETURN_PLAN plan A* and a geometry-only B-spline around map obstacles
-    RETURN    refresh it as the trailer moves, until a direct live segment is safe
-    PRECLAND  publish the corrected landing target and hand all flight control,
-              touchdown detection and auto-disarm to PX4 precision landing
-    ABORT     cue lost -> hold, then re-enter through trailer A*.
+    RETURN    retarget the validated tail while following it with TrackingMPC
+    LANDING_ACQUIRE  use LandingMPC to align at fixed altitude
+    LANDING_DESCEND  use LandingMPC to descend on the corrected moving cue
+    PRECLAND  hand final approach, contact and auto-disarm to PX4
+    ABORT     hold after loss of the continuous trailer cue
 
-THE CUE FOLLOWS, THE MARKER CENTRES. RETURN is only an obstacle bypass toward
-a recent cue snapshot and replans when that snapshot moves. As soon as the live cue has a clear YAML segment the
-node stops publishing Offboard setpoints, supplies only LandingTargetPose, and
-requests PX4 PRECLAND. PX4 then owns speed, acceleration, jerk, attitude,
-descent, contact detection and disarm. Vision remains a slowly-filtered
-horizontal correction to the continuous cue; it never becomes a flight
-controller.
+The route and landing controllers are separate wang MPC implementations and
+never publish independently. ArUco remains a measurement source; this manager
+alone selects the active controller and publishes the resulting setpoint.
 """
 
 from __future__ import annotations
@@ -61,6 +56,7 @@ import signal
 from concurrent.futures import ProcessPoolExecutor
 from functools import lru_cache
 from pathlib import Path
+from time import perf_counter
 
 import numpy as np
 import rclpy
@@ -69,19 +65,25 @@ from geometry_msgs.msg import PointStamped, Pose, PoseArray, Vector3Stamped
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import (DurabilityPolicy, HistoryPolicy, QoSProfile,
-                       ReliabilityPolicy)
+                       ReliabilityPolicy, qos_profile_sensor_data)
 from std_msgs.msg import Bool, String
 
 from px4_msgs.msg import (GotoSetpoint, LandingTargetPose, OffboardControlMode,
                           TrajectorySetpoint, VehicleCommand, VehicleLandDetected,
                           VehicleLocalPosition, VehicleStatus)
 
+from path_plan.mpc import TrackingMPC
+
 from .frame import LOCAL_ENU_FRAME_ID, enu_to_ned
+from .mpc import LandingMPC
 from .parameter_utils import (
+    derive_control_timing,
     require_finite,
     require_nonempty,
     require_positive,
 )
+from .predictor import predict_const_vel
+from .reference import HorizonReference
 
 
 def _planner_worker_init():
@@ -270,6 +272,157 @@ def _path_position(arc_m, path, distance_m):
         np.interp(distance, arc_m, path[:, axis]) for axis in range(3)])
 
 
+def _s_curve_stop_speed(remaining_m, acceleration_m_s2, jerk_m_s3):
+    """Maximum speed that can stop in ``remaining_m`` with zero end accel."""
+    remaining = max(0.0, float(remaining_m))
+    acceleration = float(acceleration_m_s2)
+    jerk = float(jerk_m_s3)
+    if acceleration <= 0.0 or jerk <= 0.0:
+        raise ValueError('acceleration and jerk limits must be positive')
+
+    # Symmetric S-curve: triangular below the acceleration limit, otherwise
+    # jerk down, hold -a_max, jerk back to zero acceleration at the endpoint.
+    triangular_distance = acceleration ** 3 / jerk ** 2
+    if remaining <= triangular_distance:
+        return (remaining * math.sqrt(jerk)) ** (2.0 / 3.0)
+    ratio = acceleration ** 2 / jerk
+    return 0.5 * (math.sqrt(ratio ** 2 + 8.0 * acceleration * remaining)
+                  - ratio)
+
+
+def _relative_braking_path_speed(nominal_speed_m_s, tangent_xy,
+                                 target_velocity_xy, range_xy_m,
+                                 start_range_m, target_relative_speed_m_s):
+    """Reduce moving-target relative speed without leaving the B-spline.
+
+    The path geometry remains authoritative.  Inside ``start_range_m`` this
+    selects the fastest forward speed whose target-relative velocity is below
+    the requested capture speed.  A target component normal to the path cannot
+    be cancelled without leaving the validated spline, so the closest feasible
+    tangent speed is used instead.
+    """
+    nominal = float(nominal_speed_m_s)
+    tangent = np.asarray(tangent_xy, float)
+    target_velocity = np.asarray(target_velocity_xy, float)
+    distance = max(0.0, float(range_xy_m))
+    start = float(start_range_m)
+    target_relative = float(target_relative_speed_m_s)
+    norm = float(np.linalg.norm(tangent))
+    if (nominal < 0.0 or tangent.shape != (2,)
+            or target_velocity.shape != (2,)
+            or not np.all(np.isfinite(np.r_[nominal, tangent,
+                                             target_velocity, distance, start,
+                                             target_relative]))
+            or start <= 0.0 or target_relative < 0.0 or norm <= 1.0e-9):
+        raise ValueError('invalid moving-target B-spline braking input')
+    if distance >= start or nominal == 0.0:
+        return nominal
+
+    direction = tangent / norm
+    target_along = float(target_velocity @ direction)
+    target_cross_sq = max(
+        0.0, float(target_velocity @ target_velocity) - target_along ** 2)
+    nominal_relative = nominal * direction - target_velocity
+
+    relative_limit = min(
+        float(np.linalg.norm(nominal_relative)), target_relative)
+
+    # ||speed*tangent - v_target|| <= relative_limit.  If the target's
+    # cross-path velocity already exceeds the cap, cancelling the along-path
+    # component is the best solution that preserves the validated geometry.
+    if relative_limit ** 2 <= target_cross_sq:
+        desired = target_along
+    else:
+        desired = target_along + math.sqrt(
+            max(0.0, relative_limit ** 2 - target_cross_sq))
+    return float(np.clip(desired, 0.0, nominal))
+
+
+def _limit_acceleration_slew(previous, desired, jerk_m_s3, elapsed_s):
+    """Rate-limit the acceleration that is actually streamed to PX4."""
+    old = np.asarray(previous, float)
+    new = np.asarray(desired, float)
+    limit = float(jerk_m_s3) * max(0.0, float(elapsed_s))
+    if (old.shape != (3,) or new.shape != (3,)
+            or not np.all(np.isfinite(np.r_[old, new]))
+            or jerk_m_s3 <= 0.0):
+        raise ValueError('invalid acceleration slew input')
+    return old + np.clip(new - old, -limit, limit)
+
+
+def _path_reference_horizon(arc_m, path, progress_m, dt_s, horizon,
+                            cruise_speed_m_s, acceleration_m_s2,
+                            jerk_m_s3, target_velocity_xy=None,
+                            target_range_xy_m=math.inf,
+                            relative_brake_start_m=10.0,
+                            target_relative_speed_m_s=0.3):
+    """Time-parameterise a geometry path with jerk-aware endpoint braking."""
+    arc = np.asarray(arc_m, float)
+    points = np.asarray(path, float)
+    dt = float(dt_s)
+    count = int(horizon)
+    speed_limit = float(cruise_speed_m_s)
+    accel = float(acceleration_m_s2)
+    jerk = float(jerk_m_s3)
+    if (points.ndim != 2 or points.shape[1] != 3 or len(points) != len(arc)
+            or len(points) < 2 or count < 1 or dt <= 0.0
+            or speed_limit <= 0.0 or accel <= 0.0 or jerk <= 0.0
+            or not np.all(np.isfinite(np.column_stack((arc, points))))
+            or not np.all(np.diff(arc) > 0.0)):
+        raise ValueError('invalid geometry path or MPC timing')
+
+    distance = float(np.clip(progress_m, arc[0], arc[-1]))
+    brake_range = max(0.0, float(target_range_xy_m))
+    target_velocity = (None if target_velocity_xy is None else
+                       np.asarray(target_velocity_xy, float))
+    if (target_velocity is not None
+            and (target_velocity.shape != (2,)
+                 or not np.all(np.isfinite(target_velocity)))):
+        raise ValueError('target_velocity_xy must contain two finite values')
+    query = np.empty(count)
+    speeds = np.empty(count)
+    for index in range(count):
+        remaining = max(0.0, float(arc[-1] - distance))
+        speed = min(speed_limit, _s_curve_stop_speed(
+            remaining, accel, jerk))
+        if target_velocity is not None and brake_range < relative_brake_start_m:
+            segment = int(np.clip(
+                np.searchsorted(arc, distance, side='right') - 1,
+                0, len(points) - 2))
+            tangent_xy = points[segment + 1, :2] - points[segment, :2]
+            speed = _relative_braking_path_speed(
+                speed, tangent_xy, target_velocity, brake_range,
+                relative_brake_start_m, target_relative_speed_m_s)
+        distance = min(float(arc[-1]), distance + speed * dt)
+        query[index] = distance
+        speeds[index] = speed if distance < arc[-1] - 1.0e-9 else 0.0
+
+    reference_positions = np.column_stack([
+        np.interp(query, arc, points[:, axis]) for axis in range(3)])
+    segment = np.clip(np.searchsorted(arc, query, side='right') - 1,
+                      0, len(points) - 2)
+    tangent = points[segment + 1] - points[segment]
+    lengths = np.linalg.norm(tangent, axis=1)
+    unit = np.divide(tangent, lengths[:, None],
+                     out=np.zeros_like(tangent),
+                     where=lengths[:, None] > 1.0e-9)
+    reference_velocities = unit * speeds[:, None]
+    return reference_positions, reference_velocities
+
+
+def _mpc_prediction_is_safe(map_yaml, current, predicted_positions):
+    """Accept a controller horizon only when every commanded chord is hard-safe."""
+    predicted = np.asarray(predicted_positions, float)
+    start = np.asarray(current, float)
+    if (predicted.ndim != 2 or predicted.shape[1] != 3 or start.shape != (3,)
+            or not np.all(np.isfinite(predicted))
+            or not np.all(np.isfinite(start))):
+        return False
+    chain = np.vstack((start, predicted))
+    return all(_mission_segment_is_free(map_yaml, a, b)
+               for a, b in zip(chain[:-1], chain[1:]))
+
+
 def _splice_path_from_current(segment_is_free, arc_m, path, current,
                               lookahead_m):
     """Join a completed rolling path from the vehicle's current position."""
@@ -314,14 +467,14 @@ def _retarget_path_tail(segment_is_free, arc_m, path, progress_m, goal,
         return None
 
     progress = float(np.clip(progress_m, 0.0, arc[-1]))
-    # Preserve every segment the follower can currently project onto.  Scanning
-    # from the old endpoint backwards then changes the smallest possible tail.
+    # Preserve every segment the follower can currently project onto, then
+    # leave the committed route at the first exact-safe live-goal connector.
     projection_window = max(2.0 * lookahead_m, 2.0 * cross_track_limit_m)
     first_join = min(
         len(points) - 1,
         int(np.searchsorted(
             arc, min(arc[-1], progress + projection_window), side='right')))
-    for index in range(len(points) - 1, first_join - 1, -1):
+    for index in range(first_join, len(points)):
         join = points[index]
         if not segment_is_free(join, target):
             continue
@@ -456,6 +609,25 @@ def _mission_segment_is_free(map_yaml, start_local_enu, goal_local_enu):
         [*map_xy[0], altitude], [*map_xy[1], altitude])
 
 
+def _forward_endpoint_eta_s(position_xy, velocity_xy, endpoints_xy,
+                            endpoint_tolerance_m, minimum_speed_m_s):
+    """Seconds to the next shuttle endpoint; zero means not safely cruising."""
+    position = np.asarray(position_xy, float)
+    velocity = np.asarray(velocity_xy, float)
+    endpoints = np.asarray(endpoints_xy, float)
+    if (position.shape != (2,) or velocity.shape != (2,)
+            or endpoints.shape != (2, 2)
+            or not np.all(np.isfinite(np.r_[position, velocity,
+                                             endpoints.ravel()]))):
+        return 0.0
+    speed = float(np.linalg.norm(velocity))
+    if speed < float(minimum_speed_m_s):
+        return 0.0
+    ahead = (endpoints - position) @ (velocity / speed)
+    ahead = ahead[ahead > float(endpoint_tolerance_m)]
+    return 0.0 if not len(ahead) else float(np.min(ahead) / speed)
+
+
 def _mission_planning_segment_is_free(
         map_yaml, start_local_enu, goal_local_enu):
     """Check one local segment against clearance plus the planning reserve."""
@@ -476,23 +648,55 @@ class MissionManagerNode(Node):
         p = self.declare_parameter
         self.control_rate_hz = require_positive(
             'control_rate_hz', p('control_rate_hz', 50.0).value)
-        self.dt = 1.0 / self.control_rate_hz
+        self.mpc_rate_hz = require_positive(
+            'mpc_rate_hz', p('mpc_rate_hz', 10.0).value)
+        self.dt, self.mpc_dt, self._mpc_solve_every = derive_control_timing(
+            self.control_rate_hz, self.mpc_rate_hz)
+        self._mpc_horizon = int(p('mpc_horizon', 20).value)
+        if self._mpc_horizon < 2:
+            raise ValueError('mpc_horizon must be >= 2')
+        self._path_mpc_speed = require_positive(
+            'path_mpc_speed_m_s', p('path_mpc_speed_m_s', 3.0).value)
+        self._path_mpc_v_max = require_positive(
+            'path_mpc_v_max_m_s', p('path_mpc_v_max_m_s', 5.0).value)
+        self._path_mpc_a_max = require_positive(
+            'path_mpc_a_max_m_s2', p('path_mpc_a_max_m_s2', 3.0).value)
+        self._path_relative_brake_distance = require_positive(
+            'path_mpc_relative_brake_distance_m',
+            p('path_mpc_relative_brake_distance_m', 10.0).value)
+        self._path_target_relative_speed = require_positive(
+            'path_mpc_target_relative_speed_m_s',
+            p('path_mpc_target_relative_speed_m_s', 0.3).value)
+        self._landing_mpc_v_max = require_positive(
+            'landing_mpc_v_max_m_s', p('landing_mpc_v_max_m_s', 3.5).value)
+        self._landing_mpc_a_max = require_positive(
+            'landing_mpc_a_max_m_s2', p('landing_mpc_a_max_m_s2', 1.0).value)
+        self._landing_mpc_vz_max = require_positive(
+            'landing_mpc_vz_max_m_s', p('landing_mpc_vz_max_m_s', 0.6).value)
+        self._landing_mpc_jerk = require_positive(
+            'landing_mpc_jerk_m_s3', p('landing_mpc_jerk_m_s3', 2.0).value)
+        self._landing_mpc_cone = require_positive(
+            'landing_mpc_cone_k', p('landing_mpc_cone_k', 2.0).value)
+        self._landing_mpc_handoff_height = require_positive(
+            'landing_mpc_precland_height_m',
+            p('landing_mpc_precland_height_m', 1.5).value)
+        self._landing_mpc_bias_ok = require_positive(
+            'landing_mpc_bias_converged_m',
+            p('landing_mpc_bias_converged_m', 0.3).value)
+        self._precland_commit_height = require_positive(
+            'precland_blind_commit_height_m',
+            p('precland_blind_commit_height_m', 0.65).value)
+        self._precland_commit_grace = require_positive(
+            'precland_blind_commit_grace_s',
+            p('precland_blind_commit_grace_s', 8.0).value)
         self.takeoff_alt = require_finite(
             'takeoff_alt', p('takeoff_alt', 6.0).value)
-        # This is a route-completion gate, not a commanded speed. PX4 owns the
-        # actual profile through Goto/Position Control.
+        # This is a route-completion gate, not the TrackingMPC reference speed.
         self.settle_v_tol = require_positive(
             'settle_vel_tol_m_s',
-            p('settle_vel_tol_m_s', 0.5).value)
+            p('settle_vel_tol_m_s', 0.2).value)
         # ArUco remains a measurement only. It slowly corrects the continuous
         # trailer cue before that target is handed to PX4 PRECLAND.
-        self.align_deg = require_positive(
-            'vision_align_depression_deg',
-            p('vision_align_depression_deg', 60.0).value)
-        if self.align_deg >= 90.0:
-            raise ValueError(
-                'vision_align_depression_deg must be < 90, '
-                f'got {self.align_deg}')
         self.bias_tau = require_positive(
             'bias_tau_s', p('bias_tau_s', 1.5).value)
         self.bias_rate = require_positive(
@@ -516,10 +720,13 @@ class MissionManagerNode(Node):
         self.mission_command_topic = require_nonempty(
             'mission_command_topic',
             p('mission_command_topic', '/mission/command').value)
+        self.marker_detection_topic = require_nonempty(
+            'marker_detection_topic',
+            p('marker_detection_topic', '/aruco/detected').value)
 
         self.get_logger().info(
-            f'control timing: {self.control_rate_hz:g} Hz; PX4 owns all '
-            'takeoff, route and landing dynamics')
+            f'control timing: {self.control_rate_hz:g} Hz setpoints, '
+            f'{self.mpc_rate_hz:g} Hz MPC solves')
 
         self._mission_arc_m = None
         self._mission_path = None
@@ -527,9 +734,14 @@ class MissionManagerNode(Node):
         self._mission_lookahead = 6.0
         self._mission_cross_track = 0.25
         self._mission_sample_spacing = 0.1
-        self._precland_handoff = 6.0
         self._return_replan_min_period = 2.0
         self._precland_target_timeout = 0.5
+        self._landing_xy_tol = 0.5
+        self._landing_v_tol = 0.3
+        self._shuttle_endpoints_local = None
+        self._shuttle_endpoint_tolerance = 0.2
+        self._shuttle_min_terminal_speed = 0.0
+        self._precland_runway_required_s = 0.0
         self._planner_pool = None
         self._plan_future = None
         if self.mission_map_yaml:
@@ -545,9 +757,6 @@ class MissionManagerNode(Node):
             self._mission_sample_spacing = require_positive(
                 'mission.bspline_sample_spacing_m',
                 mission_config.get('bspline_sample_spacing_m', 0.1))
-            self._precland_handoff = require_positive(
-                'mission.precland_handoff_m',
-                mission_config.get('precland_handoff_m', 6.0))
             self._return_replan_min_period = require_positive(
                 'mission.return_replan_min_period_s',
                 mission_config.get('return_replan_min_period_s', 2.0))
@@ -555,6 +764,41 @@ class MissionManagerNode(Node):
                 'px4_vehicle.sitl_parameter_overrides.PLD_BTOUT',
                 mission_document.get('px4_vehicle', {}).get(
                     'sitl_parameter_overrides', {}).get('PLD_BTOUT', 0.5))
+            px4_config = mission_document.get(
+                'px4_vehicle', {}).get('sitl_parameter_overrides', {})
+            self._landing_xy_tol = require_positive(
+                'px4_vehicle.sitl_parameter_overrides.PLD_HACC_RAD',
+                px4_config.get('PLD_HACC_RAD', 0.5))
+            self._landing_v_tol = require_positive(
+                'px4_vehicle.sitl_parameter_overrides.PLD_VEL_THR',
+                px4_config.get('PLD_VEL_THR', 0.3))
+            trailer_config = mission_document.get('trailer', {})
+            if trailer_config.get('route_type') == 'linear_shuttle':
+                endpoints = np.asarray(
+                    trailer_config['shuttle_endpoints_enu_m'], float)
+                spawn_pose = mission_document['spawn'][
+                    'gazebo_spawn_pose_enu']
+                spawn_xy = np.asarray(
+                    [spawn_pose['x'], spawn_pose['y']], float)
+                if endpoints.shape != (2, 2) or not np.all(
+                        np.isfinite(endpoints)):
+                    raise ValueError(
+                        'trailer.shuttle_endpoints_enu_m must be 2x2 finite')
+                self._shuttle_endpoints_local = endpoints - spawn_xy
+                self._shuttle_endpoint_tolerance = require_positive(
+                    'trailer.waypoint_tolerance_m',
+                    trailer_config.get('waypoint_tolerance_m', 0.2))
+                cruise_speed = require_positive(
+                    'trailer.cruise_speed_m_s',
+                    trailer_config['cruise_speed_m_s'])
+                self._shuttle_min_terminal_speed = max(
+                    1.0e-3, cruise_speed - self._landing_v_tol)
+                disarm_delay = require_positive(
+                    'px4_vehicle.sitl_parameter_overrides.COM_DISARM_LAND',
+                    px4_config.get('COM_DISARM_LAND', 2.0))
+                self._precland_runway_required_s = (
+                    self._precland_commit_grace
+                    + self._precland_target_timeout + disarm_delay)
             # A* is CPU-bound Python. A thread delayed the 50 Hz Offboard
             # heartbeat by hundreds of milliseconds in measurement; a spawned
             # worker process keeps ROS/DDS state out of the child and the
@@ -564,7 +808,48 @@ class MissionManagerNode(Node):
                 mp_context=multiprocessing.get_context('spawn'),
                 initializer=_planner_worker_init)
             self.get_logger().info(
-                'CJU A* -> geometry-only B-spline -> PX4 Goto ready')
+                'CJU A* -> geometry-only B-spline -> TrackingMPC ready')
+
+        # Keep the two wang controllers separate.  They solve different
+        # problems and never publish directly; this node remains the one PX4
+        # setpoint authority.
+        self._path_mpc = TrackingMPC(
+            dt_s=self.mpc_dt, horizon=self._mpc_horizon,
+            v_max=self._path_mpc_v_max, a_max=self._path_mpc_a_max)
+        self._path_reference = HorizonReference(lead_s=self.mpc_dt)
+        self._path_solve_t = None
+        self._landing_mpc = LandingMPC(
+            dt_s=self.mpc_dt, horizon=self._mpc_horizon,
+            w_vxy=20.0,
+            v_max=self._landing_mpc_v_max,
+            a_max=self._landing_mpc_a_max,
+            vz_max=self._landing_mpc_vz_max,
+            cone_k=self._landing_mpc_cone,
+            z_ref=self._landing_mpc_handoff_height,
+            j_max=self._landing_mpc_jerk)
+        self._landing_reference = HorizonReference(lead_s=self.mpc_dt)
+        self._landing_solve_t = None
+        self._landing_last_solve_t = None
+        self._landing_hold_z = None
+        self._last_mpc_setpoint = None
+        self._last_sent_acceleration = np.zeros(3)
+        self._last_sent_acceleration_t = None
+        self._mpc_solve_count = 0
+        self._mpc_solve_total_s = 0.0
+        self._mpc_solve_max_s = 0.0
+        self._marker_metric_frames = 0
+        self._marker_metric_hits = 0
+        self._touchdown_metric_recorded = False
+        self._touchdown_metric_candidate = None
+        self._landing_contact_confirmed = False
+        self._landing_error_3d_m = math.nan
+        self._landing_xy_error_m = math.nan
+        self._touchdown_relative_speed_3d_m_s = math.nan
+        self._touchdown_relative_vertical_speed_m_s = math.nan
+        self._experiment_metrics_logged = False
+        self._precland_attempts = 0
+        self._precland_recoveries = 0
+        self._landing_descend_recoveries = 0
 
         self.state = 'PRECHECK'
         self._takeoff_requested = False
@@ -574,6 +859,8 @@ class MissionManagerNode(Node):
         self._plan_goal = None
         self._last_safe_goto = None
         self._precland_goto = None
+        self._precland_commit_until = None
+        self._landing_recovery_since = None
         self._last_return_plan_t = None
         self.p_d = None
         self.v_d = np.zeros(3)
@@ -588,6 +875,7 @@ class MissionManagerNode(Node):
         self._t_cue_v_source = None
         self.vis = None
         self.vis_valid = False
+        self.vis_entry_valid = False
         self._t_vis = None
         self._bias = np.zeros(3)             # learned (vision - cue) offset
         self.k = 0
@@ -617,6 +905,8 @@ class MissionManagerNode(Node):
         self.landing_target_pub = self.create_publisher(
             LandingTargetPose, '/fmu/in/landing_target_pose', _px4_qos())
         self.state_pub = self.create_publisher(String, '/mission/state', 10)
+        self.landing_diagnostics_pub = self.create_publisher(
+            String, '/mission/landing_diagnostics', 10)
         self.planned_path_pub = self.create_publisher(
             PoseArray, '/mission/planned_path', _planned_path_qos())
         self.vehicle_position_pub = self.create_publisher(
@@ -629,6 +919,11 @@ class MissionManagerNode(Node):
                                  self._on_cue_v, 10)
         self.create_subscription(PointStamped, '/marker/position', self._on_vis, 10)
         self.create_subscription(Bool, '/marker/valid', self._on_valid, 10)
+        self.create_subscription(Bool, '/marker/entry_valid',
+                                 self._on_entry_valid, 10)
+        self.create_subscription(Bool, self.marker_detection_topic,
+                                 self._on_marker_detection,
+                                 qos_profile_sensor_data)
         self.local_pos_topic = require_nonempty(
             'local_pos_topic',
             p('local_pos_topic',
@@ -667,8 +962,8 @@ class MissionManagerNode(Node):
             self.create_timer(2.0, self._clock_watchdog,
                               clock=Clock(clock_type=ClockType.SYSTEM_TIME))
         self.get_logger().info(
-            'mission_manager: YAML A* + geometry-only B-spline supplies route '
-            'positions; PX4 Goto/PRECLAND owns all vehicle dynamics and landing')
+            'mission_manager: B-spline TrackingMPC and ArUco LandingMPC are '
+            'separate; PX4 PRECLAND retains contact and auto-disarm authority')
 
     # ------------------------------------------------------------- callbacks
     def _on_command(self, message):
@@ -683,10 +978,13 @@ class MissionManagerNode(Node):
             return
         already_accepted = {
             'takeoff': ('TAKEOFF', 'READY', 'MISSION_PLAN', 'MISSION', 'HOVER',
-                        'RETURN_PLAN', 'RETURN', 'PRECLAND', 'DONE'),
+                        'RETURN_PLAN', 'RETURN', 'LANDING_ACQUIRE',
+                        'LANDING_DESCEND', 'PRECLAND', 'DONE'),
             'mission': ('MISSION_PLAN', 'MISSION', 'HOVER', 'RETURN_PLAN',
-                        'RETURN', 'PRECLAND', 'DONE'),
-            'land': ('RETURN_PLAN', 'RETURN', 'PRECLAND', 'DONE'),
+                        'RETURN', 'LANDING_ACQUIRE', 'LANDING_DESCEND',
+                        'PRECLAND', 'DONE'),
+            'land': ('RETURN_PLAN', 'RETURN', 'LANDING_ACQUIRE',
+                     'LANDING_DESCEND', 'PRECLAND', 'DONE'),
         }
         if self.state in already_accepted.get(command, ()):
             return
@@ -718,12 +1016,8 @@ class MissionManagerNode(Node):
                 self.get_logger().warn(
                     'landing rejected: trailer cue unavailable or stale')
                 return
-            distance = float(np.linalg.norm(
-                self.p_d[:2] - self.cue[:2]))
-            if (distance <= self._precland_handoff
-                    and _mission_segment_is_free(
-                        self.mission_map_yaml, self.p_d, self.cue)):
-                self._enter_precland(distance)
+            if self._landing_mpc_entry_ready():
+                self._enter_landing_mpc()
             else:
                 self._start_global_plan(self.cue, return_route=True)
 
@@ -760,6 +1054,9 @@ class MissionManagerNode(Node):
 
     def _on_valid(self, m):
         self.vis_valid = bool(m.data)
+
+    def _on_entry_valid(self, m):
+        self.vis_entry_valid = bool(m.data)
 
     def _on_pos(self, m):
         self.p_d = np.array([m.y, m.x, -m.z])
@@ -817,6 +1114,102 @@ class MissionManagerNode(Node):
     def _on_land(self, m):
         """Observe PX4's final verdict; this node never substitutes its own."""
         self.landed = bool(m.landed)
+        if (self.state not in (
+                'LANDING_ACQUIRE', 'LANDING_DESCEND', 'PRECLAND')
+                or getattr(self, '_touchdown_metric_recorded', False)):
+            return
+        if not bool(getattr(m, 'ground_contact', False)):
+            self._touchdown_metric_candidate = None
+            return
+
+        # Keep the first sample of this uninterrupted contact, but only commit
+        # it once PX4's native land detector confirms the stronger second
+        # stage.  A brief bounce therefore cannot become the touchdown metric.
+        if getattr(self, '_touchdown_metric_candidate', None) is None:
+            self._touchdown_metric_candidate = (
+                MissionManagerNode._touchdown_snapshot(self))
+        if not (bool(getattr(m, 'maybe_landed', False)) or self.landed):
+            return
+        self._landing_contact_confirmed = True
+        candidate = self._touchdown_metric_candidate
+        if candidate is None:
+            return
+        (self._landing_error_3d_m,
+         self._landing_xy_error_m,
+         self._touchdown_relative_speed_3d_m_s,
+         self._touchdown_relative_vertical_speed_m_s) = candidate
+        self._touchdown_metric_recorded = True
+
+    def _touchdown_snapshot(self):
+        cue = getattr(self, 'cue', None)
+        position = getattr(self, 'p_d', None)
+        if cue is None or position is None:
+            return None
+        target = np.asarray(cue, float) + np.asarray(
+            getattr(self, '_bias', np.zeros(3)), float)
+        velocity = np.asarray(getattr(self, 'v_d', np.zeros(3)), float)
+        target_velocity = np.asarray(
+            getattr(self, 'cue_v', np.zeros(3)), float)
+        relative_position = np.asarray(position, float) - target
+        relative_velocity = velocity - target_velocity
+        if not np.all(np.isfinite(np.r_[relative_position, relative_velocity])):
+            return None
+        return (
+            float(np.linalg.norm(relative_position)),
+            float(np.linalg.norm(relative_position[:2])),
+            float(np.linalg.norm(relative_velocity)),
+            abs(float(relative_velocity[2])),
+        )
+
+    def _on_marker_detection(self, message):
+        """Count stable ArUco results only during precision landing."""
+        if (self.state not in (
+                'LANDING_ACQUIRE', 'LANDING_DESCEND', 'PRECLAND')
+                or getattr(self, '_touchdown_metric_recorded', False)):
+            return
+        self._marker_metric_frames += 1
+        self._marker_metric_hits += int(bool(message.data))
+
+    def _record_mpc_solve(self, elapsed_s):
+        elapsed_s = float(elapsed_s)
+        if not np.isfinite(elapsed_s) or elapsed_s < 0.0:
+            return
+        self._mpc_solve_count = getattr(self, '_mpc_solve_count', 0) + 1
+        self._mpc_solve_total_s = (
+            getattr(self, '_mpc_solve_total_s', 0.0) + elapsed_s)
+        self._mpc_solve_max_s = max(
+            getattr(self, '_mpc_solve_max_s', 0.0), elapsed_s)
+
+    def _log_experiment_metrics(self):
+        if getattr(self, '_experiment_metrics_logged', False):
+            return
+        self._experiment_metrics_logged = True
+        values = {
+            'marker_hits': getattr(self, '_marker_metric_hits', 0),
+            'marker_frames': getattr(self, '_marker_metric_frames', 0),
+            'landing_error_3d_m': getattr(
+                self, '_landing_error_3d_m', math.nan),
+            'landing_xy_error_m': getattr(
+                self, '_landing_xy_error_m', math.nan),
+            'touchdown_relative_speed_3d_m_s': getattr(
+                self, '_touchdown_relative_speed_3d_m_s', math.nan),
+            'touchdown_relative_vertical_speed_m_s': getattr(
+                self, '_touchdown_relative_vertical_speed_m_s', math.nan),
+            'mpc_count': getattr(self, '_mpc_solve_count', 0),
+            'mpc_total_ms': 1000.0 * getattr(
+                self, '_mpc_solve_total_s', 0.0),
+            'mpc_max_ms': 1000.0 * getattr(
+                self, '_mpc_solve_max_s', 0.0),
+            'precland_attempts': getattr(self, '_precland_attempts', 0),
+            'precland_recoveries': getattr(self, '_precland_recoveries', 0),
+            'landing_descend_recoveries': getattr(
+                self, '_landing_descend_recoveries', 0),
+        }
+        payload = ' '.join(
+            f'{key}={value:.9g}' if isinstance(value, float)
+            else f'{key}={value}'
+            for key, value in values.items())
+        self.get_logger().info(f'EXPERIMENT_METRICS {payload}')
 
     # ---------------------------------------------------------------- helpers
     def _resolve_px4(self, base, type_name):
@@ -903,9 +1296,15 @@ class MissionManagerNode(Node):
                 or self._t_cue_v_source is None):
             return False
         now = self._now()
+        # Gazebo pose and /clock callbacks can be delivered in either order.
+        # Accept at most one control tick of negative age so a newly received
+        # 50 Hz cue cannot inject a one-tick hold; larger future stamps remain
+        # fail-closed just like stale samples.
+        future_tolerance = self.dt + 1.0e-6
         return (
-            0.0 <= now - self._t_cue_source <= self._precland_target_timeout
-            and 0.0 <= now - self._t_cue_v_source
+            -future_tolerance <= now - self._t_cue_source
+            <= self._precland_target_timeout
+            and -future_tolerance <= now - self._t_cue_v_source
             <= self._precland_target_timeout)
 
     def _precheck_issues(self):
@@ -984,11 +1383,17 @@ class MissionManagerNode(Node):
             v = enu_to_ned(vel)
             s.velocity = [float(v[0]), float(v[1]), float(v[2])]
         if acc is not None:
-            a = enu_to_ned(acc)
+            acceleration = np.asarray(acc, float)
+            a = enu_to_ned(acceleration)
             s.acceleration = [float(a[0]), float(a[1]), float(a[2])]
+            remembered_acceleration = acceleration.copy()
+        else:
+            remembered_acceleration = np.zeros(3)
         s.yaw = float('nan')
         s.yawspeed = float('nan')
         self.sp_pub.publish(s)
+        self._last_sent_acceleration = remembered_acceleration
+        self._last_sent_acceleration_t = s.timestamp * 1.0e-6
 
     def _send_goto(self, pos):
         """Send geometry only; PX4 creates the velocity/acceleration profile."""
@@ -1005,10 +1410,367 @@ class MissionManagerNode(Node):
         message.flag_set_max_heading_rate = False
         message.max_heading_rate = float('nan')
         self.goto_pub.publish(message)
+        self._last_sent_acceleration = np.zeros(3)
+        self._last_sent_acceleration_t = message.timestamp * 1.0e-6
+
+    def _follow_path(self):
+        """Track the accepted B-spline with wang's dedicated TrackingMPC."""
+        progress, safe_target = _safe_spatial_path_target(
+            self.mission_map_yaml, self._mission_arc_m,
+            self._mission_path, self.p_d,
+            self._mission_progress_m, self._mission_lookahead,
+            self._mission_cross_track)
+        if safe_target is None:
+            return False
+        self._mission_progress_m = progress
+        self._last_safe_goto = np.asarray(safe_target, float).copy()
+
+        # Tests and non-CJU fallback users may deliberately omit the controller.
+        if getattr(self, '_path_mpc', None) is None:
+            self._send_goto(safe_target)
+            return True
+
+        now = self._now()
+        solve_due = (
+            not self._path_reference.ready()
+            or self._path_solve_t is None
+            or now - self._path_solve_t >= self.mpc_dt - 1.0e-6)
+        if solve_due:
+            return_braking = (
+                getattr(self, 'state', '') in ('RETURN', 'RETURN_PLAN')
+                and self._cue_fresh())
+            target_velocity = self.cue_v[:2] if return_braking else None
+            target_range = (float(np.linalg.norm(
+                (self.cue - self.p_d)[:2])) if return_braking else math.inf)
+            reference_p, reference_v = _path_reference_horizon(
+                self._mission_arc_m, self._mission_path, progress,
+                self.mpc_dt, self._path_mpc.N,
+                self._path_mpc_speed, self._path_mpc_a_max,
+                self._path_mpc.j_max,
+                target_velocity_xy=target_velocity,
+                target_range_xy_m=target_range,
+                relative_brake_start_m=getattr(
+                    self, '_path_relative_brake_distance', 10.0),
+                target_relative_speed_m_s=getattr(
+                    self, '_path_target_relative_speed', 0.3))
+            output_step = min(
+                int(self._path_reference.lead / self.mpc_dt),
+                self._path_mpc.N - 1)
+            solve_started = perf_counter()
+            try:
+                result = self._path_mpc.solve(
+                    self.p_d, self.v_d, reference_p, reference_v,
+                    applied_acceleration=getattr(
+                        self, '_last_sent_acceleration', np.zeros(3)),
+                    output_step=output_step)
+            finally:
+                MissionManagerNode._record_mpc_solve(
+                    self, perf_counter() - solve_started)
+            accepted = (
+                result.success
+                and np.all(np.isfinite(result.predicted_vel))
+                and np.all(np.isfinite(result.predicted_acc))
+                and _mpc_prediction_is_safe(
+                    self.mission_map_yaml, self.p_d,
+                    result.predicted_pos))
+            if accepted:
+                zeros = np.zeros(3)
+                self._path_reference.set_plan(
+                    self.p_d, self.v_d,
+                    result.predicted_pos, result.predicted_vel,
+                    result.predicted_acc, self.mpc_dt,
+                    zeros, zeros, zeros)
+                self._path_solve_t = now
+            else:
+                self._path_reference.reset()
+                self._path_mpc.reset()
+                self.get_logger().warn(
+                    'TrackingMPC rejected; use last exact-safe B-spline Goto',
+                    throttle_duration_sec=2.0)
+
+        if self._path_reference.ready() and self._path_solve_t is not None:
+            pos, vel, acc = self._path_reference.sample(
+                self._now() - self._path_solve_t)
+            if (_mission_segment_is_free(
+                    self.mission_map_yaml, self.p_d, pos)
+                    and np.all(np.isfinite(np.r_[pos, vel, acc]))):
+                self._last_mpc_setpoint = np.asarray(pos, float).copy()
+                last_acceleration = getattr(
+                    self, '_last_sent_acceleration', np.zeros(3))
+                last_time = getattr(self, '_last_sent_acceleration_t', None)
+                elapsed = (getattr(self, 'dt', self.mpc_dt)
+                           if last_time is None else max(
+                               0.0, self._now() - last_time))
+                streamed_acceleration = _limit_acceleration_slew(
+                    last_acceleration, acc, self._path_mpc.j_max, elapsed)
+                self._send(pos, vel, streamed_acceleration)
+                return True
+            self._path_reference.reset()
+            self._path_mpc.reset()
+
+        # One manager remains the sole authority; Goto is only the bounded
+        # fallback already proven by the existing route follower.
+        self._send_goto(safe_target)
+        return True
+
+    def _vision_measurement_fresh(self):
+        if (not self.vis_entry_valid
+                or not self.vis_valid or self.vis is None or self.cue is None
+                or self._t_vis is None
+                or self._now() - self._t_vis > self.vis_fresh):
+            return False
+        return True
+
+    def _vision_correction_converged(self):
+        if not self._vision_measurement_fresh():
+            return False
+        corrected = self.cue[:2] + self._bias[:2]
+        return float(np.linalg.norm(self.vis[:2] - corrected)) <= (
+            self._landing_mpc_bias_ok)
+
+    def _precland_target_allowed(self):
+        """Require vision except for one bounded, aligned camera-blind commit."""
+        now = self._now()
+        target = self.cue + self._bias
+        p_rel = self.p_d - target
+        v_rel = self.v_d - self.cue_v
+        aligned = (
+            0.0 <= float(p_rel[2]) <= self._precland_commit_height
+            and float(np.linalg.norm(p_rel[:2])) <= self._landing_xy_tol
+            and float(np.linalg.norm(v_rel[:2])) <= self._landing_v_tol)
+        if self._vision_measurement_fresh():
+            if aligned:
+                # The centred 0.30 m marker fills the image below about 0.19 m.
+                # The SITL estimator reads ~0.42 m high there, hence 0.65 m.
+                # The low marker disappears about 3 s before contact and PX4
+                # ground_contact can lag another 4 s; eight seconds leaves a
+                # one-second margin without relaxing the alignment gates.
+                self._precland_commit_until = (
+                    now + self._precland_commit_grace)
+            return True
+        if getattr(self, '_touchdown_metric_candidate', None) is not None:
+            return True
+        return bool(
+            aligned and self._precland_commit_until is not None
+            and now <= self._precland_commit_until)
+
+    def _terminal_runway_status(self):
+        """Return whether PX4 can finish before the next shuttle reversal."""
+        endpoints = getattr(self, '_shuttle_endpoints_local', None)
+        if endpoints is None:
+            return True, math.inf
+        eta_s = _forward_endpoint_eta_s(
+            self.cue[:2], self.cue_v[:2], endpoints,
+            self._shuttle_endpoint_tolerance,
+            self._shuttle_min_terminal_speed)
+        return eta_s >= self._precland_runway_required_s, eta_s
+
+    def _landing_diagnostics(self):
+        if self.p_d is None or self.cue is None:
+            return 'landing data: waiting'
+        distance = float(np.linalg.norm(self.p_d[:2] - self.cue[:2]))
+        relative_speed = float(np.linalg.norm(
+            self.v_d[:2] - self.cue_v[:2]))
+        runway_clear, eta_s = MissionManagerNode._terminal_runway_status(self)
+        deadline = getattr(self, '_precland_commit_until', None)
+        commit_s = 0.0 if deadline is None else max(
+            0.0, float(deadline) - self._now())
+        eta_text = 'n/a' if math.isinf(eta_s) else f'{eta_s:.1f}s'
+        return (
+            f'horizontal range={distance:.2f}m | '
+            f'relative XY speed={relative_speed:.2f}m/s | '
+            f'ArUco entry={int(bool(self.vis_entry_valid))} | '
+            f'blind commit={commit_s:.1f}s | '
+            f'turnaround={"CLEAR" if runway_clear else "HOLD"} '
+            f'(endpoint ETA {eta_text})')
+
+    def _landing_mpc_entry_ready(self):
+        """Enter only on a confirmed camera track and a planning-safe chord."""
+        return (
+            self._landing_target_fresh()
+            and self.vis_entry_valid
+            and self._vision_measurement_fresh()
+            and _mission_planning_segment_is_free(
+                self.mission_map_yaml, self.p_d, self.cue))
+
+    def _enter_landing_mpc(self):
+        if not self._landing_mpc_entry_ready():
+            return False
+        self._landing_mpc.reset()
+        self._landing_reference.reset()
+        self._landing_solve_t = None
+        self._landing_last_solve_t = None
+        self._landing_hold_z = float(self.p_d[2])
+        self._last_mpc_setpoint = self.p_d.copy()
+        self._publish_planned_path(None)
+        self._set_state(
+            'LANDING_ACQUIRE',
+            '(3 KF-accepted ArUco fixes within 0.5 s)')
+        return True
+
+    def _recover_precland(self):
+        """Reclaim Offboard and climb to the existing ArUco acquire height."""
+        self._landing_mpc.reset()
+        self._landing_reference.reset()
+        self._landing_solve_t = None
+        self._landing_last_solve_t = None
+        # Warm up Offboard at the current state.  The acquire MPC will then
+        # climb to its existing z_ref under its acceleration/jerk limits.
+        self._landing_hold_z = float(self.p_d[2])
+        self._hold_pos = self.p_d.copy()
+        self._native_precland_accepted = False
+        self._last_offboard_cmd = None
+        self._landing_recovery_since = self._now()
+        self._precland_commit_until = None
+        self._set_state(
+            'LANDING_ACQUIRE', '(ArUco lost; reclaim Offboard and reacquire)')
+
+    def _run_landing_mpc(self):
+        """Run wang LandingMPC; PX4 still owns physical contact and disarm."""
+        if not self._landing_target_fresh():
+            self._landing_reference.reset()
+            self._hold_pos = self.p_d.copy()
+            self._send(self._hold_pos)
+            return
+
+        target, target_v = self._target()
+        p_rel = self.p_d - target
+        v_rel = self.v_d - target_v
+        vision_ready = self._vision_correction_converged()
+        acquiring = self.state == 'LANDING_ACQUIRE'
+        # ArUco can qualify entry only 0.5 s after the route brake begins.
+        # Keep the jerk limit, but give ACQUIRE the route controller's braking
+        # authority; DESCEND returns to the conservative landing limit.
+        self._landing_mpc.a_max = (
+            self._path_mpc_a_max if acquiring else self._landing_mpc_a_max)
+
+        if acquiring or not vision_ready:
+            # At acquisition, or on a vision dropout, align horizontally while
+            # refusing any descent.  Disabling the cone also prevents the old
+            # long-range corridor from requesting a climb.
+            self._landing_mpc.cone_k = 0.0
+            self._landing_mpc.z_ref = max(
+                float(p_rel[2]), self._landing_mpc_handoff_height)
+            if self._landing_hold_z is None:
+                self._landing_hold_z = float(self.p_d[2])
+        else:
+            self._landing_mpc.cone_k = self._landing_mpc_cone
+            self._landing_mpc.z_ref = self._precland_commit_height
+            self._landing_hold_z = None
+
+        now = self._now()
+        last_solve = getattr(self, '_landing_last_solve_t', None)
+        solve_due = (
+            last_solve is None or now < last_solve
+            or now - last_solve >= self.mpc_dt - 1.0e-6)
+        if solve_due:
+            self._landing_last_solve_t = now
+            target_p, target_v_h, target_a = predict_const_vel(
+                target, target_v, self.mpc_dt, self._landing_mpc.N)
+            output_step = min(
+                int(self._landing_reference.lead / self.mpc_dt),
+                self._landing_mpc.N - 1)
+            solve_started = perf_counter()
+            try:
+                result = self._landing_mpc.solve(
+                    p_rel, v_rel, target_p, target_v_h, target_a,
+                    applied_acceleration=getattr(
+                        self, '_last_sent_acceleration', np.zeros(3)),
+                    output_step=output_step)
+            finally:
+                MissionManagerNode._record_mpc_solve(
+                    self, perf_counter() - solve_started)
+            absolute_prediction = target_p + result.pred_rel_pos
+            accepted = (
+                result.success
+                and np.all(np.isfinite(np.column_stack((
+                    absolute_prediction, result.pred_rel_vel,
+                    result.pred_rel_acc))))
+                and _mpc_prediction_is_safe(
+                    self.mission_map_yaml, self.p_d,
+                    absolute_prediction))
+            if accepted:
+                self._landing_reference.set_plan(
+                    p_rel, v_rel, result.pred_rel_pos,
+                    result.pred_rel_vel, result.pred_rel_acc,
+                    self.mpc_dt, target, target_v, np.zeros(3))
+                self._landing_solve_t = now
+            else:
+                self._landing_reference.reset()
+                self._landing_mpc.reset()
+                self.get_logger().warn(
+                    'LandingMPC rejected; hold without stale control',
+                    throttle_duration_sec=2.0)
+
+        if (self._landing_reference.ready()
+                and self._landing_solve_t is not None):
+            pos, vel, acc = self._landing_reference.sample(
+                self._now() - self._landing_solve_t)
+            if self._landing_hold_z is not None:
+                pos = np.asarray(pos, float).copy()
+                vel = np.asarray(vel, float).copy()
+                acc = np.asarray(acc, float).copy()
+                pos[2] = max(float(pos[2]), self._landing_hold_z)
+                vel[2] = max(float(vel[2]), 0.0)
+            if (_mission_segment_is_free(
+                    self.mission_map_yaml, self.p_d, pos)
+                    and np.all(np.isfinite(np.r_[pos, vel, acc]))):
+                self._last_mpc_setpoint = np.asarray(pos, float).copy()
+                last_acceleration = getattr(
+                    self, '_last_sent_acceleration', np.zeros(3))
+                last_time = getattr(self, '_last_sent_acceleration_t', None)
+                elapsed = (getattr(self, 'dt', self.mpc_dt)
+                           if last_time is None else max(
+                               0.0, self._now() - last_time))
+                streamed_acceleration = _limit_acceleration_slew(
+                    last_acceleration, acc, self._landing_mpc.j_max, elapsed)
+                self._send(pos, vel, streamed_acceleration)
+            else:
+                self._landing_reference.reset()
+                self._landing_mpc.reset()
+                self._hold_pos = self.p_d.copy()
+                self._send(self._hold_pos)
+                return
+        else:
+            self._hold_pos = self.p_d.copy()
+            self._send(self._hold_pos)
+            return
+
+        horizontal = float(np.linalg.norm(p_rel[:2]))
+        relative_speed = float(np.linalg.norm(v_rel[:2]))
+        if (acquiring and vision_ready
+                and horizontal <= self._landing_xy_tol
+                and relative_speed <= self._landing_v_tol
+                and p_rel[2] >= self._landing_mpc_handoff_height - 0.1):
+            self._landing_reference.reset()
+            self._landing_solve_t = None
+            self._landing_hold_z = None
+            self._set_state(
+                'LANDING_DESCEND',
+                f'(ArUco aligned, d={horizontal:.2f} m, '
+                f'dv={relative_speed:.2f} m/s)')
+            return
+
+        if (not acquiring and not vision_ready):
+            self._landing_reference.reset()
+            self._landing_solve_t = None
+            self._landing_hold_z = float(self.p_d[2])
+            self._set_state('LANDING_ACQUIRE', '(ArUco lost; hold altitude)')
+            return
+
+        runway_clear, _ = MissionManagerNode._terminal_runway_status(self)
+        if (not acquiring and vision_ready
+                and 0.0 <= p_rel[2] <= self._precland_commit_height
+                and horizontal <= self._landing_xy_tol
+                and relative_speed <= self._landing_v_tol
+                and runway_clear):
+            self._last_safe_goto = self._last_mpc_setpoint.copy()
+            self._enter_precland(horizontal)
 
     def _publish_landing_target(self):
         """Publish one live target measurement; never a flight setpoint."""
-        if self.p_d is None or not self._landing_target_fresh():
+        if (self.p_d is None or not self._landing_target_fresh()
+                or not MissionManagerNode._precland_target_allowed(self)):
             return False
         # Do not turn one old measurement into a fresh 50 Hz stream. PX4 must
         # observe an actual publication gap and enforce PLD_BTOUT on source loss.
@@ -1054,7 +1816,17 @@ class MissionManagerNode(Node):
 
     def _set_state(self, s, why=''):
         if s != self.state:
-            self.get_logger().info(f'{self.state} -> {s}  {why}')
+            previous = self.state
+            self.get_logger().info(f'{previous} -> {s}  {why}')
+            if s == 'PRECLAND':
+                self._precland_attempts = getattr(
+                    self, '_precland_attempts', 0) + 1
+            if previous == 'PRECLAND' and s == 'LANDING_ACQUIRE':
+                self._precland_recoveries = getattr(
+                    self, '_precland_recoveries', 0) + 1
+            if previous == 'LANDING_DESCEND' and s == 'LANDING_ACQUIRE':
+                self._landing_descend_recoveries = getattr(
+                    self, '_landing_descend_recoveries', 0) + 1
             self.state = s
             if s == 'ABORT' and getattr(self, 'p_d', None) is not None:
                 self._hold_pos = self.p_d.copy()
@@ -1067,6 +1839,8 @@ class MissionManagerNode(Node):
                 self._precland_since = self._now()
                 self._last_precland_cmd = None
                 self._native_precland_accepted = False
+            if s == 'DONE':
+                self._log_experiment_metrics()
 
     def _start_global_plan(self, goal_local_enu, *, return_route):
         """Start one serialized map-goal or trailer A*/B-spline leg."""
@@ -1120,23 +1894,10 @@ class MissionManagerNode(Node):
                 message.poses.append(pose)
         self.planned_path_pub.publish(message)
 
-    def _depression(self, target):
-        """Angle below horizontal from the vehicle to `target`, in degrees.
-
-        90 deg is straight down.  This is the axis the measured detection rate
-        is stratified along, so it is the axis the marker is trusted along.
-        """
-        d = self.p_d - target
-        return math.degrees(math.atan2(max(0.0, d[2]),
-                                       max(float(math.hypot(d[0], d[1])), 1e-6)))
-
     def _target(self):
         """Return the live cue plus a fresh, horizontal ArUco correction."""
         cue = self.cue if self.cue is not None else self.p_d
-        if (self.vis_valid and self.vis is not None and self.cue is not None
-                and self._t_vis is not None
-                and self._now() - self._t_vis <= self.vis_fresh
-                and self._depression(self.vis) >= self.align_deg):
+        if MissionManagerNode._vision_measurement_fresh(self):
             err = self.vis[:2] - cue[:2]
             if float(np.linalg.norm(err)) <= self.bias_max:
                 alpha = min(1.0, self.dt / max(self.bias_tau, 1e-3))
@@ -1152,7 +1913,21 @@ class MissionManagerNode(Node):
     def _tick(self):
         self.k += 1
         self.state_pub.publish(String(data=self.state))
+        diagnostics_pub = getattr(self, 'landing_diagnostics_pub', None)
+        if diagnostics_pub is not None:
+            diagnostics_pub.publish(String(
+                data=MissionManagerNode._landing_diagnostics(self)))
         if self.state == 'DONE' or self.p_d is None:
+            return
+        if (self.state in ('LANDING_ACQUIRE', 'LANDING_DESCEND', 'PRECLAND')
+                and self.landed is True and self.armed is False):
+            self._set_state('DONE', '(PX4 landed and auto-disarmed)')
+            return
+        if (self.state in ('LANDING_ACQUIRE', 'LANDING_DESCEND')
+                and (getattr(self, '_touchdown_metric_candidate', None)
+                     is not None
+                     or getattr(self, '_landing_contact_confirmed', False))):
+            # Never reclaim Offboard or command a climb once contact has begun.
             return
 
         nav_state = None if self._status is None else self._status.nav_state
@@ -1177,7 +1952,10 @@ class MissionManagerNode(Node):
         if not native_takeoff and not native_precland:
             self._ocm()
 
-        if self.state in ('RETURN_PLAN', 'RETURN') and not self._cue_fresh():
+        if (self.state in (
+                'RETURN_PLAN', 'RETURN',
+                'LANDING_ACQUIRE', 'LANDING_DESCEND')
+                and not self._cue_fresh()):
             if self._plan_future is not None:
                 self._plan_future.cancel()
                 self._plan_future = None
@@ -1246,8 +2024,17 @@ class MissionManagerNode(Node):
                     self._set_state('READY', f'(PX4 takeoff at {self.p_d[2]:.1f} m)')
             return
 
-        if self.state in ('READY', 'HOVER'):
+        if self.state == 'READY':
             self._send(self._hold_pos)
+            return
+
+        if self.state == 'HOVER':
+            # HOVER is a mission/command state, not a controller handoff.
+            # Keep the terminal TrackingMPC P/V/A reference so its braking
+            # feed-forward is not replaced by a position-only setpoint.
+            if not self._follow_path():
+                self._hold_pos = self.p_d.copy()
+                self._send(self._hold_pos)
             return
 
         if self.state in ('MISSION_PLAN', 'RETURN_PLAN'):
@@ -1257,27 +2044,13 @@ class MissionManagerNode(Node):
                 and getattr(self, '_mission_path', None) is not None)
             rolling_path_safe = False
             if rolling_path:
-                live_distance = float(np.linalg.norm(
-                    self.p_d[:2] - self.cue[:2]))
-                if (live_distance <= self._precland_handoff
-                        and _mission_segment_is_free(
-                            self.mission_map_yaml, self.p_d, self.cue)
-                        and self._enter_precland(live_distance)):
+                if (self._landing_mpc_entry_ready()
+                        and self._enter_landing_mpc()):
                     self._plan_future.cancel()
                     self._plan_future = None
                     return
-                progress, safe_target = _safe_spatial_path_target(
-                    self.mission_map_yaml, self._mission_arc_m,
-                    self._mission_path, self.p_d,
-                    self._mission_progress_m, self._mission_lookahead,
-                    self._mission_cross_track)
-                if safe_target is not None:
-                    self._mission_progress_m = progress
-                    self._last_safe_goto = np.asarray(
-                        safe_target, float).copy()
-                    self._send_goto(safe_target)
-                    rolling_path_safe = True
-                else:
+                rolling_path_safe = self._follow_path()
+                if not rolling_path_safe:
                     self._hold_pos = self.p_d.copy()
                     self._send(self._hold_pos)
             else:
@@ -1357,40 +2130,31 @@ class MissionManagerNode(Node):
             self._mission_arc_m = arc_m
             self._mission_path = path
             self._mission_progress_m = replacement_progress
+            if getattr(self, '_path_mpc', None) is not None:
+                self._path_mpc.reset()
+                self._path_reference.reset()
+                self._path_solve_t = None
             self._publish_planned_path(path)
             self.get_logger().info(
                 f'global A*/B-spline: {len(path)} samples, '
                 f'{arc_m[-1]:.1f} m, {expanded} A* expansions')
             next_state = 'RETURN' if return_route else 'MISSION'
             self._set_state(
-                next_state, '(validated geometry B-spline -> PX4 Goto)')
+                next_state, '(validated geometry B-spline -> TrackingMPC)')
             return
 
         if self.state in ('MISSION', 'RETURN'):
             return_route = self.state == 'RETURN'
-            if return_route:
-                live_distance = float(np.linalg.norm(
-                    self.p_d[:2] - self.cue[:2]))
-                if (live_distance <= self._precland_handoff
-                        and _mission_segment_is_free(
-                            self.mission_map_yaml, self.p_d, self.cue)):
-                    self._enter_precland(live_distance)
-                    return
-            progress, safe_target = _safe_spatial_path_target(
-                self.mission_map_yaml, self._mission_arc_m,
-                self._mission_path, self.p_d,
-                self._mission_progress_m, self._mission_lookahead,
-                self._mission_cross_track)
-            if safe_target is None:
+            if (return_route and self._landing_mpc_entry_ready()
+                    and self._enter_landing_mpc()):
+                return
+            if not self._follow_path():
                 hold = self.p_d.copy()
                 hold[2] = self.takeoff_alt
                 self._send_goto(hold)
                 goal = self.cue if return_route else None
                 self._start_global_plan(goal, return_route=return_route)
                 return
-            self._mission_progress_m = progress
-            self._last_safe_goto = np.asarray(safe_target, float).copy()
-            self._send_goto(safe_target)
             at_end = (
                 self._mission_arc_m[-1] - self._mission_progress_m
                 <= self.mission_tolerance
@@ -1438,11 +2202,34 @@ class MissionManagerNode(Node):
                         'HOVER', '(B-spline goal (50,50), altitude 5 m)')
             return
 
+        if self.state in ('LANDING_ACQUIRE', 'LANDING_DESCEND'):
+            if nav_state != VehicleStatus.NAVIGATION_STATE_OFFBOARD:
+                now = self._now()
+                if self._landing_recovery_since is None:
+                    self._landing_recovery_since = now
+                self._send(self.p_d, self.v_d, np.zeros(3))
+                if (now - self._landing_recovery_since >= 1.0
+                        and (self._last_offboard_cmd is None
+                             or now - self._last_offboard_cmd >= 1.0)):
+                    self._cmd(
+                        VehicleCommand.VEHICLE_CMD_DO_SET_MODE, 1.0, 6.0)
+                    self._last_offboard_cmd = now
+                return
+            if self._landing_recovery_since is not None:
+                # PRECLAND may have descended during the Offboard warm-up.
+                # Re-anchor the no-descent floor to the accepted switch state.
+                self._landing_hold_z = float(self.p_d[2])
+            self._landing_recovery_since = None
+            self._run_landing_mpc()
+            return
+
         if self.state == 'PRECLAND':
-            published = self._publish_landing_target()
             now = self._now()
-            if self.landed is True and self.armed is False:
-                self._set_state('DONE', '(PX4 landed and auto-disarmed)')
+            if getattr(self, '_landing_contact_confirmed', False):
+                return
+            published = self._publish_landing_target()
+            if not published:
+                self._recover_precland()
                 return
             if not native_precland:
                 # Preserve PX4's Goto smoother until the native-mode handoff.
@@ -1476,6 +2263,7 @@ class MissionManagerNode(Node):
             return
 
     def destroy_node(self):
+        self._log_experiment_metrics()
         if self._plan_future is not None:
             self._plan_future.cancel()
         if self._planner_pool is not None:

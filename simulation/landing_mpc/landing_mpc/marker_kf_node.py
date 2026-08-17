@@ -16,6 +16,8 @@ Publishes
     /marker/position    geometry_msgs/PointStamped   filtered/coasted (ENU)
     /marker/velocity    geometry_msgs/Vector3Stamped filtered (ENU)
     /marker/valid       std_msgs/Bool                false once coasting too long
+    /marker/entry_valid std_msgs/Bool                3 accepted fixes within
+                                                     0.5 s
 
 Model — constant velocity in the horizontal plane (z is the known deck height,
 so it is not estimated).  With state x = [px, py, vx, vy]^T and step dt:
@@ -69,6 +71,11 @@ class MarkerKfNode(Node):
         # Coasting is dead reckoning: trust it for the last metre, not forever.
         self.max_coast = require_nonnegative(
             'max_coast_s', p('max_coast_s', 3.0).value)
+        self.entry_fix_count = int(p('entry_fix_count', 3).value)
+        if self.entry_fix_count < 3:
+            raise ValueError('entry_fix_count must be at least 3')
+        self.entry_window = require_positive(
+            'entry_fix_window_s', p('entry_fix_window_s', 0.5).value)
         # A fix this far from the prediction is treated as an outlier (gating),
         # in units of the innovation standard deviation.
         self.gate_sigma = require_positive(
@@ -80,6 +87,7 @@ class MarkerKfNode(Node):
         self.H = np.array([[1.0, 0, 0, 0], [0, 1.0, 0, 0]])
         self._t_last = None               # last predict time
         self._t_meas = None               # last accepted measurement time
+        self._entry_fix_ns = []           # distinct accepted capture stamps
         self._rejected = 0
         # Ceiling on the lag correction.  A fix older than this is not a
         # pipeline delay, it is a bad or badly stamped message, and
@@ -101,12 +109,15 @@ class MarkerKfNode(Node):
         self.pos_pub = self.create_publisher(PointStamped, '/marker/position', 10)
         self.vel_pub = self.create_publisher(Vector3Stamped, '/marker/velocity', 10)
         self.valid_pub = self.create_publisher(Bool, '/marker/valid', 10)
+        self.entry_valid_pub = self.create_publisher(
+            Bool, '/marker/entry_valid', 10)
         self.create_subscription(PointStamped, '/marker/measured',
                                  self._on_meas, 10)
         self.create_timer(1.0 / self.rate, self._tick)
         self.get_logger().info(
             f'marker_kf_node: const-velocity KF @ {self.rate:.0f} Hz, '
-            f'sigma_meas={self.sigma_m} m, coast<={self.max_coast} s')
+            f'sigma_meas={self.sigma_m} m, coast<={self.max_coast} s, '
+            f'entry={self.entry_fix_count} fixes/{self.entry_window:g} s')
 
     # -------------------------------------------------------------- filter
     def _Q(self, dt):
@@ -145,6 +156,28 @@ class MarkerKfNode(Node):
         self._t_last = t
         self._t_meas = t
 
+    def _record_entry_fix(self, capture_ns, reset=False):
+        """Record one distinct KF-accepted camera capture for entry gating."""
+        if reset:
+            self._entry_fix_ns.clear()
+        if self._entry_fix_ns and capture_ns <= self._entry_fix_ns[-1]:
+            return
+        window_ns = int(round(self.entry_window * 1.0e9))
+        self._entry_fix_ns.append(int(capture_ns))
+        cutoff = int(capture_ns) - window_ns
+        self._entry_fix_ns[:] = [stamp for stamp in self._entry_fix_ns
+                                 if stamp >= cutoff]
+        if len(self._entry_fix_ns) > self.entry_fix_count:
+            del self._entry_fix_ns[:-self.entry_fix_count]
+
+    def _entry_confirmed(self, now):
+        if len(self._entry_fix_ns) < self.entry_fix_count:
+            return False
+        newest = self._entry_fix_ns[-1] * 1.0e-9
+        age = float(now) - newest
+        future_tolerance = 1.0 / self.rate + 1.0e-6
+        return -future_tolerance <= age <= self.entry_window
+
     def _on_meas(self, msg: PointStamped):
         """Fold in one fix, AT THE INSTANT IT WAS TAKEN.
 
@@ -167,6 +200,8 @@ class MarkerKfNode(Node):
         """
         z = np.array([msg.point.x, msg.point.y])
         t = self._now()
+        capture_ns = (int(msg.header.stamp.sec) * 1_000_000_000
+                      + int(msg.header.stamp.nanosec))
         expired = (self._t_meas is not None
                    and t - self._t_meas > self.max_coast)
         if self.x is None or expired:
@@ -174,8 +209,9 @@ class MarkerKfNode(Node):
                 self.get_logger().info(
                     'expired marker track recovered from a fresh fix')
             self._initialise(z, t)
+            self._record_entry_fix(capture_ns, reset=True)
             return
-        t_cap = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+        t_cap = capture_ns * 1e-9
         # bring the state up to now, then bring the MEASUREMENT forward to meet
         # it across the pipeline delay (see the docstring)
         dt = max(0.0, t - self._t_last)
@@ -230,11 +266,13 @@ class MarkerKfNode(Node):
         self.x = self.x + K @ y
         self.P = (np.eye(4) - K @ self.H) @ self.P
         self._t_meas = t
+        self._record_entry_fix(capture_ns)
 
     # ---------------------------------------------------------------- output
     def _tick(self):
         if self.x is None:
             self.valid_pub.publish(Bool(data=False))
+            self.entry_valid_pub.publish(Bool(data=False))
             return
         t = self._now()
         dt = max(0.0, t - self._t_last)
@@ -245,6 +283,7 @@ class MarkerKfNode(Node):
         coasting = t - (self._t_meas if self._t_meas is not None else t)
         valid = coasting <= self.max_coast
         self.valid_pub.publish(Bool(data=bool(valid)))
+        self.entry_valid_pub.publish(Bool(data=self._entry_confirmed(t)))
 
         stamp = self.get_clock().now().to_msg()
         pm = PointStamped()

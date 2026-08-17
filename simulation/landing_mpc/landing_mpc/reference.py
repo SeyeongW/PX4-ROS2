@@ -90,6 +90,9 @@ class HorizonReference:
     def ready(self) -> bool:
         return self._ok
 
+    def reset(self):
+        self._ok = False
+
     def sample(self, tau: float):
         """Return absolute (pos, vel, acc) setpoint at elapsed time ``tau``.
 

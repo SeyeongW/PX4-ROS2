@@ -27,7 +27,8 @@ subject to (all linear in U):
     p_k    >= p_lb,k                  (linear;  cone bound, z stage only)
 
 The target acceleration enters the free response (net accel = a_drone -
-a_target), which is the curved-target feed-forward (§3.1).  Only a_0 is applied.
+a_target), which is the curved-target feed-forward (§3.1).  The manager selects
+the same look-ahead knot that its streamed reference will actually publish.
 """
 
 from __future__ import annotations
@@ -45,7 +46,7 @@ _INF = np.inf
 
 @dataclass
 class MPCResult:
-    accel_cmd: np.ndarray      # (3,) drone accel to apply now (a_0)
+    accel_cmd: np.ndarray      # (3,) selected outgoing drone acceleration
     pos_cmd: np.ndarray        # (3,) absolute position setpoint at t+dt
     vel_cmd: np.ndarray        # (3,) absolute velocity setpoint at t+dt
     acc_cmd: np.ndarray        # (3,) absolute accel feed-forward at t+dt
@@ -101,14 +102,38 @@ class LandingMPC:
         self.Fp, self.Fv, self.Gp, self.Gv = condense(self.dt, self.N)
         self._warm = np.zeros((3, self.N))
 
-    def _reachable_velocity(self, v0, a0, tk, sign, target_accel):
+    def reset(self):
+        """Clear receding-horizon history at a controller-mode boundary."""
+        self._warm.fill(0.0)
+        self._a_prev.fill(0.0)
+
+    def _acceleration_limits(self, a0, output_step):
+        """Bounds that jerk back inside ``a_max`` from an out-of-band handoff."""
+        if self.j_max <= 0.0 or abs(a0) <= self.a_max:
+            return np.full(self.N, self.a_max)
+        jd = self.j_max * self.dt
+        recovery_steps = np.maximum(
+            1, np.arange(self.N) - int(output_step) + 1)
+        return np.maximum(
+            self.a_max, abs(a0) - jd * recovery_steps)
+
+    def _reachable_velocity(self, v0, a0, tk, sign, target_accel,
+                            output_step=0):
         """Extreme QP-knot velocity under its discrete jerk/accel limits."""
         steps = np.arange(1, np.asarray(tk).size + 1, dtype=float)
         s = 1.0 if sign > 0 else -1.0
         if self.j_max > 0.0:
-            accel = np.clip(
-                a0 + s * self.j_max * self.dt * steps,
-                -self.a_max, self.a_max)
+            jd = self.j_max * self.dt
+            limits = self._acceleration_limits(a0, output_step)
+            accel = np.empty(steps.size, dtype=float)
+            current = float(a0)
+            for k in range(steps.size):
+                current = float(np.clip(
+                    current + s * jd, -limits[k], limits[k]))
+                if k == output_step:
+                    current = float(np.clip(
+                        current, a0 - jd, a0 + jd))
+                accel[k] = current
         else:
             accel = np.full(steps.shape, s * self.a_max)
         return v0 + self.dt * np.cumsum(
@@ -116,7 +141,7 @@ class LandingMPC:
 
     # -- single-axis QP -----------------------------------------------------
     def _solve_axis(self, p0, v0, at_axis, wp, wv, p_ref, warm,
-                    v_lo, v_hi, p_lb=None, a_prev=0.0):
+                    v_lo, v_hi, p_lb=None, a_prev=0.0, output_step=0):
         """Solve one axis; return (u, pred_p, pred_v).
 
         at_axis (N,)  predicted target accel on this axis (feed-forward).
@@ -159,10 +184,10 @@ class LandingMPC:
         tk = self.dt * np.arange(1, N + 1)
         v_ub = np.maximum(
             v_hi, self._reachable_velocity(
-                v0, a_prev, tk, -1, at_axis))
+                v0, a_prev, tk, -1, at_axis, output_step))
         v_lb = np.minimum(
             v_lo, self._reachable_velocity(
-                v0, a_prev, tk, +1, at_axis))
+                v0, a_prev, tk, +1, at_axis, output_step))
         cons = [LinearConstraint(Gv, v_lb - v_free, v_ub - v_free)]
         if p_lb is not None:
             cons.append(LinearConstraint(Gp, p_lb - p_free, np.full(N, _INF)))
@@ -174,7 +199,13 @@ class LandingMPC:
             lb[0] += a_prev
             ub[0] += a_prev
             cons.append(LinearConstraint(self.D, lb, ub))
-        bounds = [(-self.a_max, self.a_max)] * N
+            if output_step:
+                selector = np.zeros((1, N))
+                selector[0, output_step] = 1.0
+                cons.append(LinearConstraint(
+                    selector, [a_prev - jd], [a_prev + jd]))
+        limits = self._acceleration_limits(a_prev, output_step)
+        bounds = [(-limit, limit) for limit in limits]
         res = minimize(cost, warm, jac=grad, method='SLSQP', bounds=bounds,
                        constraints=cons, options={'maxiter': 60, 'ftol': 1e-6})
         if res.success:
@@ -197,7 +228,8 @@ class LandingMPC:
         pred_v = v_free + Gv @ u
         return u, pred_p, pred_v, bool(res.success)
 
-    def solve(self, p_rel, v_rel, target_P, target_V, target_A) -> MPCResult:
+    def solve(self, p_rel, v_rel, target_P, target_V, target_A,
+              applied_acceleration=None, output_step=0) -> MPCResult:
         """One receding-horizon step.
 
         p_rel/v_rel : (3,) current relative position/velocity.
@@ -207,6 +239,13 @@ class LandingMPC:
         v_rel = np.asarray(v_rel, float)
         At = np.asarray(target_A, float).reshape(self.N, 3)
         N = self.N
+        output_step = int(output_step)
+        if not 0 <= output_step < N:
+            raise ValueError('output_step must index the MPC horizon')
+        applied = (self._a_prev.copy() if applied_acceleration is None else
+                   np.asarray(applied_acceleration, float).reshape(3))
+        if not np.all(np.isfinite(applied)):
+            raise ValueError('applied_acceleration must be finite')
         zeros = np.zeros(N)
         t0 = time.perf_counter()
         ok = True
@@ -220,7 +259,7 @@ class LandingMPC:
             u, pp, pv, s = self._solve_axis(
                 p_rel[ax], v_rel[ax], At[:, ax], self.w_xy, self.w_vxy, zeros,
                 self._warm[ax], -self.v_max, self.v_max,
-                a_prev=self._a_prev[ax])
+                a_prev=applied[ax], output_step=output_step)
             U[ax], pred_p[ax], pred_v[ax] = u, pp, pv
             failed[ax] = not s
             ok &= s
@@ -238,7 +277,7 @@ class LandingMPC:
         u, pp, pv, s = self._solve_axis(
             p_rel[2], v_rel[2], At[:, 2], self.w_z, self.w_vz,
             z_ref_seq, self._warm[2], -self.vz_max, self.v_max,
-            a_prev=self._a_prev[2])
+            a_prev=applied[2], output_step=output_step)
         U[2], pred_p[2], pred_v[2] = u, pp, pv
         failed[2] = not s
         ok &= s
@@ -252,14 +291,15 @@ class LandingMPC:
 
         pred_rel_pos = pred_p.T.copy()
         pred_rel_vel = pred_v.T.copy()
-        a0 = U[:, 0].copy()
-        self._a_prev = a0.copy()          # jerk continuity across re-plans
+        selected_acceleration = U[:, output_step].copy()
+        self._a_prev = selected_acceleration.copy()
+        self._a_prev[np.asarray(failed, bool)] = 0.0
         tp0 = np.asarray(target_P, float).reshape(N, 3)[0]
         tv0 = np.asarray(target_V, float).reshape(N, 3)[0]
         ta0 = np.asarray(target_A, float).reshape(N, 3)[0]
         pos_cmd = tp0 + pred_rel_pos[0]
         vel_cmd = tv0 + pred_rel_vel[0]
-        acc_cmd = ta0 + a0
+        acc_cmd = ta0 + selected_acceleration
         pred_rel_acc = U.T.copy()
-        return MPCResult(a0, pos_cmd, vel_cmd, acc_cmd,
+        return MPCResult(selected_acceleration, pos_cmd, vel_cmd, acc_cmd,
                          pred_rel_pos, pred_rel_vel, pred_rel_acc, solve_dt, ok)

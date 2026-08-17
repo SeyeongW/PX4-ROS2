@@ -59,6 +59,110 @@ def test_receding_descent_respects_the_vertical_speed_limit():
         assert velocity[2] >= -mpc.vz_max - 1.0e-6
 
 
+def test_landing_lookahead_acceleration_anchors_the_actual_output_step():
+    mpc = LandingMPC(
+        dt_s=0.1, horizon=10, v_max=3.5, a_max=1.0,
+        j_max=2.0, cone_k=0.0, z_ref=0.0)
+    target_p, target_v, target_a = predict_const_vel(
+        np.zeros(3), np.zeros(3), mpc.dt, mpc.N)
+    applied = np.zeros(3)
+
+    first = mpc.solve(
+        np.array([5.0, 5.0, 1.0]), np.zeros(3),
+        target_p, target_v, target_a,
+        applied_acceleration=applied, output_step=1)
+    second = mpc.solve(
+        np.array([-5.0, -5.0, 1.0]), np.zeros(3),
+        target_p, target_v, target_a,
+        applied_acceleration=first.accel_cmd, output_step=1)
+
+    jerk_step = mpc.j_max * mpc.dt
+    assert first.success and second.success
+    assert np.allclose(first.accel_cmd, first.pred_rel_acc[1])
+    assert np.allclose(second.accel_cmd, second.pred_rel_acc[1])
+    assert np.all(np.abs(first.accel_cmd - applied) <= jerk_step + 1.0e-6)
+    assert np.all(
+        np.abs(second.accel_cmd - first.accel_cmd)
+        <= jerk_step + 1.0e-6)
+
+
+def test_landing_lookahead_velocity_envelope_respects_the_output_anchor():
+    mpc = LandingMPC(
+        dt_s=0.1, horizon=20, v_max=3.5, vz_max=0.6,
+        a_max=1.0, j_max=2.0, cone_k=0.0, z_ref=1.5)
+    target_p, target_v, target_a = predict_const_vel(
+        np.zeros(3), np.zeros(3), mpc.dt, mpc.N)
+    applied = np.array([0.0, 0.0, -0.8])
+
+    result = mpc.solve(
+        np.array([0.0, 0.0, 5.028]),
+        np.array([0.0, 0.0, -0.461]),
+        target_p, target_v, target_a,
+        applied_acceleration=applied, output_step=1)
+
+    assert result.success
+    assert np.all(
+        np.abs(result.accel_cmd - applied)
+        <= mpc.j_max * mpc.dt + 1.0e-6)
+
+
+def test_landing_handoff_slews_back_inside_its_acceleration_limit():
+    mpc = LandingMPC(
+        dt_s=0.1, horizon=20, v_max=3.5, vz_max=0.6,
+        a_max=1.0, j_max=2.0, cone_k=0.0, z_ref=1.5)
+    target_p, target_v, target_a = predict_const_vel(
+        np.zeros(3), np.zeros(3), mpc.dt, mpc.N)
+    applied = np.array([-1.51, 0.0, 0.0])
+
+    result = mpc.solve(
+        np.array([3.0, 0.0, 1.5]), np.zeros(3),
+        target_p, target_v, target_a,
+        applied_acceleration=applied, output_step=1)
+
+    assert result.success
+    assert abs(result.accel_cmd[0] - applied[0]) <= (
+        mpc.j_max * mpc.dt + 1.0e-6)
+    limits = mpc._acceleration_limits(applied[0], output_step=1)
+    assert np.all(np.abs(result.pred_rel_acc[:, 0]) <= limits + 1.0e-6)
+    assert abs(result.pred_rel_acc[3, 0]) <= mpc.a_max + 1.0e-6
+
+
+def test_acquire_brakes_before_a_reversing_target_without_crossing():
+    mpc = LandingMPC(
+        dt_s=0.1, horizon=20, w_vxy=20.0, v_max=3.5,
+        a_max=3.0, j_max=2.0, cone_k=0.0, z_ref=1.5)
+    drone_p = np.array([-9.0, 0.0, 5.0])
+    drone_v = np.array([3.64, 0.0, 0.0])
+    target_p = np.zeros(3)
+    target_v = np.array([1.0, 0.0, 0.0])
+    applied = np.zeros(3)
+    captured_at = None
+
+    for step in range(50):
+        prediction = predict_const_vel(
+            target_p, target_v, mpc.dt, mpc.N)
+        result = mpc.solve(
+            drone_p - target_p, drone_v - target_v, *prediction,
+            applied_acceleration=applied, output_step=1)
+        assert result.success
+        applied = result.accel_cmd
+        target_accel = (
+            np.array([-3.0, 0.0, 0.0])
+            if 20 <= step < 27 else np.zeros(3))
+        drone_p += drone_v * mpc.dt + 0.5 * applied * mpc.dt ** 2
+        drone_v += applied * mpc.dt
+        target_p += target_v * mpc.dt + 0.5 * target_accel * mpc.dt ** 2
+        target_v += target_accel * mpc.dt
+        relative_position = drone_p[0] - target_p[0]
+        relative_velocity = drone_v[0] - target_v[0]
+        assert relative_position <= 1.0e-3
+        if abs(relative_position) <= 0.5 and abs(relative_velocity) <= 0.3:
+            captured_at = (step + 1) * mpc.dt
+            break
+
+    assert captured_at is not None and captured_at <= 5.0
+
+
 @pytest.mark.parametrize(
     ('control_rate', 'mpc_rate'),
     [(0.0, 10.0), (50.0, 0.0), (10.0, 50.0), (50.0, 7.0)],

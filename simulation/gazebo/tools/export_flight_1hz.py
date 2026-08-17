@@ -30,8 +30,22 @@ ACCEL_SPIKE_LIMIT_M_S2 = 5.0
 BODY_RATE_WARN_DEG_S = 90.0
 OBSTACLE_RESERVE_WARN_M = 0.5
 DESCENT_WARN_MARGIN_M_S = 0.05
+EXPERIMENT_METRIC_FIELDS = (
+    "mission_success_rate_pct",
+    "path_tracking_rmse_m",
+    "path_tracking_error_max_m",
+    "marker_detection_rate_pct",
+    "landing_error_3d_m",
+    "landing_xy_error_m",
+    "touchdown_relative_speed_3d_m_s",
+    "touchdown_relative_vertical_speed_m_s",
+    "mpc_solve_mean_ms",
+    "mpc_solve_max_ms",
+    "flight_battery_energy_wh",
+)
 _TRANSITION = re.compile(
     r"\[(\d+(?:\.\d+)?)\].*?\b([A-Z_]+) -> ([A-Z_]+)\b")
+_EXPERIMENT_METRICS = re.compile(r"EXPERIMENT_METRICS\s+(.+)$")
 
 
 def _manifest(path: Path) -> dict[str, str]:
@@ -176,6 +190,99 @@ def _planner_failure_events(path: Path) -> int:
             "global A*/B-spline replan failed:")
 
 
+def _precision_landing_retries(path: Path) -> tuple[int, int, int]:
+    """Count PX4 handoff attempts and camera-loss recoveries from transitions."""
+    if not path.exists():
+        return 0, 0, 0
+    text = path.read_text(encoding="utf-8", errors="replace")
+    transitions = [match.groups()[1:] for match in _TRANSITION.finditer(text)]
+    attempts = sum(new == "PRECLAND" for _, new in transitions)
+    precland_recoveries = sum(
+        old == "PRECLAND" and new == "LANDING_ACQUIRE"
+        for old, new in transitions)
+    descend_recoveries = sum(
+        old == "LANDING_DESCEND" and new == "LANDING_ACQUIRE"
+        for old, new in transitions)
+    return attempts, precland_recoveries, descend_recoveries
+
+
+def _experiment_metrics(path: Path) -> dict[str, float]:
+    """Read the final machine-readable metric line from mission-manager."""
+    values: dict[str, float] = {}
+    if not path.exists():
+        return values
+    for line in path.read_text(
+            encoding="utf-8", errors="replace").splitlines():
+        match = _EXPERIMENT_METRICS.search(line)
+        if not match:
+            continue
+        candidate = {}
+        for token in match.group(1).split():
+            key, separator, value = token.partition("=")
+            if not separator:
+                continue
+            try:
+                candidate[key] = float(value)
+            except ValueError:
+                continue
+        if candidate:
+            values = candidate
+    return values
+
+
+def _battery_energy_wh(battery, start: float, end: float) -> float:
+    """Integrate measured flight-battery power; invalid current stays N/A."""
+    if (battery is None or not np.isfinite(start) or not np.isfinite(end)
+            or end <= start):
+        return math.nan
+    timestamps = np.asarray(battery.get("timestamp", []), float) * 1e-6
+    voltage = np.asarray(battery.get("voltage_v", []), float)
+    current = np.asarray(battery.get("current_a", []), float)
+    if not (len(timestamps) == len(voltage) == len(current)):
+        return math.nan
+    inside = (timestamps >= start) & (timestamps <= end)
+    timestamps, voltage, current = (
+        values[inside] for values in (timestamps, voltage, current))
+    if len(timestamps) < 2:
+        return math.nan
+    valid = (np.isfinite(voltage) & np.isfinite(current)
+             & (voltage > 0.0) & (current >= 0.0))
+    delta = np.diff(timestamps)
+    pairs = (valid[:-1] & valid[1:] & (delta > 0.0) & (delta <= 1.0))
+    if not np.any(pairs):
+        return math.nan
+    coverage = float(np.sum(delta[pairs]))
+    if coverage < 0.8 * (end - start):
+        return math.nan
+    power = voltage * current
+    return float(np.sum(
+        0.5 * (power[:-1][pairs] + power[1:][pairs]) * delta[pairs]
+    ) / 3600.0)
+
+
+def _path_tracking_metrics(track_t, track_xy, events, clock,
+                           arm_time, disarm_time):
+    """RMSE/max against streamed setpoints during B-spline route phases."""
+    track_t, track_xy = _finite_time_series(track_t, track_xy)
+    if not len(track_t):
+        return math.nan, math.nan
+    mask = np.zeros(track_t.shape, dtype=bool)
+    if clock is not None and events:
+        mask = np.asarray([
+            _at_phase(events, clock, stamp) in ("MISSION", "RETURN")
+            for stamp in track_t], dtype=bool)
+    if not np.any(mask):
+        mask = (track_t >= arm_time if np.isfinite(arm_time)
+                else np.ones(track_t.shape, dtype=bool))
+        if np.isfinite(disarm_time):
+            mask &= track_t <= disarm_time
+    values = track_xy[mask]
+    if not len(values):
+        return math.nan, math.nan
+    return (float(np.sqrt(np.mean(values * values))),
+            float(np.max(values)))
+
+
 def _minimum_aabb_residual(points, obstacles, clearance_m):
     """Return physical-AABB XY distance minus the required clearance."""
     points = np.asarray(points, float)
@@ -278,7 +385,7 @@ def _at_phase(events, clock, timestamp):
     return phase
 
 
-def export_run(run_dir: Path) -> tuple[Path, Path]:
+def export_run(run_dir: Path) -> tuple[Path, Path, Path]:
     run_dir = run_dir.resolve()
     ulog_path = run_dir / "flight.ulg"
     if not ulog_path.is_file():
@@ -313,7 +420,7 @@ def export_run(run_dir: Path) -> tuple[Path, Path]:
     wanted = ["vehicle_local_position", "vehicle_local_position_groundtruth",
               "vehicle_angular_velocity",
               "trajectory_setpoint", "vehicle_status", "vehicle_land_detected",
-              "timesync_status"]
+              "timesync_status", "battery_status"]
     ulog = ULog(str(ulog_path), message_name_filter_list=wanted)
     actual = _topic(ulog, "vehicle_local_position")
     groundtruth = _topic(ulog, "vehicle_local_position_groundtruth")
@@ -321,11 +428,10 @@ def export_run(run_dir: Path) -> tuple[Path, Path]:
     setpoint = _topic(ulog, "trajectory_setpoint")
     status = _topic(ulog, "vehicle_status")
     landed = _topic(ulog, "vehicle_land_detected")
-    if (actual is None or groundtruth is None or angular_velocity is None
-            or status is None):
+    battery = _topic(ulog, "battery_status")
+    if actual is None or angular_velocity is None or status is None:
         raise RuntimeError(
-            "ULog lacks vehicle_local_position, "
-            "vehicle_local_position_groundtruth, vehicle_angular_velocity, "
+            "ULog lacks vehicle_local_position, vehicle_angular_velocity, "
             "or vehicle_status")
 
     at = np.asarray(actual["timestamp"], float) * 1e-6
@@ -348,8 +454,11 @@ def export_run(run_dir: Path) -> tuple[Path, Path]:
     body_rate_deg_s = np.linalg.norm(np.column_stack([
         angular_velocity[f"xyz[{axis}]"] for axis in range(3)]), axis=1
     ) * 180.0 / math.pi
-    gt_t, height_deck_groundtruth = _groundtruth_height(
-        groundtruth, deck_world_z)
+    if groundtruth is None:
+        gt_t = height_deck_groundtruth = np.array([], dtype=float)
+    else:
+        gt_t, height_deck_groundtruth = _groundtruth_height(
+            groundtruth, deck_world_z)
     height_deck_estimated = au - deck_local_z
 
     if setpoint is None:
@@ -402,6 +511,9 @@ def export_run(run_dir: Path) -> tuple[Path, Path]:
     clock = _clock_mapper(ulog)
     mission_log = run_dir / "gimbal_mission.log"
     events = _phase_events(mission_log)
+    logged_metrics = _experiment_metrics(mission_log)
+    parsed_attempts, parsed_precland_recoveries, parsed_descend_recoveries = (
+        _precision_landing_retries(mission_log))
     abort_events = sum(state == "ABORT" for _, state in events)
     planner_failure_events = _planner_failure_events(mission_log)
     # Keep only complete one-second windows; extrapolating a partial first or
@@ -581,6 +693,36 @@ def export_run(run_dir: Path) -> tuple[Path, Path]:
     ulog_dropouts = len(ulog.dropouts)
     paper_reproducible = int(manifest.get("git_dirty") == "0")
     result = manifest.get("result", "unknown")
+    route_rmse, route_max = _path_tracking_metrics(
+        track_t, track_xy, events, clock, arm_time, disarm_time)
+    landed_seen = int(bool(
+        landed is not None and np.any(
+            np.asarray(landed["landed"], bool)[
+                (land_t >= arm_time) if np.isfinite(arm_time)
+                else np.ones(land_t.shape, dtype=bool)])))
+    done_seen = result == "done" or any(
+        state == "DONE" for _, state in events)
+    mission_success = int(
+        done_seen and landed_seen and np.isfinite(disarm_time)
+        and not failsafe_seen and not abort_events)
+    precland_attempts = int(logged_metrics.get(
+        "precland_attempts", parsed_attempts))
+    precland_recoveries = int(logged_metrics.get(
+        "precland_recoveries", parsed_precland_recoveries))
+    landing_descend_recoveries = int(logged_metrics.get(
+        "landing_descend_recoveries", parsed_descend_recoveries))
+    precision_landing_first_try = int(
+        mission_success and precland_attempts == 1
+        and precland_recoveries == 0
+        and landing_descend_recoveries == 0)
+    marker_frames = logged_metrics.get("marker_frames", 0.0)
+    marker_rate = (100.0 * logged_metrics.get("marker_hits", 0.0)
+                   / marker_frames if marker_frames > 0.0 else math.nan)
+    mpc_count = logged_metrics.get("mpc_count", 0.0)
+    mpc_mean_ms = (logged_metrics.get("mpc_total_ms", math.nan) / mpc_count
+                   if mpc_count > 0.0 else math.nan)
+    battery_energy_wh = _battery_energy_wh(
+        battery, arm_time, disarm_time)
     fail_reasons = []
     warn_reasons = []
     if result != "done":
@@ -607,6 +749,8 @@ def export_run(run_dir: Path) -> tuple[Path, Path]:
         warn_reasons.append("low_obstacle_reserve")
     if descent_spike_bins:
         warn_reasons.append("descent_spike")
+    if mission_success and not precision_landing_first_try:
+        warn_reasons.append("precision_landing_retry")
     if not paper_reproducible:
         warn_reasons.append("dirty_tree")
     quality, quality_reasons = classify_quality(fail_reasons, warn_reasons)
@@ -651,6 +795,10 @@ def export_run(run_dir: Path) -> tuple[Path, Path]:
         "obstacle_reserve_warn_m": OBSTACLE_RESERVE_WARN_M,
         "planner_failure_events": planner_failure_events,
         "abort_events": abort_events,
+        "precland_attempts": precland_attempts,
+        "precland_recoveries": precland_recoveries,
+        "landing_descend_recoveries": landing_descend_recoveries,
+        "precision_landing_first_try": precision_landing_first_try,
         "mpc_land_speed_m_s": land_speed,
         "descent_warn_m_s": descent_warn,
         "failsafe_seen": failsafe_seen,
@@ -670,9 +818,35 @@ def export_run(run_dir: Path) -> tuple[Path, Path]:
         writer = csv.DictWriter(stream, fieldnames=list(summary))
         writer.writeheader()
         writer.writerow({key: _clean(value) for key, value in summary.items()})
+    experiment_metrics = {
+        "mission_success_rate_pct": 100.0 * mission_success,
+        "path_tracking_rmse_m": route_rmse,
+        "path_tracking_error_max_m": route_max,
+        "marker_detection_rate_pct": marker_rate,
+        "landing_error_3d_m": logged_metrics.get(
+            "landing_error_3d_m", math.nan),
+        "landing_xy_error_m": logged_metrics.get(
+            "landing_xy_error_m", math.nan),
+        "touchdown_relative_speed_3d_m_s": logged_metrics.get(
+            "touchdown_relative_speed_3d_m_s", math.nan),
+        "touchdown_relative_vertical_speed_m_s": logged_metrics.get(
+            "touchdown_relative_vertical_speed_m_s", math.nan),
+        "mpc_solve_mean_ms": mpc_mean_ms,
+        "mpc_solve_max_ms": logged_metrics.get("mpc_max_ms", math.nan),
+        "flight_battery_energy_wh": battery_energy_wh,
+    }
+    metrics_path = run_dir / "experiment_metrics.csv"
+    metrics_tmp = metrics_path.with_suffix(".csv.tmp")
+    with metrics_tmp.open("w", newline="", encoding="utf-8") as stream:
+        writer = csv.DictWriter(
+            stream, fieldnames=EXPERIMENT_METRIC_FIELDS)
+        writer.writeheader()
+        writer.writerow({
+            key: _clean(value) for key, value in experiment_metrics.items()})
     os.replace(csv_tmp, csv_path)
     os.replace(summary_tmp, summary_path)
-    return csv_path, summary_path
+    os.replace(metrics_tmp, metrics_path)
+    return csv_path, summary_path, metrics_path
 
 
 def main(argv=None) -> int:
@@ -680,14 +854,16 @@ def main(argv=None) -> int:
     parser.add_argument("run_dir", type=Path, help="run artifact directory")
     args = parser.parse_args(argv)
     try:
-        csv_path, summary_path = export_run(args.run_dir)
+        csv_path, summary_path, metrics_path = export_run(args.run_dir)
     except Exception as error:  # keep the shell's original flight result intact
-        for name in ("flight_1hz.csv.tmp", "flight_summary.csv.tmp"):
+        for name in ("flight_1hz.csv.tmp", "flight_summary.csv.tmp",
+                     "experiment_metrics.csv.tmp"):
             (args.run_dir / name).unlink(missing_ok=True)
         print(f"flight CSV export failed: {error}", file=sys.stderr)
         return 1
     print(f"1 Hz flight CSV: {csv_path}")
     print(f"flight summary : {summary_path}")
+    print(f"experiment data: {metrics_path}")
     return 0
 
 

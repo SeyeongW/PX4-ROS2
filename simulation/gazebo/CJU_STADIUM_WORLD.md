@@ -42,12 +42,12 @@ Run the integrated experiment:
 Enter `takeoff`, `mission`, then `land`. Phase 0 `PRECHECK` validates PX4 feedback, the
 live cue, planner, and Offboard readiness; Phase 1 requests PX4
 `NAV_TAKEOFF` to 5 m and holds `READY`. In Phase 2, `mission` makes YAML A* provide obstacle topology, a validated
-geometry-only B-spline reinforces that spatial path, and PX4 Goto tracks it to
+geometry-only B-spline reinforces that spatial path, and TrackingMPC tracks it to
 `(50,50)` and `HOVER`. The `stadium_endpoint` remains `(0,0)`;
 the drone and trailer start together on the track centre at the integer map
 coordinate `(5,0)`, with the drone on the 2.051 m deck. The drone flies at
-0.5 m/s to 5 m, then uses 1 m-grid A* topology plus the geometry B-spline/PX4
-Goto route to `(50,50)` around twenty
+0.5 m/s to 5 m, then uses 1 m-grid A* topology plus the geometry B-spline/
+TrackingMPC route to `(50,50)` around twenty
 `0.45 x 0.35 x 10 m` barriers at seed-5053-based integer centres sampled from
 `(0,0)` to `(50,50)` and filtered inside the infield, with barrier 2 manually
 placed above barrier 17: `(33,10)`, `(18,39)`,
@@ -55,17 +55,19 @@ placed above barrier 17: `(33,10)`, `(18,39)`,
 `(22,33)`, `(44,33)`, `(24,12)`, `(39,0)`, `(30,23)`, `(49,1)`, `(21,3)`,
 `(15,34)`, `(42,41)`, `(35,49)`, and `(28,46)`. The trailer moves
 50 m forward along the stadium long axis and 50 m backward at 1 m/s, repeating
-that fixed segment. The A* and exact segment checks use a 2 m Euclidean XY
-radius around each physical obstacle AABB. In Phase 3, `land` uses A* → geometry-only B-spline
-`RETURN` until a live 6 m direct segment is YAML-safe. It then supplies
-`LandingTargetPose`, requests PX4 `NAV_PRECLAND`, and stops Offboard control.
-PX4 owns speed, acceleration, attitude, descent, contact detection and
-auto-disarm. ArUco remains only a horizontal landing-target correction.
+that fixed segment. A*/B-spline, return-tail, and landing-entry checks use a
+1.5 m Euclidean XY radius around each physical obstacle AABB; runtime checks
+retain the hard 1 m radius. In Phase 3 the gimbal remains nadir beyond 10 m,
+blends toward the trailer over 10→9 m of horizontal GPS/cue range, and points directly inside
+9 m. `land` stays in `RETURN` until three distinct KF-accepted ArUco fixes arrive
+within 0.5 s and the live cue segment passes the 1.5 m planning-clearance check.
+LandingMPC then acquires at fixed
+altitude, descends after alignment, and hands the low-altitude final approach to
+PX4 `NAV_PRECLAND`. PX4 owns contact detection and auto-disarm.
 
-The B-spline owns no flight speed or P/V/A schedule. PX4
-Goto/PositionSmoothing owns route speed, acceleration, and jerk through
-`MPC_XY_CRUISE=3`, `MPC_ACC_HOR`, and `MPC_JERK_AUTO`, with
-`MPC_XY_VEL_MAX=10` as the hard horizontal cap.
+The B-spline owns no flight speed or P/V/A schedule. TrackingMPC derives a
+braking reference from the accepted spatial path, while PX4 retains the
+lower-level position, velocity, attitude, and motor-control loops.
 
 Regenerate the runtime models after editing their generator:
 

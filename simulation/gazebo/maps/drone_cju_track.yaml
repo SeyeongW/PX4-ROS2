@@ -90,7 +90,9 @@ px4_vehicle:
     PLD_BTOUT: 0.5
     PLD_HACC_RAD: 0.5
     PLD_VEL_THR: 0.3
-    PLD_FAPPR_ALT: 0.1
+    # EKF local-z read 0.35 m above the cue at physical deck contact; 0.1 m
+    # never entered FinalApproach, so thrust stayed high until vision recovery.
+    PLD_FAPPR_ALT: 0.5
     PLD_SRCH_ALT: 5.0
     PLD_SRCH_TOUT: 10.0
     PLD_MAX_SRCH: 3
@@ -173,22 +175,22 @@ mission:
   cruise_altitude_m: 5.0
   goal_m: [50, 50]
   planner_resolution_m: 1
-  obstacle_clearance_m: 2
+  obstacle_clearance_m: 1
   # Planning reserve for PX4 tracking error; the hard/runtime clearance below
-  # remains the exact Euclidean 2 m contract.
+  # remains the exact Euclidean 1 m contract.
   bspline_clearance_margin_m: 0.5
   bspline_control_spacing_m: 2.0
   bspline_sample_spacing_m: 0.1
-  # Spatial carrot only; PX4 Goto owns time/speed. Runtime collision checks
-  # shorten it near obstacles. Six metres permits the 3 m/s Goto profile to
-  # brake under the clean PX4 defaults (3 m/s^2 acceleration, 4 m/s^3 jerk).
+  # Spatial route lookahead/fallback only. Runtime collision checks shorten it
+  # near obstacles; TrackingMPC supplies the accepted P/V/A profile.
   mpc_path_lookahead_m: 6.0
   mpc_path_cross_track_m: 0.25
-  # The inflated obstacles stay at least 6.775 m from the trailer route.
-  # Keep A*/B-spline authority until the vehicle is inside that corridor.
-  precland_handoff_m: 6.0
+  # The gimbal stays nadir outside 10 m, blends toward the trailer from 10 to
+  # 9 m (horizontal GPS/cue range), and points directly inside 9 m. LandingMPC entry requires
+  # three distinct KF-accepted ArUco fixes within 0.5 s plus a live cue segment
+  # that is safe under this same 1.5 m planning envelope.
   # Retarget only the validated return path tail every two seconds. Full
-  # A*/B-spline is a fallback only when no 2.5 m-safe tail connector exists.
+  # A*/B-spline is a fallback only when no 1.5 m-safe tail connector exists.
   return_replan_min_period_s: 2.0
   obstacle_layout_seed: 5053
   obstacle_generation_bounds_m: {x: [0, 50], y: [0, 50]}
