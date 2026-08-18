@@ -186,6 +186,248 @@ def sweep_plan(pitch_deg, yaw_step_deg: float, yaw_limit_deg: float
 
 
 @dataclass
+class GimbalSweep:
+    """Where to point the camera while searching, and when to trust what it sees.
+
+    The scan half of `mpc_landing_node`'s SEARCH, lifted out so a second mission
+    node can run the SAME sweep rather than a lookalike of it, and so the timing
+    rules — which are the part that was got wrong first — can be tested without a
+    gimbal or a vehicle.
+
+    WHY SWEEP AT ALL. A camera held at nadir sees one patch of ground: at 5 m
+    with the 0.18 m marker this airframe uses, a circle about 2.5 m across. If
+    the marker is not in it, the mission stares at the wrong grass for a minute
+    and lands. Sweeping the gimbal searches a circle roughly 2*tan(50 deg) ~ 2.4
+    vehicle-heights across WITHOUT MOVING THE VEHICLE — which, low over a trailer
+    with people near it, is the difference between a search and a hazard. And
+    because the gimbal angle is known at the moment of the sighting, what comes
+    back is a position fix rather than "it is somewhere over there"
+    (`marker_enu_from_gimbal_camera` does that part).
+
+    THE TWO TIMING RULES, BOTH LEARNED ON THE BENCH:
+
+    * A look's dwell is counted from when the camera ARRIVES, not from when it
+      was commanded. A fixed dwell pays a 45 deg step and a 135 deg swing the
+      same, and the bench measured what that bought: 36% of the sweep settled,
+      64% slewing, with three of fifteen looks getting a single settled sample.
+    * Settled time must be CONTINUOUS. A gimbal that arrives, is knocked off by
+      a gust and comes back serves the full view again rather than banking the
+      two halves — the same rule, for the same reason, as the consecutive frames
+      an acquisition needs.
+
+    And the acceptance rule: a fix taken mid-slew is placed at the wrong angle,
+    and off nadir that error is multiplied by the SLANT RANGE rather than the
+    height. So `settled()` gates which fixes may be used at all.
+    """
+
+    #: Rings to sweep, in gimbal pitch (negative is down). Nadir first: the
+    #: marker is usually under the vehicle and the cheapest look is the one the
+    #: camera already points at. Nothing shallower than about -25 deg — slant
+    #: range grows as 1/sin(elevation), so a shallow look sees a long way and
+    #: places what it finds very badly.
+    pitch_deg: tuple = (-90.0, -60.0, -40.0)
+    #: Azimuth step, and how far round each ring goes. 135 deg is the A8 mini's
+    #: YAW TRAVEL LIMIT, not a choice: the sector behind the tail stays blind.
+    yaw_step_deg: float = 45.0
+    yaw_limit_deg: float = 135.0
+    #: Settled seconds per look. ~12 detector frames against the 5 consecutive
+    #: that an acquisition needs.
+    view_s: float = 1.0
+    #: Backstop, in wall-clock: with no attitude feedback "settled" may never
+    #: arrive and the sweep would stop dead at one look.
+    look_max_s: float = 4.0
+    #: Minimum time since the aim last MOVED before any fix is trusted.
+    settle_s: float = 0.5
+    #: How closely feedback must agree with the command to count as arrived.
+    #: 6 deg, not 4: settled yaw error benched at 1.5 deg mean but 3.9 deg peak,
+    #: and this only decides whether a fix is ACCEPTED — placement always uses
+    #: the MEASURED angle, so a wide band costs nothing but a little latency.
+    settled_deg: float = 6.0
+    #: False holds nadir and searches nothing, i.e. the behaviour before this.
+    enabled: bool = True
+
+    plan: list = field(default_factory=list)
+    i: int = 0
+    scanning: bool = False
+    aim_cmd: tuple | None = field(default=None)      # (yaw, pitch) deg, SIYI
+    attitude: tuple | None = field(default=None)     # (yaw, pitch) deg measured
+    _t_att: float = 0.0
+    _t_look: float = 0.0                             # when the aim last MOVED
+    _t_settled: float | None = field(default=None)   # when it ARRIVED
+    attitude_timeout_s: float = 2.0
+
+    def __post_init__(self) -> None:
+        self.plan = ([(0.0, NADIR_PITCH_DEG)] if not self.enabled
+                     else sweep_plan(self.pitch_deg, self.yaw_step_deg,
+                                     self.yaw_limit_deg))
+
+    # ------------------------------------------------------------------ input
+    def on_attitude(self, now: float, *, yaw_deg: float,
+                    pitch_deg: float) -> None:
+        self.attitude = (float(yaw_deg), float(pitch_deg))
+        self._t_att = float(now)
+
+    def attitude_fresh(self, now: float) -> bool:
+        return (self.attitude is not None
+                and (float(now) - self._t_att) <= self.attitude_timeout_s)
+
+    def angles(self, now: float) -> tuple[float, float]:
+        """Where the camera IS pointing, (yaw, pitch) deg. Never None.
+
+        Feedback first, because that is the measurement; the last commanded
+        angle second, because a gimbal with no telemetry is still obeying; and
+        nadir last, because that is what the gimbal node holds when nobody has
+        asked for anything else.
+        """
+        if self.attitude_fresh(now):
+            return self.attitude                     # type: ignore[return-value]
+        if self.aim_cmd is not None:
+            return self.aim_cmd
+        return 0.0, NADIR_PITCH_DEG
+
+    # ----------------------------------------------------------------- output
+    def aim(self, yaw_deg: float, pitch_deg: float, now: float) -> tuple:
+        """Record a commanded angle; restart the settle timer if it MOVED.
+
+        Used by the sweep and by marker tracking alike, so "how long has the
+        camera been pointing here" means one thing everywhere.
+        """
+        if (self.aim_cmd is None
+                or abs(yaw_deg - self.aim_cmd[0]) > self.settled_deg
+                or abs(pitch_deg - self.aim_cmd[1]) > self.settled_deg):
+            self._t_look = float(now)
+            self._t_settled = None
+        self.aim_cmd = (float(yaw_deg), float(pitch_deg))
+        return self.aim_cmd
+
+    def restart(self, now: float) -> None:
+        """Begin a sweep from the first look. Called on every entry to SEARCH.
+
+        The sweep RESTARTS rather than resuming: after a climb, or an abort and
+        a second attempt, under the vehicle is again the first place worth
+        looking — and without the restart the dwell timer would still be running
+        from whenever the gimbal last moved, so the first look would be skipped
+        before the camera ever saw it.
+        """
+        self.scanning = True
+        self.i = 0
+        self._t_look = float(now)
+        self._t_settled = None
+
+    def stop(self) -> None:
+        """No longer sweeping — tracking, or done. Loosens `settled` (see there)."""
+        self.scanning = False
+
+    def look(self, now: float) -> tuple:
+        """Hold the current look, advance when its dwell is up; return the aim."""
+        if len(self.plan) > 1:
+            if self.settled(now):
+                self._t_settled = self._t_settled or float(now)
+                done = (float(now) - self._t_settled) >= self.view_s
+            else:
+                self._t_settled = None
+                done = False
+            if done or (float(now) - self._t_look) >= self.look_max_s:
+                self.i = (self.i + 1) % len(self.plan)
+                self._t_settled = None
+        yaw, pitch = self.plan[self.i]
+        return self.aim(yaw, pitch, now)
+
+    # ---------------------------------------------------------------- queries
+    def settled(self, now: float) -> bool:
+        """May a fix taken right now be trusted?
+
+        Time since the aim moved, always. Plus, WHILE SCANNING, feedback that
+        agrees with the command: a sweep steps 45 deg at a time and the attitude
+        poll is a few Hz, so the reported angle can be a whole sector out of date
+        and a fix placed with it lands where the marker never was.
+
+        That second test is deliberately not applied while TRACKING. There the
+        aim moves a few degrees a second, so command and feedback are never far
+        apart but never equal either, and demanding agreement would throw away
+        every fix during the approach and abort a descent on a marker the camera
+        can see perfectly well.
+        """
+        if float(now) - self._t_look < self.settle_s:
+            return False
+        if not self.scanning or self.aim_cmd is None \
+                or not self.attitude_fresh(now):
+            return True
+        yaw, pitch = self.attitude                   # type: ignore[misc]
+        return (abs(yaw - self.aim_cmd[0]) <= self.settled_deg
+                and abs(pitch - self.aim_cmd[1]) <= self.settled_deg)
+
+    def duration_s(self) -> float:
+        """Roughly how long one complete sweep takes, for the startup log."""
+        return len(self.plan) * (self.view_s + 1.0)
+
+
+@dataclass
+class VelocityEstimate:
+    """How fast a tracked point is moving, from its own position fixes.
+
+    WHY A LANDING NEEDS THIS AT ALL
+    -------------------------------
+    A proportional controller cannot hold zero error against a target that keeps
+    moving: it settles at exactly `v_target / kp` and stays there. On a trailer
+    creeping at 0.3 m/s with kp = 0.8 that is 0.375 m — just outside the 0.30 m
+    radius the descent is allowed to open in, so the vehicle centres, hovers,
+    and never comes down. It does not look like a failure in the log; it looks
+    like a descent that is about to start, forever.
+
+    Feeding the target's own velocity forward removes that offset instead of
+    fighting it, and it does so WITHOUT raising the gain — which is the whole
+    point, because a higher gain buys the same steady-state accuracy by making
+    every noise spike a lurch.
+
+    A stationary marker estimates ~0 and the feed-forward vanishes, so this
+    changes nothing about the fixed-pad case it is added alongside.
+
+    THE DROPOUT RULE
+    ----------------
+    A difference taken across a gap is not a velocity. If the marker was lost
+    and re-acquired — possibly a different marker, possibly the same one after
+    the vehicle moved — the position jump divided by the gap is a large, entirely
+    fictitious speed pointed in an arbitrary direction, and it would be fed
+    straight into the vehicle. So a gap longer than `gap_s` resets the estimate
+    to zero and starts again.
+    """
+
+    #: Low-pass time constant [s]. Marker fixes are noisy and differencing
+    #: amplifies noise, so the raw difference is never used directly.
+    tau_s: float = 0.5
+    #: Clamp [m/s]. Also the OFF switch: 0.0 disables the feed-forward entirely.
+    max_speed: float = 1.0
+    #: Longer than this between fixes and the estimate is discarded, not updated.
+    gap_s: float = 1.0
+
+    v: np.ndarray = field(default_factory=lambda: np.zeros(2))
+    _p: np.ndarray | None = field(default=None)
+    _t: float = 0.0
+
+    def reset(self) -> None:
+        self.v = np.zeros(2)
+        self._p = None
+
+    def update(self, xy, now: float) -> np.ndarray:
+        """Take one position fix; return the current velocity estimate [m/s]."""
+        p = np.asarray(xy, dtype=float)[:2]
+        dt = float(now) - self._t
+        prev, self._p, self._t = self._p, p, float(now)
+        if prev is None or dt <= 0.0 or dt > self.gap_s:
+            self.v = np.zeros(2)
+            return self.v
+        raw = (p - prev) / dt
+        alpha = dt / (self.tau_s + dt) if self.tau_s > 0.0 else 1.0
+        v = (1.0 - alpha) * self.v + alpha * raw
+        speed = float(np.linalg.norm(v))
+        if speed > self.max_speed:
+            v = v * (self.max_speed / speed) if speed > 0.0 else v
+        self.v = v
+        return self.v
+
+
+@dataclass
 class MarkerTracker:
     """Latest accepted marker fix, and whether it may be trusted yet.
 

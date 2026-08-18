@@ -18,6 +18,8 @@ from mpc_landing.marker import (
     marker_enu_from_gimbal_camera,
     marker_enu_from_nadir_camera,
     sweep_plan,
+    GimbalSweep,
+    VelocityEstimate,
 )
 
 EAST = 0.0
@@ -209,3 +211,177 @@ def test_sweep_degenerates_to_one_look_rather_than_to_nothing():
     """A zero step must not produce an empty plan; SEARCH would have nothing to do."""
     assert sweep_plan([-60.0], 0.0, 135.0) == [(0.0, -60.0)]
     assert sweep_plan([], 45.0, 135.0) == [(0.0, -90.0)]
+
+
+# --------------------------------------------------------- marker velocity
+# The failure these exist for: a proportional descent onto a trailer creeping at
+# 0.3 m/s settles at v/kp = 0.375 m and hovers there, outside the 0.30 m radius
+# the sink is allowed to open in, forever. Feeding the marker's own velocity
+# forward is what removes that offset — so the estimate has to be right, and
+# has to be ZERO whenever it cannot be trusted.
+def _drive(est, v, *, n=40, dt=0.05, start=(0.0, 0.0)):
+    """Feed `n` fixes of a marker moving at constant velocity `v`."""
+    p = np.array(start, dtype=float)
+    t = 0.0
+    for _ in range(n):
+        t += dt
+        p = p + np.array(v, dtype=float) * dt
+        est.update(p, t)
+    return est.v
+
+
+def test_a_still_marker_estimates_zero():
+    """The fixed-pad case must be untouched by any of this."""
+    est = VelocityEstimate()
+    for i in range(20):
+        est.update((3.0, -1.0), i * 0.05)
+    assert np.linalg.norm(est.v) < 1e-9
+
+
+def test_it_converges_on_the_real_velocity():
+    est = VelocityEstimate(tau_s=0.3)
+    v = _drive(est, (0.0, 0.3), n=120)
+    assert abs(v[0]) < 0.02 and abs(v[1] - 0.3) < 0.02
+
+
+def test_the_first_fix_is_never_a_velocity():
+    """One position is a position; it takes two to be a speed."""
+    est = VelocityEstimate()
+    assert np.allclose(est.update((5.0, 5.0), 1.0), 0.0)
+
+
+def test_a_dropout_is_discarded_not_differenced():
+    """Re-acquiring 4 m away after 3 s must not command 1.3 m/s at the vehicle."""
+    est = VelocityEstimate(gap_s=1.0)
+    _drive(est, (0.0, 0.3))
+    est.update((0.0, 4.0), 100.0)                 # long gap, big jump
+    assert np.allclose(est.v, 0.0)
+
+
+def test_the_clamp_is_a_clamp():
+    """A noise spike differenced over 50 ms is a huge, entirely fake velocity."""
+    est = VelocityEstimate(tau_s=0.0, max_speed=1.0)
+    est.update((0.0, 0.0), 0.0)
+    est.update((0.0, 0.5), 0.05)                  # 10 m/s of nonsense
+    assert np.linalg.norm(est.v) <= 1.0 + 1e-9
+
+
+def test_zero_max_speed_turns_it_off():
+    """The documented off switch — the plain proportional descent, unchanged."""
+    est = VelocityEstimate(max_speed=0.0)
+    assert np.allclose(_drive(est, (0.5, 0.5)), 0.0)
+
+
+def test_reset_forgets_the_marker_as_well_as_the_velocity():
+    """Otherwise the next fix differences against a stale position."""
+    est = VelocityEstimate()
+    _drive(est, (0.0, 0.3))
+    est.reset()
+    assert np.allclose(est.v, 0.0)
+    assert np.allclose(est.update((99.0, 99.0), 999.0), 0.0)
+
+
+# ------------------------------------------------------------- gimbal sweep
+# The timing rules are the part that was got wrong first, so they are what is
+# pinned here: a fix taken mid-slew is placed at the wrong angle, and off nadir
+# that error is multiplied by the SLANT RANGE rather than the height.
+def _arrived(s, now):
+    """Report the gimbal sitting exactly where it was told to go."""
+    yaw, pitch = s.aim_cmd
+    s.on_attitude(now, yaw_deg=yaw, pitch_deg=pitch)
+
+
+def test_the_first_look_is_always_straight_down():
+    """The marker is usually under the vehicle; the cheapest look is that one."""
+    s = GimbalSweep()
+    s.restart(0.0)
+    assert s.look(0.0) == (0.0, -90.0)
+
+
+def test_disabled_is_a_nadir_hold_and_nothing_else():
+    s = GimbalSweep(enabled=False)
+    s.restart(0.0)
+    assert s.plan == [(0.0, -90.0)]
+    for t in range(20):
+        assert s.look(t * 1.0) == (0.0, -90.0)
+
+
+def test_nothing_is_trusted_until_the_camera_has_stopped_moving():
+    s = GimbalSweep(settle_s=0.5)
+    s.restart(0.0)
+    s.look(0.0)
+    assert not s.settled(0.1)
+    _arrived(s, 0.6)
+    assert s.settled(0.6)
+
+
+def test_a_stale_look_does_not_advance_until_it_has_been_seen():
+    """The dwell counts SETTLED time, so a long slew still gets its full look."""
+    s = GimbalSweep(view_s=1.0, settle_s=0.5, look_max_s=100.0)
+    s.restart(0.0)
+    first = s.look(0.0)
+    # Gimbal never reports arriving: the look must not advance on wall clock.
+    assert s.look(3.0) == first
+    # It arrives at t=3, so its second of viewing runs from there, not from 0.
+    _arrived(s, 3.0)
+    assert s.look(3.6) == first
+    _arrived(s, 4.1)
+    assert s.look(4.1) != first
+
+
+def test_settled_time_must_be_continuous():
+    """Knocked off by a gust and back again serves the full view again."""
+    s = GimbalSweep(view_s=1.0, settle_s=0.0, look_max_s=100.0)
+    s.restart(0.0)
+    first = s.look(0.0)
+    _arrived(s, 0.0)
+    s.look(0.5)                                  # half a view banked
+    s.on_attitude(0.6, yaw_deg=99.0, pitch_deg=0.0)   # blown off target
+    assert s.look(0.6) == first
+    _arrived(s, 0.7)
+    s.look(0.7)                                  # back on target: the spell
+    assert s.look(1.2) == first                  # restarts here, not at 0.0
+    assert s.look(1.75) != first                 # a full second from 0.7
+
+
+def test_a_gimbal_that_never_arrives_still_sweeps():
+    """Without this the sweep stops dead at one look and searches nothing."""
+    s = GimbalSweep(view_s=1.0, look_max_s=2.0)
+    s.restart(0.0)
+    first = s.look(0.0)
+    assert s.look(1.9) == first
+    assert s.look(2.1) != first
+
+
+def test_tracking_does_not_demand_agreement():
+    """Aim and feedback are never equal while following a moving marker."""
+    s = GimbalSweep(settle_s=0.5, settled_deg=6.0)
+    s.restart(0.0)
+    s.aim(40.0, -50.0, 0.0)
+    s.on_attitude(1.0, yaw_deg=25.0, pitch_deg=-50.0)   # 15 deg behind
+    assert not s.settled(1.0)                            # scanning: refused
+    s.stop()
+    assert s.settled(1.0)                                # tracking: accepted
+
+
+def test_the_settle_timer_only_restarts_on_a_real_move():
+    """Tracking nudges the aim every tick; each nudge must not reset the clock."""
+    s = GimbalSweep(settle_s=0.5)
+    s.stop()
+    s.aim(10.0, -50.0, 0.0)
+    for i in range(1, 10):                     # 1 deg nudges, well inside the band
+        s.aim(10.0 + i * 0.5, -50.0, i * 0.1)
+    assert s.settled(0.9)
+    s.aim(90.0, -50.0, 1.0)                    # a real slew
+    assert not s.settled(1.2)
+
+
+def test_the_measured_angle_is_what_gets_used():
+    """`angles` prefers feedback; falls back to the command; then to nadir."""
+    s = GimbalSweep(attitude_timeout_s=2.0)
+    assert s.angles(0.0) == (0.0, -90.0)
+    s.aim(30.0, -45.0, 0.0)
+    assert s.angles(0.0) == (30.0, -45.0)
+    s.on_attitude(0.0, yaw_deg=28.0, pitch_deg=-44.0)
+    assert s.angles(0.5) == (28.0, -44.0)
+    assert s.angles(9.0) == (30.0, -45.0)       # feedback went stale

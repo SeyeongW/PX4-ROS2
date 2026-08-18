@@ -5,9 +5,53 @@ real airframe (MAVROS wired, PX4 accepts OFFBOARD, the vehicle climbs, holds and
 lands).  This node keeps that exact skeleton and adds ONE thing: it descends
 onto an ArUco marker instead of landing where it took off.
 
-    PRECHECK ─approve─► ARM ─► TAKEOFF ─► SEARCH ─► DESCEND ─► LAND ─► DONE
-                                            │ marker acquired  │
-                                            └── timeout ───────┘► LAND
+    PRECHECK ─approve─► ARM ─► TAKEOFF ─► CRUISE ─► SEARCH ─► DESCEND ─► LAND ─► DONE
+                                             │         │ marker acquired  │
+                                             │         └── timeout ───────┘► LAND
+                                             └── (off unless cruise_to_trailer)
+
+GOING TO THE TRAILER FIRST
+--------------------------
+With `cruise_to_trailer` the mission flies to a GNSS coordinate before it starts
+looking: `trailer_target_node` turns the trailer's radioed lat/lon into a point
+in this vehicle's own local ENU frame (`/trailer/target_local`), and CRUISE
+drives to it at cruise altitude.  GNSS gets the trailer INTO THE CAMERA'S FRAME
+and nothing more — two receivers disagree by a metre or two, and the trailer's
+antenna is not its marker — so the moment the marker is acquired, vision takes
+over completely and the coordinate is never used again.  That handover is the
+whole design: coarse where coarse is enough, vision where it is not.
+
+SEARCH keeps station over the coordinate rather than over a fixed patch of
+ground, so a trailer that rolls a few metres while the detector is settling stays
+under the camera — and it descends to `search_alt_m` while doing it, because the
+altitude a marker is DETECTABLE at is lower than the altitude that sees the most
+ground (the table on that parameter has the numbers).
+
+SEARCHING WITH THE GIMBAL, NOT WITH THE VEHICLE
+-----------------------------------------------
+A camera locked at nadir sees one circle of ground, and if the marker is not in
+it the mission stares at the wrong grass until it times out.  The obvious answer
+is to fly the vehicle in a widening spiral; the better one, on an airframe that
+already carries a 3-axis gimbal, is to point the CAMERA around and leave the
+vehicle where it is — low over a trailer with people near it, vehicle motion is
+the expensive part.  So SEARCH sweeps: nadir first, then rings at progressively
+shallower pitch, dwelling at each look for `scan_view_s` of SETTLED time
+(`marker.GimbalSweep` owns the pattern and the timing rules).
+
+That makes the gimbal angle load-bearing.  Because the angle is KNOWN at the
+moment of the sighting, a marker spotted 40 deg off to one side is a position
+fix and not merely a sighting — solvePnP gives the range along the line, the
+gimbal gives the line (`marker_enu_from_gimbal_camera`).  Two consequences that
+are not optional:
+
+    * fixes taken while the gimbal is still slewing are DROPPED, because off
+      nadir an angle error is multiplied by the slant range, not the height;
+    * once acquired the camera is LEFT WHERE IT IS, and re-aimed
+      (`gimbal_aim_for`) only if the marker is actually lost.  Pointing the
+      camera at a marker costs pixels — off nadir the range becomes the slant
+      range and the marker is foreshortened — and with a marker near the
+      detector's floor that is enough to lose one the nadir view could read
+      perfectly well.  `_track_marker` has the measured numbers.
 
 Deliberately simple control — a plain proportional centre-and-descend, NOT the
 MPC.  `mpc_landing_node` already flies the SITL-validated MPC; this is the
@@ -25,8 +69,9 @@ The MARKER comes from `aruco_landing`'s `aruco_pose_node`, which already
 publishes the two topics below.  It solves the marker in the camera's optical
 frame and, with `landing_tf_node` running, republishes it in `map` — the frame
 MAVROS local position is in — so the offset is a plain subtraction.  If the pose
-still arrives in the camera frame (no tf chain), it is converted here on the
-gimbal's nadir hold alone, exactly as `mpc_landing_node` does.
+still arrives in the camera frame (no tf chain), it is converted here against the
+gimbal's MEASURED angle, exactly as `mpc_landing_node` does — which is what makes
+a sighting from a swept look a usable position fix.
 
 The MAVROS discipline is lifted verbatim from `naive_flight_node`: BEST_EFFORT
 sensor QoS, stream→mode→arm order, keeping the stream alive through the gate,
@@ -50,8 +95,12 @@ Subscribes
     /mavros/gpsstatus/gps1/raw             mavros_msgs/GPSRAW
     /perception/down/marker_pose           geometry_msgs/PoseStamped
     /perception/down/aruco_detected        std_msgs/Bool
+    /trailer/target_local                  geometry_msgs/PointStamped
+                                           (only with cruise_to_trailer)
+    /siyi_gimbal_node/attitude             geometry_msgs/Vector3Stamped
 Publishes
     /mavros/setpoint_raw/local             mavros_msgs/PositionTarget
+    /siyi_gimbal_node/aim                  geometry_msgs/Vector3Stamped
     ~/state                                std_msgs/String
 Services (offered)
     ~/approve, ~/abort                     std_srvs/Trigger
@@ -73,7 +122,7 @@ from enum import Enum
 
 import numpy as np
 import rclpy
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PointStamped, PoseStamped, Vector3Stamped
 from rclpy.node import Node
 from rclpy.qos import (DurabilityPolicy, HistoryPolicy, QoSProfile,
                        ReliabilityPolicy)
@@ -86,6 +135,11 @@ from mavros_msgs.msg import (EstimatorStatus, ExtendedState, GPSRAW,
 from mavros_msgs.srv import CommandBool, CommandTOL, SetMode
 
 from .estimator import DEFAULT_SPEED_ACC_MAX, EstimatorHealth
+# The geometry and the sweep both live in `marker`, which is what every mission
+# node in this package imports — a second copy of either is a second thing to be
+# wrong in only one place.
+from .marker import (GimbalSweep, VelocityEstimate, enu_yaw_from_quaternion,
+                     gimbal_aim_for, marker_enu_from_gimbal_camera)
 
 
 class Phase(str, Enum):
@@ -93,33 +147,24 @@ class Phase(str, Enum):
     READY_TO_ARM = 'READY_TO_ARM'  # checks passed, waiting for the one approval
     ARMING = 'ARMING'              # stream -> OFFBOARD -> arm
     TAKEOFF = 'TAKEOFF'            # climbing to takeoff_alt
-    SEARCH = 'SEARCH'              # holding at altitude, looking for the marker
+    CRUISE = 'CRUISE'              # flying to the trailer's GNSS coordinate
+    SEARCH = 'SEARCH'              # holding over it, looking for the marker
     DESCEND = 'DESCEND'            # centring on the marker and coming down
     LAND = 'LAND'                  # handed to the autopilot's LAND, disarming
     DONE = 'DONE'
 
 
-def enu_yaw_from_quaternion(x: float, y: float, z: float, w: float) -> float:
-    """Heading of an ENU body frame, radians CCW from East."""
-    return math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+def _capped(v: np.ndarray, limit: float) -> np.ndarray:
+    """Scale a 2-vector down to `limit` if it is longer, keeping its direction.
 
-
-def marker_enu_from_nadir_camera(tvec, vehicle_enu, yaw_rad: float) -> np.ndarray:
-    """Marker in the camera's optical frame -> marker in map ENU.
-
-    Assumes the gimbal is holding nadir, so the only unknown is where the
-    vehicle is pointing.  Optical is X right, Y down the image, Z along the lens;
-    at nadir the top of the image is the nose, which makes forward -y, left -x,
-    and the marker -z below.  Identical to `mpc_landing_node`'s conversion.
+    Capping the VECTOR rather than each axis: clipping x and y separately turns a
+    diagonal command into a different heading, which is how a vehicle ends up
+    flying past the corner of a pad it was aimed at.
     """
-    x, y, z = float(tvec[0]), float(tvec[1]), float(tvec[2])
-    fwd, left, up = -y, -x, -z
-    c, s = math.cos(yaw_rad), math.sin(yaw_rad)
-    return np.array([
-        float(vehicle_enu[0]) + c * fwd - s * left,
-        float(vehicle_enu[1]) + s * fwd + c * left,
-        float(vehicle_enu[2]) + up,
-    ])
+    n = float(np.linalg.norm(v))
+    if n <= limit or n == 0.0:
+        return v
+    return v * (limit / n)
 
 
 def _sensor_qos() -> QoSProfile:
@@ -145,6 +190,21 @@ class ArucoLandingNode(Node):
         self.detected = False
         self._detector_seen = False
         self._acq_streak = 0
+        # How fast the marker itself is moving — the trailer's deck does not
+        # hold still, and a P controller alone cannot centre on something that
+        # keeps going (see VelocityEstimate).
+        self.marker_vel = VelocityEstimate(tau_s=self.marker_vel_tau,
+                                           max_speed=self.marker_vel_max,
+                                           gap_s=self.marker_timeout)
+        # The trailer's coordinate, already converted into this vehicle's local
+        # ENU frame by trailer_target_node — never a lat/lon here.
+        self.target: np.ndarray | None = None
+        self.target_t = 0.0
+        self._target_seen = False
+        # The horizontal velocity actually being commanded, so every change to it
+        # can be rate-limited (`_slew`). Guidance asks for a velocity; this is
+        # what the vehicle is given.
+        self._v_cmd = np.zeros(2)
         self._t_phase = self._now()
         self._t_prestream: float | None = None
         self._t_calls: dict[str, float] = {}
@@ -183,10 +243,20 @@ class ArucoLandingNode(Node):
                                  self._on_marker, _sensor_qos())
         self.create_subscription(Bool, self.marker_detected_topic,
                                  self._on_detected, _sensor_qos())
+        # Subscribed even when cruise is off, so `ros2 topic echo` is not the
+        # only way to see whether the trailer link is alive before a flight.
+        self.create_subscription(PointStamped, self.target_topic,
+                                 self._on_target, _sensor_qos())
+        # Where the camera actually IS. Fixes are dropped while this disagrees
+        # with what was commanded (`GimbalSweep.settled`).
+        self.create_subscription(Vector3Stamped, self.gimbal_attitude_topic,
+                                 self._on_gimbal, 10)
 
         self.sp_pub = self.create_publisher(PositionTarget,
                                             '/mavros/setpoint_raw/local', 10)
         self.state_pub = self.create_publisher(String, '~/state', 10)
+        self.aim_pub = self.create_publisher(Vector3Stamped,
+                                             self.gimbal_aim_topic, 10)
 
         self.mode_cli = self.create_client(SetMode, '/mavros/set_mode')
         self.arm_cli = self.create_client(CommandBool, '/mavros/cmd/arming')
@@ -201,9 +271,12 @@ class ArucoLandingNode(Node):
             threading.Thread(target=self._stdin_loop, daemon=True).start()
 
         self.create_timer(1.0 / self.rate_hz, self._tick)
+        route = (f'cruise to {self.target_topic} (max {self.cruise_max_dist:.0f} m) '
+                 f'| ' if self.cruise else '')
         self.get_logger().info(
             f'aruco_landing_node: PX4 mode={self.mode_name} | '
-            f'takeoff {self.takeoff_alt:.1f} m | descend on '
+            f'takeoff/transit {self.takeoff_alt:.1f} m, search '
+            f'{self.search_alt:.1f} m | {route}descend on '
             f'{self.marker_pose_topic}')
         if self.skip_preflight:
             self.get_logger().warn(
@@ -222,20 +295,110 @@ class ArucoLandingNode(Node):
         """THE one place any of these numbers may be set."""
         p = self.declare_parameter
         # --- mission geometry
-        p('takeoff_alt_m', 5.0)             # search altitude above takeoff point
+        p('takeoff_alt_m', 5.0)             # takeoff AND transit altitude
+        # SEARCH settles here instead, and the difference is not cosmetic. The
+        # camera trades footprint against resolution, and BOTH ends bite:
+        #
+        #   h     marker (0.18 m) on a 719 px focal   footprint radius
+        #   3 m   43 px  — detects reliably           1.5 m
+        #   5 m   26 px  — marginal                   2.5 m
+        #   8 m   16 px  — 2.7 px per 4x4 cell: no    4.0 m
+        #
+        # So climbing to see more ground is self-defeating with this marker: at
+        # 8 m the marker is in frame and undetectable. 3 m is where a 0.18 m
+        # marker is solid. The rule for this camera is `radius ~= 9 x marker
+        # edge`, so a bigger marker is what buys a wider search, not altitude.
+        #
+        # Transit stays at `takeoff_alt_m`: 3 m is a search height, not a height
+        # to cross a field at. SEARCH descends to this on arrival, and the marker
+        # usually resolves on the way down rather than at the bottom.
+        p('search_alt_m', 3.0)
         p('alt_tolerance_m', 0.3)           # counts as "reached" within this
         p('climb_speed_m_s', 0.7)           # TAKEOFF climb cap
+        # Descending into SEARCH is done blind, over a trailer, so it is capped
+        # well below the climb rate rather than sharing it.
+        p('search_descend_speed_m_s', 0.4)
         # --- marker input (aruco_pose_node's default output topics)
         p('map_frame', 'map')
         p('marker_pose_topic', '/perception/down/marker_pose')
         p('marker_detected_topic', '/perception/down/aruco_detected')
         p('marker_timeout_s', 1.5)          # older than this is not a fix
         p('marker_lost_abort_s', 5.0)       # gone this long mid-descent -> LAND
-        p('search_timeout_s', 60.0)         # no marker in SEARCH -> LAND
+        # No marker in SEARCH -> LAND. RAISED from 60 s for the sweep: what
+        # matters is how many COMPLETE sweeps fit before giving up, and one is
+        # not enough — the marker can sit on the boundary between two looks and
+        # be missed by a lap that was otherwise fine. An upper bound on
+        # hovering, not a plan: the mission commits the moment it sees the marker.
+        p('search_timeout_s', 90.0)
         # SEARCH -> DESCEND is automatic and irreversible, so require the marker
         # to be seen this many CONSECUTIVE ticks before committing — one frame is
         # enough for a false positive to start a descent.
         p('marker_acquire_frames', 5)
+        # --- cruise to the trailer's coordinate (off by default: without a
+        # trailer link this node is exactly the marker-landing mission it was)
+        p('cruise_to_trailer', False)
+        p('trailer_target_topic', '/trailer/target_local')
+        p('trailer_target_timeout_s', 3.0)   # older than this is not a target
+        # Gentle by design: this is a real airframe flying at a coordinate it
+        # cannot see. kp * v_max puts full speed at ~4 m of error, and the
+        # acceleration limit means no setpoint step the vehicle has to snatch at.
+        p('cruise_kp', 0.35)                 # horizontal P gain [1/s]
+        p('cruise_v_max_m_s', 1.5)
+        p('cruise_accel_m_s2', 0.5)          # slew limit on the commanded velocity
+        # Within this -> start searching. Tight on purpose: the search footprint
+        # at `search_alt_m` is only ~1.5 m in its short axis with the current
+        # marker, so arriving loosely is arriving with the marker out of frame.
+        p('cruise_arrive_m', 1.0)
+        # The leash. This node REFUSES to fly farther than this, at the gate and
+        # in the air — a bad fix must not become a long flight. It is the
+        # mission's own limit, independent of trailer_target_node's sanity check.
+        p('cruise_max_distance_m', 150.0)
+        p('cruise_timeout_s', 180.0)         # never arrived -> land where we are
+        # How often the transit prints drone / trailer / range. A long cruise is
+        # slow and uneventful, so 3 s is enough to watch it close without
+        # burying the phase transitions in a scrolling wall.
+        p('cruise_log_period_s', 3.0)
+        # Target gone this long mid-cruise: stop chasing a stale coordinate and
+        # start looking with the camera from wherever we got to.
+        p('trailer_lost_search_s', 10.0)
+        # --- gimbal search
+        # The camera is on a 3-axis gimbal, so SEARCH points the CAMERA around
+        # instead of flying the vehicle around: a nadir-only look sees one ~2.5 m
+        # circle, and if the marker is not in it the mission stares at the wrong
+        # grass until it times out. Sweeping costs no vehicle motion at all,
+        # which low over a trailer is the whole argument. Angles, dwell rules and
+        # the reasons for each number live in `marker.GimbalSweep`.
+        p('gimbal_aim_topic', '/siyi_gimbal_node/aim')
+        p('gimbal_attitude_topic', '/siyi_gimbal_node/attitude')
+        p('gimbal_scan', True)
+        # ONLY THE RINGS THIS MARKER CAN ACTUALLY BE READ FROM. A look off nadir
+        # pays twice — the range becomes the slant range (h/sin) and the marker
+        # is foreshortened (x sin) — so the marker's apparent size falls as
+        # sin^2 of the elevation: `fx * edge * sin^2(elev) / h` pixels.
+        #
+        #   h      nadir   -60 ring   -40 ring        (0.18 m marker, fx 719,
+        #   5 m    25.9*    19.4       10.7            floor ~25 px to decode)
+        #   3 m    43.1*    32.3*      17.8
+        #
+        # mpc_landing_node's third ring at -40 deg is therefore SEVEN of its
+        # fifteen looks spent staring at ground this marker cannot be read from,
+        # at any altitude the mission flies. Dropping it halves the sweep, which
+        # buys complete sweeps inside `search_timeout_s` instead of coverage
+        # that was never real. Put it back when the marker gets bigger: at
+        # 0.45 m the -40 ring clears the floor at 5 m and reaches 6 m out.
+        p('scan_pitch_deg', [-90.0, -60.0])
+        p('scan_yaw_step_deg', 45.0)
+        p('scan_yaw_limit_deg', 135.0)
+        p('scan_view_s', 1.0)
+        p('scan_look_max_s', 4.0)
+        p('scan_settle_s', 0.5)
+        p('gimbal_settled_deg', 6.0)
+        p('gimbal_attitude_timeout_s', 2.0)
+        # Keep the camera on the marker while flying to it. Without this a
+        # marker found 40 deg off to one side leaves the frame the moment the
+        # gimbal returns to nadir, and the descent aborts on a lost marker
+        # before the vehicle has covered any ground.
+        p('gimbal_track', True)
         # --- descent control (plain proportional centre-and-descend)
         p('center_kp', 0.8)                 # horizontal P gain [1/s]
         p('center_v_max_m_s', 0.6)          # horizontal speed cap while centring
@@ -244,6 +407,16 @@ class ArucoLandingNode(Node):
         # to the side of the pad.
         p('descend_radius_m', 0.30)
         p('descend_speed_m_s', 0.30)        # capped sink rate when centred
+        # Feed the MARKER's own velocity forward while centring, so a deck that
+        # is still rolling does not sit permanently at the P controller's
+        # steady-state lag (v/kp) and block the descent. Set the max to 0.0 to
+        # turn it off and fly the plain proportional descent.
+        p('marker_vel_tau_s', 0.5)          # low-pass on a differenced position
+        p('marker_vel_max_m_s', 1.0)
+        # Kept at 1 s, unlike the cruise: the descent is the part where the
+        # numbers change fast and where a log has to be dense enough to explain
+        # a landing afterwards.
+        p('descend_log_period_s', 1.0)
         # Hand to the autopilot's LAND at this height above the marker, once
         # centred — below here the camera loses the marker anyway (it leaves the
         # frame), so the autopilot's own land detector finishes the touchdown.
@@ -268,8 +441,10 @@ class ArucoLandingNode(Node):
     def _read_params(self) -> None:
         g = self.get_parameter
         self.takeoff_alt = float(g('takeoff_alt_m').value)
+        self.search_alt = float(g('search_alt_m').value)
         self.alt_tol = float(g('alt_tolerance_m').value)
         self.climb_speed = float(g('climb_speed_m_s').value)
+        self.search_descend = float(g('search_descend_speed_m_s').value)
         self.map_frame = str(g('map_frame').value)
         self.marker_pose_topic = str(g('marker_pose_topic').value)
         self.marker_detected_topic = str(g('marker_detected_topic').value)
@@ -277,10 +452,37 @@ class ArucoLandingNode(Node):
         self.marker_lost_abort = float(g('marker_lost_abort_s').value)
         self.search_timeout = float(g('search_timeout_s').value)
         self.acquire_frames = int(g('marker_acquire_frames').value)
+        self.cruise = bool(g('cruise_to_trailer').value)
+        self.target_topic = str(g('trailer_target_topic').value)
+        self.target_timeout = float(g('trailer_target_timeout_s').value)
+        self.cruise_kp = float(g('cruise_kp').value)
+        self.cruise_v_max = float(g('cruise_v_max_m_s').value)
+        self.cruise_accel = float(g('cruise_accel_m_s2').value)
+        self.cruise_arrive = float(g('cruise_arrive_m').value)
+        self.cruise_max_dist = float(g('cruise_max_distance_m').value)
+        self.cruise_timeout = float(g('cruise_timeout_s').value)
+        self.cruise_log_period = float(g('cruise_log_period_s').value)
+        self.trailer_lost_search = float(g('trailer_lost_search_s').value)
+        self.gimbal_aim_topic = str(g('gimbal_aim_topic').value)
+        self.gimbal_attitude_topic = str(g('gimbal_attitude_topic').value)
+        self.gimbal_track = bool(g('gimbal_track').value)
+        self.sweep = GimbalSweep(
+            pitch_deg=tuple(float(v) for v in g('scan_pitch_deg').value),
+            yaw_step_deg=float(g('scan_yaw_step_deg').value),
+            yaw_limit_deg=float(g('scan_yaw_limit_deg').value),
+            view_s=float(g('scan_view_s').value),
+            look_max_s=float(g('scan_look_max_s').value),
+            settle_s=float(g('scan_settle_s').value),
+            settled_deg=float(g('gimbal_settled_deg').value),
+            attitude_timeout_s=float(g('gimbal_attitude_timeout_s').value),
+            enabled=bool(g('gimbal_scan').value))
         self.center_kp = float(g('center_kp').value)
         self.center_v_max = float(g('center_v_max_m_s').value)
         self.descend_radius = float(g('descend_radius_m').value)
         self.descend_speed = float(g('descend_speed_m_s').value)
+        self.marker_vel_tau = float(g('marker_vel_tau_s').value)
+        self.marker_vel_max = float(g('marker_vel_max_m_s').value)
+        self.descend_log_period = float(g('descend_log_period_s').value)
         self.touch_alt = float(g('touchdown_alt_m').value)
         self.touch_xy = float(g('touchdown_xy_m').value)
         self.min_batt = float(g('min_battery_v').value)
@@ -320,6 +522,11 @@ class ArucoLandingNode(Node):
                         satellites=m.satellites_visible,
                         h_acc_m=m.h_acc * 1e-3, vel_acc_m_s=m.vel_acc * 1e-3)
 
+    def _on_gimbal(self, m: Vector3Stamped) -> None:
+        """siyi_gimbal_node publishes (roll, pitch, yaw) in degrees as x, y, z."""
+        self.sweep.on_attitude(self._now(), yaw_deg=float(m.vector.z),
+                               pitch_deg=float(m.vector.y))
+
     def _on_detected(self, m):
         self.detected = bool(m.data)
         self._detector_seen = True
@@ -329,19 +536,51 @@ class ArucoLandingNode(Node):
 
         Which one it is comes off the message header, not a parameter, so the
         two ends can never be configured to disagree.
+
+        THE CONVERSION USES THE GIMBAL'S MEASURED ANGLE, not nadir. Once the
+        camera sweeps, "assume it is pointing straight down" stops being a small
+        approximation and becomes a wrong answer: a marker seen 45 deg off to
+        one side at 5 m would be reported 5 m BELOW the vehicle instead of 5 m
+        beside it, and the mission would fly a descent onto empty ground.
+
+        A fix taken while the gimbal is still slewing is dropped rather than
+        placed, because off nadir an angle error is multiplied by the slant
+        range instead of the height.
         """
+        now = self._now()
+        if not self.sweep.settled(now):
+            return
         p = np.array([m.pose.position.x, m.pose.position.y, m.pose.position.z])
         if m.header.frame_id and m.header.frame_id != self.map_frame:
             if self.pose is None:
                 return
             q = self.pose.pose.orientation
-            p = marker_enu_from_nadir_camera(
+            aim_yaw, aim_pitch = self.sweep.angles(now)
+            p = marker_enu_from_gimbal_camera(
                 p,
                 (self.pose.pose.position.x, self.pose.pose.position.y,
                  self.pose.pose.position.z),
-                enu_yaw_from_quaternion(q.x, q.y, q.z, q.w))
+                enu_yaw_from_quaternion(q.x, q.y, q.z, q.w),
+                # SIYI counts yaw positive to the RIGHT; the geometry wants
+                # CCW/left positive, so it is negated exactly here and nowhere
+                # else.
+                gimbal_yaw_rad=math.radians(-aim_yaw),
+                gimbal_pitch_rad=math.radians(aim_pitch))
+        # Differenced BEFORE the new fix is stored, and on the same clock the
+        # freshness checks use, so a dropout shows up as a gap here too.
+        self.marker_vel.update(p, now)
         self.marker = p
-        self.marker_t = self._now()
+        self.marker_t = now
+
+    def _on_target(self, m: PointStamped):
+        """The trailer, already in local ENU — trailer_target_node did the geodesy.
+
+        It publishes ONLY while the target is fully valid, so arrival IS the
+        validity signal and there is no flag to interpret here.
+        """
+        self.target = np.array([m.point.x, m.point.y, m.point.z])
+        self.target_t = self._now()
+        self._target_seen = True
 
     # ------------------------------------------------------------ terminal UI
     def _stdin_loop(self) -> None:
@@ -366,8 +605,13 @@ class ArucoLandingNode(Node):
         if self._prompted == Phase.READY_TO_ARM.value:
             return
         self._prompted = Phase.READY_TO_ARM.value
+        # The distance is in the prompt because it is the one number the operator
+        # can check against the field in front of them before saying yes.
+        leg = (f', fly {self._target_range():.0f} m to the trailer'
+               if self.cruise and self._fresh_target() else '')
         print(f'\n{"=" * 72}\n  preflight PASSED — approve to ARM, take off to '
-              f'{self.takeoff_alt:.1f} m and land on the marker\n{"=" * 72}\n'
+              f'{self.takeoff_alt:.1f} m{leg} and land on the marker'
+              f'\n{"=" * 72}\n'
               f'  proceed?  [ENTER = yes / n = abort]  ', end='', flush=True)
 
     # ---------------------------------------------------------------- services
@@ -388,7 +632,17 @@ class ArucoLandingNode(Node):
     def _on_approve(self, _req, res):
         ok, msg = self._approve()
         res.success, res.message = ok, msg
-        (self.get_logger().info if ok else self.get_logger().warn)(msg)
+        # SEPARATE CALL SITES, deliberately. `(info if ok else warn)(msg)`
+        # reads better and crashes the node: rclpy identifies a logger call by
+        # its file and LINE, and raises "Logger severity cannot be changed
+        # between calls" the first time one line logs at two severities. An
+        # operator who approves once too early (warn) and again at the gate
+        # (info) therefore kills the mission node — in the air, which stops the
+        # setpoint stream and drops PX4 out of OFFBOARD.
+        if ok:
+            self.get_logger().info(msg)
+        else:
+            self.get_logger().warn(msg)
         return res
 
     def _on_abort(self, _req, res):
@@ -423,6 +677,19 @@ class ArucoLandingNode(Node):
         if self._call(client, request, name):
             self._t_calls[name] = self._now()
 
+    def _due(self, key: str, period: float) -> bool:
+        """True at most once per `period` s, per key — for periodic logging.
+
+        Replaces a tick-counter modulo, which only lands on the intended period
+        when the timer fires on exact boundaries and divides cleanly by
+        `rate_hz`. This is on the clock, so a 3 s log is 3 s.
+        """
+        now = self._now()
+        if now - self._t_calls.get(key, float('-inf')) < period:
+            return False
+        self._t_calls[key] = now
+        return True
+
     def _alt(self) -> float:
         return float(self.pose.pose.position.z) if self.pose else float('nan')
 
@@ -446,9 +713,28 @@ class ArucoLandingNode(Node):
         base = self._z_ground if self._z_ground is not None else 0.0
         return base + self.takeoff_alt
 
+    def _search_target(self) -> float:
+        """`search_alt` above the same ground datum — see `_takeoff_target`."""
+        base = self._z_ground if self._z_ground is not None else 0.0
+        return base + self.search_alt
+
     def _fresh_marker(self) -> bool:
         return (self.marker is not None
                 and (self._now() - self.marker_t) < self.marker_timeout)
+
+    def _fresh_target(self) -> bool:
+        return (self.target is not None
+                and (self._now() - self.target_t) < self.target_timeout)
+
+    def _range_to(self, point) -> float:
+        """Horizontal distance to a point in the local frame [m], NaN if unknown."""
+        if point is None or self.pose is None:
+            return float('nan')
+        return float(math.hypot(float(point[0]) - self.pose.pose.position.x,
+                                float(point[1]) - self.pose.pose.position.y))
+
+    def _target_range(self) -> float:
+        return self._range_to(self.target)
 
     def _on_ground(self) -> bool:
         """True once the vehicle has actually settled — never a geometric guess."""
@@ -493,6 +779,106 @@ class ArucoLandingNode(Node):
             m.yaw = float(yaw)
         self.sp_pub.publish(m)
 
+    def _publish_aim(self, yaw_deg: float, pitch_deg: float) -> None:
+        """Point the gimbal. siyi_gimbal_node reads pitch in y, yaw in z."""
+        m = Vector3Stamped()
+        m.header.stamp = self.get_clock().now().to_msg()
+        m.vector.y, m.vector.z = float(pitch_deg), float(yaw_deg)
+        self.aim_pub.publish(m)
+
+    def _release_aim(self) -> None:
+        """Hand the gimbal back to its own nadir hold. NaN is the release."""
+        if self.sweep.aim_cmd is None:
+            return
+        self.sweep.aim_cmd = None
+        self.sweep.stop()
+        m = Vector3Stamped()
+        m.header.stamp = self.get_clock().now().to_msg()
+        m.vector.y = m.vector.z = float('nan')
+        self.aim_pub.publish(m)
+
+    def _track_marker(self) -> None:
+        """Re-aim at the marker WHEN IT HAS BEEN LOST, not continuously.
+
+        Pointing the camera at a target on the ground is not free, and the bill
+        is paid in the one currency this marker has none of — pixels. Off nadir
+        the distance to the marker becomes the SLANT range instead of the height,
+        and the marker is foreshortened by the elevation on top of that. Measured
+        on the case that failed: marker acquired 3.2 m to the side at 4.9 m, so
+        26 px straight down; aiming at it made the range 5.9 m and the view
+        oblique, which is ~19 px — under the detector's floor. The camera moved
+        to look at the marker and that is precisely how it lost it.
+
+        Nadir is the best look available whenever the marker is in frame at all:
+        shortest range, no foreshortening, no slew. So the rule is DO NOT MOVE A
+        CAMERA THAT IS WORKING. The aim is only re-pointed once the marker has
+        actually gone, which is what a stale fix is good for — and as the vehicle
+        arrives overhead `gimbal_aim_for` walks the recovery aim back to nadir on
+        its own, so there is no handover at the end either.
+        """
+        if not self.gimbal_track or self.pose is None or self.marker is None:
+            return
+        if self._fresh_marker() and self.detected:
+            return
+        q = self.pose.pose.orientation
+        yaw, pitch = gimbal_aim_for(
+            (self.pose.pose.position.x, self.pose.pose.position.y,
+             self.pose.pose.position.z),
+            enu_yaw_from_quaternion(q.x, q.y, q.z, q.w),
+            self.marker)
+        self.sweep.aim(yaw, pitch, self._now())
+        self._publish_aim(yaw, pitch)
+
+    def _slew(self, v_want: np.ndarray) -> np.ndarray:
+        """Rate-limit the horizontal velocity command, and remember it.
+
+        A P controller on a 40 m error asks for full cruise speed in the very
+        first tick, and a velocity setpoint that steps is a lurch: the vehicle
+        pitches hard to chase it, which on a real airframe with a gimbal hanging
+        underneath is both unpleasant and unnecessary. Limiting the CHANGE per
+        tick turns every phase transition — start of cruise, arrival, marker
+        acquired, target lost — into a ramp instead of a snatch, without touching
+        the gains that decide where it ends up.
+        """
+        dv = np.asarray(v_want, dtype=float) - self._v_cmd
+        step = self.cruise_accel / self.rate_hz
+        n = float(np.linalg.norm(dv))
+        if n > step:
+            dv *= step / n
+        self._v_cmd = self._v_cmd + dv
+        return self._v_cmd
+
+    def _hold(self, vz: float = 0.0) -> None:
+        """Stop horizontally — by ramping down, not by dropping the command."""
+        v = self._slew(np.zeros(2))
+        self._send(float(v[0]), float(v[1]), vz)
+
+    def _fly_to(self, target_xy, *, kp: float, v_max: float, vz: float = 0.0,
+                feed_forward=None) -> float:
+        """Drive at a point in the local frame. Returns the distance to it [m].
+
+        Velocity, not position, for the reason given in `_send`: this regulates
+        against a target that moves, and a position setpoint would re-inject the
+        estimator's drift on top of it.
+
+        `feed_forward` is the TARGET's own velocity, added on top of the
+        correction rather than inside it: the P term keeps its full `v_max` of
+        authority to close the error, and the feed-forward supplies the speed
+        needed merely to keep up. Capping the sum instead would let a fast target
+        eat the whole budget and leave nothing to centre with.
+        """
+        err = np.array([float(target_xy[0]) - float(self.pose.pose.position.x),
+                        float(target_xy[1]) - float(self.pose.pose.position.y)])
+        distance = float(np.linalg.norm(err))
+        v = _capped(kp * err, v_max)
+        if feed_forward is not None:
+            ff = _capped(np.asarray(feed_forward, dtype=float)[:2],
+                         self.marker_vel_max)
+            v = _capped(v + ff, v_max + self.marker_vel_max)
+        v = self._slew(v)
+        self._send(float(v[0]), float(v[1]), vz)
+        return distance
+
     # ------------------------------------------------------------- preflight
     def _preflight_ok(self) -> bool:
         """Minimal: link up, EKF aided, disarmed, (opt) battery, detector alive.
@@ -534,6 +920,13 @@ class ArucoLandingNode(Node):
         if not self._detector_seen:
             overridable.append(
                 f'marker detector silent — nothing on {self.marker_detected_topic}')
+        # Cruising needs the trailer's coordinate BEFORE the arm, not after it:
+        # taking off to go somewhere and only then asking where, is a hover over
+        # the pad burning battery at best. The check is for a LIVE target, which
+        # also proves the whole chain behind it — radio, trailer fix, vehicle fix,
+        # local pose — since trailer_target_node publishes nothing without all four.
+        if self.cruise:
+            overridable.extend(self._cruise_preflight())
         (waived if self.skip_preflight else reasons).extend(overridable)
 
         for r in waived:
@@ -552,11 +945,43 @@ class ArucoLandingNode(Node):
         if warn and warn not in self._warned:
             self._warned.add(warn)
             self.get_logger().warn(f'preflight WARNING: {warn}')
+        # A silent gimbal never BLOCKS — the sweep still commands angles and
+        # places fixes at the commanded ones, and grounding a vehicle over a
+        # topic that may not be wired is the worse failure. But it is worth
+        # saying once, because unverified angles off nadir are the one input
+        # whose error gets multiplied by the slant range.
+        if self.sweep.enabled and not self.sweep.attitude_fresh(self._now()):
+            gimbal_warn = (f'no gimbal attitude on {self.gimbal_attitude_topic} '
+                           f'— the sweep will run on COMMANDED angles, and a fix '
+                           f'taken before the camera arrives cannot be caught')
+            if gimbal_warn not in self._warned:
+                self._warned.add(gimbal_warn)
+                self.get_logger().warn(f'preflight WARNING: {gimbal_warn}')
         if not self._checks_logged:
             self._checks_logged = True
             self.get_logger().info(
                 f'preflight PASSED — {self.ekf.summary(self._now())}')
+            if self.cruise and self._fresh_target():
+                self.get_logger().info(
+                    f'trailer is {self._target_range():.1f} m away — CRUISE will '
+                    f'fly there at {self.takeoff_alt:.1f} m before searching')
         return True
+
+    def _cruise_preflight(self) -> list[str]:
+        """What must be true about the trailer link before an arm is offered."""
+        if not self._target_seen:
+            return [f'no trailer target — nothing on {self.target_topic} '
+                    f'(is trailer_gps_node + trailer_target_node running? its own '
+                    f'log says which input is missing)']
+        if not self._fresh_target():
+            return [f'trailer target is stale (>{self.target_timeout:.1f} s old) '
+                    f'— the link or the trailer fix has dropped']
+        distance = self._target_range()
+        if math.isfinite(distance) and distance > self.cruise_max_dist:
+            return [f'trailer is {distance:.0f} m away, past this mission\'s '
+                    f'{self.cruise_max_dist:.0f} m limit — move closer, or raise '
+                    f'cruise_max_distance_m deliberately']
+        return []
 
     # ------------------------------------------------------------------- loop
     def _tick(self) -> None:
@@ -568,7 +993,7 @@ class ArucoLandingNode(Node):
         # silence. Phases that fly a real setpoint overwrite this in the same
         # tick; publishing twice is harmless, a gap is not.
         if self.phase in (Phase.READY_TO_ARM, Phase.ARMING, Phase.TAKEOFF,
-                          Phase.SEARCH, Phase.DESCEND):
+                          Phase.CRUISE, Phase.SEARCH, Phase.DESCEND):
             self._send(0.0, 0.0, 0.0)
 
         if self.phase is Phase.PRECHECK:
@@ -622,15 +1047,42 @@ class ArucoLandingNode(Node):
         if self.phase is Phase.TAKEOFF:
             err = self._takeoff_target() - self._alt()
             if abs(err) <= self.alt_tol:
-                self._send(0.0, 0.0, 0.0)
-                self._to(Phase.SEARCH)
+                self._hold()
+                self._to(Phase.CRUISE if self.cruise else Phase.SEARCH)
                 return
             vz = float(np.clip(err, -self.climb_speed, self.climb_speed))
-            self._send(0.0, 0.0, vz)
+            self._hold(vz)
+            return
+
+        if self.phase is Phase.CRUISE:
+            self._cruise_to_trailer()
             return
 
         if self.phase is Phase.SEARCH:
-            self._send(0.0, 0.0, 0.0)
+            # Point the camera. The sweep restarts on every entry to SEARCH, so
+            # the first look is always straight down — see GimbalSweep.restart.
+            if not self.sweep.scanning:
+                self.sweep.restart(self._now())
+                self.get_logger().info(
+                    f'sweeping the gimbal: {len(self.sweep.plan)} looks, '
+                    f'~{self.sweep.duration_s():.0f} s per sweep '
+                    f'(search_timeout_s {self.search_timeout:.0f})')
+            yaw, pitch = self.sweep.look(self._now())
+            self._publish_aim(yaw, pitch)
+            # Come down to the altitude the marker is actually detectable at
+            # (see `search_alt_m`). The descent is part of searching, not a
+            # step before it: the marker grows on the way down and is normally
+            # acquired mid-descent rather than at the bottom.
+            vz = float(np.clip(self._search_target() - self._alt(),
+                               -self.search_descend, self.search_descend))
+            # Station-keep over the trailer coordinate while looking, so a
+            # trailer that rolls on stays under the camera; without a target
+            # (cruise off, or link lost) this is the plain hover it always was.
+            if self.cruise and self._fresh_target():
+                self._fly_to(self.target, kp=self.cruise_kp,
+                             v_max=self.center_v_max, vz=vz)
+            else:
+                self._hold(vz)
             # Commit only after several CONSECUTIVE fresh detections: a live fix
             # AND a currently-asserted detected flag both have to hold, so a lone
             # spurious hit trips one tick and the streak resets.
@@ -639,22 +1091,33 @@ class ArucoLandingNode(Node):
             else:
                 self._acq_streak = 0
             if self._acq_streak >= self.acquire_frames:
+                # Stop sweeping, and LEAVE THE CAMERA WHERE IT IS: the look that
+                # found the marker is by definition a look that can see it.
+                # `_track_marker` only re-points once that stops being true.
+                self.sweep.stop()
                 self._to(Phase.DESCEND)
                 self.get_logger().info(
-                    f'marker acquired ({self._acq_streak} consecutive fixes) — '
-                    f'descending')
+                    f'marker acquired ({self._acq_streak} consecutive fixes) at '
+                    f'h={self._alt() - (self._z_ground or 0.0):.1f} m — descending')
                 return
             if self._now() - self._t_phase > self.search_timeout:
                 self.get_logger().warn(
-                    f'no marker within {self.search_timeout:.0f} s — landing here')
+                    f'no marker within {self.search_timeout:.0f} s at '
+                    f'h={self._alt() - (self._z_ground or 0.0):.1f} m — landing '
+                    f'here. A marker outside the camera footprint is the usual '
+                    f'cause; see search_alt_m')
                 self._to(Phase.LAND)
             return
 
         if self.phase is Phase.DESCEND:
+            self._track_marker()
             self._descend()
             return
 
         if self.phase is Phase.LAND:
+            # The camera has no job left; give the gimbal back to its own hold
+            # rather than leaving it wherever the last aim pointed it.
+            self._release_aim()
             # Hand to the autopilot's own landing, then disarm ONLY once it has
             # actually settled (extended_state), so motors are never cut in the
             # air. Both are throttled: this runs every tick.
@@ -667,6 +1130,83 @@ class ArucoLandingNode(Node):
                 self._to(Phase.DONE)
                 self.get_logger().info('disarmed — landing complete')
             return
+
+    def _cruise_to_trailer(self) -> None:
+        """Fly to the trailer's coordinate at takeoff altitude, then start looking.
+
+        Four ways out, and only one of them is arrival — the rest exist because
+        the coordinate comes over a radio from a vehicle that is driving away:
+
+            arrived         within `cruise_arrive_m` -> SEARCH, camera takes over
+            target lost     stop first, then SEARCH from wherever we got to: a
+                            stale coordinate is not worth chasing, and the marker
+                            may well already be in frame
+            too far         a fix that jumps past the leash is a bad fix; stop
+                            and say so, rather than fly at it
+            timeout         never arrived (headwind, a trailer driving faster
+                            than cruise speed) -> hand to the autopilot's LAND
+
+        No marker logic here on purpose. Acquiring is SEARCH's job, and having
+        one place decide it means the descent can never be started by a detection
+        this phase counted differently.
+        """
+        if self.pose is None:
+            return
+        elapsed = self._now() - self._t_phase
+
+        if not self._fresh_target():
+            gone = (self._now() - self.target_t) if self.target is not None \
+                else elapsed
+            if gone > self.trailer_lost_search:
+                self.get_logger().warn(
+                    f'trailer target lost for {gone:.1f} s during cruise — '
+                    f'searching for the marker from here')
+                self._to(Phase.SEARCH)
+            else:
+                self._hold()      # brief dropout: stop, wait for the coordinate
+            return
+
+        if elapsed > self.cruise_timeout:
+            self.get_logger().warn(
+                f'still {self._target_range():.1f} m from the trailer after '
+                f'{self.cruise_timeout:.0f} s — landing here')
+            self._to(Phase.LAND)
+            return
+
+        distance = self._target_range()
+        if distance > self.cruise_max_dist:
+            self.get_logger().error(
+                f'trailer target jumped to {distance:.0f} m, past the '
+                f'{self.cruise_max_dist:.0f} m leash — HOLDING, not chasing it',
+                throttle_duration_sec=5.0)
+            self._hold()
+            return
+
+        if distance <= self.cruise_arrive:
+            self._hold()
+            self.get_logger().info(
+                f'over the trailer coordinate ({distance:.1f} m) — searching '
+                f'for the marker')
+            self._to(Phase.SEARCH)
+            return
+
+        # Hold the cruise altitude on the way: the climb datum is the ground the
+        # vehicle armed on, so a drifting z estimate cannot slowly walk the
+        # cruise up or down over a long transit.
+        vz = float(np.clip(self._takeoff_target() - self._alt(),
+                           -self.climb_speed, self.climb_speed))
+        self._fly_to(self.target, kp=self.cruise_kp, v_max=self.cruise_v_max,
+                     vz=vz)
+
+        # Both positions in the SAME local ENU frame, so the two coordinates can
+        # be read against each other and the range is just their separation —
+        # nothing here is in lat/lon, and nothing needs converting to check it.
+        if self._due('cruise_log', self.cruise_log_period):
+            self.get_logger().info(
+                f'[CRUISE] drone ({self.pose.pose.position.x:8.2f},'
+                f'{self.pose.pose.position.y:8.2f}) | '
+                f'trailer ({self.target[0]:8.2f},{self.target[1]:8.2f}) | '
+                f'{distance:6.2f} m')
 
     def _descend(self) -> None:
         """Plain proportional centre-and-descend onto the marker.
@@ -687,24 +1227,15 @@ class ArucoLandingNode(Node):
                 self._to(Phase.LAND)
             else:
                 # brief dropout: hold position and wait for the fix to return
-                self._send(0.0, 0.0, 0.0)
+                self._hold()
             return
 
-        px = float(self.pose.pose.position.x)
-        py = float(self.pose.pose.position.y)
-        err = np.array([self.marker[0] - px, self.marker[1] - py])
-        radius = float(np.linalg.norm(err))
-
-        # Horizontal: proportional, capped.
-        v = self.center_kp * err
-        n = float(np.linalg.norm(v))
-        if n > self.center_v_max:
-            v *= self.center_v_max / n
-
         # Vertical: sink only while centred; otherwise hold and centre first.
+        radius = self._range_to(self.marker)
         centred = radius <= self.descend_radius
         vz = -self.descend_speed if centred else 0.0
-        self._send(float(v[0]), float(v[1]), vz)
+        self._fly_to(self.marker, kp=self.center_kp, v_max=self.center_v_max,
+                     vz=vz, feed_forward=self.marker_vel.v)
 
         # Handover: low over the marker AND centred -> autopilot LAND finishes it
         # (the marker leaves the frame from here anyway).
@@ -715,9 +1246,15 @@ class ArucoLandingNode(Node):
             self._to(Phase.LAND)
             return
 
-        if int((self._now() - self._t_phase) * self.rate_hz) % int(self.rate_hz) == 0:
+        # dx/dy are the marker RELATIVE TO THE VEHICLE, in local ENU — the error
+        # the controller is actually closing, signed, so which way it is off is
+        # readable in flight instead of only the magnitude.
+        if self._due('descend_log', self.descend_log_period):
+            dx = float(self.marker[0]) - float(self.pose.pose.position.x)
+            dy = float(self.marker[1]) - float(self.pose.pose.position.y)
             self.get_logger().info(
-                f'[DESCEND] h={h:.2f} m  xy={radius:.2f} m  '
+                f'[DESCEND] marker dx {dx:+6.2f} dy {dy:+6.2f} | '
+                f'xy {radius:5.2f} m | h {h:5.2f} m | '
                 f'{"sinking" if centred else "centring (holding alt)"}')
 
     # ------------------------------------------------------------------ output

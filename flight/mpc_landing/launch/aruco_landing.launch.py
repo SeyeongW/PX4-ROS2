@@ -18,6 +18,20 @@ Starts, in this order:
                        publishes nothing — see fixed_marker_landing.launch.py)
     aruco_landing_node the gated mission: takeoff -> search -> centre-and-descend
 
+GOING TO A TRAILER FIRST
+------------------------
+    ros2 launch mpc_landing aruco_landing.launch.py trailer:=true
+
+adds the two-node trailer link and turns the mission's CRUISE phase on, so it
+flies to the trailer's radioed coordinate before it starts looking:
+
+    trailer_gps_node    900 MHz MAVLink radio -> /trailer/fix
+    trailer_target_node /trailer/fix + the vehicle's own fix -> /trailer/target_local
+
+`cruise_to_trailer` is set HERE rather than defaulted in the node, so the two can
+never disagree: the phase is on exactly when the nodes that feed it are running.
+Without the argument this is the same marker-only mission it has always been.
+
 MAVROS is NOT started here — its fcu_url depends on the companion wiring:
 
     ros2 launch mavros px4.launch fcu_url:=/dev/ttyACM0:921600
@@ -44,16 +58,26 @@ from launch.actions import DeclareLaunchArgument
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
     mission = LaunchConfiguration('mission')
+    trailer = LaunchConfiguration('trailer')
     return LaunchDescription([
         # Set mission:=false to start ONLY the perception stack, and drive the
         # mission node separately with `ros2 run` so its ENTER-to-approve prompt
         # works (ros2 launch does not forward stdin to a child). run_px4 does
         # exactly this.
         DeclareLaunchArgument('mission', default_value='true'),
+        # Set trailer:=true to fly to the trailer's radioed coordinate before
+        # searching. Off by default: no radio, no cruise.
+        DeclareLaunchArgument('trailer', default_value='false'),
+        # The radio's serial port on the Jetson, and its baud. These are the two
+        # things that change between vehicles, so they are arguments; everything
+        # else about the trailer nodes lives in their own `_declare`.
+        DeclareLaunchArgument('trailer_device', default_value='/dev/ttyUSB0'),
+        DeclareLaunchArgument('trailer_baud', default_value='57600'),
         # --- camera: hardware JPEG decode on the Jetson's NVJPG block --------
         Node(
             package='aruco_landing',
@@ -86,6 +110,31 @@ def generate_launch_description():
             output='screen',
         ),
 
+        # --- the trailer's coordinate (trailer:=true) -----------------------
+        # The radio end: proves the link and republishes the trailer's
+        # GLOBAL_POSITION_INT as /trailer/fix.
+        Node(
+            package='trailer_link',
+            executable='trailer_gps_node',
+            name='trailer_gps_node',
+            output='screen',
+            parameters=[{
+                'serial_device': LaunchConfiguration('trailer_device'),
+                'baud': ParameterValue(LaunchConfiguration('trailer_baud'),
+                                       value_type=int),
+            }],
+            condition=IfCondition(trailer),
+        ),
+        # ...and the geodesy end: /trailer/fix -> a point in the vehicle's own
+        # local ENU frame. Publishes ONLY while the target is fully valid.
+        Node(
+            package='trailer_link',
+            executable='trailer_target_node',
+            name='trailer_target_node',
+            output='screen',
+            condition=IfCondition(trailer),
+        ),
+
         # --- the gated ArUco landing mission (mission:=false omits it) ------
         Node(
             package='mpc_landing',
@@ -93,6 +142,11 @@ def generate_launch_description():
             name='aruco_landing_node',
             output='screen',
             emulate_tty=True,
+            # value_type=bool is not optional: a launch substitution arrives as
+            # the STRING 'true', and the node declared this parameter as a bool,
+            # so without the cast the node dies on a type mismatch.
+            parameters=[{'cruise_to_trailer': ParameterValue(trailer,
+                                                             value_type=bool)}],
             condition=IfCondition(mission),
         ),
     ])

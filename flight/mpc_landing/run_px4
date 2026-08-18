@@ -5,6 +5,10 @@
 # approval, because arming is a human decision.
 #
 #   ./run_px4                 ArUco precision landing  (aruco_landing.launch.py)
+#   ./run_px4 trailer         the same landing, but FLY TO THE TRAILER FIRST:
+#                             its coordinate arrives over the 900 MHz radio,
+#                             the vehicle cruises there, then the camera takes
+#                             over for the descent.
 #   ./run_px4 mpc             MPC precision landing     (fixed_marker_landing)
 #   ./run_px4 naive           just MAVROS + the naive takeoff/land (no camera)
 #   ./run_px4 bench           GROUND REHEARSAL of the MPC mission's SEARCH:
@@ -12,6 +16,7 @@
 #                             with the FCU never commanded. Props off.
 #
 #   FCU_URL=/dev/ttyACM0:57600 ./run_px4      override the flight-controller link
+#   TRAILER_DEV=/dev/ttyUSB1 ./run_px4 trailer   the radio, if it is not USB0
 #   GNSS_CHECK=on ./run_px4 mpc               put the GNSS preflight gate back
 #
 # Approve / abort from another terminal (under launch, ENTER does not reach the
@@ -28,6 +33,11 @@ MODE="${1:-aruco}"
 
 case "$MODE" in
   aruco) MISSION_LAUNCH="aruco_landing.launch.py";        NODE="aruco_landing_node" ;;
+  # Same stack as aruco, plus the trailer link, plus the mission's CRUISE phase.
+  # The two travel together on purpose: the phase that flies to a coordinate is
+  # enabled exactly when the nodes that produce that coordinate are running.
+  trailer) MISSION_LAUNCH="aruco_landing.launch.py";      NODE="aruco_landing_node"
+         TRAILER=1 ;;
   mpc)   MISSION_LAUNCH="fixed_marker_landing.launch.py"; NODE="mpc_landing_node" ;;
   naive) MISSION_LAUNCH="";                               NODE="naive_flight_node" ;;
   # The mpc stack exactly, with the mission node started in SEARCH and forbidden
@@ -37,11 +47,16 @@ case "$MODE" in
   bench) MISSION_LAUNCH="fixed_marker_landing.launch.py"; NODE="mpc_landing_node"
          BENCH=1 ;;
   -h|--help|help)
-    sed -n '2,23p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    sed -n '2,28p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
     exit 0 ;;
-  *) echo "unknown mode '$MODE' (try: aruco | mpc | naive | bench)" >&2; exit 2 ;;
+  *) echo "unknown mode '$MODE' (try: aruco | trailer | mpc | naive | bench)" >&2
+     exit 2 ;;
 esac
 BENCH="${BENCH:-0}"
+TRAILER="${TRAILER:-0}"
+# The B end of the 900 MHz pair, on the Jetson. SiK radios enumerate as ttyUSB.
+TRAILER_DEV="${TRAILER_DEV:-/dev/ttyUSB0}"
+TRAILER_BAUD="${TRAILER_BAUD:-57600}"
 
 # The flight-controller link. ttyACM is USB CDC (baud is ignored, but MAVROS
 # still wants a number); change the device for a TELEM UART, e.g.
@@ -80,7 +95,13 @@ if [[ "$BENCH" == "1" ]]; then
   [[ ${#MISSION_ARGS[@]} -gt 0 ]] || MISSION_ARGS+=(--ros-args)
   MISSION_ARGS+=(-p bench_search:=true)
 fi
-
+# The mission node is started by THIS script, not by the launch (so ENTER can
+# approve it), which is why the launch's trailer:= argument cannot reach it —
+# the CRUISE phase has to be switched on here as well as the nodes there.
+if [[ "$TRAILER" == "1" ]]; then
+  [[ ${#MISSION_ARGS[@]} -gt 0 ]] || MISSION_ARGS+=(--ros-args)
+  MISSION_ARGS+=(-p cruise_to_trailer:=true)
+fi
 # The environment is normally already set by .bashrc; source it ourselves only
 # if it is not, so this also works from cron/systemd (see flight_env.sh).
 if ! command -v ros2 >/dev/null 2>&1; then
@@ -97,12 +118,13 @@ cleanup() {
   # Sweep the nodes ros2 launch/run spawned in their own process groups, so a
   # detached child cannot survive and break the next run.
   for pat in mavros_node aruco_landing_node mpc_landing_node naive_flight_node \
-             aruco_pose_node gst_camera_node siyi_gimbal_node landing_tf_node; do
+             aruco_pose_node gst_camera_node siyi_gimbal_node landing_tf_node \
+             trailer_gps_node trailer_target_node; do
     pkill -TERM -f "$pat" 2>/dev/null || true
   done
   sleep 1
   for pat in mavros_node aruco_pose_node gst_camera_node siyi_gimbal_node \
-             landing_tf_node; do
+             landing_tf_node trailer_gps_node trailer_target_node; do
     pkill -KILL -f "$pat" 2>/dev/null || true
   done
   wait 2>/dev/null || true
@@ -145,12 +167,31 @@ fi
 # prompt works. The perception stack (camera + detector + gimbal + tf) goes to
 # the background via the launch with mission:=false. NOT `exec`, so the cleanup
 # trap still fires on Ctrl-C and takes MAVROS and the perception nodes with it.
+LAUNCH_ARGS=(mission:=false)
+if [[ "$TRAILER" == "1" ]]; then
+  if [[ ! -e "$TRAILER_DEV" ]]; then
+    echo "run_px4: WARNING — $TRAILER_DEV does not exist. Is the 900 MHz radio" >&2
+    echo "         plugged in? (ls /dev/ttyUSB* ; override with TRAILER_DEV=...)" >&2
+  fi
+  LAUNCH_ARGS+=(trailer:=true "trailer_device:=$TRAILER_DEV"
+                "trailer_baud:=$TRAILER_BAUD")
+fi
+
 if [[ -n "$MISSION_LAUNCH" ]]; then
   echo "run_px4: starting $MISSION_LAUNCH perception (camera + detector + gimbal + tf)"
-  ros2 launch mpc_landing "$MISSION_LAUNCH" mission:=false \
+  # `set -e` is on: a bare `[[ ... ]] && echo` would exit the script whenever the
+  # test is false, so every conditional here is a real `if`.
+  SETTLE=2
+  if [[ "$TRAILER" == "1" ]]; then
+    echo "run_px4: + trailer link on $TRAILER_DEV @ $TRAILER_BAUD -> /trailer/target_local"
+    # The trailer target has a whole radio chain behind it and the mission
+    # refuses to offer the arm without one, so give it longer than the detector.
+    SETTLE=5
+  fi
+  ros2 launch mpc_landing "$MISSION_LAUNCH" "${LAUNCH_ARGS[@]}" \
     >/tmp/run_px4_stack.log 2>&1 &
   PIDS+=($!)
-  sleep 2   # let the detector advertise before the node's preflight looks for it
+  sleep "$SETTLE"   # let the stack advertise before the node's preflight looks
 fi
 
 echo
