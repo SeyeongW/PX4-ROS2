@@ -3,6 +3,11 @@
 `GateState` is ROS-free precisely so this can run anywhere. What is asserted
 here is the safety property the whole node exists for: **nothing between
 preflight and the descent advances without an explicit approval.**
+
+That property is what `auto_after_arm` narrows, and the tests at the foot of
+this file pin down exactly how far: the operator may delegate the two gates that
+pause a flight already under way, never the ARM itself, and `abort` continues to
+reach every phase either way.
 """
 
 from mpc_landing.mission import GATES, GateState, Phase
@@ -118,3 +123,65 @@ def test_ready_to_takeoff_streams_even_though_it_is_not_flying():
     g = GateState(phase=Phase.READY_TO_TAKEOFF)
     assert g.waiting and not g.flying
     assert g.needs_setpoint_stream
+
+
+# ------------------------------------------------- one approval per flight
+# `auto_after_arm` exists so an armed airframe is not left on the pad with live
+# props waiting for a keystroke. What must survive it: the ARM stays a human
+# decision, and abort still works from everywhere.
+def _armed_and_flying(g):
+    g.checks_passed()
+    g.approve()
+    g.armed_confirmed()
+    return g
+
+
+def test_auto_after_arm_still_stops_at_the_arm():
+    """The one gate that may never be delegated."""
+    g = GateState(auto_after_arm=True)
+    g.checks_passed()
+    assert g.phase is Phase.READY_TO_ARM and g.waiting
+
+
+def test_auto_after_arm_runs_the_rest_without_asking():
+    g = GateState(auto_after_arm=True)
+    g.checks_passed()
+    assert g.approve()[0]
+    g.armed_confirmed()
+    assert g.phase is Phase.TAKEOFF and not g.waiting
+    g.altitude_reached()
+    assert g.phase is Phase.SEARCH and not g.waiting
+
+
+def test_the_delegated_gates_are_still_entered_and_recorded():
+    """A skipped step a reader has to notice is missing is a worse log."""
+    g = _armed_and_flying(GateState(auto_after_arm=True))
+    seen = [frm for frm, _to, _why in g.history]
+    assert Phase.READY_TO_TAKEOFF in seen
+    assert any(why == 'auto-released after arm' for _f, _t, why in g.history)
+
+
+def test_without_the_flag_nothing_changes():
+    g = _armed_and_flying(GateState())
+    assert g.phase is Phase.READY_TO_TAKEOFF and g.waiting
+
+
+def test_abort_still_reaches_every_phase_when_gates_are_delegated():
+    """The control that actually matters once it is airborne."""
+    for step in range(3):
+        g = GateState(auto_after_arm=True)
+        g.checks_passed()
+        g.approve()
+        if step >= 1:
+            g.armed_confirmed()
+        if step >= 2:
+            g.altitude_reached()
+        g.abort('operator aborted')
+        assert g.phase is Phase.ABORT
+
+
+def test_the_arm_gate_cannot_be_made_auto_releasable():
+    """Structural, not a convention — see mission.AUTO_RELEASABLE."""
+    from mpc_landing.mission import AUTO_RELEASABLE
+    assert Phase.READY_TO_ARM not in AUTO_RELEASABLE
+    assert set(AUTO_RELEASABLE) < set(GATES)

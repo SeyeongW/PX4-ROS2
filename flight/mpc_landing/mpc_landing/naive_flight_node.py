@@ -444,7 +444,17 @@ class NaiveFlightNode(Node):
     def _on_approve(self, _req, res):
         ok, msg = self._approve()
         res.success, res.message = ok, msg
-        (self.get_logger().info if ok else self.get_logger().warn)(msg)
+        # SEPARATE CALL SITES, deliberately. `(info if ok else warn)(msg)`
+        # reads better and crashes the node: rclpy identifies a logger call by
+        # its file and LINE, and raises "Logger severity cannot be changed
+        # between calls" the first time one line logs at two severities. An
+        # operator who approves once too early (warn) and again at the gate
+        # (info) therefore kills the mission node — in the air, which stops the
+        # setpoint stream and drops PX4 out of OFFBOARD.
+        if ok:
+            self.get_logger().info(msg)
+        else:
+            self.get_logger().warn(msg)
         return res
 
     def _on_abort(self, _req, res):

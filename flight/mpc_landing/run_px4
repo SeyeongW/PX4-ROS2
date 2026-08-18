@@ -18,6 +18,8 @@
 #   FCU_URL=/dev/ttyACM0:57600 ./run_px4      override the flight-controller link
 #   TRAILER_DEV=/dev/ttyUSB1 ./run_px4 trailer   the radio, if it is not USB0
 #   GNSS_CHECK=on ./run_px4 mpc               put the GNSS preflight gate back
+#   GATES=all ./run_px4 mpc                   approve takeoff and search too,
+#                                             not just the arm (mpc only)
 #
 # Approve / abort from another terminal (under launch, ENTER does not reach the
 # node — see the launch docstrings):
@@ -47,7 +49,7 @@ case "$MODE" in
   bench) MISSION_LAUNCH="fixed_marker_landing.launch.py"; NODE="mpc_landing_node"
          BENCH=1 ;;
   -h|--help|help)
-    sed -n '2,28p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
     exit 0 ;;
   *) echo "unknown mode '$MODE' (try: aruco | trailer | mpc | naive | bench)" >&2
      exit 2 ;;
@@ -101,6 +103,25 @@ fi
 if [[ "$TRAILER" == "1" ]]; then
   [[ ${#MISSION_ARGS[@]} -gt 0 ]] || MISSION_ARGS+=(--ros-args)
   MISSION_ARGS+=(-p cruise_to_trailer:=true)
+fi
+# --- ONE approval per flight, on the mpc path ------------------------------
+# aruco_landing_node has always had exactly one gate: approve the ARM and the
+# rest of the mission runs. mpc_landing_node instead stops again after arming
+# and again at altitude, which means an armed airframe sitting on the pad with
+# live props waiting for a keystroke — the state you least want to extend. So
+# the mpc modes are brought into line with the aruco one here.
+#
+# The ARM approval is NOT affected and cannot be: mission.AUTO_RELEASABLE does
+# not contain it. `abort` still lands the vehicle from any phase.
+# GATES=all restores the three-gate behaviour for a flight that wants it.
+GATES="${GATES:-arm}"
+if [[ "$NODE" == "mpc_landing_node" && "$BENCH" != "1" ]]; then
+  if [[ "$GATES" == "all" ]]; then
+    echo "run_px4: all three approval gates ENABLED (GATES=all)"
+  else
+    [[ ${#MISSION_ARGS[@]} -gt 0 ]] || MISSION_ARGS+=(--ros-args)
+    MISSION_ARGS+=(-p auto_after_arm:=true)
+  fi
 fi
 # The environment is normally already set by .bashrc; source it ourselves only
 # if it is not, so this also works from cron/systemd (see flight_env.sh).

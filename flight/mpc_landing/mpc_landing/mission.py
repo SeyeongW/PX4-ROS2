@@ -50,6 +50,16 @@ class Phase(str, Enum):
 #: Phases that exist only to wait for a human. Nothing else may advance them.
 GATES = (Phase.READY_TO_ARM, Phase.READY_TO_TAKEOFF, Phase.READY_TO_SEARCH)
 
+#: The gates `auto_after_arm` may release on the operator's behalf.
+#:
+#: READY_TO_ARM IS DELIBERATELY ABSENT AND CANNOT BE ADDED. Arming is the moment
+#: a parked airframe becomes a machine with live propellers, and it is the one
+#: decision that stays with a person; every later gate is a pause inside a flight
+#: the operator has already authorised. Expressing this as a fixed tuple rather
+#: than a caller-supplied list is the point — "approve everything" is then not a
+#: configuration anyone can reach by accident.
+AUTO_RELEASABLE = (Phase.READY_TO_TAKEOFF, Phase.READY_TO_SEARCH)
+
 #: What `approve` does at each gate.
 _GATE_RELEASES = {
     Phase.READY_TO_ARM: Phase.ARMING,
@@ -94,6 +104,11 @@ class GateState:
     phase: Phase = Phase.PRECHECK
     abort_reason: str = ''
     history: list = field(default_factory=list)
+    #: Release the post-arm gates automatically: the operator approves the ARM
+    #: and the mission then runs takeoff, search and descent without stopping
+    #: again. `abort` still works from every phase, which is what makes this a
+    #: reasonable trade rather than an unattended flight.
+    auto_after_arm: bool = False
 
     # ------------------------------------------------------------- transitions
     def _to(self, phase: Phase, why: str = '') -> None:
@@ -101,6 +116,15 @@ class GateState:
             return
         self.history.append((self.phase, phase, why))
         self.phase = phase
+        # A delegated gate releases the instant it is reached. It is still
+        # ENTERED and still recorded in the history — so the log shows the
+        # mission passing through "props are live" rather than skipping a step
+        # that a reader would then have to notice was missing. A loop, not
+        # recursion, and every release target is a non-gate, so it terminates.
+        while self.auto_after_arm and self.phase in AUTO_RELEASABLE:
+            nxt = _GATE_RELEASES[self.phase]
+            self.history.append((self.phase, nxt, 'auto-released after arm'))
+            self.phase = nxt
 
     def checks_passed(self) -> None:
         """Preflight is green — stop and wait for a human."""

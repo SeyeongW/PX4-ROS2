@@ -114,7 +114,8 @@ class MpcLandingNode(Node):
         # A bench run starts where the thing being rehearsed starts. It cannot
         # reach SEARCH the normal way — that road goes through arming — and
         # faking the phases it skipped would rehearse those too.
-        self.gate = GateState(phase=Phase.SEARCH) if self.bench else GateState()
+        self.gate = (GateState(phase=Phase.SEARCH) if self.bench
+                     else GateState(auto_after_arm=self.auto_after_arm))
         # THE controller under test — imported, not reimplemented.  This node
         # exists to fly the MPC that simulation/landing_mpc validated in SITL;
         # a lookalike written here would only ever validate the lookalike.
@@ -255,6 +256,11 @@ class MpcLandingNode(Node):
         else:
             self.get_logger().info(
                 'SEARCH holds the gimbal at nadir (gimbal_scan=false)')
+        if self.auto_after_arm:
+            self.get_logger().warn(
+                'auto_after_arm: the ARM is the ONLY approval — takeoff, search '
+                'and descent then run without stopping. Abort with: '
+                f'ros2 run mpc_landing abort {self.get_name()}')
         if self._stdin_ok:
             self.get_logger().info(
                 'each step will ask on this terminal — ENTER approves, n aborts')
@@ -388,6 +394,20 @@ class MpcLandingNode(Node):
         # It cannot check what only altitude provides: on the ground the whole
         # sweep points at the floor within a metre or two of the airframe.
         # Prop the vehicle up and put the marker close.
+        # ONE APPROVAL FOR THE WHOLE FLIGHT. The operator authorises the ARM;
+        # takeoff, search and descent then run without stopping again.
+        #
+        # The gates being dropped are the two that pause a flight already under
+        # way, and what they were really buying was a chance to look at the
+        # vehicle before the next step. That is worth having on a first flight
+        # and a nuisance on the twentieth, when the operator is standing in a
+        # field holding a terminal while an armed airframe waits on the pad for
+        # a keystroke. `abort` still lands it from any phase, which is the
+        # control that actually matters once it is airborne.
+        #
+        # The ARM gate cannot be dropped by this or by anything else — see
+        # mission.AUTO_RELEASABLE.
+        p('auto_after_arm', False)
         p('bench_search', False)
         # --- preflight thresholds
         p('min_battery_v', 14.0)            # 4S nominal; raise for 6S
@@ -464,6 +484,7 @@ class MpcLandingNode(Node):
         self.gimbal_settled_deg = float(g('gimbal_settled_deg').value)
         self.gimbal_timeout = float(g('gimbal_attitude_timeout_s').value)
         self.gimbal_track = bool(g('gimbal_track').value)
+        self.auto_after_arm = bool(g('auto_after_arm').value)
         self.bench = bool(g('bench_search').value)
         self.min_batt = float(g('min_battery_v').value)
         self.require_batt = bool(g('require_battery').value)
@@ -782,7 +803,17 @@ class MpcLandingNode(Node):
     def _on_approve(self, _req, res):
         ok, msg = self.gate.approve()
         res.success, res.message = ok, msg
-        (self.get_logger().info if ok else self.get_logger().warn)(msg)
+        # SEPARATE CALL SITES, deliberately. `(info if ok else warn)(msg)`
+        # reads better and crashes the node: rclpy identifies a logger call by
+        # its file and LINE, and raises "Logger severity cannot be changed
+        # between calls" the first time one line logs at two severities. An
+        # operator who approves once too early (warn) and again at the gate
+        # (info) therefore kills the mission node — in the air, which stops the
+        # setpoint stream and drops PX4 out of OFFBOARD.
+        if ok:
+            self.get_logger().info(msg)
+        else:
+            self.get_logger().warn(msg)
         return res
 
     def _on_abort(self, _req, res):
