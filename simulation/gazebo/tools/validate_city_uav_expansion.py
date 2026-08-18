@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import csv
+import math
 import sys
 from pathlib import Path
 from xml.etree import ElementTree as ET
@@ -446,6 +447,11 @@ def validate() -> dict:
         == "edge_clamp_feather_to_neutral",
         "road texture edge-extension contract changed",
     )
+    require(
+        derived["terrain"]["southeast_texture_repair"]
+        == "diagonal_edge_clamp_with_osm_road_restore",
+        "south-east texture repair contract changed",
+    )
 
     xmin, xmax = map(float, bounds["x"])
     ymin, ymax = map(float, bounds["y"])
@@ -545,8 +551,8 @@ def validate() -> dict:
         # has been removed; only real connected asphalt certifies a spawn.
         return red <= 75 and green <= 80 and blue <= 85 and max(red, green, blue) - min(red, green, blue) < 28
 
-    # The drone gets a 2 x 2 m asphalt square. The trailer check includes a
-    # 1 m halo around the SEO trailer's 5 x 5 m body (7 x 7 m total).
+    # The drone gets a 2 x 2 m asphalt square. The trailer checks include a
+    # 1 m halo around its 5 x 5 m body (7 x 7 m total).
     for x_step in range(-4, 5):
         for y_step in range(-4, 5):
             point = (gen.SPAWN_XY[0] + 0.25 * x_step, gen.SPAWN_XY[1] + 0.25 * y_step)
@@ -558,12 +564,35 @@ def validate() -> dict:
                 gen.TRAILER_SPAWN_XY[1] + 0.25 * y_step,
             )
             require(is_asphalt(point), f"trailer spawn safety rectangle leaves asphalt at {point}")
-    require(gen.SPAWN_XY[0] * gen.TRAILER_SPAWN_XY[0] < 0.0,
-            "drone and trailer are not in opposite east/west halves")
-    require(gen.SPAWN_XY[1] * gen.TRAILER_SPAWN_XY[1] < 0.0,
-            "drone and trailer are not in opposite north/south halves")
+    closed_patrol = gen.TRAILER_PATROL_WAYPOINTS + (
+        gen.TRAILER_PATROL_WAYPOINTS[0],
+    )
+    for first, second in zip(closed_patrol, closed_patrol[1:]):
+        samples = max(1, math.ceil(math.dist(first, second)))
+        for index in range(samples + 1):
+            ratio = index / samples
+            center = (
+                first[0] + ratio * (second[0] - first[0]),
+                first[1] + ratio * (second[1] - first[1]),
+            )
+            for offset_x in (-3.5, 0.0, 3.5):
+                for offset_y in (-3.5, 0.0, 3.5):
+                    sample = (center[0] + offset_x, center[1] + offset_y)
+                    require(
+                        is_asphalt(sample),
+                        f"trailer patrol plus 1 m halo leaves asphalt at {sample}",
+                    )
+    for restored_road_sample in (
+        (512.0, -450.0),
+        (575.0, -322.0),
+        (636.0, -450.0),
+    ):
+        require(
+            is_asphalt(restored_road_sample),
+            f"south-east restored road is missing at {restored_road_sample}",
+        )
     spawn_separation = gen.math.dist(gen.SPAWN_XY, gen.TRAILER_SPAWN_XY)
-    require(spawn_separation >= 1500.0, "drone/trailer diagonal separation is below 1.5km")
+    require(spawn_separation >= 100.0, "drone/trailer initial separation is below 100m")
     spawn_boundary_clearance = min(
         gen.SPAWN_XY[0] - xmin, xmax - gen.SPAWN_XY[0],
         gen.SPAWN_XY[1] - ymin, ymax - gen.SPAWN_XY[1],
@@ -572,8 +601,8 @@ def validate() -> dict:
         gen.TRAILER_SPAWN_XY[0] - xmin, xmax - gen.TRAILER_SPAWN_XY[0],
         gen.TRAILER_SPAWN_XY[1] - ymin, ymax - gen.TRAILER_SPAWN_XY[1],
     )
-    require(spawn_boundary_clearance >= 60.0 and trailer_boundary_clearance >= 60.0,
-            "a diagonal staging site is too close to the map boundary")
+    require(spawn_boundary_clearance >= 50.0 and trailer_boundary_clearance >= 50.0,
+            "a staging site is too close to the map boundary")
 
     southwest_clearance = min(-600.0 - xmin, -600.0 - ymin)
     require(southwest_clearance >= 50.0, "(-600,-600) is outside the restored 1300m ground")
@@ -643,6 +672,11 @@ def validate() -> dict:
             "forward sensor YAML contract differs from the flyable model")
     require(derived["px4_vehicle"]["downward_sensors"] == expected_downward,
             "downward sensor YAML contract differs from the flyable model")
+    require(
+        derived["px4_vehicle"]["sitl_parameter_overrides"]
+        == {"MPC_XY_CRUISE": 12.0, "MPC_XY_VEL_MAX": 20.0},
+        "city SITL speed contract must use a non-binding 20 m/s cap",
+    )
     require("pad" not in derived["spawn"], "derived YAML still declares a spawn pad")
     require(world.find(".//model[@name='drone_spawn_pad']") is None, "green spawn pad remains in UAV world")
     spawn_frame = world.find(".//frame[@name='drone_spawn']")
@@ -650,19 +684,42 @@ def validate() -> dict:
         spawn_frame is not None
         and spawn_frame.findtext("pose")
         == f"{gen.fmt(gen.SPAWN_XY[0])} {gen.fmt(gen.SPAWN_XY[1])} 0 0 0 0",
-        "spawn frame is not at the diagonal road site on z=0",
+        "spawn frame is not at the road site on z=0",
     )
     trailer = derived["trailer"]
     require(trailer["entity_name"] == "trailer", "derived trailer entity contract changed")
-    require(trailer["model_uri"] == "model://moving_platform_aruco", "SEO ArUco trailer model is not selected")
-    require(trailer["body_footprint_m"] == [5.0, 5.0], "SEO trailer footprint mismatch")
-    require(float(trailer["deck_height_m"]) == 2.05, "SEO trailer deck height mismatch")
-    require(trailer["controller_plugin"] == "libMovingPlatformController.so", "SEO trailer controller mismatch")
-    require(float(trailer["controller_velocity_m_s"]) == 0.0, "city trailer controller must be pinned to zero speed")
-    require(trailer["motion"] == "stationary_spawn_only", "city trailer route must remain disabled")
     require(
-        trailer["controller_noise_active_after_px4_spawn"] is True,
-        "SEO controller perturbation semantics must be explicit",
+        trailer["model_uri"] == "model://moving_platform_aruco_velocity",
+        "deterministic ArUco trailer model is not selected",
+    )
+    require(trailer["body_footprint_m"] == [5.0, 5.0], "trailer footprint mismatch")
+    require(float(trailer["deck_height_m"]) == 2.05, "trailer deck height mismatch")
+    require(
+        trailer["controller_plugin"] == "gz-sim-velocity-control-system"
+        and trailer["command_topic"] == "/model/trailer/cmd_vel",
+        "city trailer velocity-controller contract differs",
+    )
+    require(trailer["motion"] == "repeated_black_road_waypoint_patrol",
+            "city trailer patrol is not enabled")
+    require(trailer["route_type"] == "waypoints" and trailer["patrol_mode"] == "repeat",
+            "city trailer repeat-waypoint contract differs")
+    require(float(trailer["cruise_speed_m_s"]) == gen.TRAILER_CRUISE_SPEED_M_S,
+            "city trailer speed is not 9 m/s")
+    require(float(trailer["acceleration_m_s2"]) == gen.TRAILER_ACCELERATION_M_S2,
+            "city trailer acceleration contract differs")
+    require(trailer.get("stop_at_waypoints") is True,
+            "city trailer must stop before changing straight segments")
+    require("corner_radius_m" not in trailer,
+            "city trailer arc routing must remain disabled")
+    require(
+        float(trailer["turn_speed_tolerance_m_s"])
+        == gen.TRAILER_TURN_SPEED_TOLERANCE_M_S,
+        "city trailer turn-speed tolerance differs",
+    )
+    require(
+        tuple(int(index) for index in trailer["stop_waypoint_indices"])
+        == gen.TRAILER_STOP_WAYPOINT_INDICES,
+        "city trailer stop-corner indices differ",
     )
     trailer_include = next(
         (
@@ -674,7 +731,7 @@ def validate() -> dict:
     )
     require(
         trailer_include is not None
-        and trailer_include.findtext("uri") == "model://moving_platform_aruco",
+        and trailer_include.findtext("uri") == "model://moving_platform_aruco_velocity",
         "derived world does not spawn the calibrated ArUco trailer",
     )
     trailer_spawn = trailer["spawn_pose_enu"]
@@ -688,8 +745,8 @@ def validate() -> dict:
         "trailer world include pose differs from YAML",
     )
     require(
-        trailer["waypoints_enu_m"] == [list(gen.TRAILER_SPAWN_XY)],
-        "stationary trailer YAML must contain only its spawn point",
+        trailer["waypoints_enu_m"] == [list(point) for point in gen.TRAILER_PATROL_WAYPOINTS],
+        "city trailer YAML differs from the black-road closed patrol",
     )
 
     neighbor_pairs = gen.find_neighbor_pairs(expected_geometry, gen.DEFAULT_NEIGHBOR_RADIUS_M)

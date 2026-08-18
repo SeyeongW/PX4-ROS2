@@ -14,7 +14,7 @@ active_uav_city_removed_buildings=69
 active_uav_city_removal_grid_cells=25
 active_uav_city_collision_geometries=205
 active_uav_city_minimum_building_gap_m=0.971942
-active_uav_city_spawn_separation_m=1603.352737
+active_uav_city_spawn_separation_m=740.606508
 mountain_engine=Gazebo Harmonic
 mountain_size_m=300x300
 mountain_world_sha256=148676c9b6adf4155e1daa2c6f7699a620f17dd2300925f2f942e1f62389ec4e
@@ -24,7 +24,7 @@ mountain_deterministic_validator=PASS
 static_preview_drones=0
 mountain_trailer_model=flat_platform
 active_uav_city_drone_spawn_enu=587,580,0
-active_uav_city_trailer_model=moving_platform_aruco entity=trailer spawn_enu=-587,-512,0 mean_velocity=0 noise=seo_default_after_px4_spawn
+active_uav_city_trailer_model=moving_platform_aruco_velocity entity=trailer spawn_enu=-150,507,0 patrol_speed_m_s=9 stop_turn=1
 trailer_waypoint_driver=gazebo_transport_no_mavros
 px4_dynamic_model=gz_x500_city_rgbd_lidar autostart=4001
 px4_model_repository_symlink=PASS

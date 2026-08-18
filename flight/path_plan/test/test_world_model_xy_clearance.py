@@ -1,7 +1,9 @@
 import math
+from pathlib import Path
 
 import numpy as np
 import pytest
+import yaml
 
 from path_plan.world_model import (
     WorldModel,
@@ -143,3 +145,45 @@ def test_box_and_clearance_use_the_same_rounded_xy_geometry():
 def test_xy_clearance_rejects_invalid_values(value):
     with pytest.raises(ValueError, match="xy_clearance_m"):
         _world(value)
+
+
+def test_city_yaml_keeps_raw_aabb_and_applies_round_vehicle_radius(tmp_path):
+    city = tmp_path / "city.yaml"
+    city.write_text(
+        """
+map:
+  bounds_enu_m: {x: [-10, 10], y: [-10, 10]}
+terrain:
+  collision_geometry: {top_z_m: 0}
+buildings:
+  - footprint:
+      outer: [[0, 0], [2, 0], [2, 2], [0, 2]]
+    foundation_z_m: 0
+    roof_z_m: 2
+""",
+        encoding="utf-8")
+
+    world = WorldModel.from_city_yaml(
+        city, xy_clearance_m=1.5, ceiling_m=10.0,
+        overfly_allowed=False)
+
+    assert world.boxes_min[0, :2].tolist() == [0.0, 0.0]
+    assert world.boxes_max[0, :2].tolist() == [2.0, 2.0]
+    assert world.xy_clearance_m == pytest.approx(1.5)
+    assert not world.is_free([[3.5, 1.0, 1.0]])[0]
+    assert world.is_free([[3.51, 1.0, 1.0]])[0]
+    assert world.is_free([[3.1, 3.1, 1.0]])[0]
+
+
+def test_city_pipeline_splits_hard_radius_and_planning_reserve():
+    config = Path(__file__).resolve().parents[1] / "config/city_uav.yaml"
+    document = yaml.safe_load(config.read_text(encoding="utf-8"))
+    planning_nodes = ("astar_planner", "sfc_builder", "bspline_optimizer")
+
+    assert {
+        document[f"/{name}"]["ros__parameters"]["vehicle_clearance_xy_m"]
+        for name in planning_nodes
+    } == {1.5}
+    assert document["/tracking_mpc"]["ros__parameters"][
+        "vehicle_clearance_xy_m"] == 1.0
+    assert "inflation_xy_m" not in config.read_text(encoding="utf-8")

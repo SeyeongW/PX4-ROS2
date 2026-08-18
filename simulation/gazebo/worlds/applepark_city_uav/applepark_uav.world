@@ -295,12 +295,11 @@
     <!-- No visual spawn pad: PX4 model contact is referenced to the z=0 datum. -->
     <frame name="drone_spawn"><pose>587 580 0 0 0 0</pose></frame>
     <frame name="mission_goal"><pose>200 -128 0 0 0 0</pose></frame>
-    <frame name="trailer_spawn"><pose>-587 -512 0 0 0 0</pose></frame>
-    <frame name="trailer_destination"><pose>-128 -128 0 0 0 0</pose></frame>
-    <!-- SEO branch's default PX4 moving-platform trailer. The city launcher
-         pins its mean controller velocity to zero. The stock SEO controller
-         still applies its built-in perturbations after the PX4 entity spawns. -->
-    <include><uri>model://moving_platform_aruco</uri><name>trailer</name><pose>-587 -512 0 0 0 0</pose></include>
+    <frame name="trailer_spawn"><pose>-150 507 0 0 0 0</pose></frame>
+    <frame name="trailer_destination"><pose>16.8 458.8 0 0 0 0</pose></frame>
+    <!-- Repository-owned deterministic three-marker trailer. It remains
+         stationary unless run_px4_map.sh starts the waypoint driver. -->
+    <include><uri>model://moving_platform_aruco_velocity</uri><name>trailer</name><pose>-150 507 0 0 0 0</pose></include>
     <!-- PX4 SITL spawns the real sensor-equipped vehicle dynamically. -->
   </world>
 </sdf>

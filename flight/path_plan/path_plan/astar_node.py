@@ -33,7 +33,7 @@ class AStarNode(Node):
         res = p("resolution_m", 2.0).value
         world = WorldModel.from_city_yaml(
             self.map_yaml,
-            inflation_xy_m=p("inflation_xy_m", 1.45).value,
+            xy_clearance_m=p("vehicle_clearance_xy_m", 1.5).value,
             roof_clearance_m=p("roof_clearance_m", 10.0).value,
             ground_clearance_m=p("cruise_floor_m", 20.0).value,
             ceiling_m=p("cruise_ceiling_m", 30.0).value,

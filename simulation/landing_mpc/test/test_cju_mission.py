@@ -701,6 +701,13 @@ def test_world_and_yaml_share_stadium_obstacles_and_spawns():
     map_launcher = MAP_LAUNCHER.read_text(encoding='utf-8')
     assert 'commands=(takeoff mission land)' in launcher
     assert 'wait_for_states READY 120' in launcher
+    takeoff_case = launcher.split('      takeoff)', 1)[1].split(
+        '      mission)', 1)[0]
+    mission_case = launcher.split('      mission)', 1)[1].split(
+        '      land)', 1)[0]
+    assert takeoff_case.count('touch "$TRAILER_START_FILE"') == 1
+    assert 'touch "$TRAILER_START_FILE"' not in mission_case
+    assert 'waiting for takeoff clearance' in map_launcher
     assert "send_until_state mission 'MISSION_PLAN|MISSION|HOVER'" in launcher
     assert "wait_for_states 'MISSION|HOVER' 120" in launcher
     assert 'wait_for_states HOVER 180' in launcher
@@ -1873,12 +1880,12 @@ def test_precland_runway_waits_for_endpoint_reversal_to_finish():
     assert not clear and eta == pytest.approx(15.0)
 
 
-def test_precland_allows_only_a_bounded_aligned_camera_blind_commit():
+def test_precland_latches_a_bounded_aligned_camera_blind_commit():
     now = [10.0]
     state = SimpleNamespace(
         cue=np.zeros(3),
         cue_v=np.array([1.0, 0.0, 0.0]),
-        p_d=np.array([0.1, 0.0, 0.3]),
+        p_d=np.array([0.1, 0.0, 0.64]),
         v_d=np.array([1.0, 0.0, 0.0]),
         _bias=np.zeros(3),
         _landing_xy_tol=0.5,
@@ -1899,12 +1906,22 @@ def test_precland_allows_only_a_bounded_aligned_camera_blind_commit():
     assert np.isclose(state._precland_commit_until, 18.0)
 
     state._vision_measurement_fresh = lambda: False
-    now[0] = 11.0
+    now[0] = 10.36
+    state.p_d[2] = 0.66
     assert MissionManagerNode._precland_target_allowed(state)
+    # A small vertical estimator rebound must not command a reacquisition
+    # climb after the qualified low-altitude handoff.
     state.v_d[0] = 1.31
     assert not MissionManagerNode._precland_target_allowed(state)
     state.v_d[0] = 1.0
+    state.p_d[0] = 0.51
+    assert not MissionManagerNode._precland_target_allowed(state)
+    state.p_d[0] = 0.1
     now[0] = 18.01
+    assert not MissionManagerNode._precland_target_allowed(state)
+
+    state._precland_commit_until = None
+    now[0] = 11.0
     assert not MissionManagerNode._precland_target_allowed(state)
 
 
@@ -2666,6 +2683,43 @@ def test_precland_only_publishes_target_and_observes_px4_landed_disarmed():
     state.armed = False
     MissionManagerNode._tick(state)
     assert state.state == 'DONE'
+
+
+def test_ground_contact_is_a_one_way_boundary_even_without_a_metric_snapshot():
+    published = []
+    forbidden = lambda *_: (_ for _ in ()).throw(
+        AssertionError('flight or reacquisition command issued after contact'))
+    state = SimpleNamespace(
+        k=0,
+        state='PRECLAND',
+        state_pub=SimpleNamespace(publish=lambda _: None),
+        p_d=np.zeros(3),
+        cue=None,
+        landed=False,
+        armed=True,
+        _touchdown_metric_recorded=False,
+        _touchdown_metric_candidate=None,
+        _ground_contact_seen=False,
+        _publish_landing_target=lambda: published.append(True) or False,
+        _recover_precland=forbidden,
+        _ocm=forbidden,
+        _send=forbidden,
+        _send_goto=forbidden,
+        _cmd=forbidden,
+    )
+
+    contact = VehicleLandDetected()
+    contact.ground_contact = True
+    MissionManagerNode._on_land(state, contact)
+    assert state._ground_contact_seen
+    assert state._touchdown_metric_candidate is None
+
+    contact.ground_contact = False
+    MissionManagerNode._on_land(state, contact)
+    assert state._ground_contact_seen
+    MissionManagerNode._tick(state)
+    assert published == [True]
+    assert state.state == 'PRECLAND'
 
 
 def test_experiment_metrics_use_first_confirmed_ground_contact_segment():

@@ -936,6 +936,7 @@ class MissionManagerNode(Node):
         self._marker_metric_hits = 0
         self._touchdown_metric_recorded = False
         self._touchdown_metric_candidate = None
+        self._ground_contact_seen = False
         self._landing_contact_confirmed = False
         self._landing_error_3d_m = math.nan
         self._landing_xy_error_m = math.nan
@@ -1213,9 +1214,12 @@ class MissionManagerNode(Node):
     def _on_land(self, m):
         """Observe PX4's final verdict; this node never substitutes its own."""
         self.landed = bool(m.landed)
-        if (self.state not in (
-                'LANDING_ACQUIRE', 'LANDING_DESCEND', 'PRECLAND')
-                or getattr(self, '_touchdown_metric_recorded', False)):
+        if self.state not in (
+                'LANDING_ACQUIRE', 'LANDING_DESCEND', 'PRECLAND'):
+            return
+        if bool(getattr(m, 'ground_contact', False)):
+            self._ground_contact_seen = True
+        if getattr(self, '_touchdown_metric_recorded', False):
             return
         if not bool(getattr(m, 'ground_contact', False)):
             self._touchdown_metric_candidate = None
@@ -1645,10 +1649,13 @@ class MissionManagerNode(Node):
         target = self.cue + self._bias
         p_rel = self.p_d - target
         v_rel = self.v_d - self.cue_v
+        horizontal_aligned = (
+            float(np.linalg.norm(p_rel[:2])) <= self._landing_xy_tol)
+        velocity_aligned = (
+            float(np.linalg.norm(v_rel[:2])) <= self._landing_v_tol)
         aligned = (
             0.0 <= float(p_rel[2]) <= self._precland_commit_height
-            and float(np.linalg.norm(p_rel[:2])) <= self._landing_xy_tol
-            and float(np.linalg.norm(v_rel[:2])) <= self._landing_v_tol)
+            and horizontal_aligned and velocity_aligned)
         if self._vision_measurement_fresh():
             if aligned:
                 # The centred 0.30 m marker fills the image below about 0.19 m.
@@ -1661,9 +1668,13 @@ class MissionManagerNode(Node):
             return True
         if getattr(self, '_touchdown_metric_candidate', None) is not None:
             return True
+        # A qualified low-altitude handoff remains valid across a few
+        # millimetres of vertical estimator rebound.  Horizontal alignment and
+        # relative speed remain live safety gates.
         return bool(
-            aligned and self._precland_commit_until is not None
-            and now <= self._precland_commit_until)
+            self._precland_commit_until is not None
+            and now <= self._precland_commit_until
+            and horizontal_aligned and velocity_aligned)
 
     def _terminal_runway_status(self, descent_height_m=None):
         """Return whether PX4 can finish before the next shuttle reversal."""
@@ -2147,6 +2158,14 @@ class MissionManagerNode(Node):
         if (self.state in ('LANDING_ACQUIRE', 'LANDING_DESCEND', 'PRECLAND')
                 and self.landed is True and self.armed is False):
             self._set_state('DONE', '(PX4 landed and auto-disarmed)')
+            return
+        if (self.state in ('LANDING_ACQUIRE', 'LANDING_DESCEND', 'PRECLAND')
+                and getattr(self, '_ground_contact_seen', False)):
+            # Contact is a one-way terminal boundary.  Keep feeding PX4's
+            # native PRECLAND target when possible, but never reclaim Offboard
+            # or command an acquire climb after contact.
+            if self.state == 'PRECLAND':
+                self._publish_landing_target()
             return
         if (self.state in ('LANDING_ACQUIRE', 'LANDING_DESCEND')
                 and (getattr(self, '_touchdown_metric_candidate', None)
