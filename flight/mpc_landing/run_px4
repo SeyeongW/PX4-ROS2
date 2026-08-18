@@ -17,6 +17,8 @@
 #
 #   FCU_URL=/dev/ttyACM0:57600 ./run_px4      override the flight-controller link
 #   TRAILER_DEV=/dev/ttyUSB1 ./run_px4 trailer   the radio, if it is not USB0
+#   TRAILER_LINK=0 ./run_px4 trailer          you are running trailer_gps_node
+#                                             yourself; do not start a second
 #   GNSS_CHECK=on ./run_px4 mpc               put the GNSS preflight gate back
 #   GATES=all ./run_px4 mpc                   approve takeoff and search too,
 #                                             not just the arm (mpc only)
@@ -49,7 +51,7 @@ case "$MODE" in
   bench) MISSION_LAUNCH="fixed_marker_landing.launch.py"; NODE="mpc_landing_node"
          BENCH=1 ;;
   -h|--help|help)
-    sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    sed -n '2,32p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
     exit 0 ;;
   *) echo "unknown mode '$MODE' (try: aruco | trailer | mpc | naive | bench)" >&2
      exit 2 ;;
@@ -138,14 +140,21 @@ cleanup() {
   for pid in "${PIDS[@]:-}"; do kill "$pid" 2>/dev/null || true; done
   # Sweep the nodes ros2 launch/run spawned in their own process groups, so a
   # detached child cannot survive and break the next run.
+  # Only ever sweep what THIS script started. With TRAILER_LINK=0 the radio
+  # reader belongs to the operator's own terminal, and killing it on Ctrl-C
+  # would take down the thing they are watching.
+  RADIO_PAT="trailer_gps_node"
+  if [[ "${TRAILER_LINK:-1}" == "0" ]]; then
+    RADIO_PAT=""
+  fi
   for pat in mavros_node aruco_landing_node mpc_landing_node naive_flight_node \
              aruco_pose_node gst_camera_node siyi_gimbal_node landing_tf_node \
-             trailer_gps_node trailer_target_node; do
+             trailer_target_node ${RADIO_PAT}; do
     pkill -TERM -f "$pat" 2>/dev/null || true
   done
   sleep 1
   for pat in mavros_node aruco_pose_node gst_camera_node siyi_gimbal_node \
-             landing_tf_node trailer_gps_node trailer_target_node; do
+             landing_tf_node trailer_target_node ${RADIO_PAT}; do
     pkill -KILL -f "$pat" 2>/dev/null || true
   done
   wait 2>/dev/null || true
@@ -196,6 +205,14 @@ if [[ "$TRAILER" == "1" ]]; then
   fi
   LAUNCH_ARGS+=(trailer:=true "trailer_device:=$TRAILER_DEV"
                 "trailer_baud:=$TRAILER_BAUD")
+  # TRAILER_LINK=0: the operator is already running trailer_gps_node in their
+  # own terminal, so do not start a second one. One serial port, one reader —
+  # the loser of that race fails quietly into a log file.
+  if [[ "${TRAILER_LINK:-1}" == "0" ]]; then
+    LAUNCH_ARGS+=(trailer_radio:=false)
+    echo "run_px4: NOT starting trailer_gps_node (TRAILER_LINK=0) — expecting"
+    echo "         /trailer/fix from the one you are running yourself"
+  fi
 fi
 
 if [[ -n "$MISSION_LAUNCH" ]]; then

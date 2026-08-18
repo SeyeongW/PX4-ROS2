@@ -56,7 +56,7 @@ own `_declare()`.
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.conditions import IfCondition
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
@@ -64,6 +64,7 @@ from launch_ros.parameter_descriptions import ParameterValue
 def generate_launch_description():
     mission = LaunchConfiguration('mission')
     trailer = LaunchConfiguration('trailer')
+    radio = LaunchConfiguration('trailer_radio')
     return LaunchDescription([
         # Set mission:=false to start ONLY the perception stack, and drive the
         # mission node separately with `ros2 run` so its ENTER-to-approve prompt
@@ -78,6 +79,13 @@ def generate_launch_description():
         # else about the trailer nodes lives in their own `_declare`.
         DeclareLaunchArgument('trailer_device', default_value='/dev/ttyUSB0'),
         DeclareLaunchArgument('trailer_baud', default_value='57600'),
+        # Set trailer_radio:=false to keep the coordinate pipeline but NOT start
+        # the radio reader, for when trailer_gps_node is already running in its
+        # own terminal. Two processes cannot share one serial port, and the one
+        # that loses is silent about it in a log file nobody is watching — so
+        # this exists to make "I am driving the radio myself" a supported setup
+        # rather than a race.
+        DeclareLaunchArgument('trailer_radio', default_value='true'),
         # --- camera: hardware JPEG decode on the Jetson's NVJPG block --------
         Node(
             package='aruco_landing',
@@ -123,7 +131,10 @@ def generate_launch_description():
                 'baud': ParameterValue(LaunchConfiguration('trailer_baud'),
                                        value_type=int),
             }],
-            condition=IfCondition(trailer),
+            # Both must be true: the mission wants the trailer, AND nobody
+            # else is already holding the radio.
+            condition=IfCondition(PythonExpression(
+                ["'", trailer, "' == 'true' and '", radio, "' == 'true'"])),
         ),
         # ...and the geodesy end: /trailer/fix -> a point in the vehicle's own
         # local ENU frame. Publishes ONLY while the target is fully valid.
