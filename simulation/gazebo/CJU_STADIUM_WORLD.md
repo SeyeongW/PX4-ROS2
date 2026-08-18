@@ -47,17 +47,20 @@ geometry-only B-spline reinforces that spatial path, and TrackingMPC tracks it t
 the drone and trailer start together on the track centre at the integer map
 coordinate `(5,0)`, with the drone on the 2.051 m deck. The drone flies at
 0.5 m/s to 5 m, then uses 1 m-grid A* topology plus the geometry B-spline/
-TrackingMPC route to `(50,50)` around twenty
-`0.45 x 0.35 x 10 m` barriers at seed-5053-based integer centres sampled from
-`(0,0)` to `(50,50)` and filtered inside the infield, with barrier 2 manually
-placed above barrier 17: `(33,10)`, `(18,39)`,
-`(21,25)`, `(49,41)`, `(31,36)`, `(45,11)`, `(39,21)`, `(42,50)`, `(17,18)`,
-`(22,33)`, `(44,33)`, `(24,12)`, `(39,0)`, `(30,23)`, `(49,1)`, `(21,3)`,
-`(15,34)`, `(42,41)`, `(35,49)`, and `(28,46)`. The trailer moves
+TrackingMPC route to `(50,50)` around twenty-five
+`0.45 x 0.35 x 10 m` barriers. The first twenty use seed-5053-based integer
+centres filtered inside the infield, with selected Y coordinates adjusted, and
+five additional integer centres increase density without blocking the route:
+`(33,10)`, `(18,39)`,
+`(21,25)`, `(49,41)`, `(31,36)`, `(45,12)`, `(39,21)`, `(42,51)`, `(17,18)`,
+`(22,33)`, `(44,33)`, `(24,14)`, `(39,0)`, `(30,23)`, `(49,4)`, `(21,3)`,
+`(15,34)`, `(42,41)`, `(35,49)`, `(28,46)`, `(12,48)`, `(50,23)`,
+`(12,8)`, `(30,1)`, and `(12,25)`. The trailer moves
 50 m forward along the stadium long axis and 50 m backward at 1 m/s, repeating
-that fixed segment. A*/B-spline, return-tail, and landing-entry checks use a
-1.5 m Euclidean XY radius around each physical obstacle AABB; runtime checks
-retain the hard 1 m radius. In Phase 3 the gimbal remains nadir beyond 10 m,
+that fixed segment. A*/optimizer-SFC/B-spline and landing-entry checks use a
+1.5 m Euclidean XY planning clearance around each raw physical obstacle AABB;
+this is the drone-owned 1 m radius plus 0.5 m tracking reserve. Runtime checks
+use the hard 1 m vehicle radius. In Phase 3 the gimbal remains nadir beyond 10 m,
 blends toward the trailer over 10→9 m of horizontal GPS/cue range, and points directly inside
 9 m. `land` stays in `RETURN` until three distinct KF-accepted ArUco fixes arrive
 within 0.5 s and the live cue segment passes the 1.5 m planning-clearance check.

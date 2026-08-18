@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import math
 import sys
+import textwrap
 from collections import deque
 from pathlib import Path
 
@@ -41,7 +42,6 @@ try:
     from landing_mpc.mission_manager_node import (
         _mission_planning_segment_is_free,
         _plan_global_path,
-        _retarget_path_tail,
     )
 except ModuleNotFoundError as exc:
     if exc.name == "px4_msgs":
@@ -101,9 +101,94 @@ def _plan_map_leg(map_path, start_map=None, goal_map=None):
                    _map_to_local(start_map, rotation, origin, spawn, altitude)[0])
     goal_local = (None if goal_map is None else
                   _map_to_local(goal_map, rotation, origin, spawn, altitude)[0])
-    arc, path_local, expanded = _plan_global_path(
-        str(map_path), start_local, goal_local)
-    return arc, _local_to_map(path_local, rotation, origin, spawn), expanded
+    arc, path_local, expanded, diagnostics = _plan_global_path(
+        str(map_path), start_local, goal_local, include_diagnostics=True)
+    return (arc, _local_to_map(path_local, rotation, origin, spawn),
+            expanded, diagnostics)
+
+
+def _sfc_vertices(boxes_min, boxes_max):
+    """Return top-down polygons for finite, ordered SFC boxes."""
+    boxes_min = np.asarray(boxes_min, float)
+    boxes_max = np.asarray(boxes_max, float)
+    if (boxes_min.ndim != 2 or boxes_min.shape[1] < 2
+            or boxes_max.shape != boxes_min.shape
+            or not np.all(np.isfinite(np.r_[boxes_min, boxes_max]))
+            or np.any(boxes_max < boxes_min)):
+        raise ValueError("SFC boxes must be finite ordered Nx2/Nx3 arrays")
+    return np.asarray([
+        [[low[0], low[1]], [high[0], low[1]],
+         [high[0], high[1]], [low[0], high[1]]]
+        for low, high in zip(boxes_min, boxes_max)
+    ], float)
+
+
+def _sfc_message_vertices(message):
+    """Decode the manager's flattened xmin,ymin,xmax,ymax SFC message."""
+    values = np.asarray(message.data, float)
+    if values.size % 4:
+        raise ValueError("SFC message data length must be divisible by four")
+    if not np.all(np.isfinite(values)):
+        raise ValueError("SFC message must contain only finite values")
+    boxes = values.reshape(-1, 4)
+    if not len(boxes):
+        return np.empty((0, 4, 2))
+    return _sfc_vertices(boxes[:, :2], boxes[:, 2:])
+
+
+def _active_plan_marker_snapshot(message, expected_frame):
+    """Decode one atomic map-frame active path/SFC MarkerArray sample."""
+    from visualization_msgs.msg import Marker
+
+    markers = list(message.markers)
+    empty_path = np.empty((0, 3))
+    empty_sfc = np.empty((0, 4, 2))
+    if not markers or markers[0].action != Marker.DELETEALL:
+        raise ValueError("active plan must start with DELETEALL")
+    reference_stamp = (
+        markers[0].header.stamp.sec, markers[0].header.stamp.nanosec)
+    for marker in markers:
+        stamp = (marker.header.stamp.sec, marker.header.stamp.nanosec)
+        if marker.header.frame_id != expected_frame or stamp != reference_stamp:
+            raise ValueError("active plan frame/stamp mismatch")
+    if len(markers) == 1:
+        return None, empty_path, empty_sfc
+
+    additions = markers[1:]
+    paths = [marker for marker in additions if marker.ns == "active_path"]
+    boxes = [marker for marker in additions if marker.ns == "active_sfc"]
+    if len(paths) != 1 or len(boxes) + 1 != len(additions):
+        raise ValueError("active plan needs one path and only SFC boxes")
+    path_marker = paths[0]
+    if (path_marker.type != Marker.LINE_STRIP
+            or path_marker.action != Marker.ADD or path_marker.id <= 0):
+        raise ValueError("active path marker contract is invalid")
+    path = np.asarray([
+        [point.x, point.y, point.z] for point in path_marker.points], float)
+    if (path.shape[0] < 2 or path.shape[1:] != (3,)
+            or not np.all(np.isfinite(path))):
+        raise ValueError("active path must contain finite map points")
+    if not boxes or len({marker.id for marker in boxes}) != len(boxes):
+        raise ValueError("active SFC must contain uniquely identified boxes")
+
+    lows, highs = [], []
+    for marker in boxes:
+        quaternion = marker.pose.orientation
+        values = np.array([
+            marker.pose.position.x, marker.pose.position.y,
+            marker.pose.position.z, marker.scale.x, marker.scale.y,
+            marker.scale.z, quaternion.x, quaternion.y, quaternion.z,
+            quaternion.w], float)
+        if (marker.type != Marker.CUBE or marker.action != Marker.ADD
+                or not np.all(np.isfinite(values))
+                or np.any(values[3:6] <= 0.0)
+                or not np.allclose(values[6:10], [0.0, 0.0, 0.0, 1.0],
+                                   atol=1.0e-9, rtol=0.0)):
+            raise ValueError("active SFC cube contract is invalid")
+        centre, extent = values[:3], values[3:6]
+        lows.append(centre - 0.5 * extent)
+        highs.append(centre + 0.5 * extent)
+    return path_marker.id, path, _sfc_vertices(lows, highs)
 
 
 def _path_position(arc, path, distance_m):
@@ -144,21 +229,21 @@ def build_preview(map_path, dt_s=0.1):
     preview_speed = float(
         document["px4_vehicle"]["sitl_parameter_overrides"]["MPC_XY_CRUISE"])
     replan_s = float(mission["return_replan_min_period_s"])
-    lookahead_m = float(mission["mpc_path_lookahead_m"])
-    cross_track_m = float(mission["mpc_path_cross_track_m"])
-    sample_spacing_m = float(mission["bspline_sample_spacing_m"])
-    if min(dt_s, trailer_speed, preview_speed, replan_s,
-           lookahead_m, cross_track_m, sample_spacing_m) <= 0.0:
+    if min(dt_s, trailer_speed, preview_speed, replan_s) <= 0.0:
         raise ValueError("preview and YAML motion values must be positive")
     ideal_vision_range_m = GIMBAL_AIM_FULL_RANGE_M
 
-    arc, path, expanded = _plan_map_leg(map_path)
+    arc, path, expanded, diagnostics = _plan_map_leg(map_path)
+    sfc_vertices = _sfc_vertices(
+        diagnostics["sfc_boxes_min_map"],
+        diagnostics["sfc_boxes_max_map"])
     plans = [{
         "phase": "MISSION",
         "start_frame": 0,
         "arc": arc,
         "path": path,
         "expanded": expanded,
+        "sfc_vertices": sfc_vertices,
         "target": path[-1].copy(),
     }]
     phase = "MISSION"
@@ -210,37 +295,9 @@ def build_preview(map_path, dt_s=0.1):
                 refresh_return = True
 
         trailer = _trailer_position(route, trailer_speed, time_s)
-        if refresh_return:
-            def planning_segment_is_free(start, goal):
-                local = _map_to_local(
-                    np.vstack((start, goal)), rotation, origin, spawn,
-                    altitude)
-                return _mission_planning_segment_is_free(
-                    str(map_path), local[0], local[1])
-
-            replacement = _retarget_path_tail(
-                planning_segment_is_free, arc, path, progress, trailer,
-                lookahead_m, cross_track_m, sample_spacing_m)
-            last_return_update_s = time_s
-            if replacement is not None:
-                arc, path = replacement
-                plan_index = len(plans)
-                plans.append({
-                    "phase": "RETURN",
-                    "start_frame": len(frames),
-                    "planned_at_s": time_s,
-                    "arc": arc,
-                    "path": path,
-                    "expanded": None,
-                    "target": trailer.copy(),
-                })
-                progress = min(
-                    progress + preview_speed * dt_s, float(arc[-1]))
-                drone = _path_position(arc, path, progress)[:2]
-                time_s += dt_s
-                continue
         try:
-            arc, path, expanded = _plan_map_leg(map_path, drone, trailer)
+            arc, path, expanded, diagnostics = _plan_map_leg(
+                map_path, drone, trailer)
         except RuntimeError:
             if not refresh_return or phase != "RETURN":
                 raise
@@ -259,6 +316,9 @@ def build_preview(map_path, dt_s=0.1):
             "arc": arc,
             "path": path,
             "expanded": expanded,
+            "sfc_vertices": _sfc_vertices(
+                diagnostics["sfc_boxes_min_map"],
+                diagnostics["sfc_boxes_max_map"]),
             "target": trailer.copy(),
         })
         last_return_update_s = time_s
@@ -269,36 +329,78 @@ def build_preview(map_path, dt_s=0.1):
 
 
 def _draw_obstacles(ax, mission):
-    """Draw physical AABBs and their Euclidean XY clearance zones."""
-    from matplotlib.patches import FancyBboxPatch, Rectangle
+    """Draw the physical YAML AABBs without storing clearance on them."""
+    from matplotlib.patches import Rectangle
 
-    clearance = float(mission["obstacle_clearance_m"])
     for index, obstacle in enumerate(mission["obstacles"], 1):
         center = np.asarray(obstacle["center_m"][:2], float)
         size = np.asarray(obstacle["size_m"][:2], float)
         corner = center - size / 2.0
-        ax.add_patch(FancyBboxPatch(
-            corner, *size,
-            boxstyle=(f"round,pad={clearance},"
-                      f"rounding_size={clearance}"),
-            facecolor="#f8d7da", edgecolor="#dc3545", alpha=0.25,
-            linewidth=0.8))
         ax.add_patch(Rectangle(
             corner, *size,
-            facecolor="#343a40", edgecolor="black", linewidth=0.8))
+            facecolor="#343a40", edgecolor="black", linewidth=0.8, zorder=4,
+            label="physical obstacle" if index == 1 else None))
         ax.text(center[0] + 0.35, center[1] + 0.35, str(index),
-                fontsize=7, color="#343a40")
+                fontsize=7, color="#343a40", zorder=5)
+
+
+def _figure_layout(bottom=0.14):
+    """Keep map artists and diagnostics in non-overlapping axes."""
+    import matplotlib.pyplot as plt
+
+    fig = plt.figure(figsize=(11.5, 8))
+    grid = fig.add_gridspec(
+        1, 2, width_ratios=(3.4, 1.6), left=0.06, right=0.98,
+        bottom=bottom, top=0.93, wspace=0.08)
+    ax = fig.add_subplot(grid[0])
+    info_ax = fig.add_subplot(grid[1])
+    info_ax.set_axis_off()
+    return fig, ax, info_ax
+
+
+def _draw_vehicle_radius(ax, radius_m, *, visible=True):
+    """Show the clearance owned by the drone, not by each obstacle."""
+    from matplotlib.patches import Circle
+
+    circle = Circle(
+        (0.0, 0.0), float(radius_m),
+        facecolor=(0.10, 0.45, 0.85, 0.08), edgecolor="#1971c2",
+        linestyle="--", linewidth=1.2, zorder=6,
+        label=f"drone safety radius {float(radius_m):g} m")
+    circle.set_visible(visible)
+    ax.add_patch(circle)
+    return circle
+
+
+def _expand_axes_to_points(ax, points, pad_m=1.0):
+    """Expand, but never shrink, the map so live SFC boxes stay visible."""
+    points = np.asarray(points, float).reshape(-1, 2)
+    points = points[np.all(np.isfinite(points), axis=1)]
+    if not len(points):
+        return
+    xlim, ylim = ax.get_xlim(), ax.get_ylim()
+    low, high = points.min(axis=0) - pad_m, points.max(axis=0) + pad_m
+    ax.set_xlim(min(xlim[0], low[0]), max(xlim[1], high[0]))
+    ax.set_ylim(min(ylim[0], low[1]), max(ylim[1], high[1]))
 
 
 def _make_figure(document, route, frames, plans, preview_speed):
-    import matplotlib.pyplot as plt
+    from matplotlib.collections import PolyCollection
     from matplotlib.patches import Rectangle
     from matplotlib.widgets import Button
 
-    fig, ax = plt.subplots(figsize=(9, 8))
-    fig.subplots_adjust(bottom=0.14)
+    fig, ax, info_ax = _figure_layout(bottom=0.14)
     mission = document["mission"]
     _draw_obstacles(ax, mission)
+    vehicle_radius = float(mission["vehicle_clearance_xy_m"])
+    planning_clearance = (
+        vehicle_radius
+        + float(mission.get("bspline_clearance_margin_m", 0.5)))
+    sfc_collection = PolyCollection(
+        [], facecolor=(0.13, 0.55, 0.90, 0.05),
+        edgecolor=(0.09, 0.39, 0.67, 0.40), linewidth=0.7, zorder=1,
+        label=f"active-path SFC ({planning_clearance:g} m planning)")
+    ax.add_collection(sfc_collection)
 
     ax.plot(route[:, 0], route[:, 1], "--", color="#e8590c", linewidth=1.5,
             label="trailer shuttle (YAML)")
@@ -318,14 +420,16 @@ def _make_figure(document, route, frames, plans, preview_speed):
                            label="drone preview")
     trailer_trace, = ax.plot([], [], color="#e8590c", linewidth=1.2, alpha=0.7)
     drone_dot, = ax.plot([], [], "o", color="#1971c2", markersize=9, zorder=9)
+    drone_radius = _draw_vehicle_radius(ax, vehicle_radius)
     trailer_size = np.asarray(document["trailer"]["body_footprint_m"], float)
     trailer_box = Rectangle((0.0, 0.0), *trailer_size,
                             facecolor="#ff922b", edgecolor="#d9480f",
                             alpha=0.65, zorder=7)
     ax.add_patch(trailer_box)
     handoff_line, = ax.plot([], [], ":", color="#ffd43b", linewidth=2.0)
-    status = ax.text(0.015, 0.985, "", transform=ax.transAxes, va="top",
-                     family="monospace", bbox={"facecolor": "white", "alpha": 0.85})
+    status = info_ax.text(
+        0.0, 1.0, "", transform=info_ax.transAxes, va="top",
+        family="monospace", fontsize=9)
 
     all_points = np.vstack([
         route,
@@ -335,10 +439,16 @@ def _make_figure(document, route, frames, plans, preview_speed):
     lo, hi = all_points.min(axis=0) - 5.0, all_points.max(axis=0) + 5.0
     ax.set(xlim=(lo[0], hi[0]), ylim=(lo[1], hi[1]),
            xlabel="map x [m]", ylabel="map y [m]")
+    all_sfc = [plan["sfc_vertices"].reshape(-1, 2) for plan in plans
+               if len(plan["sfc_vertices"])]
+    if all_sfc:
+        _expand_axes_to_points(ax, np.vstack(all_sfc))
     ax.set_aspect("equal")
     ax.grid(alpha=0.2)
-    ax.set_title("CJU YAML mission: A* -> geometry-only B-spline -> trailer")
-    ax.legend(loc="lower right", fontsize=8)
+    ax.set_title("CJU YAML mission preview")
+    handles, labels = ax.get_legend_handles_labels()
+    info_ax.legend(handles, labels, loc="lower left", fontsize=8,
+                   frameon=True, borderaxespad=0.0)
 
     def update(frame_index):
         frame = frames[frame_index]
@@ -357,6 +467,7 @@ def _make_figure(document, route, frames, plans, preview_speed):
         drone_trace.set_data(drone_history[:, 0], drone_history[:, 1])
         trailer_trace.set_data(trailer_history[:, 0], trailer_history[:, 1])
         drone_dot.set_data([frame["drone"][0]], [frame["drone"][1]])
+        drone_radius.center = frame["drone"][:2]
         trailer_box.set_xy(frame["trailer"] - trailer_size / 2.0)
         if frame["phase"].startswith("LANDING MPC ENTRY"):
             handoff_line.set_data(
@@ -365,15 +476,22 @@ def _make_figure(document, route, frames, plans, preview_speed):
         else:
             handoff_line.set_data([], [])
         plan = plans[active]
-        plan_kind = ("tail retarget" if plan["expanded"] is None else
-                     f"A* expansions: {plan['expanded']}")
+        sfc_collection.set_verts(plan["sfc_vertices"])
         status.set_text(
-            f"phase: {frame['phase']}\n"
-            f"t: {frame['time_s']:.1f} s   trailer distance: {frame['distance_m']:.1f} m\n"
-            f"plan: {plan['arc'][-1]:.1f} m   {plan_kind}\n"
-            f"PX4 speed preview: {preview_speed:.1f} m/s (not a B-spline input)")
+            "phase:\n"
+            f"  {frame['phase']}\n"
+            f"time: {frame['time_s']:.1f} s\n"
+            f"trailer distance: {frame['distance_m']:.1f} m\n"
+            f"plan length: {plan['arc'][-1]:.1f} m\n"
+            f"A* expansions: {plan['expanded']}\n"
+            f"active SFC boxes: {len(plan['sfc_vertices'])}\n"
+            "  A* -> optimizer SFC -> B-spline\n"
+            "  final path free-box certified\n"
+            f"PX4 speed preview: {preview_speed:.1f} m/s\n"
+            "  (not a B-spline input)")
         return [*path_lines, drone_trace, trailer_trace, drone_dot,
-                trailer_box, handoff_line, status]
+                trailer_box, handoff_line, sfc_collection, drone_radius,
+                status]
 
     button_ax = fig.add_axes([0.42, 0.035, 0.16, 0.055])
     button = Button(button_ax, "Pause")
@@ -383,13 +501,12 @@ def _make_figure(document, route, frames, plans, preview_speed):
 def _check(document, route, frames, plans):
     obstacles = document["mission"]["obstacles"]
     centers = np.asarray([item["center_m"][:2] for item in obstacles], float)
-    assert len(centers) == 20 and np.all(centers == np.round(centers))
+    assert len(centers) == 25 and np.all(centers == np.round(centers))
     assert np.allclose(route, [[5.0, 0.0], [5.0, 50.0]], atol=1.0e-6)
     assert np.allclose(plans[0]["path"][0], [5.0, 0.0], atol=1.0e-6)
     assert np.allclose(plans[0]["path"][-1], [50.0, 50.0], atol=1.0e-6)
     assert len(plans) >= 3 and plans[1]["phase"] == "RETURN"
-    full_plans = [plan for plan in plans if plan["expanded"] is not None]
-    assert len(full_plans) == 2  # outbound + initial return
+    assert all(plan["expanded"] is not None for plan in plans)
     return_times = [plan["planned_at_s"] for plan in plans[1:]]
     cadence = float(document["mission"]["return_replan_min_period_s"])
     assert all(cadence <= right - left <= cadence + 0.11
@@ -404,19 +521,23 @@ def _check(document, route, frames, plans):
 def _run_live(map_path):
     """Display ROS measurements and the manager's accepted geometry."""
     import rclpy
-    from geometry_msgs.msg import PointStamped, PoseArray
+    from geometry_msgs.msg import PointStamped
     from matplotlib.animation import FuncAnimation
     from rclpy.qos import (DurabilityPolicy, HistoryPolicy, QoSProfile,
                            ReliabilityPolicy)
     from std_msgs.msg import String
+    from visualization_msgs.msg import MarkerArray
+    from matplotlib.collections import PolyCollection
     import matplotlib.pyplot as plt
 
     map_path = Path(map_path).resolve()
     document = yaml.safe_load(map_path.read_text(encoding="utf-8"))
     rotation, origin, spawn = _frame_contract(document)
     route = _trailer_route(document, rotation, origin)
+    expected_frame = str(document["mission"]["coordinate_frame"])
     data = {"state": "WAITING", "vehicle": None, "cue": None,
-            "path": np.empty((0, 3)),
+            "active_plan": (
+                None, np.empty((0, 3)), np.empty((0, 4, 2))),
             "landing": "landing data: waiting"}
     vehicle_history, cue_history = deque(maxlen=5000), deque(maxlen=5000)
 
@@ -437,16 +558,24 @@ def _run_live(map_path):
         if point is not None:
             data["cue"] = point
 
-    def on_path(message):
-        path = _path_message_to_local(message)
-        if path is not None:
-            data["path"] = path
+    def on_active_plan(message):
+        try:
+            snapshot = _active_plan_marker_snapshot(message, expected_frame)
+        except ValueError as exc:
+            node.get_logger().warning(
+                f"ignored invalid active-plan message: {exc}")
+            return
+        current_seq = data["active_plan"][0]
+        if snapshot[0] is None or current_seq is None \
+                or snapshot[0] > current_seq:
+            data["active_plan"] = snapshot
 
     node.create_subscription(
         PointStamped, "/mission/vehicle_position", on_vehicle, 10)
     node.create_subscription(PointStamped, "/marker/cue", on_cue, 10)
     node.create_subscription(
-        PoseArray, "/mission/planned_path", on_path, path_qos)
+        MarkerArray, "/mission/active_plan_markers",
+        on_active_plan, path_qos)
     node.create_subscription(
         String, "/mission/state",
         lambda message: data.__setitem__("state", message.data), 10)
@@ -454,9 +583,18 @@ def _run_live(map_path):
         String, "/mission/landing_diagnostics",
         lambda message: data.__setitem__("landing", message.data), 10)
 
-    fig, ax = plt.subplots(figsize=(9, 8))
+    fig, ax, info_ax = _figure_layout(bottom=0.08)
     mission = document["mission"]
     _draw_obstacles(ax, mission)
+    vehicle_radius = float(mission["vehicle_clearance_xy_m"])
+    planning_clearance = (
+        vehicle_radius
+        + float(mission.get("bspline_clearance_margin_m", 0.5)))
+    sfc_collection = PolyCollection(
+        [], facecolor=(0.13, 0.55, 0.90, 0.05),
+        edgecolor=(0.09, 0.39, 0.67, 0.40), linewidth=0.7, zorder=1,
+        label=f"active-path SFC ({planning_clearance:g} m planning)")
+    ax.add_collection(sfc_collection)
 
     ax.plot(route[:, 0], route[:, 1], "--", color="#e8590c",
             linewidth=1.5, label="trailer shuttle (YAML)")
@@ -471,9 +609,11 @@ def _run_live(map_path):
                          alpha=0.7, label="trailer measured")
     vehicle_dot, = ax.plot([], [], "o", color="#1971c2", markersize=9)
     cue_dot, = ax.plot([], [], "s", color="#e8590c", markersize=8)
-    status = ax.text(
-        0.015, 0.985, "", transform=ax.transAxes, va="top",
-        family="monospace", bbox={"facecolor": "white", "alpha": 0.85})
+    drone_radius = _draw_vehicle_radius(
+        ax, vehicle_radius, visible=False)
+    status = info_ax.text(
+        0.0, 1.0, "", transform=info_ax.transAxes, va="top",
+        family="monospace", fontsize=9)
 
     centers = np.asarray(
         [item["center_m"][:2] for item in mission["obstacles"]], float)
@@ -484,18 +624,25 @@ def _run_live(map_path):
     ax.set_aspect("equal")
     ax.grid(alpha=0.2)
     ax.set_title("CJU live mission (read-only ROS view)")
-    ax.legend(loc="lower right", fontsize=8)
+    handles, labels = ax.get_legend_handles_labels()
+    info_ax.legend(handles, labels, loc="lower left", fontsize=8,
+                   frameon=True, borderaxespad=0.0)
 
     def update(_frame):
         for _ in range(20):
             rclpy.spin_once(node, timeout_sec=0.0)
         vehicle = data["vehicle"]
         cue = data["cue"]
-        path = data["path"]
+        plan_seq, path, sfc = data["active_plan"]
+        sfc_collection.set_verts(sfc)
+        if len(sfc):
+            _expand_axes_to_points(ax, sfc)
         if vehicle is not None:
             vehicle_history.append(vehicle.copy())
             mapped = _local_to_map(vehicle, rotation, origin, spawn)[0]
             vehicle_dot.set_data([mapped[0]], [mapped[1]])
+            drone_radius.center = mapped[:2]
+            drone_radius.set_visible(True)
         if cue is not None:
             cue_history.append(cue.copy())
             mapped = _local_to_map(cue, rotation, origin, spawn)[0]
@@ -509,20 +656,25 @@ def _run_live(map_path):
                 np.asarray(cue_history), rotation, origin, spawn)
             cue_trace.set_data(mapped[:, 0], mapped[:, 1])
         if len(path):
-            mapped = _local_to_map(path, rotation, origin, spawn)
-            planned_line.set_data(mapped[:, 0], mapped[:, 1])
+            planned_line.set_data(path[:, 0], path[:, 1])
+            _expand_axes_to_points(ax, path[:, :2])
         else:
             planned_line.set_data([], [])
         distance = (float(np.linalg.norm(vehicle[:2] - cue[:2]))
                     if vehicle is not None and cue is not None else float("nan"))
+        landing = "\n".join(
+            textwrap.fill(part.strip(), width=39)
+            for part in data["landing"].split("|") if part.strip())
         status.set_text(
             f"state: {data['state']}\n"
             f"horizontal range: {distance:.1f} m\n"
-            f"{data['landing']}\n"
+            f"{landing}\n"
+            f"active plan: {plan_seq if plan_seq is not None else 'none'}\n"
             f"active path samples: {len(path)}\n"
+            f"active SFC boxes: {len(sfc)}\n"
             "read-only: no flight commands")
-        return (planned_line, vehicle_trace, cue_trace,
-                vehicle_dot, cue_dot, status)
+        return (planned_line, vehicle_trace, cue_trace, sfc_collection,
+                vehicle_dot, cue_dot, drone_radius, status)
 
     animation = FuncAnimation(
         fig, update, interval=100, cache_frame_data=False, blit=False)

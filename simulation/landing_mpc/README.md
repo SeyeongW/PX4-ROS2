@@ -46,10 +46,11 @@ Perception + mission nodes (the live stack, launched by
   and `HOVER`. The spline itself publishes no speed or P/V/A schedule;
   TrackingMPC derives a braking reference and PX4 retains the lower-level
   position, velocity, attitude, and motor-control loops.
-- **Phase 3 — landing**: `land` builds one A* → geometry-only B-spline
-  `RETURN`, then replaces only a validated 1.5 m-safe tail every two seconds
-  from the latest live GPS/cue. A full replan is the fallback only when no safe
-  tail connector exists; the prior route remains active throughout. There is no
+- **Phase 3 — landing**: `land` builds an A* → optimizer-SFC → geometry-only
+  B-spline `RETURN`, then asynchronously reruns that complete paper pipeline
+  from the latest live GPS/cue on the configured minimum two-second cadence.
+  The prior certified route remains active until
+  the new path/SFC pair passes the 1.5 m checks and commits atomically. There is no
   angle-only handoff: the gimbal holds literal yaw 0/pitch -90 outside 10 m
   and blends toward the trailer over 10→9 m
   of horizontal GPS/cue range, and entry requires three distinct KF-accepted ArUco fixes within
@@ -59,7 +60,8 @@ Perception + mission nodes (the live stack, launched by
   and auto-disarm to PX4 `NAV_PRECLAND` only with fresh alignment and enough
   straight runway before the shuttle's next reversal.
   Before `land` and again after terminal `DONE`, the gimbal publishes encoder
-  state/TF but no joint-position commands.
+  state/TF but no joint-position commands. The first post-`land` nadir park is
+  limited to 30 deg/s; cue/vision tracking retains the 90 deg/s limit.
 
 ## Design notes (do not "improve" without rebutting the rationale — spec §2)
 

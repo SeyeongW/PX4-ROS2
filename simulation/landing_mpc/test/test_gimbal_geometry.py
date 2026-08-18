@@ -128,3 +128,45 @@ def test_gimbal_uses_literal_joint_lock_outside_ten_metres_after_land():
     step = np.deg2rad(1.8)
     assert _rate_limit(4.0 * np.pi, 0.0, step) == pytest.approx(
         4.0 * np.pi - step)
+
+
+def test_land_entry_joint_lock_is_slower_than_target_tracking():
+    pitch_commands = []
+
+    class Publisher:
+        def __init__(self, values=None):
+            self.values = values
+
+        def publish(self, message):
+            if self.values is not None:
+                self.values.append(message.data)
+
+    node = SimpleNamespace(
+        _measured=(0.0, 0.0, 0.0),
+        _yaw=0.0, _roll=0.0, _pitch=0.0,
+        _desired=None, _sat_n=0,
+        max_rate=np.deg2rad(90.0),
+        land_entry_rate=np.deg2rad(30.0),
+        rate_hz=50.0,
+        _pub_yaw=Publisher(), _pub_roll=Publisher(),
+        _pub_pitch=Publisher(pitch_commands),
+        _publish_joints=lambda: None,
+    )
+
+    def joint_lock():
+        node._source = 'joint lock (cue beyond 10 m)'
+        return 0.0, 0.0, -np.pi / 2.0
+
+    node._desired_joint_angles = joint_lock
+    GimbalControlNode._tick(node)
+    assert pitch_commands[-1] == pytest.approx(-np.deg2rad(0.6))
+
+    node._pitch = 0.0
+
+    def target_tracking():
+        node._source = 'cue handoff'
+        return 0.0, 0.0, -np.pi / 2.0
+
+    node._desired_joint_angles = target_tracking
+    GimbalControlNode._tick(node)
+    assert pitch_commands[-1] == pytest.approx(-np.deg2rad(1.8))

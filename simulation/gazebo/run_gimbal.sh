@@ -12,6 +12,9 @@
 #   FOLLOW_DRONE=1 ./simulation/gazebo/run_gimbal.sh   optional camera tracking
 #   ARUCO_VIEW=0 ./simulation/gazebo/run_gimbal.sh mission   disable the automatic viewer
 #   MISSION_VIEW=0 ./simulation/gazebo/run_gimbal.sh mission disable the live map viewer
+#   TRAILER_CUE_SOURCE=gps TRAILER_LINK=sim \
+#     ./simulation/gazebo/run_gimbal.sh mission
+#                                      MAVLink-in-the-loop GPS simulation
 #   CJU_LOG_ROOT=/data/cju ./simulation/gazebo/run_gimbal.sh mission
 #                                      override the persistent artifact root
 #
@@ -43,13 +46,70 @@ case "$MODE" in
   mission)   RUN_MISSION=1 ;;
   baseline)  RUN_MISSION=1; GIMBAL=0 ;;
   -h|--help|help)
-    sed -n '2,13p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
     exit 0 ;;
   *) echo "unknown mode '$MODE' (try: gimbal | mission | baseline)" >&2; exit 2 ;;
 esac
 
 ROS_SETUP="${ROS_SETUP:-/opt/ros/humble/setup.bash}"
 PX4_MSGS_SETUP="${PX4_MSGS_SETUP:-${HOME}/px4_ros2_ws/install/setup.bash}"
+TRAILER_CUE_SOURCE="${TRAILER_CUE_SOURCE:-gazebo}"
+TRAILER_LINK="${TRAILER_LINK:-1}"
+TRAILER_DEV="${TRAILER_DEV:-/dev/ttyUSB0}"
+TRAILER_BAUD="${TRAILER_BAUD:-57600}"
+TRAILER_SYSID="${TRAILER_SYSID:-1}"
+GPS_INPUT_TIMEOUT_S="${GPS_INPUT_TIMEOUT_S:-1.0}"
+GPS_CUE_TIMEOUT_S="${GPS_CUE_TIMEOUT_S:-1.0}"
+ALLOW_EXTERNAL_GPS_SITL="${ALLOW_EXTERNAL_GPS_SITL:-0}"
+GPS_SIM_POSITION_NOISE_M="${GPS_SIM_POSITION_NOISE_M:-0.03}"
+GPS_SIM_VELOCITY_NOISE_M_S="${GPS_SIM_VELOCITY_NOISE_M_S:-0.02}"
+GPS_SIM_DELAY_S="${GPS_SIM_DELAY_S:-0.08}"
+GPS_SIM_DROPOUT="${GPS_SIM_DROPOUT:-0.0}"
+GPS_SIM_SEED="${GPS_SIM_SEED:-1}"
+case "$TRAILER_CUE_SOURCE" in
+  gazebo|gps) ;;
+  *)
+    echo "TRAILER_CUE_SOURCE must be 'gazebo' or 'gps'" >&2
+    exit 2
+    ;;
+esac
+if [[ "$TRAILER_CUE_SOURCE" == "gps" && "$TRAILER_LINK" != "sim" \
+    && "$ALLOW_EXTERNAL_GPS_SITL" != "1" ]]; then
+  echo "GPS+SITL mixes a physical GPS target with the Gazebo ArUco target." >&2
+  echo "Use flight/trailer_link/run_gps_cue.sh for hardware, or set" >&2
+  echo "ALLOW_EXTERNAL_GPS_SITL=1 only for an intentional wiring test." >&2
+  exit 2
+fi
+if [[ "$TRAILER_CUE_SOURCE" == "gps" && "$TRAILER_LINK" != "sim" \
+    && -z "${TRAILER_DECK_Z_M:-}" ]]; then
+  echo "GPS cue requires measured TRAILER_DECK_Z_M in PX4 local ENU." >&2
+  exit 2
+fi
+if [[ "$TRAILER_LINK" != "0" && "$TRAILER_LINK" != "1" \
+    && "$TRAILER_LINK" != "sim" ]]; then
+  echo "TRAILER_LINK must be 0, 1, or sim (Gazebo MAVLink PTY)" >&2
+  exit 2
+fi
+if [[ "$TRAILER_LINK" == "sim" && "$TRAILER_CUE_SOURCE" != "gps" ]]; then
+  echo "TRAILER_LINK=sim requires TRAILER_CUE_SOURCE=gps" >&2
+  exit 2
+fi
+if ! [[ "$TRAILER_BAUD" =~ ^[1-9][0-9]*$ ]]; then
+  echo "TRAILER_BAUD must be a positive integer" >&2
+  exit 2
+fi
+if ! [[ "$TRAILER_SYSID" =~ ^[0-9]+$ ]] \
+    || (( TRAILER_SYSID < 1 || TRAILER_SYSID > 254 )); then
+  echo "TRAILER_SYSID must be 1..254" >&2
+  exit 2
+fi
+if [[ "$TRAILER_CUE_SOURCE" == "gps" && "$TRAILER_LINK" == "1" ]]; then
+  TRAILER_CANON="$(readlink -f "$TRAILER_DEV" 2>/dev/null || true)"
+  if [[ -z "$TRAILER_CANON" || ! -c "$TRAILER_CANON" ]]; then
+    echo "trailer radio is not a serial device: $TRAILER_DEV" >&2
+    exit 2
+  fi
+fi
 export GZ_PARTITION="${GZ_PARTITION:-px4_ros2_${USER:-user}}"
 if [[ -z "${PX4_MAP_RUNTIME_DIR:-}" ]]; then
   CJU_LOG_ROOT="${CJU_LOG_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/px4-ros2-wang/cju}"
@@ -73,10 +133,11 @@ cp -- "$LANDING_COORDINATES_SOURCE" "$LANDING_COORDINATES"
 # Read the run's immutable map snapshot so planning and postflight export use
 # exactly the same coordinate contract even if the source YAML later changes.
 mapfile -t LANDING_CONFIG < <(
-  python3 - "$LANDING_COORDINATES" <<'PY'
+  python3 - "$LANDING_COORDINATES" "$REPO_DIR/simulation" <<'PY'
 import json
 import pathlib
 import sys
+import xml.etree.ElementTree as ET
 
 import yaml
 
@@ -92,6 +153,15 @@ print(float(document.get("mission", {}).get("cruise_altitude_m", 6.0)))
 print(trailer["odometry_topic"])
 print(float(trailer["cruise_speed_m_s"]))
 print(float(trailer["command_rate_hz"]))
+world_path = pathlib.Path(
+    sys.argv[2], document["map"]["world_file"]).resolve()
+world = ET.parse(world_path).getroot().find("world")
+spherical = world.find("spherical_coordinates")
+print(float(spherical.findtext("latitude_deg")))
+print(float(spherical.findtext("longitude_deg")))
+print(float(spherical.findtext("elevation")))
+print(float(spherical.findtext("heading_deg", "0")))
+print(float(trailer["marker_surface_height_m"]))
 PY
 )
 LANDING_SPAWN_ENU="${LANDING_CONFIG[0]}"
@@ -100,6 +170,12 @@ LANDING_TAKEOFF_ALT="${LANDING_CONFIG[2]}"
 LANDING_ODOMETRY_TOPIC="${LANDING_CONFIG[3]}"
 LANDING_TRAILER_SPEED="${LANDING_CONFIG[4]}"
 LANDING_CUE_RATE="${LANDING_CONFIG[5]}"
+GPS_SIM_LAT="${LANDING_CONFIG[6]}"
+GPS_SIM_LON="${LANDING_CONFIG[7]}"
+GPS_SIM_ELEVATION="${LANDING_CONFIG[8]}"
+GPS_SIM_HEADING="${LANDING_CONFIG[9]}"
+GPS_SIM_ANTENNA_Z="${LANDING_CONFIG[10]}"
+GPS_DECK_Z="${TRAILER_DECK_Z_M:-$LANDING_DECK_Z}"
 
 XRCE_LOG="$PX4_MAP_RUNTIME_DIR/gimbal_xrce.log"
 SIM_LOG="$PX4_MAP_RUNTIME_DIR/gimbal_sim.log"
@@ -107,6 +183,9 @@ STACK_LOG="$PX4_MAP_RUNTIME_DIR/gimbal_stack.log"
 VIEW_LOG="$PX4_MAP_RUNTIME_DIR/gimbal_aruco_view.log"
 MISSION_VIEW_LOG="$PX4_MAP_RUNTIME_DIR/gimbal_mission_view.log"
 CUE_LOG="$PX4_MAP_RUNTIME_DIR/gimbal_cue.log"
+GPS_LOG="$PX4_MAP_RUNTIME_DIR/trailer_gps.log"
+GPS_SIM_LOG="$PX4_MAP_RUNTIME_DIR/trailer_mavlink_emulator.log"
+GPS_SIM_PTY_LINK="$PX4_MAP_RUNTIME_DIR/trailer_mavlink.pty"
 MISSION_LOG="$PX4_MAP_RUNTIME_DIR/gimbal_mission.log"
 ODOMETRY_LOG="$PX4_MAP_RUNTIME_DIR/trailer_odometry.jsonl"
 ODOMETRY_ERROR_LOG="$PX4_MAP_RUNTIME_DIR/trailer_odometry.err"
@@ -145,6 +224,14 @@ GIT_DIRTY=0
   printf 'coordinates_source\t%s\n' "$LANDING_COORDINATES_SOURCE"
   printf 'coordinates_sha256\t%s\n' "$(sha256sum "$LANDING_COORDINATES" | cut -d' ' -f1)"
   printf 'gimbal\t%s\n' "$GIMBAL"
+  printf 'trailer_cue_source\t%s\n' "$TRAILER_CUE_SOURCE"
+  printf 'trailer_link_owned\t%s\n' "$TRAILER_LINK"
+  printf 'gps_deck_z_m\t%s\n' "$GPS_DECK_Z"
+  printf 'gps_sim_position_noise_m\t%s\n' "$GPS_SIM_POSITION_NOISE_M"
+  printf 'gps_sim_velocity_noise_m_s\t%s\n' "$GPS_SIM_VELOCITY_NOISE_M_S"
+  printf 'gps_sim_delay_s\t%s\n' "$GPS_SIM_DELAY_S"
+  printf 'gps_sim_dropout\t%s\n' "$GPS_SIM_DROPOUT"
+  printf 'gps_sim_seed\t%s\n' "$GPS_SIM_SEED"
   printf 'takeoff_alt_m\t%s\n' "$LANDING_TAKEOFF_ALT"
   printf 'flight_control_owner\t%s\n' 'mission_manager_mpc_then_px4_precland'
   printf 'trailer_speed_m_s\t%s\n' "$TRAILER_SPEED_FOR_RUN"
@@ -245,9 +332,15 @@ fi
 
 # Never kill a process this invocation does not own.  A stale stack is reported
 # and must be stopped explicitly by its owner.
-if pgrep -f 'px4_sitl_default/bin/px4|native_gz_sensor_bridge|landing_mpc/lib/landing_mpc/|python3 .*simulation/gazebo/(trailer_waypoint_driver.py|tools/aruco_debug_viewer.py)' >/dev/null 2>&1; then
+if pgrep -f 'px4_sitl_default/bin/px4|native_gz_sensor_bridge|landing_mpc/lib/landing_mpc/|trailer_link/lib/trailer_link/trailer_target_node|trailer_mavlink_emulator.py|python3 .*simulation/gazebo/(trailer_waypoint_driver.py|tools/aruco_debug_viewer.py)' >/dev/null 2>&1; then
   echo "ERROR: another sim/perception stack is already running." >&2
-  pgrep -af 'px4_sitl_default/bin/px4|native_gz_sensor_bridge|landing_mpc/lib/landing_mpc/|python3 .*simulation/gazebo/(trailer_waypoint_driver.py|tools/aruco_debug_viewer.py)' >&2 || true
+  pgrep -af 'px4_sitl_default/bin/px4|native_gz_sensor_bridge|landing_mpc/lib/landing_mpc/|trailer_link/lib/trailer_link/trailer_target_node|trailer_mavlink_emulator.py|python3 .*simulation/gazebo/(trailer_waypoint_driver.py|tools/aruco_debug_viewer.py)' >&2 || true
+  exit 4
+fi
+if [[ "$TRAILER_CUE_SOURCE" == "gps" && "$TRAILER_LINK" != "0" ]] \
+    && pgrep -f 'trailer_link/lib/trailer_link/trailer_gps_node' >/dev/null 2>&1; then
+  echo "ERROR: another trailer GPS radio reader is already running." >&2
+  pgrep -af 'trailer_link/lib/trailer_link/trailer_gps_node' >&2 || true
   exit 4
 fi
 
@@ -321,6 +414,21 @@ python3 -c 'import px4_msgs' >/dev/null 2>&1 || {
   echo "ERROR: px4_msgs not found; set PX4_MSGS_SETUP to its install/setup.bash." >&2
   exit 3
 }
+topic_publisher_count() {
+  { ros2 topic info "$1" 2>/dev/null || true; } \
+    | awk '/Publisher count:/ {print $3; found=1} END {if (!found) print 0}'
+}
+require_single_publisher() {
+  local topic="$1" count=0
+  for _ in {1..50}; do
+    count="$(topic_publisher_count "$topic")"
+    [[ "$count" == "1" ]] && return 0
+    [[ "$count" -gt 1 ]] && break
+    sleep 0.1
+  done
+  echo "ERROR: $topic needs exactly one publisher; found $count." >&2
+  return 1
+}
 
 if [[ "$GIMBAL" == "1" ]]; then
   echo "=== gimbal + perception — log: $STACK_LOG ==="
@@ -392,16 +500,83 @@ fi
 
 if [[ "$RUN_MISSION" == "1" ]]; then
   echo "=== mission — log: $MISSION_LOG ==="
-  setsid ros2 run landing_mpc trailer_cue_node --ros-args \
-    -p use_sim_time:=true -p world:="$LANDING_WORLD" \
-    -p "spawn_enu:=$LANDING_SPAWN_ENU" -p deck_z:="$LANDING_DECK_Z" \
-    -p rate_hz:="$LANDING_CUE_RATE" \
-    >"$CUE_LOG" 2>&1 &
-  CUE_PID=$!
-  PIDS+=("$CUE_PID")
-  REQUIRED_NAMES+=(trailer_cue)
-  REQUIRED_PIDS+=("$CUE_PID")
+  if [[ "$TRAILER_CUE_SOURCE" == "gazebo" ]]; then
+    setsid ros2 run landing_mpc trailer_cue_node --ros-args \
+      -p use_sim_time:=true -p world:="$LANDING_WORLD" \
+      -p "spawn_enu:=$LANDING_SPAWN_ENU" -p deck_z:="$LANDING_DECK_Z" \
+      -p rate_hz:="$LANDING_CUE_RATE" \
+      >"$CUE_LOG" 2>&1 &
+    CUE_PID=$!
+    PIDS+=("$CUE_PID")
+    REQUIRED_NAMES+=(trailer_cue)
+    REQUIRED_PIDS+=("$CUE_PID")
+  else
+    TRAILER_PREFIX="$(ros2 pkg prefix trailer_link 2>/dev/null || true)"
+    if [[ "$(readlink -f "$TRAILER_PREFIX" 2>/dev/null || true)" \
+        != "$(readlink -f "$REPO_DIR/install/trailer_link")" ]]; then
+      echo "ERROR: trailer_link is not built in this workspace." >&2
+      exit 3
+    fi
+    if [[ "$TRAILER_LINK" == "sim" ]]; then
+      setsid python3 -u "$SCRIPT_DIR/tools/trailer_mavlink_emulator.py" \
+        --odometry-topic "$LANDING_ODOMETRY_TOPIC" \
+        --pty-link "$GPS_SIM_PTY_LINK" \
+        --latitude-deg "$GPS_SIM_LAT" --longitude-deg "$GPS_SIM_LON" \
+        --elevation-m "$GPS_SIM_ELEVATION" \
+        --heading-deg "$GPS_SIM_HEADING" \
+        --antenna-z-m "$GPS_SIM_ANTENNA_Z" --sysid "$TRAILER_SYSID" \
+        --position-noise-std-m "$GPS_SIM_POSITION_NOISE_M" \
+        --velocity-noise-std-m-s "$GPS_SIM_VELOCITY_NOISE_M_S" \
+        --delay-s "$GPS_SIM_DELAY_S" \
+        --dropout-probability "$GPS_SIM_DROPOUT" --seed "$GPS_SIM_SEED" \
+        >"$GPS_SIM_LOG" 2>&1 &
+      GPS_SIM_PID=$!
+      PIDS+=("$GPS_SIM_PID")
+      REQUIRED_NAMES+=(trailer_mavlink_emulator)
+      REQUIRED_PIDS+=("$GPS_SIM_PID")
+      for _ in {1..50}; do
+        [[ -c "$GPS_SIM_PTY_LINK" ]] && break
+        kill -0 "$GPS_SIM_PID" 2>/dev/null || break
+        sleep 0.1
+      done
+      if [[ ! -c "$GPS_SIM_PTY_LINK" ]]; then
+        echo "ERROR: Gazebo MAVLink emulator did not create its PTY." >&2
+        cat "$GPS_SIM_LOG" >&2 || true
+        exit 7
+      fi
+      TRAILER_DEV="$GPS_SIM_PTY_LINK"
+    fi
+    if [[ "$TRAILER_LINK" != "0" ]]; then
+      setsid ros2 run trailer_link trailer_gps_node --ros-args \
+        -p use_sim_time:=true -p serial_device:="$TRAILER_DEV" \
+        -p baud:="$TRAILER_BAUD" -p target_sysid:="$TRAILER_SYSID" \
+        >"$GPS_LOG" 2>&1 &
+      GPS_PID=$!
+      PIDS+=("$GPS_PID")
+      REQUIRED_NAMES+=(trailer_gps)
+      REQUIRED_PIDS+=("$GPS_PID")
+    fi
+    setsid ros2 run trailer_link trailer_target_node --ros-args \
+      -p use_sim_time:=true -p deck_z_m:="$GPS_DECK_Z" \
+      -p stale_after_s:="$GPS_INPUT_TIMEOUT_S" \
+      >"$CUE_LOG" 2>&1 &
+    CUE_PID=$!
+    PIDS+=("$CUE_PID")
+    REQUIRED_NAMES+=(trailer_gps_cue)
+    REQUIRED_PIDS+=("$CUE_PID")
+  fi
   sleep 2
+  require_single_publisher /marker/cue || exit 7
+  require_single_publisher /marker/cue_velocity || exit 7
+  if [[ "$TRAILER_CUE_SOURCE" == "gps" ]]; then
+    require_single_publisher /trailer/fix || exit 7
+    require_single_publisher /trailer/velocity_enu || exit 7
+    if ! timeout 15 ros2 topic echo /marker/cue --once >/dev/null 2>&1; then
+      echo "ERROR: no coherent GPS cue; inspect $GPS_LOG and $CUE_LOG." >&2
+      [[ "$TRAILER_LINK" == "sim" ]] && cat "$GPS_SIM_LOG" >&2 || true
+      exit 7
+    fi
+  fi
   MISSION_ARGS=(-p auto_start:=true)
   if [[ "$LANDING_MAP" == "cju-track" ]]; then
     MISSION_ARGS=(
@@ -409,6 +584,9 @@ if [[ "$RUN_MISSION" == "1" ]]; then
       -p takeoff_alt:="$LANDING_TAKEOFF_ALT"
       -p "mission_map_yaml:=$LANDING_COORDINATES"
     )
+  fi
+  if [[ "$TRAILER_CUE_SOURCE" == "gps" ]]; then
+    MISSION_ARGS+=( -p cue_timeout_s:="$GPS_CUE_TIMEOUT_S" )
   fi
   setsid ros2 run landing_mpc mission_manager_node --ros-args -p use_sim_time:=true \
     "${MISSION_ARGS[@]}" \

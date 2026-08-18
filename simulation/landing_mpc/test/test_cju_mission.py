@@ -11,6 +11,8 @@ import yaml
 from geometry_msgs.msg import PointStamped, Pose, PoseArray, Vector3Stamped
 from rclpy.clock import Clock
 from rclpy.qos import DurabilityPolicy, ReliabilityPolicy
+from std_msgs.msg import Float32MultiArray
+from visualization_msgs.msg import Marker
 from px4_msgs.msg import (LandingTargetPose, VehicleCommand,
                           VehicleLocalPosition,
                           VehicleLandDetected, VehicleStatus)
@@ -26,7 +28,6 @@ from landing_mpc.mission_manager_node import (MissionManagerNode,
                                               _mission_segment_is_free,
                                               _path_reference_horizon,
                                               _plan_global_path,
-                                              _retarget_path_tail,
                                               _splice_path_from_current,
                                               _spatial_path_target)
 from landing_mpc.marker_kf_node import MarkerKfNode
@@ -74,7 +75,7 @@ def _endpoint_pose_to_enu(pose, document):
 
 def _blocked(points, mission):
     hit = np.zeros(len(points), dtype=bool)
-    clearance = mission['obstacle_clearance_m']
+    clearance = mission['vehicle_clearance_xy_m']
     for obstacle in mission['obstacles']:
         centre = np.asarray(obstacle['center_m'][:2])
         half = 0.5 * np.asarray(obstacle['size_m'][:2])
@@ -153,7 +154,7 @@ def test_cju_clearance_uses_configured_xy_radius():
     barrier = document['mission']['obstacles'][4]
     centre = np.asarray(barrier['center_m'], float)
     half = 0.5 * np.asarray(barrier['size_m'], float)
-    clearance = document['mission']['obstacle_clearance_m']
+    clearance = document['mission']['vehicle_clearance_xy_m']
     # A square expansion would block this corner point, while its true radial
     # distance is sqrt(2) * 0.75 times the configured clearance.
     rounded_corner = centre.copy()
@@ -172,7 +173,31 @@ def test_cju_clearance_uses_configured_xy_radius():
 
 def test_cju_yaml_astar_avoids_configured_barriers_outbound_and_return():
     document = yaml.safe_load(MAP.read_text(encoding='utf-8'))
-    outbound_arc, outbound, expanded_out = _plan_global_path(MAP)
+    outbound_arc, outbound, expanded_out, diagnostics = _plan_global_path(
+        MAP, include_diagnostics=True)
+    boxes_min = diagnostics['sfc_boxes_min_map']
+    boxes_max = diagnostics['sfc_boxes_max_map']
+    assert boxes_min.shape == boxes_max.shape
+    assert boxes_min.ndim == 2 and boxes_min.shape[1] == 3
+    assert len(boxes_min) > 0
+    assert np.all(np.isfinite(np.r_[boxes_min, boxes_max]))
+    assert np.all(boxes_max > boxes_min)
+    rotation, spawn, origin, altitude, planning_world = (
+        mission_module._mission_collision_contract(str(MAP), True))
+    planning_world = WorldModel.from_boxes(
+        planning_world.boxes_min, planning_world.boxes_max,
+        [*planning_world.bounds_min[:2], altitude - 0.5],
+        [*planning_world.bounds_max[:2], altitude + 0.5],
+        xy_clearance_m=planning_world.xy_clearance_m)
+    outbound_map = np.column_stack((
+        (outbound[:, :2] + spawn - origin) @ rotation,
+        np.full(len(outbound), altitude)))
+    assert all(planning_world.box_is_free(low, high)
+               for low, high in zip(boxes_min, boxes_max))
+    assert all(np.any(np.all(
+        (a >= boxes_min - 1.0e-9) & (a <= boxes_max + 1.0e-9)
+        & (b >= boxes_min - 1.0e-9) & (b <= boxes_max + 1.0e-9), axis=1))
+        for a, b in zip(outbound_map[:-1], outbound_map[1:]))
     # A real controller reaches a waypoint with tolerance rather than landing
     # on its exact grid coordinate. This offset reproduces that dynamic start.
     reached_goal = outbound[-1] + np.array([1.1, -0.3, 0.0])
@@ -252,10 +277,11 @@ def test_cju_yaml_astar_avoids_configured_barriers_outbound_and_return():
     assert np.equal(obstacle_centres, np.round(obstacle_centres)).all()
     assert obstacle_centres[:, :2].tolist() == [
         [33, 10], [18, 39], [21, 25], [49, 41], [31, 36],
-        [45, 11], [39, 21], [42, 50], [17, 18], [22, 33],
-        [44, 33], [24, 12], [39, 0], [30, 23], [49, 1],
-        [21, 3], [15, 34], [42, 41], [35, 49], [28, 46]]
-    assert len({tuple(xy) for xy in obstacle_centres[:, :2]}) == 20
+        [45, 12], [39, 21], [42, 51], [17, 18], [22, 33],
+        [44, 33], [24, 14], [39, 0], [30, 23], [49, 4],
+        [21, 3], [15, 34], [42, 41], [35, 49], [28, 46],
+        [12, 48], [50, 23], [12, 8], [30, 1], [12, 25]]
+    assert len({tuple(xy) for xy in obstacle_centres[:, :2]}) == 25
     route = (np.asarray(document['mission']['goal_m'], float)
              - outbound_stadium[0, :2])
     relative = obstacle_centres[:, :2] - outbound_stadium[0, :2]
@@ -270,12 +296,12 @@ def test_cju_yaml_astar_avoids_configured_barriers_outbound_and_return():
     field_high = (np.asarray(field['center_m'], float)
                   + 0.5 * np.asarray(field['size_m'], float))
     inflated_half = np.array([0.45 / 2.0, 0.35 / 2.0]) \
-        + document['mission']['obstacle_clearance_m']
+        + document['mission']['vehicle_clearance_xy_m']
     assert np.all(obstacle_centres[:, :2] - inflated_half >= field_low)
     assert np.all(obstacle_centres[:, :2] + inflated_half <= field_high)
     generation_bounds = document['mission']['obstacle_generation_bounds_m']
     assert document['mission']['obstacle_layout_seed'] == 5053
-    assert generation_bounds == {'x': [0, 50], 'y': [0, 50]}
+    assert generation_bounds == {'x': [0, 50], 'y': [0, 51]}
     assert np.all((obstacle_centres[:, 0] >= generation_bounds['x'][0])
                   & (obstacle_centres[:, 0] <= generation_bounds['x'][1]))
     assert np.all((obstacle_centres[:, 1] >= generation_bounds['y'][0])
@@ -309,7 +335,8 @@ def test_cju_yaml_astar_avoids_configured_barriers_outbound_and_return():
                for obstacle in document['mission']['obstacles'])
     assert document['mission']['goal_m'] == [50, 50]
     assert 'takeoff_speed_m_s' not in document['mission']
-    assert document['mission']['obstacle_clearance_m'] == 1
+    assert 'obstacle_clearance_m' not in document['mission']
+    assert document['mission']['vehicle_clearance_xy_m'] == 1.0
     assert document['mission']['bspline_clearance_margin_m'] == 0.5
     assert document['mission']['bspline_control_spacing_m'] == 2.0
     assert document['mission']['bspline_sample_spacing_m'] == 0.1
@@ -388,6 +415,98 @@ def test_planned_path_is_latched_geometry_only_local_enu():
     state._publish_planned_path = cleared.append
     MissionManagerNode._set_state(state, 'ABORT', '(cue stale)')
     assert cleared == [None]
+
+
+def test_optimizer_sfc_is_latched_and_decoded_by_the_yaml_ui():
+    published = []
+    state = SimpleNamespace(
+        sfc_pub=SimpleNamespace(publish=published.append))
+    diagnostics = {
+        'sfc_boxes_min_map': np.array([
+            [1.0, 2.0, 4.5], [5.0, 6.0, 4.5]]),
+        'sfc_boxes_max_map': np.array([
+            [3.0, 4.0, 5.5], [8.0, 9.0, 5.5]]),
+    }
+
+    MissionManagerNode._publish_sfc(state, diagnostics)
+    vertices = UI._sfc_message_vertices(published[-1])
+
+    assert vertices.shape == (2, 4, 2)
+    assert np.allclose(vertices[0], [
+        [1.0, 2.0], [3.0, 2.0], [3.0, 4.0], [1.0, 4.0]])
+    assert np.allclose(vertices[1], [
+        [5.0, 6.0], [8.0, 6.0], [8.0, 9.0], [5.0, 9.0]])
+
+    MissionManagerNode._publish_sfc(state, None)
+    assert UI._sfc_message_vertices(published[-1]).shape == (0, 4, 2)
+    with pytest.raises(ValueError, match='divisible by four'):
+        UI._sfc_message_vertices(Float32MultiArray(data=[1.0, 2.0, 3.0]))
+
+
+def test_active_path_and_sfc_commit_as_one_plan_number():
+    active_messages, legacy_paths, legacy_sfcs = [], [], []
+    input_path = np.array([
+        [0.0, 0.0, 5.0], [10.0, 0.0, 5.0],
+    ])
+    arc, path, diagnostics = mission_module._active_path_sfc(MAP, input_path)
+    state = SimpleNamespace(
+        mission_map_yaml=str(MAP),
+        _active_plan_seq=0,
+        active_plan_pub=SimpleNamespace(publish=active_messages.append),
+        get_clock=lambda: Clock(),
+        _publish_planned_path=lambda value: legacy_paths.append(
+            np.asarray(value).copy()),
+        sfc_pub=object(),
+        _publish_sfc=legacy_sfcs.append,
+    )
+
+    MissionManagerNode._commit_active_path(
+        state, arc, path, 0.0, diagnostics)
+
+    document = yaml.safe_load(MAP.read_text(encoding='utf-8'))
+    frame = document['mission']['coordinate_frame']
+    sequence, path_map, sfc_vertices = UI._active_plan_marker_snapshot(
+        active_messages[-1], frame)
+    rotation, origin, spawn = UI._frame_contract(document)
+    assert active_messages[-1].markers[0].action == Marker.DELETEALL
+    assert sequence == state._active_plan_seq == 1
+    assert np.allclose(path_map[:, :2], UI._local_to_map(
+        path, rotation, origin, spawn))
+    assert len(sfc_vertices) == len(diagnostics['sfc_boxes_min_map'])
+    assert np.array_equal(state._mission_path, path)
+    assert len(legacy_paths) == len(legacy_sfcs) == 1
+
+    old_path = state._mission_path.copy()
+    bad = {
+        'sfc_boxes_min_map': np.zeros((1, 3)),
+        'sfc_boxes_max_map': np.zeros((1, 3)),
+    }
+    with pytest.raises(ValueError, match='positive SFC'):
+        MissionManagerNode._commit_active_path(
+            state, arc, path, 0.0, bad)
+    assert state._active_plan_seq == 1
+    assert np.array_equal(state._mission_path, old_path)
+    assert len(active_messages) == 1
+
+
+def test_active_plan_ui_rejects_mixed_or_malformed_snapshot():
+    stamp = Clock().now().to_msg()
+    clear_only = mission_module._active_plan_marker_message(
+        MAP, None, None, 0, stamp)
+    document = yaml.safe_load(MAP.read_text(encoding='utf-8'))
+    frame = document['mission']['coordinate_frame']
+    sequence, path, sfc = UI._active_plan_marker_snapshot(clear_only, frame)
+    assert sequence is None and path.shape == (0, 3)
+    assert sfc.shape == (0, 4, 2)
+
+    arc, path_local, diagnostics = mission_module._active_path_sfc(
+        MAP, np.array([[0.0, 0.0, 5.0], [10.0, 0.0, 5.0]]))
+    del arc
+    message = mission_module._active_plan_marker_message(
+        MAP, path_local, diagnostics, 3, stamp)
+    message.markers[-1].header.frame_id = 'wrong_generation'
+    with pytest.raises(ValueError, match='frame/stamp mismatch'):
+        UI._active_plan_marker_snapshot(message, frame)
 
 
 def test_path_reference_horizon_brakes_at_the_bspline_endpoint():
@@ -478,11 +597,11 @@ def test_mpc_prediction_checks_every_horizon_chord(monkeypatch):
     assert np.allclose(checked[1][0], prediction[0])
 
 
-def test_ui_draws_rounded_two_metre_clearance_around_physical_barrier():
+def test_ui_keeps_physical_obstacles_raw_and_clearance_on_the_drone():
     import matplotlib.pyplot as plt
 
     mission = {
-        'obstacle_clearance_m': 2.0,
+        'vehicle_clearance_xy_m': 1.0,
         'obstacles': [{
             'center_m': [0.0, 0.0, 5.0],
             'size_m': [0.45, 0.35, 10.0],
@@ -490,15 +609,30 @@ def test_ui_draws_rounded_two_metre_clearance_around_physical_barrier():
     }
     fig, ax = plt.subplots()
     UI._draw_obstacles(ax, mission)
-    safety, physical = ax.patches
+    assert len(ax.patches) == 1
+    physical = ax.patches[0]
     half_size = np.array([0.225, 0.175])
-    assert np.allclose(safety.get_path().vertices.min(axis=0),
-                       -half_size - 2.0)
-    assert np.allclose(safety.get_path().vertices.max(axis=0),
-                       half_size + 2.0)
-    assert safety.get_path().contains_point(half_size + [1.0, 1.0])
-    assert not safety.get_path().contains_point(half_size + [1.5, 1.5])
     assert np.allclose(physical.get_xy(), -half_size)
+    assert np.allclose([physical.get_width(), physical.get_height()],
+                       2.0 * half_size)
+
+    safety = UI._draw_vehicle_radius(ax, 1.0)
+    safety.center = (2.0, 3.0)
+    assert safety.radius == 1.0
+    assert safety.center == (2.0, 3.0)
+    plt.close(fig)
+
+
+def test_ui_places_diagnostics_to_the_right_of_the_map():
+    import matplotlib.pyplot as plt
+
+    fig, map_ax, info_ax = UI._figure_layout()
+    fig.canvas.draw()
+    assert map_ax.get_position().x1 < info_ax.get_position().x0
+    map_ax.set(xlim=(0.0, 1.0), ylim=(0.0, 1.0))
+    UI._expand_axes_to_points(map_ax, [[-2.0, 3.0]], pad_m=1.0)
+    assert map_ax.get_xlim() == pytest.approx((-3.0, 1.0))
+    assert map_ax.get_ylim() == pytest.approx((0.0, 4.0))
     plt.close(fig)
 
 
@@ -1012,6 +1146,44 @@ def test_planning_state_keeps_offboard_heartbeat_and_hold_setpoint():
     assert counts == {'state': 50, 'ocm': 50, 'send': 50}
 
 
+def test_initial_return_plan_enters_landing_before_the_worker_finishes():
+    class PendingPlan:
+        cancelled = False
+
+        @staticmethod
+        def done():
+            return False
+
+        @classmethod
+        def cancel(cls):
+            cls.cancelled = True
+
+    entered = []
+    state = SimpleNamespace(
+        k=0,
+        state='RETURN_PLAN',
+        state_pub=SimpleNamespace(publish=lambda _: None),
+        _ocm=lambda: None,
+        _send=lambda *_: (_ for _ in ()).throw(
+            AssertionError('landing-ready RETURN_PLAN must not hold')),
+        p_d=np.array([0.0, 0.0, 5.0]),
+        cue=np.array([1.0, 0.0, 0.0]),
+        _cue_fresh=lambda: True,
+        _status=SimpleNamespace(
+            nav_state=VehicleStatus.NAVIGATION_STATE_OFFBOARD),
+        _mission_path=None,
+        _plan_future=PendingPlan(),
+        _landing_mpc_entry_ready=lambda: True,
+        _enter_landing_mpc=lambda: entered.append(True) or True,
+    )
+
+    MissionManagerNode._tick(state)
+
+    assert entered == [True]
+    assert PendingPlan.cancelled
+    assert state._plan_future is None
+
+
 def test_rolling_return_plan_follows_old_path_then_atomically_swaps(monkeypatch):
     class PendingPlan:
         @staticmethod
@@ -1049,7 +1221,7 @@ def test_rolling_return_plan_follows_old_path_then_atomically_swaps(monkeypatch)
         cue=np.array([20.0, 0.0, 0.0]),
         _cue_fresh=lambda: True,
         _last_safe_goto=np.array([2.0, 0.0, 5.0]),
-        _planner_pool=SimpleNamespace(submit=lambda *args: (
+        _planner_pool=SimpleNamespace(submit=lambda *args, **_kwargs: (
             submissions.append(args) or PendingPlan())),
         _plan_future=None,
         _publish_planned_path=published.append,
@@ -1087,13 +1259,14 @@ def test_rolling_return_plan_follows_old_path_then_atomically_swaps(monkeypatch)
     assert len(gotos) == 3
     assert gotos[0][0] < gotos[1][0] < gotos[2][0]
 
-    state.p_d = np.array([2.0, 0.0, 5.0])
+    state.p_d = np.array([2.0, 0.0, 4.87])
     state._plan_future = CompletedPlan()
     MissionManagerNode._tick(state)
     assert state.state == 'RETURN'
     assert len(gotos) == 4
     assert len(published) == 1
-    assert np.allclose(state._mission_path[0], state.p_d)
+    assert np.allclose(state._mission_path[0, :2], state.p_d[:2])
+    assert np.isclose(state._mission_path[0, 2], 5.0)
     assert np.allclose(state._mission_path[-1], CompletedPlan.result()[1][-1])
     assert np.all(np.diff(state._mission_arc_m) > 0.0)
 
@@ -1108,9 +1281,12 @@ def test_rolling_return_plan_follows_old_path_then_atomically_swaps(monkeypatch)
     monkeypatch.setattr(
         mission_module, '_mission_planning_segment_is_free', lambda *_: True)
     MissionManagerNode._tick(state)
-    assert events == ['goto']
-    assert len(published) == 2
-    assert np.allclose(state._mission_path[-1], [21.0, 0.0, 5.0])
+    assert events[0] == 'goto'
+    assert events[1][0] == 'plan' and events[1][2]
+    assert np.allclose(events[1][1], [21.0, 0.0, 0.0])
+    assert len(published) == 1
+    assert np.allclose(
+        state._mission_path[-1], CompletedPlan.result()[1][-1])
 
 
 def test_rolling_return_rejects_an_unreachable_replacement(monkeypatch):
@@ -1513,9 +1689,10 @@ def test_phase3_replans_until_observation_based_landing_mpc_is_ready(
     assert replans == []
 
 
-def test_return_retargets_tail_every_two_seconds_from_latest_gps(monkeypatch):
+def test_return_schedules_paper_pipeline_from_latest_cue_every_two_seconds(
+        monkeypatch):
     sent = []
-    published = []
+    replans = []
     now = [11.999]
     state = SimpleNamespace(
         k=0,
@@ -1543,39 +1720,42 @@ def test_return_retargets_tail_every_two_seconds_from_latest_gps(monkeypatch):
         _last_return_plan_t=10.0,
         _return_replan_min_period=2.0,
         _send_goto=lambda target: sent.append(np.asarray(target).copy()),
-        _publish_planned_path=lambda path: published.append(
-            np.asarray(path).copy()),
         get_logger=lambda: SimpleNamespace(
             info=lambda *_: None, warn=lambda *_: None),
     )
     state._landing_mpc_entry_ready = lambda: False
     state._follow_path = lambda: MissionManagerNode._follow_path(state)
-    state._start_global_plan = lambda *_args, **_kwargs: (_ for _ in ()).throw(
-        AssertionError('periodic tail update called the full planner'))
+
+    def start_global_plan(goal, *, return_route):
+        replans.append((np.asarray(goal).copy(), return_route))
+        state._last_return_plan_t = now[0]
+
+    state._start_global_plan = start_global_plan
     monkeypatch.setattr(
         mission_module, '_mission_segment_is_free', lambda *_: True)
-    monkeypatch.setattr(
-        mission_module, '_mission_planning_segment_is_free', lambda *_: True)
 
     MissionManagerNode._tick(state)
-    assert published == [] and len(sent) == 1
+    assert replans == [] and len(sent) == 1
 
     state.cue = np.array([32.0, 0.0, 0.0])
     now[0] = 12.0
     MissionManagerNode._tick(state)
     assert len(sent) == 2
-    assert len(published) == 1
-    assert np.allclose(state._mission_path[-1], [32.0, 0.0, 5.0])
+    assert len(replans) == 1 and replans[-1][1]
+    assert np.allclose(replans[-1][0], [32.0, 0.0, 0.0])
+    # Scheduling never mutates the active path/SFC before the worker result
+    # passes A* -> SFC -> B-spline and the atomic commit gate.
+    assert np.allclose(state._mission_path[-1], [10.0, 0.0, 5.0])
 
     now[0] = 13.999
     MissionManagerNode._tick(state)
-    assert len(published) == 1 and len(sent) == 3
+    assert len(replans) == 1 and len(sent) == 3
 
     state.cue = np.array([33.0, 0.0, 0.0])
     now[0] = 14.0
     MissionManagerNode._tick(state)
-    assert len(published) == 2 and len(sent) == 4
-    assert np.allclose(state._mission_path[-1], [33.0, 0.0, 5.0])
+    assert len(replans) == 2 and len(sent) == 4
+    assert np.allclose(replans[-1][0], [33.0, 0.0, 0.0])
 
 
 def test_landing_target_pose_maps_fresh_local_enu_to_px4_ned():
@@ -1609,6 +1789,7 @@ def test_landing_target_pose_maps_fresh_local_enu_to_px4_ned():
             np.array([10.0, 20.0, 1.5]),
             np.array([3.0, 4.0, 0.0])),
         landing_target_pub=SimpleNamespace(publish=published.append),
+        get_logger=lambda: SimpleNamespace(warn=lambda *_args, **_kwargs: None),
     )
     state._landing_target_fresh = lambda: (
         MissionManagerNode._landing_target_fresh(state))
@@ -1673,6 +1854,23 @@ def test_precland_runway_waits_for_endpoint_reversal_to_finish():
     # Once the reverse leg is established, the full 50 m runway is available.
     assert _forward_endpoint_eta_s(
         [0.0, 49.5], [0.0, -1.0], endpoints, 0.2, 0.7) == pytest.approx(49.5)
+
+    # ACQUIRE reserves the descent plus PX4's terminal landing time.  Fifteen
+    # seconds is enough for the final handoff alone, but not from five metres.
+    state = SimpleNamespace(
+        cue=np.array([0.0, 35.0, 0.0]),
+        cue_v=np.array([0.0, 1.0, 0.0]),
+        _shuttle_endpoints_local=endpoints,
+        _shuttle_endpoint_tolerance=0.2,
+        _shuttle_min_terminal_speed=0.7,
+        _precland_runway_required_s=10.5,
+        _precland_commit_height=0.65,
+        _landing_mpc_vz_max=0.6,
+    )
+    clear, eta = MissionManagerNode._terminal_runway_status(state)
+    assert clear and eta == pytest.approx(15.0)
+    clear, eta = MissionManagerNode._terminal_runway_status(state, 5.0)
+    assert not clear and eta == pytest.approx(15.0)
 
 
 def test_precland_allows_only_a_bounded_aligned_camera_blind_commit():
@@ -1781,6 +1979,7 @@ def test_fresh_vision_needs_no_depression_angle():
     assert MissionManagerNode._vision_measurement_fresh(state)
     state.vis_entry_valid = False
     assert not MissionManagerNode._vision_measurement_fresh(state)
+    assert MissionManagerNode._vision_track_usable(state)
 
 
 def test_landing_mpc_acquires_without_descent_then_hands_low_altitude_to_px4(
@@ -1827,6 +2026,9 @@ def test_landing_mpc_acquires_without_descent_then_hands_low_altitude_to_px4(
 
     sent = []
     precland = []
+    runway_clear = [False]
+    runway_heights = []
+    track_converged = [True]
     now = [10.0]
     state = SimpleNamespace(
         k=0,
@@ -1868,15 +2070,32 @@ def test_landing_mpc_acquires_without_descent_then_hands_low_altitude_to_px4(
     monkeypatch.setattr(
         mission_module, '_mission_segment_is_free', lambda *_: True)
 
+    def runway_status(_self, descent_height_m=None):
+        runway_heights.append(descent_height_m)
+        return runway_clear[0], 15.0
+
+    monkeypatch.setattr(
+        MissionManagerNode, '_terminal_runway_status', runway_status)
+    monkeypatch.setattr(
+        MissionManagerNode, '_vision_track_converged',
+        lambda _self: track_converged[0])
+
     MissionManagerNode._run_landing_mpc(state)
-    assert state.state == 'LANDING_DESCEND'
+    assert state.state == 'LANDING_ACQUIRE'
     assert state._landing_mpc.a_max == 3.0
     assert sent and sent[-1][0][2] == 5.0
-    assert sent[-1][2][2] < 0.0  # upward motion may still brake smoothly
+    assert sent[-1][1][2] == 0.0 and sent[-1][2][2] == 0.0
     assert precland == []
+    assert runway_heights == [5.0]
+
+    runway_clear[0] = True
+    now[0] = 10.02
+    MissionManagerNode._run_landing_mpc(state)
+    assert state.state == 'LANDING_DESCEND'
+    assert runway_heights[-1] == 5.0
 
     state._landing_reference.reset()
-    now[0] = 10.02
+    now[0] = 10.04
     MissionManagerNode._run_landing_mpc(state)
     assert state._landing_mpc.a_max == 1.0
     assert state._landing_mpc.z_ref == 0.65
@@ -1884,24 +2103,35 @@ def test_landing_mpc_acquires_without_descent_then_hands_low_altitude_to_px4(
     assert precland == []
 
     state.vis_entry_valid = False
+    state.p_d[2] = 1.0
+    state._last_sent_acceleration[2] = -0.4
+    state._last_sent_acceleration_t = 10.08
     now[0] = 10.1
     MissionManagerNode._run_landing_mpc(state)
     assert state._landing_mpc.solve_count == 2
-    assert state.state == 'LANDING_ACQUIRE'
+    assert state.state == 'LANDING_DESCEND'
+    assert sent[-1][0][2] == pytest.approx(1.0)
+    assert sent[-1][1][2] == pytest.approx(0.0)
+    assert sent[-1][2][2] == pytest.approx(0.0)
 
+    track_converged[0] = False
     now[0] = 10.2
     MissionManagerNode._run_landing_mpc(state)
     assert state._landing_mpc.solve_count == 3
     assert state.state == 'LANDING_ACQUIRE'
+    assert state._landing_mpc.z_ref == pytest.approx(1.0)
+    assert sent[-1][0][2] == pytest.approx(1.0)
+    assert sent[-1][1][2] == pytest.approx(0.0)
+    assert sent[-1][2][2] == pytest.approx(0.0)
 
-    state.vis_entry_valid = True
-    state.p_d[2] = 1.0
     now[0] = 10.3
     MissionManagerNode._run_landing_mpc(state)
     assert state._landing_mpc.solve_count == 4
     assert state.state == 'LANDING_ACQUIRE'
+    assert state._landing_mpc.z_ref == pytest.approx(1.0)
+    assert sent[-1][0][2] == pytest.approx(1.0)
 
-    state.p_d[2] = 5.0
+    state.vis_entry_valid = True
     now[0] = 10.4
     MissionManagerNode._run_landing_mpc(state)
     assert state._landing_mpc.solve_count == 5
@@ -1918,6 +2148,51 @@ def test_landing_mpc_acquires_without_descent_then_hands_low_altitude_to_px4(
     MissionManagerNode._run_landing_mpc(state)
     assert state._landing_mpc.solve_count == 7
     assert precland == [0.0]
+
+    # A low-altitude reacquisition hands off directly: one DESCEND tick would
+    # otherwise raise z_ref from 0.30 m to the 0.65 m commit height.
+    precland.clear()
+    state.state = 'LANDING_ACQUIRE'
+    state.p_d[2] = 0.3
+    state._landing_hold_z = 0.3
+    state._landing_reference.reset()
+    now[0] = 10.7
+    MissionManagerNode._run_landing_mpc(state)
+    assert precland == [0.0]
+    assert np.allclose(state._last_safe_goto, [0.0, 0.0, 0.3])
+
+
+def test_precland_terminal_latch_never_reclaims_into_a_climb():
+    warnings = []
+    forbidden = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        AssertionError('terminal PRECLAND reclaimed Offboard'))
+    state = SimpleNamespace(
+        k=0,
+        state='PRECLAND',
+        state_pub=SimpleNamespace(publish=lambda _: None),
+        p_d=np.array([2.0, 3.0, 0.3]),
+        cue=np.array([2.0, 3.0, 0.0]),
+        _bias=np.zeros(3),
+        _precland_commit_height=0.65,
+        _precland_commit_until=9.0,
+        _landing_contact_confirmed=False,
+        _native_precland_accepted=True,
+        _status=SimpleNamespace(
+            nav_state=VehicleStatus.NAVIGATION_STATE_AUTO_PRECLAND),
+        landed=False,
+        armed=True,
+        _publish_landing_target=lambda: False,
+        _recover_precland=forbidden,
+        _ocm=forbidden,
+        _now=lambda: 10.0,
+        get_logger=lambda: SimpleNamespace(
+            warn=lambda message, **_kwargs: warnings.append(message)),
+    )
+
+    MissionManagerNode._tick(state)
+
+    assert state.state == 'PRECLAND'
+    assert warnings and 'no Offboard climb' in warnings[-1]
 
 
 def test_precland_handoff_sends_one_native_px4_command(monkeypatch):
@@ -2186,6 +2461,13 @@ def test_completed_rolling_path_splices_from_the_current_position():
     assert np.allclose(joined[-1], path[-1])
     assert np.all(np.diff(joined_arc) > 0.0)
 
+    # Normal altitude tracking error does not invalidate a fixed-altitude
+    # rolling plan; the splice keeps measured XY and uses the route plane Z.
+    _, altitude_projected = _splice_path_from_current(
+        lambda *_: True, arc, path, np.array([2.0, 1.0, 4.87]), 6.0)
+    assert np.allclose(altitude_projected[0], [2.0, 1.0, 5.0])
+    assert np.allclose(altitude_projected[:, 2], 5.0)
+
     # The projection search covers the complete replacement, not only its
     # first lookahead window.
     _, late_joined = _splice_path_from_current(
@@ -2202,48 +2484,6 @@ def test_completed_rolling_path_rejects_an_unsafe_splice():
     assert _splice_path_from_current(
         lambda *_: False, arc, path,
         np.array([2.0, 1.0, 5.0]), 6.0) is None
-
-
-def test_return_tail_retarget_uses_the_earliest_safe_join_after_the_prefix():
-    arc = np.array([0.0, 5.0, 10.0, 15.0, 20.0])
-    path = np.column_stack((arc, np.zeros(5), np.ones(5) * 5.0))
-    original = path.copy()
-    checked = []
-
-    def safe_from(start, _goal):
-        checked.append(float(start[0]))
-        return start[0] <= 15.0
-
-    replacement = _retarget_path_tail(
-        safe_from,
-        arc, path, 2.0, np.array([25.0, 0.0, 5.0]),
-        2.0, 0.25, 1.0)
-
-    assert replacement is not None
-    new_arc, new_path = replacement
-    assert np.array_equal(path, original)
-    # progress 2 m + max(2*lookahead, 2*cross-track) = 6 m, so the first
-    # eligible old sample is x=10 m.  Later x=15 m is also safe but must not
-    # win: the vehicle should leave the committed prefix as early as possible.
-    assert np.array_equal(new_path[:3], original[:3])
-    assert checked == [10.0]
-    assert np.allclose(new_path[3], [11.0, 0.0, 5.0])
-    assert np.allclose(new_path[-1], [25.0, 0.0, 5.0])
-    assert np.all(np.diff(new_arc) > 0.0)
-    assert np.max(np.linalg.norm(np.diff(new_path, axis=0), axis=1)) <= 5.0
-    assert np.max(np.linalg.norm(np.diff(new_path[2:], axis=0), axis=1)) <= 1.0
-
-
-def test_return_tail_retarget_rejects_without_mutating_the_old_path():
-    arc = np.array([0.0, 5.0, 10.0])
-    path = np.column_stack((arc, np.zeros(3), np.ones(3) * 5.0))
-    original_arc, original_path = arc.copy(), path.copy()
-
-    assert _retarget_path_tail(
-        lambda *_: False, arc, path, 1.0,
-        np.array([20.0, 0.0, 5.0]), 2.0, 0.25, 0.1) is None
-    assert np.array_equal(arc, original_arc)
-    assert np.array_equal(path, original_path)
 
 
 def test_blocked_spatial_carrot_replans_without_committing(monkeypatch):

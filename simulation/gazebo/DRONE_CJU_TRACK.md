@@ -25,10 +25,12 @@ The mission groups are:
 - Phase 1 `TAKEOFF`: PX4 `NAV_TAKEOFF` to 5 m; PX4 owns the climb profile.
 - Phase 2: A* supplies obstacle topology, a geometry-only B-spline reinforces
   that spatial route, and TrackingMPC flies it to map `(50,50)` and `HOVER`.
-- Phase 3: `land` builds one A* → geometry-only B-spline `RETURN`, then
-  atomically retargets only its 1.5 m-safe tail every two seconds from the
-  latest live GPS/cue. Full replanning is used only when no safe tail connector
-  exists. The gimbal holds a literal yaw-0/pitch--90 joint lock beyond 10 m of
+- Phase 3: `land` builds an A* → optimizer-SFC → geometry-only B-spline
+  `RETURN`, then asynchronously reruns the same paper pipeline from the latest
+  live GPS/cue on the configured minimum two-second cadence. The previous
+  certified path remains active until the new path
+  and active-path SFC commit atomically. The gimbal holds a literal
+  yaw-0/pitch--90 joint lock beyond 10 m of
   horizontal GPS/cue range, blends toward the trailer over 10→9 m, and points
   directly inside 9 m. LandingMPC entry requires
   three distinct KF-accepted ArUco fixes within 0.5 s and a live cue segment

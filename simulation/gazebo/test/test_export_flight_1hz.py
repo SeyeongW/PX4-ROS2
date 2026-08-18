@@ -149,10 +149,11 @@ def test_planner_failure_counter_uses_explicit_log_message(tmp_path):
     path.write_text(
         "global A*/B-spline replan failed: one\n"
         "unrelated planner text\n"
-        "global A*/B-spline replan failed: two\n",
+        "global A*/B-spline replan failed: two\n"
+        "global active-path SFC rejected: three\n",
         encoding="utf-8")
 
-    assert EXPORT._planner_failure_events(path) == 2
+    assert EXPORT._planner_failure_events(path) == 3
 
 
 def test_precision_landing_retry_counter_does_not_hide_recovery(tmp_path):

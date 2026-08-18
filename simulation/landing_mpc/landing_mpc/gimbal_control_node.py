@@ -150,6 +150,15 @@ class GimbalControlNode(Node):
         # 90 deg/s crosses a full hemisphere in 2 s, far quicker than a chase.
         self.max_rate = math.radians(require_positive(
             'max_rate_deg_s', p('max_rate_deg_s', 90.0).value))
+        # The first post-land request parks a previously uncommanded camera at
+        # nadir. Move that one large 90-degree transition gently; once the cue
+        # handoff begins, retain the full tracking slew rate.
+        self.land_entry_rate = math.radians(require_positive(
+            'land_entry_rate_deg_s',
+            p('land_entry_rate_deg_s', 30.0).value))
+        if self.land_entry_rate > self.max_rate:
+            raise ValueError(
+                'land_entry_rate_deg_s must not exceed max_rate_deg_s')
         self.deck_z = require_finite(
             'deck_z', p('deck_z', DEFAULT_DECK_Z_M).value)
         self.vision_timeout_s = require_positive(
@@ -240,7 +249,8 @@ class GimbalControlNode(Node):
         self.get_logger().info(
             f'gimbal_control_node: aiming {self.model} at the target '
             f'({self.rate_hz:.0f} Hz, slew '
-            f'{math.degrees(self.max_rate):.0f} deg/s)')
+            f'{math.degrees(self.max_rate):.0f} deg/s, land-entry '
+            f'{math.degrees(self.land_entry_rate):.0f} deg/s)')
 
     # ------------------------------------------------------------- callbacks
     def _now(self):
@@ -369,7 +379,10 @@ class GimbalControlNode(Node):
             self._publish_joints()
             return
         yaw_d, roll_d, pitch_d = desired
-        step = self.max_rate / self.rate_hz
+        active_rate = (self.land_entry_rate
+                       if self._source.startswith('joint lock')
+                       else self.max_rate)
+        step = active_rate / self.rate_hz
         yaw_next = _rate_limit(self._yaw, yaw_d, step)
         roll_next = _rate_limit(self._roll, roll_d, step)
         pitch_next = _rate_limit(self._pitch, pitch_d, step)

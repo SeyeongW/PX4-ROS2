@@ -22,6 +22,7 @@ Publishes
     /fmu/in/vehicle_command
     /mission/state       String          current phase (observability)
     /mission/landing_diagnostics String  range/speed/vision/commit/turnaround
+    /mission/active_plan_markers MarkerArray atomic path + active-path SFC
 
 Phases
 
@@ -36,7 +37,7 @@ Phases
     HOVER     hold over the map goal and wait for land
   Phase 3
     RETURN_PLAN plan A* and a geometry-only B-spline around map obstacles
-    RETURN    retarget the validated tail while following it with TrackingMPC
+    RETURN    asynchronously rebuild the moving-target A*/SFC/B-spline route
     LANDING_ACQUIRE  use LandingMPC to align at fixed altitude
     LANDING_DESCEND  use LandingMPC to descend on the corrected moving cue
     PRECLAND  hand final approach, contact and auto-disarm to PX4
@@ -61,12 +62,13 @@ from time import perf_counter
 import numpy as np
 import rclpy
 import yaml
-from geometry_msgs.msg import PointStamped, Pose, PoseArray, Vector3Stamped
+from geometry_msgs.msg import Point, PointStamped, Pose, PoseArray, Vector3Stamped
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import (DurabilityPolicy, HistoryPolicy, QoSProfile,
                        ReliabilityPolicy, qos_profile_sensor_data)
-from std_msgs.msg import Bool, String
+from std_msgs.msg import Bool, Float32MultiArray, String
+from visualization_msgs.msg import Marker, MarkerArray
 
 from px4_msgs.msg import (GotoSetpoint, LandingTargetPose, OffboardControlMode,
                           TrajectorySetpoint, VehicleCommand, VehicleLandDetected,
@@ -102,10 +104,12 @@ def _planned_path_qos():
                       history=HistoryPolicy.KEEP_LAST, depth=1)
 
 
-def _plan_global_path(map_yaml, start_local_enu=None, goal_local_enu=None):
+def _plan_global_path(map_yaml, start_local_enu=None, goal_local_enu=None,
+                      *, include_diagnostics=False):
     """Build one exact-safe A* -> geometry-only B-spline path."""
     from path_plan.astar import AStarPlanner3D
     from path_plan.bspline_optimizer import BsplineOptimizer
+    from path_plan.sfc import SafeFlightCorridor
     from path_plan.uniform_bspline import UniformBspline
     from path_plan.world_model import WorldModel
 
@@ -139,7 +143,7 @@ def _plan_global_path(map_yaml, start_local_enu=None, goal_local_enu=None):
             raise ValueError('goal_local_enu must contain three finite values')
         goal_xy = ((spawn + goal_local[:2]) - frame_origin) @ rotation
     goal = np.r_[goal_xy, altitude]
-    clearance = float(mission['obstacle_clearance_m'])
+    clearance = float(mission['vehicle_clearance_xy_m'])
     spline_margin = float(mission.get('bspline_clearance_margin_m', 0.5))
     control_spacing = float(mission.get('bspline_control_spacing_m', 2.0))
     sample_spacing = float(mission.get('bspline_sample_spacing_m', 0.1))
@@ -261,9 +265,23 @@ def _plan_global_path(map_yaml, start_local_enu=None, goal_local_enu=None):
                for a, b in zip(positions[:-1], positions[1:])):
         raise RuntimeError(
             'CJU B-spline failed exact planning-clearance validation')
+    positions, active_corridor = SafeFlightCorridor(
+        spline_world).cover_polyline(positions)
+    arc = np.r_[0.0, np.cumsum(np.linalg.norm(
+        np.diff(positions, axis=0), axis=1))]
     world_xy = positions[:, :2] @ rotation.T + frame_origin
     local_positions = np.column_stack((world_xy - spawn, positions[:, 2]))
-    return arc, local_positions, result.expanded
+    result_tuple = (arc, local_positions, result.expanded)
+    if not include_diagnostics:
+        return result_tuple
+    diagnostics = {
+        # These boxes certify the final active polyline.  The optimizer's soft
+        # control-point corridor shapes the B-spline but does not certify the
+        # current-position splice added when a rolling plan completes.
+        'sfc_boxes_min_map': active_corridor.boxes_min.copy(),
+        'sfc_boxes_max_map': active_corridor.boxes_max.copy(),
+    }
+    return (*result_tuple, diagnostics)
 
 
 def _path_position(arc_m, path, distance_m):
@@ -428,7 +446,11 @@ def _splice_path_from_current(segment_is_free, arc_m, path, current,
     """Join a completed rolling path from the vehicle's current position."""
     arc = np.asarray(arc_m, float)
     points = np.asarray(path, float)
-    current = np.asarray(current, float)
+    current = np.asarray(current, float).copy()
+    # The global route is planar. Preserve the measured XY anchor but project
+    # ordinary altitude-tracking error onto the route plane before certifying
+    # its SFC; the vertical controller independently closes that error.
+    current[2] = points[0, 2]
     projection_s, _, _ = _spatial_path_target(
         arc, points, current, 0.0, float(arc[-1]), 1.0)
     # Half a normal carrot avoids both a near-perpendicular projection join
@@ -450,50 +472,6 @@ def _splice_path_from_current(segment_is_free, arc_m, path, current,
             and np.all(np.diff(joined_arc) > 0.0)):
         return None
     return joined_arc, joined
-
-
-def _retarget_path_tail(segment_is_free, arc_m, path, progress_m, goal,
-                        lookahead_m, cross_track_limit_m, sample_spacing_m):
-    """Replace only the unflown tail with one exact-safe live-goal segment."""
-    arc = np.asarray(arc_m, float)
-    points = np.asarray(path, float)
-    target = np.asarray(goal, float)
-    if (points.ndim != 2 or len(points) != len(arc) or len(points) < 2
-            or target.shape != (points.shape[1],)
-            or not np.all(np.isfinite(np.column_stack((arc, points))))
-            or not np.all(np.isfinite(target))
-            or not math.isfinite(sample_spacing_m)
-            or sample_spacing_m <= 0.0):
-        return None
-
-    progress = float(np.clip(progress_m, 0.0, arc[-1]))
-    # Preserve every segment the follower can currently project onto, then
-    # leave the committed route at the first exact-safe live-goal connector.
-    projection_window = max(2.0 * lookahead_m, 2.0 * cross_track_limit_m)
-    first_join = min(
-        len(points) - 1,
-        int(np.searchsorted(
-            arc, min(arc[-1], progress + projection_window), side='right')))
-    for index in range(first_join, len(points)):
-        join = points[index]
-        if not segment_is_free(join, target):
-            continue
-        distance = float(np.linalg.norm(target - join))
-        count = max(1, int(math.ceil(distance / sample_spacing_m)))
-        connector = join + np.linspace(0.0, 1.0, count + 1)[:, None] * (
-            target - join)
-        candidate = np.vstack((points[:index + 1], connector[1:]))
-        keep = np.r_[True, np.linalg.norm(
-            np.diff(candidate, axis=0), axis=1) > 1.0e-9]
-        candidate = candidate[keep]
-        if len(candidate) < 2:
-            continue
-        candidate_arc = np.r_[0.0, np.cumsum(np.linalg.norm(
-            np.diff(candidate, axis=0), axis=1))]
-        if (np.all(np.isfinite(candidate_arc))
-                and np.all(np.diff(candidate_arc) > 0.0)):
-            return candidate_arc, candidate
-    return None
 
 
 def _spatial_path_target(arc_m, path, position, progress_m, lookahead_m,
@@ -576,7 +554,7 @@ def _mission_collision_contract(map_yaml, planning=False):
     origin = np.asarray(frame['origin_enu_m'][:2], float)
     terrain_center = np.asarray(document['terrain']['center_m'], float)
     terrain_half = 0.5 * np.asarray(document['terrain']['size_m'], float)
-    clearance = float(mission['obstacle_clearance_m'])
+    clearance = float(mission['vehicle_clearance_xy_m'])
     if planning:
         clearance += float(mission.get('bspline_clearance_margin_m', 0.5))
     lows, highs = [], []
@@ -594,6 +572,121 @@ def _mission_collision_contract(map_yaml, planning=False):
         xy_clearance_m=clearance,
     )
     return rotation, spawn, origin, altitude, world
+
+
+def _active_path_sfc(map_yaml, path_local_enu):
+    """Return a refined local path and free-box cover at planning clearance."""
+    from path_plan.sfc import SafeFlightCorridor
+    from path_plan.world_model import WorldModel
+
+    path = np.asarray(path_local_enu, float)
+    if (path.ndim != 2 or path.shape[1] != 3 or len(path) < 2
+            or not np.all(np.isfinite(path))):
+        raise ValueError('active path must be finite Nx3 local ENU')
+    rotation, spawn, origin, altitude, planar_world = (
+        _mission_collision_contract(str(map_yaml), True))
+    if not np.allclose(path[:, 2], altitude, atol=1.0e-6, rtol=0.0):
+        raise ValueError('active path must stay at mission cruise altitude')
+
+    # The 50 Hz segment checker is planar.  SFC boxes need real z thickness
+    # for MarkerArray/RViz, so use the same +/-0.5 m optimizer slab without
+    # changing the horizontal 1.5 m planning-clearance contract.
+    world = WorldModel.from_boxes(
+        planar_world.boxes_min, planar_world.boxes_max,
+        [*planar_world.bounds_min[:2], altitude - 0.5],
+        [*planar_world.bounds_max[:2], altitude + 0.5],
+        xy_clearance_m=planar_world.xy_clearance_m)
+    map_xy = (path[:, :2] + spawn - origin) @ rotation
+    map_path = np.column_stack((map_xy, np.full(len(path), altitude)))
+    refined_map, corridor = SafeFlightCorridor(world).cover_polyline(map_path)
+    local_xy = refined_map[:, :2] @ rotation.T + origin - spawn
+    refined_local = np.column_stack((
+        local_xy, np.full(len(refined_map), altitude)))
+    arc = np.r_[0.0, np.cumsum(np.linalg.norm(
+        np.diff(refined_local, axis=0), axis=1))]
+    if (len(refined_local) < 2 or not np.all(np.diff(arc) > 0.0)
+            or not all(world.box_is_free(lo, hi) for lo, hi in zip(
+                corridor.boxes_min, corridor.boxes_max))):
+        raise ValueError('active-path SFC certification failed')
+    diagnostics = {
+        'sfc_boxes_min_map': corridor.boxes_min.copy(),
+        'sfc_boxes_max_map': corridor.boxes_max.copy(),
+    }
+    return arc, refined_local, diagnostics
+
+
+@lru_cache(maxsize=8)
+def _mission_frame_id(map_yaml):
+    document = yaml.safe_load(Path(map_yaml).read_text(encoding='utf-8'))
+    return str(document['mission']['coordinate_frame'])
+
+
+def _active_plan_marker_message(
+        map_yaml, path_local_enu, diagnostics, plan_seq, stamp):
+    """Serialize one atomic map-frame path/SFC snapshot for the live UI."""
+    frame_id = _mission_frame_id(str(map_yaml))
+    clear = Marker()
+    clear.header.frame_id = frame_id
+    clear.header.stamp = stamp
+    clear.ns = 'active_plan'
+    clear.id = 0
+    clear.action = Marker.DELETEALL
+    message = MarkerArray(markers=[clear])
+    if path_local_enu is None:
+        return message
+
+    path = np.asarray(path_local_enu, float)
+    boxes_min = np.asarray(diagnostics['sfc_boxes_min_map'], float)
+    boxes_max = np.asarray(diagnostics['sfc_boxes_max_map'], float)
+    if (path.ndim != 2 or path.shape[1] != 3 or len(path) < 2
+            or not np.all(np.isfinite(path))
+            or boxes_min.ndim != 2 or boxes_min.shape[1] != 3
+            or boxes_max.shape != boxes_min.shape or not len(boxes_min)
+            or not np.all(np.isfinite(np.r_[boxes_min, boxes_max]))
+            or np.any(boxes_max <= boxes_min)):
+        raise ValueError('active plan requires a finite path and positive SFC')
+    sequence = int(plan_seq)
+    if sequence <= 0 or sequence > 2_000_000_000:
+        raise ValueError('active plan sequence must be a positive int32')
+    rotation, spawn, origin, altitude, _ = _mission_collision_contract(
+        str(map_yaml), True)
+    path_map = np.column_stack((
+        (path[:, :2] + spawn - origin) @ rotation,
+        np.full(len(path), altitude)))
+
+    line = Marker()
+    line.header.frame_id = frame_id
+    line.header.stamp = stamp
+    line.ns = 'active_path'
+    line.id = sequence
+    line.type = Marker.LINE_STRIP
+    line.action = Marker.ADD
+    line.pose.orientation.w = 1.0
+    line.scale.x = 0.12
+    line.color.r, line.color.g, line.color.b, line.color.a = (
+        0.18, 0.62, 0.27, 1.0)
+    line.points = [Point(x=float(p[0]), y=float(p[1]), z=float(p[2]))
+                   for p in path_map]
+    message.markers.append(line)
+
+    for index, (low, high) in enumerate(zip(boxes_min, boxes_max)):
+        box = Marker()
+        box.header.frame_id = frame_id
+        box.header.stamp = stamp
+        box.ns = 'active_sfc'
+        box.id = index
+        box.type = Marker.CUBE
+        box.action = Marker.ADD
+        centre = 0.5 * (low + high)
+        extent = high - low
+        box.pose.position.x, box.pose.position.y, box.pose.position.z = map(
+            float, centre)
+        box.pose.orientation.w = 1.0
+        box.scale.x, box.scale.y, box.scale.z = map(float, extent)
+        box.color.r, box.color.g, box.color.b, box.color.a = (
+            0.13, 0.55, 0.90, 0.10)
+        message.markers.append(box)
+    return message
 
 
 def _mission_segment_is_free(map_yaml, start_local_enu, goal_local_enu):
@@ -731,6 +824,8 @@ class MissionManagerNode(Node):
         self._mission_arc_m = None
         self._mission_path = None
         self._mission_progress_m = 0.0
+        self._active_plan_seq = 0
+        self._active_sfc_diagnostics = None
         self._mission_lookahead = 6.0
         self._mission_cross_track = 0.25
         self._mission_sample_spacing = 0.1
@@ -909,6 +1004,10 @@ class MissionManagerNode(Node):
             String, '/mission/landing_diagnostics', 10)
         self.planned_path_pub = self.create_publisher(
             PoseArray, '/mission/planned_path', _planned_path_qos())
+        self.sfc_pub = self.create_publisher(
+            Float32MultiArray, '/mission/sfc_boxes_map', _planned_path_qos())
+        self.active_plan_pub = self.create_publisher(
+            MarkerArray, '/mission/active_plan_markers', _planned_path_qos())
         self.vehicle_position_pub = self.create_publisher(
             PointStamped, '/mission/vehicle_position', 10)
         self.create_subscription(String, self.mission_command_topic,
@@ -1514,15 +1613,27 @@ class MissionManagerNode(Node):
         return True
 
     def _vision_measurement_fresh(self):
-        if (not self.vis_entry_valid
-                or not self.vis_valid or self.vis is None or self.cue is None
-                or self._t_vis is None
-                or self._now() - self._t_vis > self.vis_fresh):
-            return False
-        return True
+        return bool(
+            self.vis_entry_valid
+            and MissionManagerNode._vision_track_usable(self))
+
+    def _vision_track_usable(self):
+        """Keep an entered KF track usable through its bounded coast."""
+        return bool(
+            self.vis_valid and self.vis is not None and self.cue is not None
+            and self._t_vis is not None
+            and self._now() - self._t_vis <= self.vis_fresh)
 
     def _vision_correction_converged(self):
         if not self._vision_measurement_fresh():
+            return False
+        corrected = self.cue[:2] + self._bias[:2]
+        return float(np.linalg.norm(self.vis[:2] - corrected)) <= (
+            self._landing_mpc_bias_ok)
+
+    def _vision_track_converged(self):
+        """Accept a coast only while the existing KF remains cue-consistent."""
+        if not MissionManagerNode._vision_track_usable(self):
             return False
         corrected = self.cue[:2] + self._bias[:2]
         return float(np.linalg.norm(self.vis[:2] - corrected)) <= (
@@ -1554,7 +1665,7 @@ class MissionManagerNode(Node):
             aligned and self._precland_commit_until is not None
             and now <= self._precland_commit_until)
 
-    def _terminal_runway_status(self):
+    def _terminal_runway_status(self, descent_height_m=None):
         """Return whether PX4 can finish before the next shuttle reversal."""
         endpoints = getattr(self, '_shuttle_endpoints_local', None)
         if endpoints is None:
@@ -1563,7 +1674,13 @@ class MissionManagerNode(Node):
             self.cue[:2], self.cue_v[:2], endpoints,
             self._shuttle_endpoint_tolerance,
             self._shuttle_min_terminal_speed)
-        return eta_s >= self._precland_runway_required_s, eta_s
+        required_s = self._precland_runway_required_s
+        if descent_height_m is not None:
+            descent_m = max(
+                0.0, float(descent_height_m)
+                - self._precland_commit_height)
+            required_s += descent_m / self._landing_mpc_vz_max
+        return eta_s >= required_s, eta_s
 
     def _landing_diagnostics(self):
         if self.p_d is None or self.cue is None:
@@ -1609,13 +1726,13 @@ class MissionManagerNode(Node):
         return True
 
     def _recover_precland(self):
-        """Reclaim Offboard and climb to the existing ArUco acquire height."""
+        """Reclaim Offboard at the current altitude and reacquire ArUco."""
         self._landing_mpc.reset()
         self._landing_reference.reset()
         self._landing_solve_t = None
         self._landing_last_solve_t = None
-        # Warm up Offboard at the current state.  The acquire MPC will then
-        # climb to its existing z_ref under its acceleration/jerk limits.
+        # Warm up Offboard at the current state.  ACQUIRE keeps this altitude
+        # while restoring the vision entry qualification and XY alignment.
         self._landing_hold_z = float(self.p_d[2])
         self._hold_pos = self.p_d.copy()
         self._native_precland_accepted = False
@@ -1624,6 +1741,17 @@ class MissionManagerNode(Node):
         self._precland_commit_until = None
         self._set_state(
             'LANDING_ACQUIRE', '(ArUco lost; reclaim Offboard and reacquire)')
+
+    def _precland_terminal_latched(self):
+        """Keep PX4 in charge once a centred low-altitude commit has begun."""
+        position = getattr(self, 'p_d', None)
+        cue = getattr(self, 'cue', None)
+        if (position is None or cue is None
+                or getattr(self, '_precland_commit_until', None) is None):
+            return False
+        target = cue + getattr(self, '_bias', np.zeros(3))
+        height = float(position[2] - target[2])
+        return 0.0 <= height <= self._precland_commit_height
 
     def _run_landing_mpc(self):
         """Run wang LandingMPC; PX4 still owns physical contact and disarm."""
@@ -1638,6 +1766,9 @@ class MissionManagerNode(Node):
         v_rel = self.v_d - target_v
         vision_ready = self._vision_correction_converged()
         acquiring = self.state == 'LANDING_ACQUIRE'
+        vision_coasting = (
+            not acquiring and not vision_ready
+            and MissionManagerNode._vision_track_converged(self))
         # ArUco can qualify entry only 0.5 s after the route brake begins.
         # Keep the jerk limit, but give ACQUIRE the route controller's braking
         # authority; DESCEND returns to the conservative landing limit.
@@ -1646,11 +1777,11 @@ class MissionManagerNode(Node):
 
         if acquiring or not vision_ready:
             # At acquisition, or on a vision dropout, align horizontally while
-            # refusing any descent.  Disabling the cone also prevents the old
-            # long-range corridor from requesting a climb.
+            # holding the altitude at which this attempt began.  Disabling the
+            # cone and retaining that exact height prevents both descent and a
+            # low-altitude recovery climb.
             self._landing_mpc.cone_k = 0.0
-            self._landing_mpc.z_ref = max(
-                float(p_rel[2]), self._landing_mpc_handoff_height)
+            self._landing_mpc.z_ref = float(p_rel[2])
             if self._landing_hold_z is None:
                 self._landing_hold_z = float(self.p_d[2])
         else:
@@ -1710,8 +1841,9 @@ class MissionManagerNode(Node):
                 pos = np.asarray(pos, float).copy()
                 vel = np.asarray(vel, float).copy()
                 acc = np.asarray(acc, float).copy()
-                pos[2] = max(float(pos[2]), self._landing_hold_z)
-                vel[2] = max(float(vel[2]), 0.0)
+                pos[2] = self._landing_hold_z
+                vel[2] = 0.0
+                acc[2] = 0.0
             if (_mission_segment_is_free(
                     self.mission_map_yaml, self.p_d, pos)
                     and np.all(np.isfinite(np.r_[pos, vel, acc]))):
@@ -1724,6 +1856,8 @@ class MissionManagerNode(Node):
                                0.0, self._now() - last_time))
                 streamed_acceleration = _limit_acceleration_slew(
                     last_acceleration, acc, self._landing_mpc.j_max, elapsed)
+                if self._landing_hold_z is not None:
+                    streamed_acceleration[2] = 0.0
                 self._send(pos, vel, streamed_acceleration)
             else:
                 self._landing_reference.reset()
@@ -1741,7 +1875,21 @@ class MissionManagerNode(Node):
         if (acquiring and vision_ready
                 and horizontal <= self._landing_xy_tol
                 and relative_speed <= self._landing_v_tol
-                and p_rel[2] >= self._landing_mpc_handoff_height - 0.1):
+                and p_rel[2] >= 0.0):
+            runway_clear, eta_s = MissionManagerNode._terminal_runway_status(
+                self, p_rel[2])
+            if not runway_clear:
+                self.get_logger().warn(
+                    'ArUco aligned but descent held: insufficient runway '
+                    f'(endpoint ETA {eta_s:.1f} s)',
+                    throttle_duration_sec=2.0)
+                return
+            if p_rel[2] <= self._precland_commit_height:
+                # Reacquisition below the terminal gate must not pass through
+                # DESCEND, whose normal z_ref is the higher commit height.
+                self._last_safe_goto = self.p_d.copy()
+                self._enter_precland(horizontal)
+                return
             self._landing_reference.reset()
             self._landing_solve_t = None
             self._landing_hold_z = None
@@ -1752,10 +1900,17 @@ class MissionManagerNode(Node):
             return
 
         if (not acquiring and not vision_ready):
+            if vision_coasting:
+                self.get_logger().warn(
+                    'ArUco entry window lost; hold altitude on bounded KF '
+                    'coast', throttle_duration_sec=2.0)
+                return
             self._landing_reference.reset()
             self._landing_solve_t = None
             self._landing_hold_z = float(self.p_d[2])
-            self._set_state('LANDING_ACQUIRE', '(ArUco lost; hold altitude)')
+            self._set_state(
+                'LANDING_ACQUIRE',
+                '(ArUco KF coast expired; hold altitude and reacquire)')
             return
 
         runway_clear, _ = MissionManagerNode._terminal_runway_status(self)
@@ -1769,8 +1924,18 @@ class MissionManagerNode(Node):
 
     def _publish_landing_target(self):
         """Publish one live target measurement; never a flight setpoint."""
-        if (self.p_d is None or not self._landing_target_fresh()
-                or not MissionManagerNode._precland_target_allowed(self)):
+        if self.p_d is None:
+            reason = 'vehicle position unavailable'
+        elif not self._landing_target_fresh():
+            reason = 'trailer cue source stale'
+        elif not MissionManagerNode._precland_target_allowed(self):
+            reason = 'vision/alignment blind-commit gate closed'
+        else:
+            reason = None
+        if reason is not None:
+            self.get_logger().warn(
+                f'landing target blocked: {reason}',
+                throttle_duration_sec=2.0)
             return False
         # Do not turn one old measurement into a fresh 50 Hz stream. PX4 must
         # observe an actual publication gap and enforce PLD_BTOUT on source loss.
@@ -1861,11 +2026,12 @@ class MissionManagerNode(Node):
             self._plan_future.cancel()
         self._plan_future = self._planner_pool.submit(
             _plan_global_path, self.mission_map_yaml, list(start),
-            None if goal is None else goal.tolist())
+            None if goal is None else goal.tolist(), include_diagnostics=True)
         self._plan_start = start
         self._plan_goal = goal
+        self._plan_started_t = self._now()
         if return_route:
-            self._last_return_plan_t = self._now()
+            self._last_return_plan_t = self._plan_started_t
         if not rolling_return:
             self._mission_arc_m = None
             self._mission_path = None
@@ -1879,7 +2045,8 @@ class MissionManagerNode(Node):
     def _publish_planned_path(self, path):
         """Publish only geometry accepted by the flight authority."""
         message = PoseArray()
-        message.header.stamp = self.get_clock().now().to_msg()
+        stamp = self.get_clock().now().to_msg()
+        message.header.stamp = stamp
         message.header.frame_id = LOCAL_ENU_FRAME_ID
         if path is not None:
             points = np.asarray(path, float)
@@ -1893,6 +2060,64 @@ class MissionManagerNode(Node):
                 pose.orientation.w = 1.0
                 message.poses.append(pose)
         self.planned_path_pub.publish(message)
+        if path is None and hasattr(self, 'sfc_pub'):
+            self._publish_sfc(None)
+        if (path is None and hasattr(self, 'active_plan_pub')
+                and getattr(self, 'mission_map_yaml', '')):
+            self.active_plan_pub.publish(_active_plan_marker_message(
+                self.mission_map_yaml, None, None, 0, stamp))
+            self._active_sfc_diagnostics = None
+
+    def _publish_sfc(self, diagnostics):
+        """Publish the certified active-path SFC on the legacy UI topic."""
+        message = Float32MultiArray()
+        if diagnostics is not None:
+            boxes_min = np.asarray(
+                diagnostics['sfc_boxes_min_map'], float)
+            boxes_max = np.asarray(
+                diagnostics['sfc_boxes_max_map'], float)
+            if (boxes_min.ndim != 2 or boxes_min.shape[1] != 3
+                    or boxes_max.shape != boxes_min.shape
+                    or not np.all(np.isfinite(np.r_[boxes_min, boxes_max]))
+                    or np.any(boxes_max < boxes_min)):
+                raise ValueError('SFC boxes must be finite ordered Nx3 arrays')
+            # The live YAML view is top-down, so publish xmin,ymin,xmax,ymax.
+            message.data = np.column_stack((
+                boxes_min[:, 0], boxes_min[:, 1],
+                boxes_max[:, 0], boxes_max[:, 1])).astype(
+                    np.float32).ravel().tolist()
+        self.sfc_pub.publish(message)
+
+    def _commit_active_path(
+            self, arc_m, path, progress_m, diagnostics, *, reset_mpc=False):
+        """Atomically replace controller geometry and the live UI snapshot."""
+        sequence = getattr(self, '_active_plan_seq', 0) + 1
+        snapshot = None
+        if hasattr(self, 'active_plan_pub'):
+            stamp = self.get_clock().now().to_msg()
+            snapshot = _active_plan_marker_message(
+                self.mission_map_yaml, path, diagnostics, sequence, stamp)
+        arc = np.asarray(arc_m, float)
+        points = np.asarray(path, float)
+        if (len(arc) != len(points) or len(points) < 2
+                or not np.all(np.isfinite(np.column_stack((arc, points))))
+                or not np.all(np.diff(arc) > 0.0)):
+            raise ValueError('active path arc contract failed')
+
+        self._mission_arc_m = arc
+        self._mission_path = points
+        self._mission_progress_m = float(progress_m)
+        self._active_plan_seq = sequence
+        self._active_sfc_diagnostics = diagnostics
+        if reset_mpc and getattr(self, '_path_mpc', None) is not None:
+            self._path_mpc.reset()
+            self._path_reference.reset()
+            self._path_solve_t = None
+        if snapshot is not None:
+            self.active_plan_pub.publish(snapshot)
+        self._publish_planned_path(points)
+        if hasattr(self, 'sfc_pub'):
+            self._publish_sfc(diagnostics)
 
     def _target(self):
         """Return the live cue plus a fresh, horizontal ArUco correction."""
@@ -2043,12 +2268,12 @@ class MissionManagerNode(Node):
                 return_route
                 and getattr(self, '_mission_path', None) is not None)
             rolling_path_safe = False
+            if (return_route and self._landing_mpc_entry_ready()
+                    and self._enter_landing_mpc()):
+                self._plan_future.cancel()
+                self._plan_future = None
+                return
             if rolling_path:
-                if (self._landing_mpc_entry_ready()
-                        and self._enter_landing_mpc()):
-                    self._plan_future.cancel()
-                    self._plan_future = None
-                    return
                 rolling_path_safe = self._follow_path()
                 if not rolling_path_safe:
                     self._hold_pos = self.p_d.copy()
@@ -2065,7 +2290,12 @@ class MissionManagerNode(Node):
             if not self._plan_future.done():
                 return
             try:
-                arc_m, path, expanded = self._plan_future.result()
+                plan_result = self._plan_future.result()
+                if len(plan_result) == 4:
+                    arc_m, path, expanded, diagnostics = plan_result
+                else:  # Compatibility with focused tests and old workers.
+                    arc_m, path, expanded = plan_result
+                    diagnostics = None
             except Exception as exc:
                 self._plan_future = None
                 self.get_logger().error(
@@ -2127,17 +2357,41 @@ class MissionManagerNode(Node):
                         self._set_state(
                             'ABORT', '(replacement route is unreachable)')
                     return
-            self._mission_arc_m = arc_m
-            self._mission_path = path
-            self._mission_progress_m = replacement_progress
-            if getattr(self, '_path_mpc', None) is not None:
-                self._path_mpc.reset()
-                self._path_reference.reset()
-                self._path_solve_t = None
-            self._publish_planned_path(path)
+            try:
+                # A rolling replacement includes a new current-to-route splice,
+                # so the worker's original corridor cannot certify it.  Legacy
+                # three-tuple workers likewise need an active-path corridor.
+                if rolling_path or diagnostics is None:
+                    arc_m, path, diagnostics = _active_path_sfc(
+                        self.mission_map_yaml, path)
+                MissionManagerNode._commit_active_path(
+                    self, arc_m, path, replacement_progress, diagnostics,
+                    reset_mpc=True)
+            except (KeyError, RuntimeError, ValueError) as exc:
+                self.get_logger().error(
+                    f'global active-path SFC rejected: {exc}')
+                if rolling_path and rolling_path_safe:
+                    self._set_state(
+                        'RETURN', '(SFC failure; keep prior safe route)')
+                    return
+                fallback = 'ABORT' if return_route else 'READY'
+                self._hold_pos = self.p_d.copy()
+                self._set_state(fallback, '(active-path SFC failure; hold)')
+                return
+            plan_age = max(
+                0.0, self._now()
+                - float(getattr(self, '_plan_started_t', self._now())))
+            drift_text = ''
+            planned_goal = getattr(self, '_plan_goal', None)
+            if return_route and planned_goal is not None and self.cue is not None:
+                goal_drift = float(np.linalg.norm(
+                    np.asarray(self.cue, float)[:2]
+                    - np.asarray(planned_goal, float)[:2]))
+                drift_text = f', target drift {goal_drift:.2f} m'
             self.get_logger().info(
                 f'global A*/B-spline: {len(path)} samples, '
-                f'{arc_m[-1]:.1f} m, {expanded} A* expansions')
+                f'{arc_m[-1]:.1f} m, {expanded} A* expansions, '
+                f'{plan_age:.2f} s{drift_text}')
             next_state = 'RETURN' if return_route else 'MISSION'
             self._set_state(
                 next_state, '(validated geometry B-spline -> TrackingMPC)')
@@ -2165,27 +2419,15 @@ class MissionManagerNode(Node):
                     self._last_return_plan_t is None
                     or now - self._last_return_plan_t
                     >= self._return_replan_min_period)
-            if return_route and (retarget_due or at_end):
-                self._last_return_plan_t = now
-                target = np.asarray(self.cue, float).copy()
-                target[2] = self._mission_path[-1, 2]
-                replacement = _retarget_path_tail(
-                    lambda start, goal: _mission_planning_segment_is_free(
-                        self.mission_map_yaml, start, goal),
-                    self._mission_arc_m, self._mission_path,
-                    self._mission_progress_m, target,
-                    self._mission_lookahead, self._mission_cross_track,
-                    self._mission_sample_spacing)
-                if replacement is not None:
-                    self._mission_arc_m, self._mission_path = replacement
-                    self._publish_planned_path(self._mission_path)
-                    self.get_logger().info(
-                        'return tail retarget accepted: '
-                        f'goal=({target[0]:.3f},{target[1]:.3f})')
-                    return
-                self.get_logger().warn(
-                    'return tail retarget rejected; '
-                    'keep prior route while full planner runs')
+            if return_route and retarget_due:
+                # The paper pipeline reruns all three global stages for every
+                # moving-target update.  Keep the prior certified path active
+                # in RETURN_PLAN while the process worker computes the latest
+                # A* -> optimizer-SFC -> B-spline replacement; commit path and
+                # active-path SFC together only after the exact checks pass.
+                self.get_logger().info(
+                    'moving-target update: schedule rolling '
+                    'A* -> SFC -> B-spline')
                 self._start_global_plan(self.cue, return_route=True)
                 return
 
@@ -2229,6 +2471,12 @@ class MissionManagerNode(Node):
                 return
             published = self._publish_landing_target()
             if not published:
+                if MissionManagerNode._precland_terminal_latched(self):
+                    self.get_logger().warn(
+                        'PRECLAND target unavailable below terminal latch; '
+                        'keep PX4 authority (no Offboard climb)',
+                        throttle_duration_sec=2.0)
+                    return
                 self._recover_precland()
                 return
             if not native_precland:

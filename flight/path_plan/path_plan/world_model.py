@@ -182,7 +182,17 @@ class WorldModel:
             return False
 
         direction = b - a
+        clearance = self.xy_clearance_m
+        segment_low_x = min(a[0], b[0]) - clearance
+        segment_high_x = max(a[0], b[0]) + clearance
+        segment_low_y = min(a[1], b[1]) - clearance
+        segment_high_y = max(a[1], b[1]) + clearance
+        clearance_squared = clearance ** 2
         for low, high in zip(self.boxes_min, self.boxes_max):
+            # Strict separation keeps exact clearance tangency inclusive.
+            if (high[0] < segment_low_x or low[0] > segment_high_x
+                    or high[1] < segment_low_y or low[1] > segment_high_y):
+                continue
             clipped = _clip_segment_to_z_span(a, direction, low[2], high[2])
             if clipped is None:
                 continue
@@ -190,7 +200,7 @@ class WorldModel:
             end_xy = a[:2] + clipped[1] * direction[:2]
             if (_segment_aabb_distance_squared_xy(
                     start_xy, end_xy, low[:2], high[:2])
-                    <= self.xy_clearance_m ** 2):
+                    <= clearance_squared):
                 return False
         return True
 
@@ -247,15 +257,18 @@ def _clip_segment_to_z_span(a, direction, low_z, high_z):
 
 
 def _point_segment_distance_squared_xy(point, a, b):
-    direction = b - a
-    length_squared = float(direction @ direction)
+    dx = float(b[0] - a[0])
+    dy = float(b[1] - a[1])
+    px = float(point[0] - a[0])
+    py = float(point[1] - a[1])
+    length_squared = dx * dx + dy * dy
     if length_squared == 0.0:
-        delta = point - a
-        return float(delta @ delta)
-    fraction = float(np.clip(
-        (point - a) @ direction / length_squared, 0.0, 1.0))
-    delta = point - (a + fraction * direction)
-    return float(delta @ delta)
+        return px * px + py * py
+    fraction = max(0.0, min(1.0,
+                            (px * dx + py * dy) / length_squared))
+    delta_x = float(point[0]) - (float(a[0]) + fraction * dx)
+    delta_y = float(point[1]) - (float(a[1]) + fraction * dy)
+    return delta_x * delta_x + delta_y * delta_y
 
 
 def _point_aabb_distance_squared_xy(point, low, high):

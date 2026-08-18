@@ -1,527 +1,287 @@
-# PX4-ROS2 — CJU 이동 트레일러 자율 미션 (`jo`)
+# PX4-ROS2 — CJU 이동 트레일러 자율 미션
 
-청주대학교 종합운동장 Gazebo 환경에서 장애물을 피해 목표점까지 비행한 뒤,
-움직이는 트레일러를 실시간으로 재계획·추종하고 PX4 정밀착륙으로 인계하는
-ROS 2 / PX4 연구 스택이다.
+청주대학교 운동장용 `wang` 프로파일을 `jo` 브랜치에서 개발·검증한
+ROS 2/PX4 스택이다. 드론은 장애물을 피해 목표점까지 이동한 뒤, 움직이는
+트레일러의 GPS cue로 전역 경로를 갱신하고 ArUco/PX4 PRECLAND로 착륙한다.
 
-> **현재 판정 (2026-08-17 KST)**
+> 현재 판정 — 2026-08-18
 >
-> - **Gazebo SITL:** 전체 미션 `DONE`, PX4 자동 착륙·자동 disarm 확인
-> - **실기체 props-on:** **NO-GO**
-> - ROS 2의 분리된 MPC가 B-spline 추종과 ArUco 정렬·저고도 하강을 담당하고,
->   PX4는 저수준 비행제어와 최종 PRECLAND 접촉판정·자동 disarm을 담당한다.
-> - 현재 성공한 이동표적 PRECLAND는 이 저장소 밖의 수정된 PX4 소스에
->   의존한다. `jo`만 clone해서는 같은 착륙이 재현되지 않는다.
+> - Gazebo GPS/MAVLink-in-the-loop 전체 미션: `DONE`, 자동 착륙·disarm 성공
+> - 경로 planner/SFC/ABORT/failsafe 실패: 0
+> - 실기체 props-on: **NO-GO** — 아래 P0 항목을 먼저 완료해야 한다
+> - 최신 검증은 dirty worktree에서 수행했으므로 커밋 후 clean 재실행이 필요하다
 
-## 현재 상태 요약
+## 8월 17~18일 인수인계 핵심
 
-| 항목 | 현재 상태 |
+| 영역 | 반영 내용 |
 |---|---|
-| 운영 맵 | [`drone_cju_track.yaml`](simulation/gazebo/maps/drone_cju_track.yaml) |
-| 출발 / 목표 | 맵 `(5, 0)` / `(50, 50)`, 순항고도 5 m |
-| 장애물 | `[0,50] × [0,50]` 범위의 seed 5053 기반 정수 중심좌표 20개, `barrier_2` 수동 조정 |
-| 트레일러 | 맵 `(5, 0) ↔ (5, 50)`, 1 m/s 왕복 |
-| 출항 경로 | A* → geometry-only B-spline → TrackingMPC |
-| 복귀 경로 | 최초 A*/B-spline 후 2초마다 검증된 tail만 최신 cue로 교체 |
-| 착륙 인계 | 짐벌 수평 GPS/cue 거리 10→9 m 연속 조준, KF 승인 ArUco 3개/0.5 s, live cue 직선 1.5 m-safe → LandingMPC 정렬·하강 → 저고도 PX4 PRECLAND |
-| 실시간 UI | 승인 경로·실제 기체·트레일러·미션 상태를 읽기 전용 표시 |
-| 현재 브랜치 | `jo` |
+| 맵 | 정수 중심좌표 장애물 25개, YAML/Gazebo collision/visual/test 동기화. `barrier_19`는 `(35,49,5)`로 복구 |
+| 안전반경 | raw 물리 장애물 + 드론 중심 hard 반경 1.0 m + 추종 reserve 0.5 m = 계획반경 1.5 m |
+| 전역계획 | 최소 2초 주기의 최신 cue마다 별도 프로세스에서 A* → optimizer SFC → B-spline 전체 재수행 |
+| SFC/UI | 승인 경로의 모든 선분을 free box로 덮고, 동일 plan 번호의 path/SFC를 한 `MarkerArray`로 원자 갱신 |
+| 계획시간 | exact 충돌판정의 broad-phase/scalar 연산 최적화. 알고리즘·가중치·해상도는 변경하지 않음 |
+| 착륙 | 하강 전 runway gate, KF bounded coast, 재획득 시 고도 유지, 저고도 재상승·재이륙 방지 |
+| GPS | 실기 `wang`의 MAVLink 수신 흐름을 독립 `trailer_link` 패키지로 이식하고 기존 `/marker/cue*` ABI에 연결 |
+| Gazebo GPS | 트레일러 odometry를 WGS84/MAVLink로 변환해 PTY serial reader 전체 경로를 시험하는 emulator 추가 |
+| 짐벌 | `land` 진입 시 30 deg/s로 완만하게 nadir 이동하고, `DONE` 뒤 명령을 중단 |
 
-### 현재 1 m + 분리 MPC Gazebo 검증
+논문과 동일한 핵심 전역 구조는 다음과 같다.
 
-현재 hard clearance 1 m, TrackingMPC, LandingMPC, land 전 짐벌 무명령과
-ArUco 3개/0.5 s gate는 `20260817T133221Z.wgkdQS` GUI 전체 실행으로 확인했다.
-PRECLAND는 첫 시도에 완료됐고 PX4가 자동 무장해제했다. artifact의 map
-SHA-256은 실행 YAML과 일치하지만 작업트리가 dirty였으므로 커밋 단위 재현
-증거는 아니다.
+```text
+latest trailer cue
+        ↓
+A* topology → optimizer SFC cost → geometry B-spline
+        ↓ exact 1.5 m validation
+active path + active-path SFC atomic commit
+        ↓
+TrackingMPC → ArUco/KF alignment → LandingMPC → PX4 PRECLAND
+```
 
-| 지표 | 결과 |
-|---|---:|
-| 상태 전이 | `TAKEOFF → READY → MISSION → HOVER → RETURN → LANDING_ACQUIRE → LANDING_DESCEND → PRECLAND → DONE` |
-| 전체 A*/B-spline | 2회 (출항 1회 + 최초 RETURN 1회) |
-| 2초 tail retarget | 8회 승인 / 0회 거절 |
-| TrackingMPC / LandingMPC reject | 0 / 0 |
-| planner failure / ABORT / PX4 failsafe | 0 / 0 / 0 |
-| PRECLAND 시도 / 복귀 | 1 / 0 |
-| 경로 추종 RMSE / 최대오차 | 0.223 / 0.321 m |
-| MPC 평균 / 최대 계산시간 | 4.663 / 38.860 ms |
-| 최대 body-rate | 43.47 deg/s (90 deg/s 경고선 미만) |
-| LandingMPC 구간의 잘못된 position-only HOLD | 0회 |
-| Gazebo ground-truth 연속 최소거리 | 1.619 m (hard 1 m 바깥 0.619 m) |
-| 실제 데크 접촉 중심오차 / GT 하강속도 | 0.131 m / 0.101 m/s |
-| PX4 착륙판정 / 자동 disarm | 성공 / 성공 |
-| 관련 회귀시험 | 134 passed (path_plan + landing_mpc + exporter) |
-| quality v3 | `WARN (dirty_tree)` |
+계산 중이거나 새 계획이 실패하면 기존에 승인된 path/SFC를 계속 사용한다.
 
-이 실행에서 다미터 추월·재접근, PRECLAND 재획득, 접촉 뒤 재상승은 재현되지
-않았다. land 전에는 실제 gimbal command가 0건이었고 encoder도 초기 상태를
-유지했다. land 후에는 현재 실측각부터 약 1.2 s 동안 nadir로 이동했다. 다만
-10→9 m 전환 aim lag가 최대 56.3°였고, 현재 runway 요구 10.5 s는
-실측 PRECLAND→disarm 11.51 s보다 짧다. 또한 CSV의 기본 touchdown 속도는 실제
-접촉보다 약 4.68 s 늦은 PX4 `ground_contact` 기준이므로 물리 접촉 지표와
-구분해야 한다.
+## 안전·SFC 계약
 
-### 변경 전 2 m Gazebo 검증
+- YAML/Gazebo 장애물 크기는 물리 AABB 그대로다. 장애물마다 별도 1 m halo를
+  저장하지 않는다.
+- `vehicle_clearance_xy_m: 1.0`은 물리 장애물 표면부터 드론 중심까지의
+  runtime hard 반경이다.
+- `bspline_clearance_margin_m: 0.5`를 더해 A*/optimizer SFC/B-spline/final
+  path는 총 1.5 m로 계획한다. 이중 팽창은 없다.
+- optimizer SFC는 B-spline 목적함수에 들어가 경로 형상에 영향을 준다.
+- UI의 파란 `active-path SFC`는 최종 승인 경로의 각 선분이 적어도 하나의
+  free convex box에 완전히 포함됨을 인증한다. 박스끼리 겹치는 것은 정상이다.
+- path와 SFC는 `/mission/active_plan_markers` 한 메시지에서 같은 plan 번호로
+  교체된다. UI는 서로 다른 세대의 path/SFC를 조합하지 않는다.
 
-아래 전체 실행은 당시 seed 5053 맵과 50 Hz cue, 2초 tail retarget을 반영한
-`20260812T170141Z.dyaF0u`이다. 실행 시각은 2026-08-13 02:01 KST이며,
-실행 당시 YAML과 artifact의 `map.yaml` SHA-256이 일치했다. 현재 YAML은
-안전거리를 1 m로 바꾼 후이므로 hash가 다르다. 또한 이 실행은 커밋 전 dirty
-worktree에서 수행했으므로 아래 결과는 이번 커밋 자체의 clean 재현 증거는 아니다.
+현재 TrackingMPC의 runtime 검사는 hard 1.0 m를 기준으로 한다. 따라서 계획
+경로는 1.5 m를 지켜도 실제 기체가 0.5 m reserve 일부를 사용할 수 있다.
+실기체에서 실제 1.5 m까지 강제하려면 위치추정 오차를 포함한 obstacle-aware
+MPC/guard가 별도 필요하다.
 
-| 지표 | 결과 |
-|---|---:|
-| 상태 전이 | `TAKEOFF → READY → MISSION → HOVER → RETURN → PRECLAND → DONE` |
-| 전체 A*/B-spline | 2회 (출항 1회 + 최초 RETURN 1회) |
-| 2초 tail retarget | 22회 승인 / 0회 거절 |
-| planner failure / ABORT | 0 / 0 |
-| PX4 failsafe / ULog dropout | 0 / 0 |
-| tail 교체 간격 | 1.978–2.026 s (중앙값 2.003 s) |
-| tail endpoint와 동시 트레일러 위치 최대 오차 | 0.066 m |
-| 최대 수평속도 / 인접 속도 변화 | 3.224 m/s / 0.030 m/s |
-| 최대 수평가속도 / body-rate | 3.466 m/s² / 44.969 deg/s |
-| estimator 기준 장애물 표면 최소거리 | 2.260 m (2 m 바깥 0.260 m) |
-| Gazebo ground-truth 연속 검산 최소거리 | 2.086 m (2 m 바깥 0.086 m) |
-| PX4 착륙판정 / 자동 disarm | 성공 / 성공 |
-| quality v3 | `WARN (low_obstacle_reserve, dirty_tree)` |
-| 전체 Python 회귀시험 | 129 passed |
+## GPS 좌표 구조
 
-quality v3는 실행 실패, failsafe, sample gap, speed jump, ULog dropout,
-planner failure, ABORT와 장애물 침범을 `FAIL`로 판정한다. 이번 실행에는 해당
-실패가 없었지만 estimator 기준 추가 여유가 0.5 m보다 작고 작업트리가 dirty여서
-`WARN`이다. 위 ground-truth 값은 원시 Gazebo 궤적의 연속 선분을 별도로 검산한
-값이며, 현재 exporter 값보다 실제 여유가 작다. 이 실행은 변경 전 2 m 기준의
-기록이므로 현재 1 m 설정의 근거로 재사용하지 않는다. 이 판정은 실기 안전
-인증이 아니며 저장소 밖 PX4 dirty patch도 아직 재현 가능한 형태로 고정되지
-않았다. 현재 1 m 설정의 검증은 바로 위 `wgkdQS` 결과를 기준으로 한다.
+GPS는 양방향 위치 교환이 아니다. 트레일러가 자기 GPS를 방송하고, 드론은
+자기 MAVROS global/local 위치와 결합해 트레일러의 PX4-local ENU 좌표를 만든다.
 
-## 2026-08-12 13:00 KST 이후 변경
+```text
+Trailer FCU GLOBAL_POSITION_INT
+  → trailer_gps_node
+  → /trailer/fix + /trailer/velocity_enu
 
-이 시각 이후 변경은 이번 `jo` 커밋 전까지 dirty worktree에서 개발·검증했다.
+Drone MAVROS global fix + local ENU pose
+  + trailer fix/velocity
+  → trailer_target_node
+  → /marker/cue + /marker/cue_velocity (px4_local_enu)
+  → MissionManager / planner / landing
+```
 
-- 장애물 생성 범위를 `[0,50] × [0,50]`으로 넓히고 seed 5053의 정수 좌표
-  20개로 재배치했다. `barrier_2`는 수동으로 조정했으며 Gazebo world와 YAML,
-  테스트의 좌표를 동기화했다.
-- 장애물 안전거리를 축별 사각 팽창이 아니라 물리 AABB 표면에서의 정확한
-  XY 유클리드 반경으로 통일했다. 현재 hard/runtime/UI/report 기준은 1.0 m이고,
-  A*/B-spline 및 tail 연결은 추종오차 여유 0.5 m를 더한 1.5 m로 계획한다.
-- 명령 순서를 `takeoff → READY → mission → HOVER → land`로 분리했다.
-  수동 모드에서는 이륙 직후 미션이 자동으로 시작되지 않는다.
-- 트레일러 cue 발행률을 YAML의 50 Hz 설정과 launcher에 맞췄다.
-- RETURN 전체 A*/B-spline은 최초 1회만 계산한다. 이후 2초마다 기존 경로의
-  진행 가능한 앞부분을 유지하고, 최신 트레일러까지 1.5 m-safe인 tail만
-  검증 후 원자적으로 교체한다. 연결할 수 없을 때만 전체 planner를 실행하며,
-  계산·실패 중에는 기존 승인 경로를 계속 추종한다.
-- YAML/live UI의 안전영역을 같은 rounded 1 m 형상으로 표시하고, RETURN
-  경로는 누적 이력 대신 현재 활성 경로 하나만 보여준다.
-- wang 계열의 TrackingMPC와 LandingMPC를 서로 다른 제어기로 미션 매니저
-  내부에 연결했다. TrackingMPC는 B-spline 공간경로를 추종하고 LandingMPC는
-  fresh ArUco 관측 이후 고정고도 정렬과 하강만 담당한다. 저고도 접촉과 자동
-  disarm은 PX4 PRECLAND가 계속 담당한다.
-- 근거 없는 6 m 착륙 인계와 60° 각도 gate를 제거했다. `land` 전에는 짐벌에
-  위치 명령을 보내지 않고 현재 관절 상태를 그대로 둔다. `land` 후 수평
-  GPS/cue 거리 10 m 밖에서는 현재 측정각부터 속도 제한을 적용해 관절 yaw
-  0°/pitch -90°로 이동·유지하고, 10→9 m에서 연속 전환한 뒤 9 m 안에서
-  트레일러를 직접 조준한다. 착륙·자동 무장해제가 확인되어 미션이 `DONE`이
-  되면 다시 위치 명령을 끊고 마지막 관절 상태를 그대로 둔다.
-  서로 다른 KF 승인 ArUco 3개가 0.5 s 안에 들어오고 live segment가 1.5 m
-  planning-safe일 때만 착륙 MPC에 진입한다.
-- Gazebo cue 원본 시각이 `/clock`보다 한 50 Hz tick 앞서는 callback 순서차를
-  허용해 이동 중 position-only HOLD가 끼는 문제를 제거했다. TrackingMPC에는
-  최적화 horizon과 50 Hz 실제 송신값 모두에 축별 2 m/s³ acceleration-slew
-  제한을 적용했다. `T7a5e5`의 raw setpoint bag에서 축별 최대 2.00002 m/s³
-  이내를 확인했다. XY 합성 jerk/가속도 상한은 별도 실기체 계약 항목이다.
-- MAVROS parameter service의 첫 응답 discovery race를 제한시간 내 재시도로
-  처리하고, exporter의 장애물 residual도 유클리드 1 m 계약으로 맞췄다.
-- `t5Jwr1`에서 전체 planner 2회, tail 교체 12회, 두 MPC reject 0, `DONE`,
-  자동 disarm과 planner failure·ABORT·failsafe·dropout 0을 확인했다.
+핵심 변환은 다음과 같다.
 
-## 빠른 실행 — 현재 개발 PC
+- ROS local: `x=East`, `y=North`, `z=Up`
+- PX4/MAVLink velocity: `vx=North`, `vy=East`, `vz=Down`
+- 수신 변환: `ENU = (vy, vx, -vz) × 0.01`
+- target: `vehicle_local_ENU + ENU(vehicle_fix → trailer_fix)`
+- 별도 stadium heading 회전을 GPS adapter에 다시 적용하지 않는다.
+- GNSS altitude는 AMSL/ellipsoid datum 차이 때문에 착륙 제어에 쓰지 않는다.
+  `TRAILER_DECK_Z_M`에는 현장에서 측정한 PX4 local-ENU deck 높이를 넣는다.
 
-### 1. 빌드
+position/velocity는 같은 수신 epoch와 `px4_local_enu` frame으로 발행한다.
+invalid fix, 비유한 값, source regression/freeze, 입력 skew, stale data, 4 Hz 미만
+수신은 fail-closed로 cue를 발행하지 않는다.
 
-현재 launcher는 ROS 2 Humble, PX4 v1.17에 맞는 `px4_msgs` workspace와
-`MicroXRCEAgent`가 이미 설치되어 있다고 가정한다.
+관련 파일:
 
-~~~bash
+- [`flight/trailer_link/trailer_gps_node.py`](flight/trailer_link/trailer_link/trailer_gps_node.py): serial MAVLink 수신
+- [`flight/trailer_link/trailer_target_node.py`](flight/trailer_link/trailer_link/trailer_target_node.py): WGS84→PX4 local ENU cue
+- [`flight/trailer_link/geodesy.py`](flight/trailer_link/trailer_link/geodesy.py): East/North 변환
+- [`flight/trailer_link/run_gps_cue.sh`](flight/trailer_link/run_gps_cue.sh): 실기 cue bringup
+- [`trailer_mavlink_emulator.py`](simulation/gazebo/tools/trailer_mavlink_emulator.py): Gazebo→MAVLink PTY emulator
+
+## 빌드
+
+ROS 2 Humble, PX4 v1.17 호환 `px4_msgs`, Micro XRCE-DDS Agent가 필요하다.
+
+```bash
 cd /path/to/PX4-ROS2
 source /opt/ros/humble/setup.bash
 source "$HOME/px4_ros2_ws/install/setup.bash"
+rosdep install --from-paths flight simulation/landing_mpc \
+  --ignore-src --rosdistro humble -r -y
 colcon build --symlink-install
 source install/setup.bash
-~~~
+```
 
-### 2. YAML 프리뷰만 실행
+## 실행
 
-다음 명령은 YAML을 읽어 장애물·안전영역·예상 경로를 표시할 뿐,
-Gazebo·PX4·기체 제어를 시작하지 않는다.
+### 권장: Gazebo GPS/MAVLink-in-the-loop
 
-~~~bash
-cd /path/to/PX4-ROS2
-source /opt/ros/humble/setup.bash
-source "$HOME/px4_ros2_ws/install/setup.bash"
+이 모드는 Gazebo pose를 `/marker/cue`로 직접 전달하지 않는다. 트레일러
+odometry를 WGS84/MAVLink로 만든 뒤 PTY serial, 실제 GPS parser와 target
+adapter를 통과시킨다.
 
-# 창으로 정적/애니메이션 프리뷰
-python3 simulation/gazebo/tools/cju_mission_ui.py
-
-# 창 없이 YAML·planner·좌표 계약 검사
-python3 simulation/gazebo/tools/cju_mission_ui.py --check
-
-# 이미지로 저장
-python3 simulation/gazebo/tools/cju_mission_ui.py --save /tmp/cju_path.png
-~~~
-
-`--live`는 YAML-only 모드가 아니라 이미 실행 중인 ROS graph를 구독하는
-옵션이다.
-
-### 3. Gazebo 전체 미션 실험
-
-~~~bash
+```bash
 cd /path/to/PX4-ROS2
 source /opt/ros/humble/setup.bash
 source "$HOME/px4_ros2_ws/install/setup.bash"
 source install/setup.bash
-./simulation/gazebo/run_gimbal.sh mission
-~~~
 
-터미널 입력 순서는 다음과 같다.
+TRAILER_CUE_SOURCE=gps TRAILER_LINK=sim GPS_SIM_SEED=4 \
+  ./simulation/gazebo/run_gimbal.sh mission
+```
 
-1. `명령>` 프롬프트에서 `takeoff` 입력 후 `READY` 확인
-2. `mission` 입력 후 `(50,50)` `HOVER` 확인
-3. `land` 입력
+기본 emulator 조건은 위치 잡음 0.03 m, 속도 잡음 0.02 m/s, 고정 지연
+0.08 s, dropout 0이다. `GPS_SIM_POSITION_NOISE_M`,
+`GPS_SIM_VELOCITY_NOISE_M_S`, `GPS_SIM_DELAY_S`, `GPS_SIM_DROPOUT`,
+`GPS_SIM_SEED`로 고정한다.
+
+터미널 입력 순서:
+
+1. `takeoff` → `READY`
+2. `mission` → 목표 `(50,50)` 도달 후 `HOVER`
+3. `land`
 4. `DONE`과 PX4 자동 disarm 확인
-5. `Ctrl-C`로 launcher를 종료해 ULog·CSV·manifest 정리 완료
+5. `Ctrl-C`로 ULog/CSV/manifest 정리
 
-GUI 실행에서는 live mission map이 자동으로 열린다.
+### 비교용 direct Gazebo cue
 
-~~~bash
-# Gazebo server만 실행하고 모든 viewer 비활성화
-HEADLESS=1 ./simulation/gazebo/run_gimbal.sh mission
+```bash
+TRAILER_CUE_SOURCE=gazebo ./simulation/gazebo/run_gimbal.sh mission
+```
 
-# live mission map만 비활성화
-MISSION_VIEW=0 ./simulation/gazebo/run_gimbal.sh mission
+### 실기 GPS cue component
 
-# ArUco viewer와 mission map 모두 비활성화
-ARUCO_VIEW=0 MISSION_VIEW=0 ./simulation/gazebo/run_gimbal.sh mission
-~~~
+MAVROS가 드론의 global fix와 local ENU pose를 이미 발행하고 있어야 한다.
 
-비교용 실행은 다음 두 개만 유지한다.
+```bash
+TRAILER_DECK_Z_M=<measured-local-ENU-z> \
+TRAILER_DEV=/dev/serial/by-id/<radio> \
+  ./flight/trailer_link/run_gps_cue.sh
+```
 
-~~~bash
-./simulation/gazebo/run_gimbal.sh gimbal
-./simulation/gazebo/run_gimbal.sh baseline
-~~~
+이 명령은 cue adapter만 실행한다. 전체 실기체 자동미션 launcher가 아니며,
+아래 P0를 해결하기 전 props-on 비행에 사용하지 않는다.
 
-## 최초 환경 구축
+### UI/맵 검사
 
-~~~bash
-git clone --branch jo --single-branch https://github.com/SeyeongW/PX4-ROS2.git
-cd PX4-ROS2
-
-sudo bash simulation/gazebo/install_apt_deps.sh
-./simulation/gazebo/setup_px4_sitl.sh
-./simulation/gazebo/link_px4_model.sh
-
-source /opt/ros/humble/setup.bash
-source "$HOME/px4_ros2_ws/install/setup.bash"
-colcon build --symlink-install
-source install/setup.bash
-~~~
-
-다만 이 명령만으로 현재 결과를 완전히 복원할 수는 없다.
-
-- `$HOME/px4_ros2_ws`의 PX4 v1.17 호환 `px4_msgs`가 별도로 필요하다.
-- `Micro-XRCE-DDS-Agent v2.4.3` 설치 자동화가 이 저장소에 없다.
-- `setup_px4_sitl.sh`는 stock PX4 v1.17.0을 준비하며, 아래의 이동표적
-  PRECLAND 패치를 적용하지 않는다.
-- 현재 PC의 수정된 PX4 checkout과 실기체 firmware는 이 저장소에 포함되지 않는다.
-
-따라서 fresh PC에서는 build와 일반 SITL 점검까지만 기대해야 하며, 수정된
-PRECLAND를 별도로 고정하기 전에는 최신 이동 트레일러 착륙을 재현 완료로
-판정하면 안 된다.
-
-## 작동 원리
-
-기본 원칙은 **ROS 2가 안전한 공간 경로와 두 MPC의 단계 전환을 정하고,
-PX4가 저수준 비행제어와 최종 접촉판정·자동 disarm을 소유하는 것**이다.
-
-~~~mermaid
-flowchart LR
-    A[Phase 0<br/>PRECHECK] --> B[Phase 1<br/>PX4 NAV_TAKEOFF]
-    B --> R[READY<br/>mission 명령 대기]
-    R --> C[A* topology]
-    C --> D[Geometry-only B-spline]
-    D --> E[Phase 2<br/>TrackingMPC]
-    E --> F[HOVER at 50,50]
-    F --> G[Phase 3<br/>Rolling RETURN replan]
-    G --> H[3 KF-accepted ArUco fixes / 0.5 s<br/>1.5 m-safe segment]
-    H --> I[LandingMPC<br/>ACQUIRE then DESCEND]
-    I --> J[Low-alt PX4 NAV_PRECLAND]
-    J --> K[PX4 landed + auto-disarm]
-~~~
-
-| 단계 | 상태 | 역할 |
-|---|---|---|
-| Phase 0 | `PRECHECK` | PX4 위치·상태, 고도 기준, cue, planner를 검사한다. 실패하면 arm하지 않는다. |
-| Phase 1 | `TAKEOFF` | `NAV_TAKEOFF`를 요청한다. 상승 프로파일과 자세는 PX4가 만든다. |
-| Phase 1 | `READY` | 5 m 호버를 유지하고 `mission` 명령을 기다린다. |
-| Phase 2 | `MISSION_PLAN → MISSION → HOVER` | 현재 위치에서 목표 `(50,50)`까지 계획하고 TrackingMPC로 추종한다. |
-| Phase 3 | `RETURN_PLAN → RETURN → LANDING_ACQUIRE → LANDING_DESCEND → PRECLAND → DONE` | 2초마다 검증된 tail을 최신 트레일러 위치로 교체한다. 관측·1.5 m 계획안전 조건을 통과하면 LandingMPC가 고정고도 정렬 후 하강하고, fresh ArUco·정렬·다음 반전까지의 runway를 다시 확인한 0.65 m 이하에서만 PX4에 최종 착륙을 인계한다. |
-
-### A*와 B-spline
-
-A*는 YAML 장애물을 기준으로 우회 topology를 찾는다. 현재 설정은 1 m 격자와
-장애물 표면 기준 유클리드 반경 1 m clearance이며, PX4 추종오차를 위한
-B-spline 계획 여유 0.5 m를 둔다. 실제 충돌 합격 기준·UI·리포트는 여전히
-1 m이다. 장애물은 높이 10 m이므로 5 m 순항고도에서 위로 넘어가지 않는다.
-
-CJU 미션의 B-spline은 A* 경로의 모서리를 부드럽게 보강하는
-**geometry-only 후처리기**다. 속도나 시간표를 만들지 않으며, 최종 곡선은
-누적거리 기준 0.1 m 간격으로 재표본화된다.
-
-다음 조건을 모두 통과한 경로만 채택한다.
-
-- A* 시작점·끝점과 모든 edge가 자유공간일 것
-- SciPy solver가 성공하고 결과가 모두 finite일 것
-- B-spline 출력의 모든 chord가 장애물 표면과 유클리드 1.5 m 이상 떨어질 것
-- 반환 경로의 시작점·끝점이 실제 요청점과 일치할 것
-
-하나라도 실패하면 경로를 발행하지 않고 현재 위치를 유지한 채 재시도한다.
-범용 [`bspline_node.py`](flight/path_plan/path_plan/bspline_node.py)는 아직
-legacy 시간·속도 trajectory 계약이므로 CJU의 geometry-only 경로와 혼용하지
-않는다.
-
-### 공간 경로 추종과 PX4 소유권
-
-미션 매니저는 실제 위치를 경로에 투영하고 약 6 m 앞의 공간점만
-추종 대상으로 제한한다. TrackingMPC는 이 승인 경로에서 제동 가능한 P/V/A
-참조를 만들고 10 Hz로 다시 풀며, 50 Hz로 보간해 PX4에 보낸다. 예측 horizon의
-모든 선분은 YAML hard clearance로 다시 검사한다.
-TrackingMPC의 가속도는 2 m/s³ jerk 제한으로 이어져 계획 대기 HOLD에서 첫
-P/V/A 명령으로 넘어갈 때도 한 번에 최대 가속도로 뛰지 않는다.
-
-계산 실패·비정상값·안전검사 실패 시 MPC 결과를 사용하지 않고, 기존에 검증된
-공간 target의 PX4 Goto로만 제한적으로 fallback한다. PX4는 MPC setpoint 아래의
-위치·속도·자세·모터 제어를 계속 담당한다.
-
-| PX4 파라미터 | 값 | 의미 |
-|---|---:|---|
-| `MPC_XY_CRUISE` | 3.0 m/s | 경로 순항속도 |
-| `MPC_XY_VEL_MAX` | 10.0 m/s | 목표가 아닌 절대 상한 |
-| `MPC_ACC_HOR` | 3.0 m/s² | 수평 가속도 |
-| `MPC_JERK_AUTO` | 4.0 m/s³ | 자동비행 jerk |
-| `MPC_LAND_SPEED` | 0.7 m/s | 일반 착륙 하강속도 |
-| `MPC_LAND_CRWL` | 0.1 m/s | 유효 HAGL 하의 지면 근처 crawl |
-| `LNDMC_Z_VEL_MAX` | 0.08 m/s | PX4 착륙판정 수직속도 임계값 |
-| `COM_DISARM_LAND` | 2.0 s | PX4 착륙 후 자동 disarm |
-
-### 이동 트레일러 재계획
-
-Gazebo의 [`trailer_cue_node.py`](simulation/landing_mpc/landing_mpc/trailer_cue_node.py)는
-트레일러 ground-truth를 다음 공통 인터페이스로 변환한다.
-
-| 토픽 | 의미 |
-|---|---|
-| `/marker/cue` | 트레일러 위치, `px4_local_enu` |
-| `/marker/cue_velocity` | 트레일러 속도, `px4_local_enu` |
-| `/mission/planned_path` | 현재 승인된 공간 경로 |
-| `/mission/vehicle_position` | 실제 기체 위치 |
-| `/mission/state` | 현재 Phase/상태 |
-
-`land` 입력 시 고정 트랙 경유점으로 가지 않고 **현재 기체 위치에서 최신
-트레일러 cue까지** 계획한다. Gazebo cue는 YAML의 50 Hz command rate로
-전달한다. 최초 RETURN만 A*와 B-spline으로 만들고, 이후에는 기존 경로의
-앞부분을 유지한 채 2초마다 1.5 m-safe인 tail만 최신 cue로 한 번에 교체한다.
-tail 연결이 불가능할 때만 전체 플래너를 실행하며, 계산·실패 중에도 기존
-승인 경로를 계속 추종한다.
-
-짐벌은 cue 기준 수평거리 10 m 밖에서 nadir를 유지하고, 10→9 m에서 트레일러
-방향으로 연속 전환하며, 9 m 안에서 직접 조준한다. 서로 다른 촬영시각의 KF 승인
-ArUco 측정 3개가 0.5 s 안에 들어오고 live cue까지의 직선이 1.5 m
-planning-safe일 때 `LANDING_ACQUIRE`로 전환한다. LandingMPC는 먼저 고도를
-고정한 채 위치·상대속도와
-비전 보정을 수렴시키고, 검증 후 `LANDING_DESCEND`로 하강한다. LandingMPC가
-0.65 m까지 직접 하강하고, fresh ArUco·정렬 조건과 다음 셔틀 반전 전 runway를
-다시 통과했을 때만 `LandingTargetPose`와 `NAV_PRECLAND`를 PX4에
-인계한다. PX4가 `AUTO_PRECLAND`를 수락하면 ROS Offboard setpoint를 중단하며,
-최종 접촉판정과 자동 disarm은 PX4가 담당한다.
-
-ArUco는 장거리 항법 제어기가 아니다. 가까운 거리에서 fresh하고 유효할 때
-GPS/cue의 수평 bias를 보정하는 보조 관측이다.
-
-### 좌표계
-
-- YAML 장애물과 목표: `stadium_endpoint`
-- ROS 미션 내부 기체·cue·경로: `px4_local_enu`
-- PX4 메시지: NED
-
-변환은 다음 계약을 따른다.
-
-~~~text
-NED x = ENU y
-NED y = ENU x
-NED z = -ENU z
-~~~
-
-실기용 GPS 어댑터도 두 GPS를 같은 측량 원점·heading·고도 기준의
-`px4_local_enu`로 변환하고 source timestamp·정확도·freshness를 함께
-검증해야 한다.
-
-## YAML 프리뷰와 실시간 UI
-
-UI는 flight-control 명령을 발행하지 않는 읽기 전용 도구다.
-
-~~~bash
-source /opt/ros/humble/setup.bash
-source "$HOME/px4_ros2_ws/install/setup.bash"
-
-# YAML 기반 정적/애니메이션 프리뷰
-python3 simulation/gazebo/tools/cju_mission_ui.py
-
-# 창 없이 planner와 좌표 계약 확인
+```bash
+# planner·좌표·YAML 계약 검사
 python3 simulation/gazebo/tools/cju_mission_ui.py --check
 
-# PNG 저장
+# 정적 이미지
 python3 simulation/gazebo/tools/cju_mission_ui.py --save /tmp/cju_path.png
 
-# 이미 실행 중인 Gazebo/실기 ROS graph 구독
+# 실행 중 ROS graph의 원자 path/SFC 구독
 python3 simulation/gazebo/tools/cju_mission_ui.py --live
-~~~
+```
 
-`--live`는 UI 안에서 경로를 새로 계산하지 않고 미션 매니저가 실제 승인한
-`/mission/planned_path`를 표시한다. 기체와 cue도 실제 토픽을 사용한다.
-기존 YAML 프리뷰는 그대로 유지된다.
+UI는 비행 명령을 발행하지 않는다. 정적 프리뷰는 YAML 기반이고, live 모드의
+트레일러 위치와 동적 path/SFC만 선택한 cue source를 따른다.
 
-## 로그와 재현 자료
+## 최신 전체 실험 결과
 
-기본 artifact 경로는 다음과 같다.
+기준 artifact: `20260818T173325Z.LSsmQm` (`GPS_SIM_SEED=4`).
 
-~~~text
-${XDG_STATE_HOME:-$HOME/.local/state}/px4-ros2-wang/cju/<run-id>/
-~~~
+| 항목 | 결과 |
+|---|---:|
+| 전체 상태 | `DONE`, landed, auto-disarm |
+| 초기 68 m 계획 | 1.28 s — 이전 동일 workload 12.97 s |
+| RETURN 계획 | 8/8 승인, 평균 0.229 s, 최대 0.42 s |
+| 움직이는 목표 drift | 최대 0.46 m — 이전 7.64 m |
+| planner / SFC / ABORT / failsafe | 0 / 0 / 0 / 0 |
+| TrackingMPC 계산 | 평균 5.10 ms, 최대 34.64 ms |
+| EKF 기준 추종 RMSE / 최대 | 0.214 / 0.346 m |
+| land 입력→DONE | 44.78 s — 이전 82.54 s |
+| DESCEND / PRECLAND recovery | 0 / 0 |
+| 착륙 XY 오차 | 0.281 m |
+| 접촉 후 상승·재무장 | 0 / 0 |
+| ArUco 착륙구간 검출률 | 67.3% |
 
-다른 디스크를
-쓰려면 실행 전에 `CJU_LOG_ROOT=/data/cju`처럼 지정한다.
+계획 B-spline의 최소 장애물 거리는 1.5959 m였다. Gazebo ground-truth 실제
+최소거리는 `barrier_14`에서 1.4528 m였다. hard 1.0 m는 지켰지만 계획선
+1.5 m보다 4.7 cm 안쪽이므로, 0.5 m 추종 reserve의 약 9.4%를 사용했다.
+planner/SFC 충돌이 아니라 추종·위치추정 편차다. `barrier_19`의 실제
+최소거리는 3.017 m로, y=49 복구 후 이전 근접 문제는 제거됐다.
 
-| 파일 | 내용 |
-|---|---|
-| `manifest.tsv` | git 상태, 명령, 종료상태와 실행 메타데이터 |
-| `map.yaml` | 실행 시점의 immutable 맵 snapshot |
-| `gimbal_mission.log` | 상태 전이·planner·착륙 로그 |
-| `gimbal_mission_view.log` | live UI 로그 |
-| `flight.ulg` | PX4 ULog |
-| `trailer_odometry.jsonl` | 트레일러 pose/velocity |
-| `flight_1hz.csv` | 논문/그래프용 1 Hz 데이터 |
-| `flight_summary.csv` | 자동 요약과 v3 quality gate 판정 |
+최신 실행의 quality는 기능 실패가 아니라 `dirty_tree` 때문에 `WARN`이다.
+아래 커밋을 clean checkout에서 같은 조건으로 재실행해야 발표용 재현 근거가 된다.
 
-`DONE` 뒤 `Ctrl-C`는 정상 정리 절차다. 이때 launcher 종료코드가 130일 수
-있지만, 비행 성공 여부는 `DONE`, PX4 `landed`, auto-disarm과 artifact를
-함께 확인한다.
+## 논문과의 관계
 
-## 테스트
+일치하는 부분:
 
-~~~bash
+- 최소 2초 주기의 moving-target 요청마다 A* → SFC → B-spline 전체 전역계획
+- SFC corridor 비용이 B-spline 형상에 영향
+- ArUco 정렬 → 하강 → 착지, constant-velocity KF
+
+실기 적용을 위해 바꾼 부분:
+
+- 논문 추종기는 2D unicycle MPC지만 현재는 PX4 P/V/A interface용 3D
+  double-integrator TrackingMPC다.
+- 논문은 marker KF velocity feed-forward를 기술하지만 현재 LandingMPC는
+  GPS/Gazebo `/marker/cue_velocity`를 사용하고 ArUco는 위치 bias 보정에 쓴다.
+- GPS/MAVLink, gimbal, runway gate, bounded KF coast, PX4 PRECLAND와
+  접촉 후 재상승 금지는 논문 외 실기 안전 확장이다.
+
+따라서 발표에서는 “논문 전역계획 구조를 재현하고 PX4 실기 인터페이스에 맞게
+추종·착륙 제어를 확장했다”고 설명해야 한다. 논문 구현을 수치까지 그대로
+복제했다고 표현하면 안 된다.
+
+## 실기체 적용 전 P0
+
+1. **GPS 시간 무결성**: `GLOBAL_POSITION_INT.time_boot_ms`를 ROS 시각에
+   매핑하고 reboot/wrap을 처리해야 한다. 현재 수신시각 restamp는 RF/queue
+   지연 패킷을 fresh로 보이게 할 수 있다.
+2. **RTK 품질 gate**: 드론·트레일러의 RTK fixed, hacc/eph, correction age,
+   covariance와 동일 datum을 control gate로 강제해야 한다.
+3. **실측 기준점**: GNSS antenna/EKF origin→landing marker lever arm·yaw,
+   `TRAILER_DECK_Z_M`, 현장 장애물 좌표를 측량해야 한다.
+4. **PX4/px4_msgs 고정**: 현재 성공은 저장소 밖의 수정된 PX4 PRECLAND와
+   matching `px4_msgs`에 의존한다. patch, firmware, revision을 저장소에서
+   재현 가능하게 고정해야 한다.
+5. **실기 perception/actuator**: SIYI A8 calibration·TF, ArUco topic chain,
+   실제 gimbal feedback과 top-level hardware launcher가 완결되지 않았다.
+6. **HIL/props-off**: delay/dropout/fix-loss/reboot, camera loss, planner failure,
+   RC takeover/kill, 접촉·미끄러짐·auto-disarm을 고장주입으로 통과해야 한다.
+
+추가로 ArUco 검출률 67.3%, LANDING_DESCEND 최대 하강속도 약 0.885 m/s,
+짐벌 slew saturation이 남아 있다. 이 조건 전에는 UI/topic replay,
+GPS bench, props-off와 HIL까지만 허용한다.
+
+## 검증
+
+```bash
 source /opt/ros/humble/setup.bash
 source "$HOME/px4_ros2_ws/install/setup.bash"
 source install/setup.bash
 
-export PYTHONPATH="$PWD/camera/siyi_gimbal:$PYTHONPATH"
 export PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
-python3 -m pytest flight/*/test camera/*/test simulation/*/test -q
+python3 -m pytest flight/path_plan/test -q
+python3 -m pytest flight/trailer_link/test -q
+python3 -m pytest simulation/landing_mpc/test -q
+python3 -m pytest simulation/gazebo/test -q
 
-python3 simulation/gazebo/tools/validate_self_contained_maps.py
 python3 simulation/gazebo/tools/cju_mission_ui.py --check
-bash -n simulation/gazebo/run_gimbal.sh simulation/gazebo/run_px4_map.sh
-~~~
+bash -n simulation/gazebo/run_gimbal.sh flight/trailer_link/run_gps_cue.sh
+```
 
-현재 전체 Python 결과는 `143 passed`다.
+8월 18일 커밋 전 마지막 결과는 관련 Python 회귀시험 159개 통과
+(`path_plan 22 + trailer_link 13 + landing_mpc 104 + gazebo 20`)였다.
 
-## 저장소 구조
+## 주요 파일
 
 | 경로 | 역할 |
 |---|---|
-| [`flight/path_plan`](flight/path_plan) | A*, SFC, B-spline과 exact collision 계약 |
-| [`simulation/landing_mpc`](simulation/landing_mpc) | CJU Phase 0–3 미션, cue, gimbal/marker 결합 |
-| [`simulation/gazebo`](simulation/gazebo) | YAML 맵, launcher, artifact exporter, live UI |
-| [`simulation/px4_models`](simulation/px4_models) | PX4 SITL 기체·하향 LiDAR 모델 |
-| [`camera/rtsp_bridge`](camera/rtsp_bridge) | SIYI A8 RTSP → ROS Image/CameraInfo |
-| [`camera/siyi_gimbal`](camera/siyi_gimbal) | SIYI UDP 제어·상태 |
-| [`camera/aruco_landing`](camera/aruco_landing) | 실기용 ArUco 검출·품질 gate |
-| [`simulation/gz_bridge`](simulation/gz_bridge) | Gazebo transport → ROS 2 bridge |
+| [`flight/path_plan`](flight/path_plan) | A*, optimizer SFC, B-spline, active-path SFC, exact collision |
+| [`flight/trailer_link`](flight/trailer_link) | trailer MAVLink GPS 수신과 PX4-local ENU cue |
+| [`simulation/landing_mpc`](simulation/landing_mpc) | 미션 상태기계, Tracking/Landing MPC, gimbal/ArUco 결합 |
+| [`simulation/gazebo`](simulation/gazebo) | CJU 맵·월드, launcher, GPS emulator, UI, exporter |
+| [`camera/aruco_landing`](camera/aruco_landing) | ArUco 검출·품질 gate |
+| [`camera/siyi_gimbal`](camera/siyi_gimbal) | SIYI 제어·상태 |
 
-## 남은 핵심 문제 — 실기체 NO-GO 사유
+실행 artifact는 기본적으로 다음 경로에 저장된다.
 
-### P0. 수정된 PX4가 저장소 밖에 있음
+```text
+${XDG_STATE_HOME:-$HOME/.local/state}/px4-ros2-wang/cju/<run-id>/
+```
 
-최신 성공은 `$HOME/PX4-Autopilot`의 PX4 v1.17.0 dirty checkout에 의존한다.
-외부 변경은 대략 다음 범위다.
-
-- uXRCE-DDS `/fmu/in/landing_target_pose` 입력 추가
-- PRECLAND 이동표적 속도 feed-forward
-- 위치와 상대속도의 연속 정렬 gate
-- FlightTaskAuto의 moving-position velocity 연결
-
-이 변경은 `jo`에 포함되지 않았고 실기체용 `.px4` firmware도 고정·빌드·HIL
-검증되지 않았다. 먼저 PX4 patch와 `px4_msgs` revision을 저장소에서
-재현 가능하게 고정해야 한다.
-
-### P0. 실제 두 GPS가 아직 연결되지 않음
-
-Gazebo의 cue는 GPS가 아니라 완벽한 simulator ground-truth다. 저장소에는
-드론 GPS와 트레일러 GPS를 공통 ENU로 만드는 NavSatFix/RTK adapter가 없다.
-현재 YAML 좌표도 `not_survey_grade`이므로 현장 RTK 원점·heading·장애물 측량
-없이 실물 collision authority로 사용하면 안 된다.
-
-### P0. 실기 A8 인식·bringup이 완결되지 않음
-
-A8 camera calibration, optical/body TF, RTSP→ArUco→미션 topic 연결과
-top-level hardware launcher가 완결되지 않았다. placeholder intrinsic으로
-props-on 비행하면 안 된다.
-
-### P1. 비행 중 feedback watchdog 부족
-
-위치·VehicleStatus freshness와 PX4 failsafe 검사는 PRECHECK에는 있지만,
-이륙 후 모든 airborne state에 공통 적용되는 feedback-loss guard가 부족하다.
-현재는 상당 부분 PX4 내부 failsafe에 의존한다.
-
-### P1. 실제 접촉·착륙 성능 미검증
-
-최신 Gazebo 실행에서는 `accel_spike`나 접촉 뒤 상승·미끄러짐이 재현되지 않았고,
-PX4 자동 disarm까지 정상 완료됐다. 다만 Gazebo 접촉 모델은 실제 랜딩기어·갑판
-충격을 대신하지 못하므로, 실기 적용 전에는 HIL과 props-off 단계시험으로 접촉
-하중, 미끄러짐과 자동 disarm을 다시 검증해야 한다.
-
-## 2026-08-03 이후 변경 이력
-
-- **2026-08-04 — `f5dfc08`**
-  - CJU 종합운동장 월드와 YAML 좌표 계약 추가
-  - 현재 위치 기반 A*와 이동 ArUco 트레일러 착륙 최초 통합
-- **2026-08-09 — `b812caf`**
-  - 경기장 모델과 자산을 self-contained 구조로 정리
-  - 좌표계, 다중 marker, gimbal 추종, launcher와 로그 보존 안정화
-- **2026-08-11 — `eda3d3a`**
-  - geometry-only CJU B-spline과 exact fail-closed collision 검사
-  - PX4-native takeoff/Goto/PRECLAND/auto-disarm로 책임 분리
-  - live cue 3 m rolling RETURN 재계획
-  - 정수 장애물 재배치, 하향 LiDAR/HAGL, live UI와 artifact exporter
-  - 전체 Python 회귀시험 110개 통과
-- **2026-08-11 — `b7d4844`**
-  - rolling RETURN 재계획 중 exact-safe Goto를 유지해 PX4 smoother reset 제거
-  - 착륙 crawl 0.1 m/s와 B-spline 추가 margin 1.0 m 적용
-  - body-rate·접촉 충격·장애물 여유·planner/ABORT를 판정하는 quality v3 추가
-  - clean Gazebo 전체 미션과 PX4 자동 disarm, 전체 회귀시험 114개 통과
-
-## 실기체 적용 전 최소 완료 조건
-
-- PX4 PRECLAND/DDS patch와 matching `px4_msgs`를 pin하고 실기 target
-  firmware를 reproducible build할 것
-- 두 GPS의 공통 RTK ENU adapter와 source timestamp/accuracy/freshness gate를
-  구현할 것
-- 현장 원점·heading·장애물을 측량하고 YAML 변환을 검증할 것
-- SIYI A8 calibration·TF·ArUco topic chain을 props-off에서 검증할 것
-- 비행 중 feedback-loss/failsafe watchdog과 단일 control authority를 검증할 것
-- HIL에서 moving-target 재계획, cue loss, camera loss, PRECLAND fallback,
-  RC takeover/kill을 통과할 것
-
-이 조건 전에는 **UI 확인, topic replay, props-off bench와 HIL까지만 허용**하고
-실기체 props-on 자동미션에는 사용하지 않는다.
+`DONE` 뒤 `Ctrl-C`는 ULog/CSV/manifest를 정리하는 정상 종료 절차다.

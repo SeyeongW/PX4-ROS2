@@ -185,9 +185,11 @@ def _phase_events(path: Path):
 def _planner_failure_events(path: Path) -> int:
     if not path.exists():
         return 0
-    return path.read_text(
-        encoding="utf-8", errors="replace").count(
-            "global A*/B-spline replan failed:")
+    text = path.read_text(encoding="utf-8", errors="replace")
+    return sum(text.count(message) for message in (
+        "global A*/B-spline replan failed:",
+        "global active-path SFC rejected:",
+    ))
 
 
 def _precision_landing_retries(path: Path) -> tuple[int, int, int]:
@@ -677,7 +679,10 @@ def export_run(run_dir: Path) -> tuple[Path, Path, Path]:
     body_rate_indices = np.flatnonzero(body_rate_armed)
     max_body_rate_i = body_rate_indices[
         np.nanargmax(body_rate_deg_s[body_rate_armed])]
-    clearance = float(mission["obstacle_clearance_m"])
+    # New runs own clearance on the vehicle. Keep reading old map snapshots so
+    # historical artifacts remain exportable.
+    clearance = float(mission.get(
+        "vehicle_clearance_xy_m", mission.get("obstacle_clearance_m")))
     armed_map_xy = map_xy[armed_indices_actual]
     physical_distance, _, _ = _minimum_aabb_residual(
         armed_map_xy, mission["obstacles"], 0.0)
@@ -791,6 +796,9 @@ def export_run(run_dir: Path) -> tuple[Path, Path, Path]:
         "min_obstacle_clearance_phase": _at_phase(
             events, clock, at[clearance_actual_i]),
         "closest_obstacle": obstacle_name,
+        "vehicle_clearance_xy_m": clearance,
+        # Compatibility alias for existing post-processing notebooks. The
+        # source-of-truth YAML now owns this radius on the vehicle.
         "obstacle_clearance_m": clearance,
         "obstacle_reserve_warn_m": OBSTACLE_RESERVE_WARN_M,
         "planner_failure_events": planner_failure_events,

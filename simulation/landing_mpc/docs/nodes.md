@@ -520,8 +520,8 @@ YAML의 `stadium_endpoint` 좌표가 아니다.
 | `MISSION_PLAN` | YAML 장애물 | 별도 프로세스에서 A*→geometry-only B-spline 생성·정확 충돌 검증 |
 | `MISSION` | B-spline 공간 경로 | TrackingMPC로 YAML `(50,50)`까지 장애물 회피 추종 |
 | `HOVER` | map goal | `(50,50)`, 고도 5 m 유지, `land` 대기 |
-| `RETURN_PLAN` | YAML 장애물 + 최신 큐 | 최초 복귀 또는 tail 연결 실패 때만 A*→geometry-only B-spline 생성 |
-| `RETURN` | B-spline + live cue | 기존 prefix 추종, 2초마다 1.5 m-safe tail만 교체, 관측·계획안전 gate까지 추종 |
+| `RETURN_PLAN` | YAML 장애물 + 최신 큐 | 별도 프로세스에서 A*→optimizer SFC→geometry-only B-spline 생성 |
+| `RETURN` | B-spline + live cue | 기존 승인 경로 추종, 최소 2초 주기의 최신 cue마다 전체 전역 파이프라인 재실행 |
 | `LANDING_ACQUIRE` | cue + fresh ArUco | 고도를 고정하고 LandingMPC로 수평 위치·상대속도·비전 보정 수렴 |
 | `LANDING_DESCEND` | cue + fresh ArUco | LandingMPC 안전콘으로 정렬을 유지하며 저고도까지 하강 |
 | `PRECLAND` | cue + ArUco 수평 보정 | 비전 소실 시 Offboard acquire로 회수; 정렬된 카메라 사각구간만 최대 8 s 커밋; PX4가 접촉판정·자동 disarm |
@@ -536,9 +536,10 @@ A* topology를 geometry-only로 보강할 뿐 속도나 P/V/A 시간표를
 6 m lookahead는 시간 기반 진행값이 아닌 공간 목표이며, exact 선분 검사가
 막힘을 찾으면 안전한 거리까지 줄이거나 현재 위치에서 재계획한다.
 
-**Phase 3 `land` 전환 조건**: 최초 `RETURN_PLAN → RETURN`에서
-A*→geometry-only B-spline을 만들고 이후 2초마다 tail만 갱신한다. tail 연결
-실패 때만 전체 플래너를 다시 사용한다. 짐벌은 cue 기준 수평거리 10 m 밖에서
+**Phase 3 `land` 전환 조건**: `RETURN_PLAN → RETURN`에서
+A*→optimizer SFC→geometry-only B-spline을 만들고 최소 2초 주기의 최신 cue마다 같은
+파이프라인을 비동기로 다시 수행한다. 계산 중에는 기존 안전 경로를 유지한다.
+짐벌은 cue 기준 수평거리 10 m 밖에서
 관절 yaw 0°/pitch -90°를 고정하고, 10→9 m에서 연속 전환, 9 m 안에서 직접
 조준한다. 서로 다른 KF 승인
 ArUco 3개가 0.5 s 안에 들어오고 live cue 직선이 1.5 m planning-safe일 때만

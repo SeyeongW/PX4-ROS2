@@ -175,9 +175,11 @@ mission:
   cruise_altitude_m: 5.0
   goal_m: [50, 50]
   planner_resolution_m: 1
-  obstacle_clearance_m: 1
-  # Planning reserve for PX4 tracking error; the hard/runtime clearance below
-  # remains the exact Euclidean 1 m contract.
+  # Drone-centre clearance. Obstacles retain their physical YAML dimensions;
+  # this radius accounts for the vehicle footprint in all runtime checks.
+  vehicle_clearance_xy_m: 1.0
+  # Additional planning reserve for PX4 tracking error. A*/SFC/B-spline use
+  # the 1.0 m vehicle radius plus this 0.5 m reserve (1.5 m total).
   bspline_clearance_margin_m: 0.5
   bspline_control_spacing_m: 2.0
   bspline_sample_spacing_m: 0.1
@@ -189,31 +191,36 @@ mission:
   # 9 m (horizontal GPS/cue range), and points directly inside 9 m. LandingMPC entry requires
   # three distinct KF-accepted ArUco fixes within 0.5 s plus a live cue segment
   # that is safe under this same 1.5 m planning envelope.
-  # Retarget only the validated return path tail every two seconds. Full
-  # A*/B-spline is a fallback only when no 1.5 m-safe tail connector exists.
+  # Minimum period between moving-target A* -> SFC -> B-spline requests.
+  # The prior certified route remains active while the worker replans.
   return_replan_min_period_s: 2.0
   obstacle_layout_seed: 5053
-  obstacle_generation_bounds_m: {x: [0, 50], y: [0, 50]}
-  # Seed-5053 integer centres with barrier_2 manually placed directly above
-  # barrier_17. All centres remain inside x=14..50, y=0..50.
+  obstacle_generation_bounds_m: {x: [0, 50], y: [0, 51]}
+  # Seed-5053-based integer centres with selected Y coordinates adjusted,
+  # plus five integer centres used by the denser 25-barrier test.
   obstacles:
     - {name: barrier_1, center_m: [33, 10, 5], size_m: [0.45, 0.35, 10]}
     - {name: barrier_2, center_m: [18, 39, 5], size_m: [0.45, 0.35, 10]}
     - {name: barrier_3, center_m: [21, 25, 5], size_m: [0.45, 0.35, 10]}
     - {name: barrier_4, center_m: [49, 41, 5], size_m: [0.45, 0.35, 10]}
     - {name: barrier_5, center_m: [31, 36, 5], size_m: [0.45, 0.35, 10]}
-    - {name: barrier_6, center_m: [45, 11, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_6, center_m: [45, 12, 5], size_m: [0.45, 0.35, 10]}
     - {name: barrier_7, center_m: [39, 21, 5], size_m: [0.45, 0.35, 10]}
-    - {name: barrier_8, center_m: [42, 50, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_8, center_m: [42, 51, 5], size_m: [0.45, 0.35, 10]}
     - {name: barrier_9, center_m: [17, 18, 5], size_m: [0.45, 0.35, 10]}
     - {name: barrier_10, center_m: [22, 33, 5], size_m: [0.45, 0.35, 10]}
     - {name: barrier_11, center_m: [44, 33, 5], size_m: [0.45, 0.35, 10]}
-    - {name: barrier_12, center_m: [24, 12, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_12, center_m: [24, 14, 5], size_m: [0.45, 0.35, 10]}
     - {name: barrier_13, center_m: [39, 0, 5], size_m: [0.45, 0.35, 10]}
     - {name: barrier_14, center_m: [30, 23, 5], size_m: [0.45, 0.35, 10]}
-    - {name: barrier_15, center_m: [49, 1, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_15, center_m: [49, 4, 5], size_m: [0.45, 0.35, 10]}
     - {name: barrier_16, center_m: [21, 3, 5], size_m: [0.45, 0.35, 10]}
     - {name: barrier_17, center_m: [15, 34, 5], size_m: [0.45, 0.35, 10]}
     - {name: barrier_18, center_m: [42, 41, 5], size_m: [0.45, 0.35, 10]}
     - {name: barrier_19, center_m: [35, 49, 5], size_m: [0.45, 0.35, 10]}
     - {name: barrier_20, center_m: [28, 46, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_21, center_m: [12, 48, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_22, center_m: [50, 23, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_23, center_m: [12, 8, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_24, center_m: [30, 1, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_25, center_m: [12, 25, 5], size_m: [0.45, 0.35, 10]}

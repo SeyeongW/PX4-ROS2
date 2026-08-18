@@ -101,9 +101,9 @@ predictor가 없으면 MPC가 움직이는 표적을 놓치고, reference가 없
   YAML 장애물 topology를 만들고 geometry-only B-spline이 공간 경로를
   보강·검증합니다. mission manager의 TrackingMPC가 제동 가능한 P/V/A
   참조를 만들고, PX4는 그 아래의 위치·속도·자세 제어를 담당합니다.
-- **Phase 3 `land`**: 최초 `RETURN_PLAN`에서 A*→geometry-only B-spline을
-  만들고 `RETURN`에서는 2초마다 검증된 tail만 live trailer로 갱신합니다.
-  tail 연결이 막힐 때만 전체 플래너를 다시 사용합니다. 서로 다른 KF 승인
+- **Phase 3 `land`**: `RETURN_PLAN`에서 A*→optimizer SFC→geometry-only
+  B-spline을 만들고 최신 live trailer 목표마다 같은 전역 파이프라인을
+  비동기로 다시 실행합니다. 계산 중에는 기존 승인 경로를 유지합니다. 서로 다른 KF 승인
   ArUco 3개/0.5 s와 1.5 m planning-safe live cue 직선을 모두 확인해야
   `LANDING_ACQUIRE`로 전환합니다. LandingMPC는 고정고도 정렬 뒤
   `LANDING_DESCEND`로 하강하고, 저고도에서 `NAV_PRECLAND`로 최종 접촉·
