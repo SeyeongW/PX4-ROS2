@@ -33,7 +33,7 @@ class SFCNode(Node):
         p = self.declare_parameter
         world = WorldModel.from_city_yaml(
             p("map_yaml", "").value,
-            xy_clearance_m=p("vehicle_clearance_xy_m", 1.5).value,
+            inflation_xy_m=p("inflation_xy_m", 1.45).value,
             roof_clearance_m=p("roof_clearance_m", 10.0).value,
             ground_clearance_m=p("cruise_floor_m", 20.0).value,
             ceiling_m=p("cruise_ceiling_m", 30.0).value,

@@ -5,14 +5,14 @@
 # unchanged base map; only the trailer motion + pursuit settings live here.
 # Used by:  path_plan/tools/pursuit_sim.py
 
-base_map: simulation/gazebo/maps/city_coordinates_uav.yaml  # physical map, unchanged
+base_map: gazebo/maps/city_coordinates_uav.yaml   # buildings + geofence (unchanged)
 
 drone:
   spawn_enu_m: [587.0, 580.0, 15.0]   # NE corner (base-map spawn), mid-band cruise 15 m
-  cruise_floor_m: 10.0                # offline-pursuit scenario band
+  cruise_floor_m: 10.0                # 10-20 m cruise band (same as visualize_pipeline)
   cruise_ceiling_m: 20.0
   cruise_speed_m_s: 10.0               # faster than the trailer so it can intercept
-  vehicle_clearance_xy_m: 1.5         # drone-owned radius; raw map is unchanged
+  inflation_xy_m: 1.0                 # 1 m wall clearance
   overfly_allowed: true               # climb within the 10-20 m band to overfly buildings
 
 trailer:

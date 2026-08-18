@@ -2,7 +2,7 @@
 """Run the A* -> SFC -> B-spline -> MPC pipeline on the real city map and render
 diagnostic figures (saved as PNG).  Dev/diagnostic tool, not installed.
 
-    python3 tools/visualize_pipeline.py [--map PATH] [--config PATH]
+    python3 tools/visualize_pipeline.py [--map PATH] [--res 4.0]
 """
 
 from __future__ import annotations
@@ -19,50 +19,22 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import yaml
-from matplotlib.patches import Circle, Rectangle
+from matplotlib.patches import Rectangle
 
 from path_plan.astar import AStarPlanner3D
 from path_plan.bspline_optimizer import BsplineOptimizer
 from path_plan.mpc_ros import UnicycleMPC, Weights
 from path_plan.world_model import WorldModel, _find_buildings
 
-PACKAGE = Path(__file__).resolve().parents[1]
-REPO = Path(__file__).resolve().parents[3]
-DEFAULT_MAP = REPO / "simulation/gazebo/maps/city_coordinates_uav.yaml"
-DEFAULT_CONFIG = PACKAGE / "config/city_uav.yaml"
-OUT = PACKAGE / "figures"
+REPO = Path(__file__).resolve().parents[2]
+DEFAULT_MAP = REPO / "gazebo/maps/city_coordinates_uav.yaml"
+OUT = Path(__file__).resolve().parents[1] / "figures"
 
 C_OBST = "#9aa4ad"
 C_ASTAR = "#e8590c"
 C_SFC = "#1c7ed6"
 C_BSPL = "#2f9e44"
 C_MPC = "#ae3ec9"
-
-_WORLD_KEYS = (
-    "vehicle_clearance_xy_m", "roof_clearance_m", "cruise_floor_m",
-    "cruise_ceiling_m", "overfly_allowed",
-)
-
-
-def load_pipeline_config(config_path):
-    """Load one ROS parameter file and reject planner geometry drift."""
-    doc = yaml.safe_load(Path(config_path).read_text(encoding="utf-8"))
-    params = {
-        name: doc[f"/{name}"]["ros__parameters"]
-        for name in ("astar_planner", "sfc_builder", "bspline_optimizer",
-                     "tracking_mpc")
-    }
-    astar = params["astar_planner"]
-    for name in ("sfc_builder", "bspline_optimizer"):
-        mismatch = [key for key in _WORLD_KEYS
-                    if params[name].get(key) != astar.get(key)]
-        if mismatch:
-            raise ValueError(
-                f"{name} geometry differs from astar_planner: {mismatch}")
-    if params["tracking_mpc"].get("vehicle_clearance_xy_m") != astar.get(
-            "vehicle_clearance_xy_m"):
-        raise ValueError("tracking_mpc vehicle clearance differs from planner")
-    return params
 
 
 def raw_footprints(map_path):
@@ -111,57 +83,26 @@ def mpc_rollout(traj, mpc, start, max_steps=None, goal_tol=2.0):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--map", default=str(DEFAULT_MAP))
-    ap.add_argument("--config", default=str(DEFAULT_CONFIG))
-    ap.add_argument("--res", type=float)
-    ap.add_argument("--start", nargs=3, type=float)
-    ap.add_argument("--goal", nargs=3, type=float)
-    ap.add_argument("--waypoints", nargs="*", type=float,
+    ap.add_argument("--res", type=float, default=4.0)
+    ap.add_argument("--start", nargs=3, type=float, default=[587, 580, 0])
+    ap.add_argument("--goal", nargs=3, type=float, default=[-300, -300, 0])
+    ap.add_argument("--waypoints", nargs="*", type=float, default=[],
                     help="flat via-points x y z x y z ... (forced slalom route)")
     ap.add_argument("--no-overfly", action="store_true",
                     help="Disable flying over buildings (force lateral avoidance)")
     args = ap.parse_args()
     OUT.mkdir(exist_ok=True)
 
-    cfg = load_pipeline_config(args.config)
-    astar_cfg = cfg["astar_planner"]
-    spline_cfg = cfg["bspline_optimizer"]
-    mpc_cfg = cfg["tracking_mpc"]
-    route_override = args.start is not None or args.goal is not None or args.waypoints is not None
-    args.start = list(args.start or astar_cfg["start_enu_m"])
-    args.goal = list(args.goal or astar_cfg["goal_enu_m"])
-    args.waypoints = list(
-        astar_cfg.get("waypoints_enu_m", [])
-        if args.waypoints is None else args.waypoints)
-    resolution = float(args.res or astar_cfg["resolution_m"])
-    floor = float(astar_cfg["cruise_floor_m"])
-    ceiling = float(astar_cfg["cruise_ceiling_m"])
-    overfly = bool(astar_cfg["overfly_allowed"]) and not args.no_overfly
-    args.no_overfly = not overfly
-    world = WorldModel.from_city_yaml(
-        args.map,
-        xy_clearance_m=float(astar_cfg["vehicle_clearance_xy_m"]),
-        roof_clearance_m=float(astar_cfg["roof_clearance_m"]),
-        ground_clearance_m=floor,
-        ceiling_m=ceiling,
-        overfly_allowed=overfly)
+    world = WorldModel.from_city_yaml(args.map, inflation_xy_m=1.0,
+                                      ground_clearance_m=10.0, ceiling_m=20.0,
+                                      overfly_allowed=not args.no_overfly)
     foots = raw_footprints(args.map)
-    print(f"world: {len(world.boxes_min)} raw obstacles, "
-          f"drone radius={world.xy_clearance_m:.2f} m")
+    print(f"world: {len(world.boxes_min)} obstacles")
 
     t0 = time.time()
-    astar = AStarPlanner3D(
-        world,
-        resolution_m=resolution,
-        max_expanded=int(astar_cfg["max_expanded"]),
-        clearance_weight=float(astar_cfg["clearance_weight"]),
-        clearance_pref_m=float(astar_cfg["clearance_pref_m"]),
-        altitude_weight=float(astar_cfg["altitude_weight"]),
-        altitude_pref_m=float(astar_cfg["altitude_pref_m"]),
-        climb_weight=float(astar_cfg["climb_weight"]))
-    start_10 = [args.start[0], args.start[1],
-                float(np.clip(args.start[2], floor, ceiling))]
-    goal_10 = [args.goal[0], args.goal[1],
-               float(np.clip(args.goal[2], floor, ceiling))]
+    astar = AStarPlanner3D(world, resolution_m=args.res)
+    start_10 = [args.start[0], args.start[1], max(10.0, args.start[2])]
+    goal_10 = [args.goal[0], args.goal[1], max(10.0, args.goal[2])]
     
     wp_list = args.waypoints
     route = [start_10] + [wp_list[i:i + 3] for i in range(0, len(wp_list) - 2, 3)] + [goal_10]
@@ -181,53 +122,22 @@ def main():
     wp = np.vstack(([args.start], wp_cruise, [args.goal]))
 
     t0 = time.time()
-    opt = BsplineOptimizer(
-        world,
-        cruise_speed_m_s=float(spline_cfg["cruise_speed_m_s"]),
-        ctrl_spacing_m=float(spline_cfg["ctrl_spacing_m"]),
-        max_vel=float(spline_cfg["max_vel_m_s"]),
-        max_acc=float(spline_cfg["max_acc_m_s2"]),
-        lambda_smooth=float(spline_cfg["lambda_smooth"]),
-        lambda_dist=float(spline_cfg["lambda_dist"]),
-        lambda_feas=float(spline_cfg["lambda_feas"]),
-        lambda_fit=float(spline_cfg["lambda_fit"]),
-        demarcation_m=float(spline_cfg["demarcation_m"]),
-        max_rebound=int(spline_cfg["max_rebound"]))
+    opt = BsplineOptimizer(world, cruise_speed_m_s=4.0, ctrl_spacing_m=5.0,
+                           max_vel=5.0, max_acc=3.0, lambda_feas=2.0)
     ores = opt.optimize(wp_cruise)
-    if not ores.accepted:
-        raise SystemExit(
-            "B-spline rejected: "
-            f"solver={ores.solver_success}, finite={ores.solution_finite}, "
-            f"collision_free={ores.collision_free}")
     corridor = ores.corridor
     traj = ores.spline
-    tt, pos, vel, acc = traj.sample(int(spline_cfg["sample_count"]))
-    if (not np.all(np.isfinite(np.column_stack((tt, pos, vel, acc))))
-            or not all(world.segment_is_free(a, b)
-                       for a, b in zip(pos[:-1], pos[1:]))):
-        raise SystemExit("B-spline rejected by final exact path check")
-    minimum_clearance = min(world.clearance(point) for point in pos)
+    tt, pos, vel, acc = traj.sample(400)
     boxes_free = all(world.box_is_free(corridor.boxes_min[i], corridor.boxes_max[i])
                      for i in range(len(corridor)))
-    if not boxes_free:
-        raise SystemExit("B-spline rejected: optimizer SFC contains an occupied box")
     print(f"B-spline optimize {time.time()-t0:.1f}s: boxes={len(corridor)} "
           f"(all free={boxes_free}) dur={traj.duration():.1f}s "
           f"rebound_iters={ores.rebound_iters} "
-          f"collision_free={ores.collision_free} free_frac={ores.free_fraction:.3f} "
-          f"clearance_residual={minimum_clearance:.3f}m")
+          f"collision_free={ores.collision_free} free_frac={ores.free_fraction:.3f}")
 
-    mpc = UnicycleMPC(
-        dt_s=float(mpc_cfg["dt_s"]), horizon=int(mpc_cfg["horizon"]),
-        v_ref=float(mpc_cfg["v_ref_m_s"]),
-        v_max=float(mpc_cfg["v_max_m_s"]),
-        omega_max=float(mpc_cfg["omega_max_rad_s"]),
-        a_max=float(mpc_cfg["a_max_m_s2"]),
-        weights=Weights(
-            cte=float(mpc_cfg["w_cte"]), epsi=float(mpc_cfg["w_epsi"]),
-            v=float(mpc_cfg["w_v"]), omega=float(mpc_cfg["w_omega"]),
-            a=float(mpc_cfg["w_a"]), domega=float(mpc_cfg["w_domega"]),
-            da=float(mpc_cfg["w_da"])))
+    mpc = UnicycleMPC(dt_s=0.1, horizon=20, v_ref=4.0, v_max=5.0,
+                      weights=Weights(cte=6.0, epsi=4.0, v=1.0, omega=1.0,
+                                      a=0.05, domega=6.0, da=0.5))
     t0 = time.time()
     actual_cruise, ref_xyz = mpc_rollout(traj, mpc, start_10)
     print(f"MPC rollout {time.time()-t0:.1f}s: {len(actual_cruise)} steps (mpc_ros unicycle)")
@@ -243,13 +153,8 @@ def main():
     actual_full = np.vstack((takeoff_pos, actual_cruise, landing_pos))
 
     _fig_3d_map(foots, wp, corridor, pos_full, actual_full, args)
-    _fig_topdown(
-        foots, wp_cruise, corridor, pos, world, args,
-        "CLI route override" if route_override else "config route")
-    _fig_altitude(tt, pos_full, args, foots, floor, ceiling)
-    _fig_profiles(
-        tt, vel, acc, float(spline_cfg["max_vel_m_s"]),
-        float(spline_cfg["max_acc_m_s2"]))
+    _fig_altitude(tt, pos_full, args, foots)
+    _fig_profiles(tt, vel, acc)
     _fig_mpc(traj.sample(6000)[1], actual_cruise)   # true error metric for cruise only
     print(f"figures written to {OUT}")
 
@@ -320,61 +225,7 @@ def _fig_3d_map(foots, wp, corridor, pos, actual, args):
     plt.close(fig)
 
 
-def _fig_topdown(foots, wp, corridor, pos, world, args, route_source):
-    """Raw map + the optimizer-owned SFC + accepted path + drone radius."""
-    closest = int(np.argmin([world.clearance(p) for p in pos]))
-    centre = pos[closest, :2]
-    residual = float(world.clearance(pos[closest]))
-
-    def draw(ax):
-        for index, (x, y, w, h, _z) in enumerate(foots):
-            ax.add_patch(Rectangle(
-                (x, y), w, h, facecolor=C_OBST, edgecolor="none", alpha=0.35,
-                label="raw planner AABBs" if index == 0 else None))
-        for index, (lo, hi) in enumerate(zip(corridor.boxes_min, corridor.boxes_max)):
-            ax.add_patch(Rectangle(
-                lo[:2], *(hi[:2] - lo[:2]), facecolor=C_SFC,
-                edgecolor=C_SFC, alpha=0.10, lw=0.6,
-                label="optimizer-owned SFC" if index == 0 else None))
-        ax.plot(wp[:, 0], wp[:, 1], "-o", color=C_ASTAR, ms=2.5,
-                lw=0.8, label="A* waypoints")
-        ax.plot(pos[:, 0], pos[:, 1], color=C_BSPL, lw=2.0,
-                label="accepted B-spline")
-        ax.set_aspect("equal")
-        ax.grid(alpha=0.2)
-        ax.set_xlabel("E x [m]")
-        ax.set_ylabel("N y [m]")
-
-    fig, (full, zoom) = plt.subplots(1, 2, figsize=(18, 8))
-    draw(full)
-    full.set_title("Raw planner AABBs + optimizer-owned SFC")
-    full.legend(loc="best")
-
-    draw(zoom)
-    radius = float(world.xy_clearance_m)
-    zoom.add_patch(Circle(
-        centre, radius, facecolor=C_SFC, edgecolor="#1864ab",
-        alpha=0.30, lw=2.0, label=f"drone safety radius {radius:.2f} m"))
-    span = max(10.0, 5.0 * radius)
-    zoom.set_xlim(centre[0] - span, centre[0] + span)
-    zoom.set_ylim(centre[1] - span, centre[1] + span)
-    zoom.set_title(
-        f"Closest-clearance detail: residual {residual:.2f} m "
-        "(no obstacle-side halo)")
-    zoom.legend(loc="best")
-    config_name = Path(args.config).name
-    start_xy = tuple(round(float(value), 1) for value in args.start[:2])
-    goal_xy = tuple(round(float(value), 1) for value in args.goal[:2])
-    fig.suptitle(
-        "A* → drone-centre SFC → verified B-spline\n"
-        f"{route_source}; config={config_name}; start={start_xy}; goal={goal_xy}",
-        fontsize=14)
-    fig.tight_layout()
-    fig.savefig(OUT / "1_global_topdown.png", dpi=130)
-    plt.close(fig)
-
-
-def _fig_altitude(tt, pos, args, foots, floor, ceiling):
+def _fig_altitude(tt, pos, args, foots):
     dist = np.concatenate(([0], np.cumsum(np.linalg.norm(np.diff(pos, axis=0), axis=1))))
     fig, ax = plt.subplots(figsize=(11, 4))
     
@@ -388,8 +239,7 @@ def _fig_altitude(tt, pos, args, foots, floor, ceiling):
             ax.fill_between([dist[idx[0]], dist[idx[-1]]], [0, 0], [z, z], 
                             color=C_OBST, alpha=0.6, zorder=1)
 
-    ax.axhspan(floor, ceiling, color=C_SFC, alpha=0.12,
-               label=f"{floor:g}–{ceiling:g} m cruise band")
+    ax.axhspan(10, 20, color=C_SFC, alpha=0.12, label="10–20 m cruise band")
     ax.plot(dist, pos[:, 2], color=C_BSPL, lw=2.2, label="B-spline altitude", zorder=2)
     ax.set_xlabel("path distance [m]"); ax.set_ylabel("altitude z [m]")
     ax.set_ylim(0, 40)
@@ -400,18 +250,16 @@ def _fig_altitude(tt, pos, args, foots, floor, ceiling):
     plt.close(fig)
 
 
-def _fig_profiles(tt, vel, acc, max_vel, max_acc):
+def _fig_profiles(tt, vel, acc):
     speed = np.linalg.norm(vel, axis=1)
     accel = np.linalg.norm(acc, axis=1)
     fig, (a1, a2) = plt.subplots(2, 1, figsize=(11, 6), sharex=True)
     a1.plot(tt, speed, color=C_BSPL, lw=2)
-    a1.axhline(max_vel, ls="--", color="#c92a2a",
-               label=f"v_max {max_vel:g} m/s")
+    a1.axhline(5.0, ls="--", color="#c92a2a", label="v_max 5 m/s")
     a1.set_ylabel("speed [m/s]"); a1.legend(); a1.grid(alpha=0.3)
     a1.set_title("B-spline speed & acceleration profiles")
     a2.plot(tt, accel, color=C_ASTAR, lw=2)
-    a2.axhline(max_acc, ls="--", color="#c92a2a",
-               label=f"a_max {max_acc:g} m/s²")
+    a2.axhline(3.0, ls="--", color="#c92a2a", label="a_max 3 m/s²")
     a2.set_ylabel("|accel| [m/s²]"); a2.set_xlabel("time [s]")
     a2.legend(); a2.grid(alpha=0.3)
     fig.tight_layout(); fig.savefig(OUT / "3_profiles.png", dpi=130)

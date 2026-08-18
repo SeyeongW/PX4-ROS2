@@ -22,12 +22,11 @@ astar  --global_path-->  bspline --trajectory-->  mpc --cmd_vel--> PX4
 ---
 
 ## 공통: 맵/밴드 파라미터
-astar·sfc·bspline 세 노드가 각자 맵을 로드하므로 아래 planning 값은
-**동일값 유지**. runtime MPC는 별도 hard radius 1.0 m를 사용한다.
+astar·sfc·bspline 세 노드가 각자 맵을 로드하므로 아래는 **동일값 유지**.
 
 | 파라미터 | 기본 | 의미 | 세팅 |
 |----------|------|------|------|
-| `vehicle_clearance_xy_m` | 1.5 | 1.0 m hard radius + 0.5 m tracking reserve인 planning 반경 | 안전반경↑ 하려면 ↑ (좁은 틈 막힐 위험) |
+| `inflation_xy_m` | 1.45 | 건물 수평 팽창 = 로봇 반경 | 안전마진↑ 하려면 ↑ (좁은 틈 막힐 위험) |
 | `roof_clearance_m` | 10.0 | 지붕 위 수직 클리어런스 | "넘어가기 가능 높이" 결정 |
 | `cruise_floor_m` / `cruise_ceiling_m` | 20 / 30 | 순항 고도 밴드 | 세 노드 동일값 필수 |
 
@@ -107,7 +106,6 @@ astar·sfc·bspline 세 노드가 각자 맵을 로드하므로 아래 planning 
 | 파라미터 | 기본 | 의미 | 튜닝 (↑ 효과) |
 |----------|------|------|--------------|
 | `dt_s` | 0.1 | 제어주기/예측스텝 | ↓ 반응 빠름·계산↑ |
-| `vehicle_clearance_xy_m` | 1.0 | runtime hard vehicle radius / RViz disk | planner 1.5 m와 역할을 구분 |
 | `horizon` | 20 | 예측 스텝(N·dt=2s) | ↑ 안정·미리봄(느림) / ↓ 근시·빠름 |
 | `v_ref_m_s` | 4.0 | 목표 순항속도 | |
 | `v_max_m_s` / `a_max_m_s2` / `omega_max_rad_s` | 5 / 3 / 1.2 | 물리 한계 | |
@@ -128,7 +126,7 @@ astar·sfc·bspline 세 노드가 각자 맵을 로드하므로 아래 planning 
 | 증상 | 조치 |
 |------|------|
 | 경로가 벽에 붙는다 | A\* `clearance_weight`↑ / `clearance_pref_m`↑ |
-| 좁은 틈을 못 지난다 | A\* `resolution_m`↓ / `vehicle_clearance_xy_m`↓ |
+| 좁은 틈을 못 지난다 | A\* `resolution_m`↓ / `inflation_xy_m`↓ |
 | B-spline 속도초과(5.7) | `lambda_feas`↑ (또는 `cruise_speed`↓) |
 | 궤적이 각지다/우회 | `lambda_smooth`↑ / `lambda_fit`↓ |
 | 회랑 밖으로 샌다(충돌) | `lambda_dist`↑ / `demarcation_m`↑ / `max_rebound`↑ |

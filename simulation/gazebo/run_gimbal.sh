@@ -112,7 +112,7 @@ if [[ "$TRAILER_CUE_SOURCE" == "gps" && "$TRAILER_LINK" == "1" ]]; then
 fi
 export GZ_PARTITION="${GZ_PARTITION:-px4_ros2_${USER:-user}}"
 if [[ -z "${PX4_MAP_RUNTIME_DIR:-}" ]]; then
-  CJU_LOG_ROOT="${CJU_LOG_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/px4-ros2-jo/cju}"
+  CJU_LOG_ROOT="${CJU_LOG_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/px4-ros2-wang/cju}"
   mkdir -p "$CJU_LOG_ROOT"
   PX4_MAP_RUNTIME_DIR="$(mktemp -d \
     "$CJU_LOG_ROOT/$(date -u +%Y%m%dT%H%M%SZ).XXXXXX")"
@@ -699,8 +699,6 @@ if [[ "$RUN_MISSION" == "1" && "$LANDING_MAP" == "cju-track" ]]; then
           retry_command 'TAKEOFF 상태 확인'
           continue
         }
-        # JO contract: the configured trailer begins with takeoff clearance.
-        touch "$TRAILER_START_FILE"
         wait_for_states READY 120 || {
           retry_command 'READY 호버 확인'
           continue
@@ -716,6 +714,7 @@ if [[ "$RUN_MISSION" == "1" && "$LANDING_MAP" == "cju-track" ]]; then
           retry_command 'geometry B-spline/TrackingMPC 상태 확인'
           continue
         }
+        touch "$TRAILER_START_FILE"
         echo '  Phase 2: YAML A*→geometry B-spline을 TrackingMPC로 추종 중...'
         wait_for_states HOVER 180 || {
           retry_command 'Phase 2 HOVER 확인'

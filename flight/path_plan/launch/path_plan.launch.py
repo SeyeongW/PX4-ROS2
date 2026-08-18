@@ -18,7 +18,7 @@ from launch_ros.actions import Node
 
 # Default map lives in the repo's gazebo tree (not installed in the package).
 _DEFAULT_MAP = os.path.expanduser(
-    "~/PX4-ROS2-jo/simulation/gazebo/maps/city_coordinates_uav.yaml")
+    "~/ros2_ws/PX4-ROS2/gazebo/maps/city_coordinates_uav.yaml")
 
 _GLOBAL_PATH = "/path_plan/global_path"
 _CORRIDOR = "/path_plan/corridor"

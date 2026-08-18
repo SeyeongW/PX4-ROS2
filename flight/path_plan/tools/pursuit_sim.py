@@ -36,9 +36,9 @@ from path_plan.bspline_optimizer import BsplineOptimizer
 from path_plan.mpc_ros import UnicycleMPC, Weights
 from path_plan.world_model import WorldModel, _find_buildings
 
-REPO = Path(__file__).resolve().parents[3]
+REPO = Path(__file__).resolve().parents[2]
 OUT = Path(__file__).resolve().parents[1] / "figures"
-DEFAULT_SCENARIO = REPO / "simulation/gazebo/maps/city_uav_trailer_loop.yaml"
+DEFAULT_SCENARIO = REPO / "gazebo/maps/city_uav_trailer_loop.yaml"
 _CORNER_S = {"SE": 0.0, "NE": 2.0, "NW": 4.0, "SW": 6.0}   # x H units along the loop
 
 # Make every figure's text bold (titles, axis labels, tick labels, legend).
@@ -121,8 +121,7 @@ def run_sim(scenario: dict, res_override=None, verbose=True):
     res = float(res_override or pu["astar_resolution_m"])
 
     world = WorldModel.from_city_yaml(
-        base, xy_clearance_m=d["vehicle_clearance_xy_m"],
-        ground_clearance_m=floor,
+        base, inflation_xy_m=d["inflation_xy_m"], ground_clearance_m=floor,
         ceiling_m=ceil, overfly_allowed=d["overfly_allowed"])
     planner = AStarPlanner3D(world, resolution_m=res)
     optimizer = BsplineOptimizer(world, cruise_speed_m_s=d["cruise_speed_m_s"],

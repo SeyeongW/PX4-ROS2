@@ -82,7 +82,7 @@ class WorldModel:
     def from_city_yaml(
         yaml_path: str | Path,
         *,
-        xy_clearance_m: float = 1.5,
+        inflation_xy_m: float = 1.45,
         vertical_margin_m: float = 0.4,
         roof_clearance_m: float = 10.0,
         ground_clearance_m: float = 0.0,
@@ -91,12 +91,11 @@ class WorldModel:
     ) -> "WorldModel":
         """Load building AABB obstacles from a city coordinate YAML.
 
-        ``xy_clearance_m`` is owned by the vehicle: the YAML building AABBs
-        remain physical/raw and free-space queries keep the path centre at
-        least this Euclidean distance from them.  When ``overfly_allowed`` is
-        False every building is treated as a full-height no-fly column (top set
-        well above the ceiling), so the vehicle must route around *all*
-        buildings laterally regardless of their height.
+        ``inflation_xy_m`` is the horizontal wall clearance (path-centre keeps
+        at least this far from any wall).  When ``overfly_allowed`` is False
+        every building is treated as a full-height no-fly column (top set well
+        above the ceiling), so the vehicle must route around *all* buildings
+        laterally regardless of their height instead of flying over short ones.
         """
         document = yaml.safe_load(Path(yaml_path).read_text(encoding="utf-8"))
         buildings = _find_buildings(document) or []
@@ -110,8 +109,9 @@ class WorldModel:
             z1 = float(b["roof_z_m"])
             top = (z1 + vertical_margin_m + roof_clearance_m if overfly_allowed
                    else ceiling_m + 1.0e4)               # full-height column
-            lows.append((x0, y0, z0 - vertical_margin_m))
-            highs.append((x1, y1, top))
+            lows.append((x0 - inflation_xy_m, y0 - inflation_xy_m,
+                         z0 - vertical_margin_m))
+            highs.append((x1 + inflation_xy_m, y1 + inflation_xy_m, top))
         bounds = document.get("map", {}).get("bounds_enu_m", {})
         xb = bounds.get("x", [-1e4, 1e4])
         yb = bounds.get("y", [-1e4, 1e4])
@@ -123,7 +123,6 @@ class WorldModel:
             bounds_min=np.asarray(
                 [xb[0], yb[0], ground + ground_clearance_m], float),
             bounds_max=np.asarray([xb[1], yb[1], ceiling_m], float),
-            xy_clearance_m=xy_clearance_m,
         )
 
     @staticmethod

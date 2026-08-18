@@ -36,7 +36,7 @@ Per-node algorithms, numerical characteristics, and parameter tuning:
 
 ### 0. Build (once, from the workspace root)
 ```bash
-cd ~/PX4-ROS2-jo
+cd ~/ros2_ws/PX4-ROS2
 colcon build --packages-select path_plan
 source install/setup.bash
 ```
@@ -44,21 +44,14 @@ source install/setup.bash
 ### 1. Offline — no ROS/sim (fastest way to test & see figures)
 Runs A\* → SFC → B-spline → MPC on the map and writes PNGs to `figures/`:
 ```bash
-cd ~/PX4-ROS2-jo/flight/path_plan
+cd path_plan
 PYTHONPATH=$PWD python3 tools/visualize_pipeline.py \
     --start 587 580 25  --goal -300 -300 25            # add --waypoints below
 ```
-`1_global_topdown.png` overlays raw (non-inflated) planner AABBs, the actual
-optimizer SFC and the accepted B-spline.  Planning keeps 1.5 m from physical
-walls; the runtime MPC vehicle disk is 1.0 m.  It does not store or draw a
-second obstacle-side safety halo.
-For live RViz, combine `/bspline_optimizer/corridor_markers`,
-`/bspline_optimizer/trajectory_path`, and `/tracking_mpc/safety_radius`.
 
 ### 2. The Gazebo + PX4 simulation (separate terminal)
 ```bash
-cd ~/PX4-ROS2-jo
-./simulation/gazebo/run_px4_map.sh city  # Gazebo Harmonic + PX4 SITL + bridges
+./gazebo/run_px4_map.sh city          # Gazebo Harmonic + PX4 SITL + bridges
 ```
 Spawn is the map's `city_drone_spawn` (currently ENU ≈ `587, 580`).
 
@@ -72,14 +65,12 @@ Feed the MPC from the sim and consume its command:
 - **in**  `/path_plan/depth` (`sensor_msgs/Range`, forward nearest obstacle)
 - **out** `/path_plan/cmd_vel` (`geometry_msgs/TwistStamped`, vx,vy,vz + yaw-rate)
   → bridge to a PX4 OFFBOARD `TrajectorySetpoint` (bridge TBD).
-- **RViz** `/bspline_optimizer/corridor_markers`,
-  `/bspline_optimizer/trajectory_path`, `/tracking_mpc/safety_radius`
 
 Run a single node with a config, e.g.:
 ```bash
 ros2 run path_plan astar_node --ros-args \
     --params-file install/path_plan/share/path_plan/config/city_uav.yaml \
-    -p map_yaml:=$HOME/PX4-ROS2-jo/simulation/gazebo/maps/city_coordinates_uav.yaml
+    -p map_yaml:=$PWD/gazebo/maps/city_coordinates_uav.yaml
 ```
 
 # Route: start / goal / waypoints
@@ -123,16 +114,14 @@ Notation: ENU world frame, metres; per-axis where axes decouple.
 
 ## 1. Occupancy — `world_model.py`
 
-Vehicle-centre free test (raw obstacles plus a drone-owned Minkowski radius):
+Vehicle-centre free test (Minkowski-inflated obstacles):
 
 ```
 free(p) ⇔ p ∈ [bounds_min, bounds_max]  ∧  ∀ box B:  p ∉ B
 ```
 
-- The city YAML AABBs stay at their physical size.  `vehicle_clearance_xy_m`
-  is 1.5 m for A\*, SFC and B-spline planning: a 1.0 m hard vehicle radius plus
-  a 0.5 m tracking reserve.  The runtime MPC collision model uses the 1.0 m
-  hard radius.
+- Point-in-box (all-axis interval test) and its vectorised negation →
+  `WorldModel.is_free` (`p[:,None,:] ≥ boxes_min ∧ p[:,None,:] ≤ boxes_max`).
 - Roof inflation `z1 + vertical_margin + roof_clearance` → `from_city_yaml`
   (this is what makes the 20–30 m band lateral).
 - AABB–AABB overlap (separating axis): `overlap ⇔ ∀axis lo ≤ B.max ∧ hi ≥ B.min`

@@ -707,11 +707,6 @@ def validate_active_uav_city_contract() -> dict[str, object]:
         terrain["texture_boundary_extension"] == "edge_clamp_feather_to_neutral",
         "active UAV city texture edge extension",
     )
-    require(
-        terrain["southeast_texture_repair"]
-        == "diagonal_edge_clamp_with_osm_road_restore",
-        "active UAV city south-east texture repair",
-    )
     spawn_pose = document["spawn"]["gazebo_spawn_pose_enu"]
     trailer_pose = document["trailer"]["spawn_pose_enu"]
     require(
@@ -719,8 +714,8 @@ def validate_active_uav_city_contract() -> dict[str, object]:
         "active UAV city drone is not at the north-east road-end site",
     )
     require(
-        tuple(float(trailer_pose[key]) for key in ("x", "y", "z")) == (-150.0, 507.0, 0.0),
-        "active UAV city trailer is not at the black-road patrol start",
+        tuple(float(trailer_pose[key]) for key in ("x", "y", "z")) == (-587.0, -512.0, 0.0),
+        "active UAV city trailer is not at the south-west road-end site",
     )
     forward = document["px4_vehicle"]["forward_sensors"]
     require(
@@ -771,49 +766,40 @@ def validate_active_uav_city_contract() -> dict[str, object]:
     trailer = document["trailer"]
     require(trailer["entity_name"] == "trailer", "active UAV city trailer entity")
     require(
-        trailer["model_uri"] == "model://moving_platform_aruco_velocity",
-        "active UAV city must use the deterministic moving-platform trailer",
+        trailer["model_uri"] == "model://moving_platform_aruco",
+        "active UAV city must use the SEO moving-platform trailer",
     )
     require(trailer["body_footprint_m"] == [5.0, 5.0],
-            "active UAV city trailer footprint")
+            "active UAV city SEO trailer footprint")
     require(abs(float(trailer["deck_height_m"]) - 2.05) < 1e-12,
-            "active UAV city trailer deck height")
+            "active UAV city SEO trailer deck height")
     require(
-        trailer["controller_plugin"] == "gz-sim-velocity-control-system"
-        and trailer["command_topic"] == "/model/trailer/cmd_vel",
-        "active UAV city trailer controller contract",
+        trailer["controller_plugin"] == "libMovingPlatformController.so"
+        and abs(float(trailer["controller_velocity_m_s"])) < 1e-12,
+        "active UAV city SEO trailer controller contract",
     )
-    require(
-        trailer["route_type"] == "waypoints"
-        and trailer["patrol_mode"] == "repeat"
-        and float(trailer["cruise_speed_m_s"]) == 9.0
-        and float(trailer["acceleration_m_s2"]) == 9.0
-        and trailer["stop_at_waypoints"] is True
-        and trailer["stop_waypoint_indices"]
-        == [1, 5, 8, 11, 12, 13, 14, 16, 18, 21]
-        and len(trailer["waypoints_enu_m"]) == 23,
-        "active UAV city black-road patrol contract",
-    )
-    trailer_model_path = GAZEBO / "models/moving_platform_aruco_velocity/model.sdf"
-    require(trailer_model_path.is_file(), "active UAV city trailer asset")
+    trailer_model_path = GAZEBO / "models/moving_platform_aruco/model.sdf"
+    trailer_tag_path = GAZEBO / "models/moving_platform_aruco/arucotag.png"
+    require(trailer_model_path.is_file() and trailer_tag_path.is_file(),
+            "active UAV city SEO trailer assets")
     trailer_model = ET.parse(trailer_model_path).getroot().find("model")
     require(
         trailer_model is not None
-        and trailer_model.attrib.get("name") == "moving_platform_aruco_velocity",
-        "city trailer root model",
+        and trailer_model.attrib.get("name") == "flat_platform",
+        "SEO trailer root model",
     )
     trailer_link = trailer_model.find("link[@name='platform_link']")
     require(
         trailer_link is not None
         and trailer_link.findtext("pose") == "0 0 2 0 0 0",
-        "city trailer platform link",
+        "SEO trailer platform link",
     )
     trailer_plugin = trailer_model.find("plugin")
     require(
         trailer_plugin is not None
-        and trailer_plugin.attrib.get("filename") == "gz-sim-velocity-control-system"
+        and trailer_plugin.attrib.get("filename") == "libMovingPlatformController.so"
         and trailer_plugin.findtext("link_name") == "platform_link",
-        "city trailer plugin",
+        "SEO trailer plugin",
     )
     active_world = ET.parse(REPO / document["map"]["world_file"]).getroot()
     trailer_include = next(
@@ -826,15 +812,15 @@ def validate_active_uav_city_contract() -> dict[str, object]:
     )
     require(
         trailer_include is not None
-        and trailer_include.findtext("uri") == "model://moving_platform_aruco_velocity"
-        and trailer_include.findtext("pose") == "-150 507 0 0 0 0",
-        "active UAV city trailer include",
+        and trailer_include.findtext("uri") == "model://moving_platform_aruco"
+        and trailer_include.findtext("pose") == "-587 -512 0 0 0 0",
+        "active UAV city SEO trailer include",
     )
     spawn_separation = math.dist(
         (float(spawn_pose["x"]), float(spawn_pose["y"])),
         (float(trailer_pose["x"]), float(trailer_pose["y"])),
     )
-    require(spawn_separation >= 100.0, "active UAV city staging separation is too small")
+    require(spawn_separation >= 1500.0, "active UAV city staging sites are not diagonal")
     require(derivation["city_spacing_scale_xy"] == 2.5,
             "active UAV city centroid spacing")
     require(derivation["building_footprint_scale_xy"] == 2.5,
@@ -990,7 +976,7 @@ def main() -> None:
             "static_preview_drones=0",
             "mountain_trailer_model=flat_platform",
             "active_uav_city_drone_spawn_enu=587,580,0",
-            "active_uav_city_trailer_model=moving_platform_aruco_velocity entity=trailer spawn_enu=-150,507,0 patrol_speed_m_s=9 stop_turn=1",
+            "active_uav_city_trailer_model=moving_platform_aruco entity=trailer spawn_enu=-587,-512,0 mean_velocity=0 noise=seo_default_after_px4_spawn",
             "trailer_waypoint_driver=gazebo_transport_no_mavros",
             "px4_dynamic_model=gz_x500_city_rgbd_lidar autostart=4001",
             "px4_model_repository_symlink=PASS",

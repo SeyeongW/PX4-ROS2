@@ -15,9 +15,6 @@ GPS_INPUT_TIMEOUT_S="${GPS_INPUT_TIMEOUT_S:-1.0}"
 GPS_MAX_INPUT_SKEW_S="${GPS_MAX_INPUT_SKEW_S:-0.25}"
 GPS_MIN_RATE_HZ="${GPS_MIN_RATE_HZ:-4.0}"
 GPS_READY_TIMEOUT_S="${GPS_READY_TIMEOUT_S:-15}"
-# The JO city patrol spans roughly 1.55 km from the PX4 spawn.  Wang's
-# 200 m default would correctly fail closed but would suppress every city cue.
-GPS_MAX_DISTANCE_M="${GPS_MAX_DISTANCE_M:-2000.0}"
 
 if [[ -z "$TRAILER_DECK_Z_M" ]]; then
   echo "ERROR: set measured TRAILER_DECK_Z_M in PX4 local ENU." >&2
@@ -32,15 +29,12 @@ if ! [[ "$TRAILER_SYSID" =~ ^[0-9]+$ ]] \
   echo "ERROR: TRAILER_SYSID must be 1..254." >&2
   exit 2
 fi
-python3 - "$TRAILER_DECK_Z_M" "$GPS_MAX_DISTANCE_M" <<'PY'
+python3 - "$TRAILER_DECK_Z_M" <<'PY'
 import math
 import sys
-deck_z = float(sys.argv[1])
-max_distance = float(sys.argv[2])
-if not math.isfinite(deck_z):
+value = float(sys.argv[1])
+if not math.isfinite(value):
     raise SystemExit('TRAILER_DECK_Z_M must be finite')
-if not math.isfinite(max_distance) or max_distance <= 0.0:
-    raise SystemExit('GPS_MAX_DISTANCE_M must be finite and positive')
 PY
 if [[ "$TRAILER_LINK" == "1" ]]; then
   TRAILER_CANON="$(readlink -f "$TRAILER_DEV" 2>/dev/null || true)"
@@ -101,7 +95,7 @@ fi
 wait_one_publisher /mavros/global_position/global || exit 5
 wait_one_publisher /mavros/local_position/pose || exit 5
 
-GPS_LOG_ROOT="${GPS_LOG_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/px4-ros2-jo/gps}"
+GPS_LOG_ROOT="${GPS_LOG_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/px4-ros2-wang/gps}"
 mkdir -p "$GPS_LOG_ROOT"
 RUN_DIR="$(mktemp -d "$GPS_LOG_ROOT/$(date -u +%Y%m%dT%H%M%SZ).XXXXXX")"
 PIDS=()
@@ -126,7 +120,6 @@ setsid ros2 run trailer_link trailer_target_node --ros-args \
   -p stale_after_s:="$GPS_INPUT_TIMEOUT_S" \
   -p max_input_skew_s:="$GPS_MAX_INPUT_SKEW_S" \
   -p min_source_rate_hz:="$GPS_MIN_RATE_HZ" \
-  -p max_distance_m:="$GPS_MAX_DISTANCE_M" \
   >"$RUN_DIR/trailer_target.log" 2>&1 &
 PIDS+=("$!")
 
