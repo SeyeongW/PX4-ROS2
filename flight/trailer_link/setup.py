@@ -23,6 +23,7 @@ setup(
         'console_scripts': [
             'trailer_gps_node = trailer_link.trailer_gps_node:main',
             'trailer_target_node = trailer_link.trailer_target_node:main',
+            'radio_probe = trailer_link.radio_probe:main',
         ],
     },
 )
