@@ -8,7 +8,9 @@
     trailer's position over a 900 MHz MAVLink telemetry radio on the Jetson,
     and convert it to a drone-local ENU relative target for the landing MPC.
     trailer_gps_node proves the link and republishes GLOBAL_POSITION_INT as a
-    ROS2 fix; the ENU/relative conversion is a later node.
+    ROS2 fix; trailer_target_node turns that fix into a point in the vehicle's
+    own local ENU frame, which the mission can fly to without knowing any
+    geodesy.
   </description>
   <maintainer email="seyeong186@gmail.com">seyeongW</maintainer>
   <license>Apache-2.0</license>
