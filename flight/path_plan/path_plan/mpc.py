@@ -25,26 +25,19 @@ subject to actuator and safety limits (linear in U):
 
     -a_max <= a_k <= a_max            (box bounds on U)                     (4)
     -v_max <= v_k <= v_max            (linear:  -v_max <= v_free + Gv U <= v_max)
+    |a_k - a_(k-1)| <= j_max dt       (linear acceleration-slew bound)       (5)
 
-Only the first input ``a_0`` is applied; the horizon is re-solved every tick
-(receding horizon).  Axes are dynamically decoupled, so three small QPs are
-solved independently.
+The caller selects the look-ahead knot it actually publishes and anchors that
+input to the last published acceleration.  Axes are dynamically decoupled, so
+three small QPs are solved independently.
 """
 
 from __future__ import annotations
 
-import warnings
 from dataclasses import dataclass
 
 import numpy as np
 from scipy.optimize import LinearConstraint, minimize
-
-# SLSQP evaluates trial points outside the box bounds during its line search and
-# clips them itself -- harmless and expected, but scipy emits a RuntimeWarning each
-# time, which floods the log at the control rate. Silence just that message.
-warnings.filterwarnings(
-    "ignore", message="Values in x were outside bounds",
-    category=RuntimeWarning, module="scipy.optimize._slsqp_py")
 
 
 def _condense(dt: float, N: int):
@@ -69,26 +62,37 @@ def _condense(dt: float, N: int):
 
 @dataclass
 class MPCResult:
-    acceleration_cmd: np.ndarray   # (3,) first input a_0 to apply now
+    acceleration_cmd: np.ndarray   # (3,) selected output acceleration
     predicted_pos: np.ndarray      # (N, 3)
     predicted_vel: np.ndarray      # (N, 3)
+    predicted_acc: np.ndarray      # (N, 3)
     success: bool
 
 
 class TrackingMPC:
     def __init__(self, dt_s: float = 0.1, horizon: int = 20,
                  v_max: float = 5.0, a_max: float = 3.0,
+                 j_max: float = 2.0,
                  q_pos: float = 4.0, q_vel: float = 0.4, r_acc: float = 0.05,
                  q_terminal: float = 20.0):
         self.dt = float(dt_s)
         self.N = int(horizon)
         self.v_max = float(v_max)
         self.a_max = float(a_max)
+        self.j_max = float(j_max)
         self.q, self.qv, self.r, self.qT = q_pos, q_vel, r_acc, q_terminal
         self.Fp, self.Fv, self.Gp, self.Gv = _condense(self.dt, self.N)
+        self.D = np.eye(self.N) - np.eye(self.N, k=-1)
         self._warm = np.zeros((3, self.N))
+        self._a_prev = np.zeros(3)
 
-    def _solve_axis(self, p0, v0, p_ref, v_ref, warm) -> np.ndarray:
+    def reset(self):
+        """Forget a plan when the accepted B-spline changes discontinuously."""
+        self._warm.fill(0.0)
+        self._a_prev.fill(0.0)
+
+    def _solve_axis(self, p0, v0, p_ref, v_ref, warm, a_prev,
+                    output_step):
         x0 = np.array([p0, v0])
         p_free = self.Fp @ x0                      # eq. (2) free response
         v_free = self.Fv @ x0
@@ -108,40 +112,72 @@ class TrackingMPC:
             return H @ u + f
 
         # eq. (4) velocity limits as a linear constraint on U
-        vel_con = LinearConstraint(Gv, -self.v_max - v_free, self.v_max - v_free)
+        constraints = [LinearConstraint(
+            Gv, -self.v_max - v_free, self.v_max - v_free)]
+        if self.j_max > 0.0:
+            jerk_step = self.j_max * self.dt
+            lower = np.full(self.N, -jerk_step)
+            upper = np.full(self.N, jerk_step)
+            lower[0] += a_prev
+            upper[0] += a_prev
+            constraints.append(LinearConstraint(self.D, lower, upper))
+            if output_step:
+                selector = np.zeros((1, self.N))
+                selector[0, output_step] = 1.0
+                constraints.append(LinearConstraint(
+                    selector, [a_prev - jerk_step], [a_prev + jerk_step]))
         bounds = [(-self.a_max, self.a_max)] * self.N
-        warm = np.clip(warm, -self.a_max, self.a_max)   # start inside the box bounds
         res = minimize(cost, warm, jac=grad, method="SLSQP",
-                       bounds=bounds, constraints=[vel_con],
+                       bounds=bounds, constraints=constraints,
                        options={"maxiter": 60, "ftol": 1e-4})
-        return res.x if res.success else np.clip(warm, -self.a_max, self.a_max)
+        if res.success and np.all(np.isfinite(res.x)):
+            return res.x, True
+        # Never replay a stale warm start after a failed solve.  A bounded
+        # constant deceleration is deterministic and moves every axis toward a
+        # hold while the mission manager falls back to its last safe route.
+        brake = float(np.clip(-v0 / max(self.N * self.dt, self.dt),
+                              -self.a_max, self.a_max))
+        return np.full(self.N, brake), False
 
-    def solve(self, position, velocity, reference_positions, reference_velocities
-              ) -> MPCResult:
+    def solve(self, position, velocity, reference_positions, reference_velocities,
+              applied_acceleration=None, output_step=0) -> MPCResult:
         """Solve all three axes for the current state and reference horizon.
 
         ``reference_positions`` / ``reference_velocities`` are (N, 3) look-ahead
-        samples of the B-spline trajectory ahead of the vehicle.
+        samples of the B-spline trajectory ahead of the vehicle.  When a caller
+        streams a look-ahead knot, ``output_step`` anchors that exact knot to
+        ``applied_acceleration`` so the outgoing acceleration slew stays bounded.
         """
         pos = np.asarray(position, float)
         vel = np.asarray(velocity, float)
         ref_p = np.asarray(reference_positions, float).reshape(self.N, 3)
         ref_v = np.asarray(reference_velocities, float).reshape(self.N, 3)
+        output_step = int(output_step)
+        if not 0 <= output_step < self.N:
+            raise ValueError('output_step must index the MPC horizon')
+        applied = (self._a_prev.copy() if applied_acceleration is None else
+                   np.asarray(applied_acceleration, float).reshape(3))
+        if not np.all(np.isfinite(applied)):
+            raise ValueError('applied_acceleration must be finite')
 
         U = np.zeros((3, self.N))
         ok = True
         for ax in range(3):
-            u = self._solve_axis(pos[ax], vel[ax], ref_p[:, ax], ref_v[:, ax],
-                                 self._warm[ax])
+            u, solved = self._solve_axis(
+                pos[ax], vel[ax], ref_p[:, ax], ref_v[:, ax],
+                self._warm[ax], applied[ax], output_step)
             U[ax] = u
-        self._warm = U
+            ok &= solved
+            self._warm[ax] = u if solved else 0.0
+            self._a_prev[ax] = u[output_step] if solved else 0.0
 
         # forward-simulate the applied horizon for diagnostics / preview
         pred_pos = np.column_stack([self.Fp @ np.array([pos[a], vel[a]]) + self.Gp @ U[a]
                                     for a in range(3)])
         pred_vel = np.column_stack([self.Fv @ np.array([pos[a], vel[a]]) + self.Gv @ U[a]
                                     for a in range(3)])
-        return MPCResult(U[:, 0].copy(), pred_pos, pred_vel, ok)
+        return MPCResult(
+            U[:, output_step].copy(), pred_pos, pred_vel, U.T.copy(), ok)
 
 
 def depth_avoidance_offset(nearest_m: float, tangent_xy: np.ndarray,

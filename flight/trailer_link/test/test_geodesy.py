@@ -15,8 +15,10 @@ one that hurts.
 """
 
 import math
+from types import SimpleNamespace
 
 from trailer_link.geodesy import RelativeTarget, bearing_deg, enu_offset
+from trailer_link.trailer_target_node import TrailerTargetNode
 
 #: Somewhere with a non-trivial cos(lat), so a latitude term dropped from the
 #: longitude scaling shows up instead of cancelling.
@@ -127,6 +129,52 @@ def test_stale_inputs_stop_being_facts():
     assert r.solve(2.9) is not None
     assert r.solve(5.0) is None
     assert 'nothing fresh on /trailer/fix' in r.blocking_reason(5.0)
+
+
+def test_input_sync_is_opt_in_for_the_absolute_map_route():
+    baseline = _ready()
+    baseline.on_vehicle_fix(2.0, lat=LAT, lon=LON, alt=30.0)
+    assert baseline.solve(2.0) is not None
+
+    route = _ready(max_input_skew=0.5)
+    route.on_vehicle_fix(2.0, lat=LAT, lon=LON, alt=30.0)
+    assert route.solve(2.0) is None
+    assert 'not time-aligned' in route.blocking_reason(2.0)
+
+
+def test_route_sync_uses_source_stamps_without_changing_trailer_default():
+    message = SimpleNamespace(header=SimpleNamespace(stamp=SimpleNamespace(
+        sec=12, nanosec=250_000_000)))
+    baseline = SimpleNamespace(
+        input_sync_tolerance=0.0, _now=lambda: 99.0)
+    route = SimpleNamespace(
+        input_sync_tolerance=0.1, _now=lambda: 99.0)
+    assert TrailerTargetNode._input_time(baseline, message) == 99.0
+    assert TrailerTargetNode._input_time(route, message) == 12.25
+    message.header.stamp.nanosec = 1_000_000_000
+    assert math.isnan(TrailerTargetNode._input_time(route, message))
+
+    synchronized = _ready(t=12.0, max_input_skew=0.5)
+    synchronized.on_vehicle_fix(12.25, lat=LAT, lon=LON, alt=30.0)
+    assert synchronized.sample_time() == 12.25
+
+    published = []
+    node = SimpleNamespace(
+        _now=lambda: 12.3,
+        target=SimpleNamespace(
+            solve=lambda _now: (1.0, 2.0, 3.0),
+            blocking_reason=lambda _now: None,
+            sample_time=lambda: 12.25),
+        input_sync_tolerance=0.1,
+        _note_block=lambda _reason: None,
+        map_frame='map',
+        target_pub=SimpleNamespace(publish=published.append),
+        _published=0,
+    )
+    TrailerTargetNode._tick(node)
+    assert len(published) == 1
+    assert published[0].header.stamp.sec == 12
+    assert published[0].header.stamp.nanosec == 250_000_000
 
 
 def test_a_zeroed_fix_is_refused_not_clamped():

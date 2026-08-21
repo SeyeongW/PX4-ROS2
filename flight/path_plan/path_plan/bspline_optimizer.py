@@ -36,18 +36,38 @@ class OptimizeResult:
     rebound_iters: int
     collision_free: bool
     free_fraction: float
+    solver_success: bool = True
+    solver_status: int = 0
+    solver_message: str = ''
+    solution_finite: bool = True
+
+    @property
+    def accepted(self) -> bool:
+        """Finite solver result whose sampled chordal path is collision-free."""
+        return bool(
+            self.solver_success
+            and self.solution_finite
+            and self.collision_free
+            and np.isfinite(self.spline.ts)
+            and self.spline.ts > 0.0
+            and np.all(np.isfinite(self.spline.q)))
 
 
 class BsplineOptimizer:
-    def __init__(self, world: WorldModel, *, cruise_speed_m_s: float = 4.0,
+    def __init__(self, world: WorldModel,
+                 *, cruise_speed_m_s: float | None = 4.0,
                  ctrl_spacing_m: float = 5.0, order: int = 3,
                  max_vel: float = 5.0, max_acc: float = 1.5,
                  lambda_smooth: float = 5.0, lambda_dist: float = 0.5,
                  lambda_feas: float = 1.0, lambda_fit: float = 0.05,
                  demarcation_m: float = 0.3, max_rebound: int = 10,
-                 dist_growth: float = 2.0, sfc: SafeFlightCorridor | None = None):
+                 dist_growth: float = 2.0, sfc: SafeFlightCorridor | None = None,
+                 strict_validation: bool = False):
         self.world = world
-        self.cruise = float(cruise_speed_m_s)
+        # None leaves the curve as geometry only. The flight controller then
+        # owns its time profile instead of inheriting a simulated cruise speed.
+        self.cruise = (None if cruise_speed_m_s is None
+                       else float(cruise_speed_m_s))
         self.ctrl_spacing = float(ctrl_spacing_m)
         self.p = int(order)
         self.max_vel = float(max_vel)
@@ -60,6 +80,7 @@ class BsplineOptimizer:
         self.max_rebound = int(max_rebound)
         self.dist_growth = float(dist_growth)
         self.sfc = sfc or SafeFlightCorridor(world)
+        self.strict_validation = bool(strict_validation)
 
     # ------------------------------------------------------------ cost terms
     def _smoothness(self, q, ts):
@@ -140,7 +161,10 @@ class BsplineOptimizer:
             q = assemble(x)
             cs, gs = self._smoothness(q, ts)
             cd, gd = self._corridor(q, lo, hi)
-            cf, gf = self._feasibility(q, ts)
+            if self.cruise is None:
+                cf, gf = 0.0, np.zeros_like(q)
+            else:
+                cf, gf = self._feasibility(q, ts)
             ct, gt = self._fitness(q, ref)
             total = (self.l_smooth * cs + l_dist * cd
                      + self.l_feas * cf + self.l_fit * ct)
@@ -150,42 +174,93 @@ class BsplineOptimizer:
 
         res = minimize(cost_and_grad, q0[free_idx].ravel(), jac=True,
                        method="L-BFGS-B", options={"maxiter": 300, "ftol": 1e-6})
-        return assemble(res.x)
+        return assemble(res.x), res
+
+    def _exact_collision_status(self, spline: UniformBspline, count: int):
+        """Continuously check each chord of this sampled spline representation."""
+        _, positions, _, _ = spline.sample(count)
+        if len(positions) < 2 or not np.all(np.isfinite(positions)):
+            return False, 0.0
+        free = np.fromiter(
+            (self.world.segment_is_free_exact(a, b)
+             for a, b in zip(positions[:-1], positions[1:])),
+            dtype=bool,
+            count=len(positions) - 1,
+        )
+        return bool(np.all(free)), float(np.mean(free))
+
+    def _collision_status(self, spline: UniformBspline, count: int):
+        if self.strict_validation:
+            return self._exact_collision_status(spline, count)
+        _, positions, _, _ = spline.sample(count)
+        free = self.world.is_free(positions)
+        return bool(np.all(free)), float(np.mean(free))
 
     def optimize(self, astar_waypoints_m: np.ndarray) -> OptimizeResult:
         wp = np.asarray(astar_waypoints_m, dtype=float).reshape(-1, 3)
         length = float(np.sum(np.linalg.norm(np.diff(wp, axis=0), axis=1)))
-        K = max(self.p + 2, int(length / self.ctrl_spacing) + 1)
+        intervals = (int(np.ceil(length / self.ctrl_spacing))
+                     if self.strict_validation
+                     else int(length / self.ctrl_spacing))
+        K = max(self.p + 2, intervals + 1)
         interp_pts = self._resample(wp, K)                    # position samples
-        ts = max(length / (self.cruise * (K + 2 - self.p)), 1e-2)
+        ts = (1.0 if self.cruise is None else
+              max(length / (self.cruise * (K + 2 - self.p)), 1e-2))
         q = UniformBspline.parameterize_to_bspline(ts, interp_pts)  # (K+2,3)
         n = len(q)
-        
+
         # Enforce exact clamping at start and end to guarantee Pos(0) == wp[0]
         q[:self.p] = wp[0]
         q[-self.p:] = wp[-1]
-        
+
         ref = self._resample(wp, n)                           # guide per ctrl pt
         corridor = self.sfc.boxes_for_points(ref)             # free box per ctrl pt
 
         free_idx = np.arange(self.p, n - self.p)
         l_dist = self.l_dist0
         iters = 0
+        solver_success = False
+        solver_status = -1
+        solver_message = "optimizer did not run"
+        solution_finite = False
+
+        def output(spline, collision_free, free_fraction):
+            return OptimizeResult(
+                spline, corridor, ref, iters, collision_free, free_fraction,
+                solver_success, solver_status, solver_message, solution_finite)
+
         for iters in range(1, self.max_rebound + 1):
-            q = self._solve(q, ts, corridor.boxes_min, corridor.boxes_max,
-                            ref, free_idx, l_dist)
+            previous = q
+            candidate, solver = self._solve(
+                q, ts, corridor.boxes_min, corridor.boxes_max,
+                ref, free_idx, l_dist)
+            solution_finite = bool(
+                np.all(np.isfinite(candidate))
+                and np.isfinite(float(solver.fun)))
+            solver_success = bool(solver.success)
+            solver_status = int(solver.status)
+            solver_message = str(solver.message)
+            if (self.strict_validation
+                    and (not solver_success or not solution_finite)):
+                spline = UniformBspline(previous, ts)
+                collision_free, frac = self._collision_status(
+                    spline, max(200, 4 * n))
+                return output(spline, collision_free, frac)
+            q = candidate
             spline = UniformBspline(q, ts)
-            _, pos, _, _ = spline.sample(max(200, 4 * n))
-            free = self.world.is_free(pos)
-            if bool(np.all(free)):
-                return OptimizeResult(spline, corridor, ref, iters, True, 1.0)
+            collision_free, frac = self._collision_status(
+                spline, max(200, 4 * n))
+            if collision_free:
+                return output(spline, True, frac)
             # rebound: refresh boxes for control points near collisions, raise λ2
             self._refresh_boxes(corridor, q, ref)
             l_dist *= self.dist_growth
         spline = UniformBspline(q, ts)
-        _, pos, _, _ = spline.sample(max(200, 4 * n))
-        frac = float(np.mean(self.world.is_free(pos)))
-        return OptimizeResult(spline, corridor, ref, iters, False, frac)
+        collision_free, frac = self._collision_status(
+            spline, max(200, 4 * n))
+        if not self.strict_validation:
+            collision_free = False
+        return output(spline, collision_free, frac)
 
     def _refresh_boxes(self, corridor: Corridor, q, ref):
         """Reseed each control point's box at its (free) guide point.

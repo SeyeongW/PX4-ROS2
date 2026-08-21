@@ -3,10 +3,10 @@
     ros2 launch mpc_landing aruco_landing.launch.py
 
 The perception half is identical to `fixed_marker_landing.launch.py` — the same
-proven camera + detector + frame chain — only the mission node is swapped: this
-runs `aruco_landing_node` (plain proportional centre-and-descend) instead of the
-MPC. It is the intermediate rung: prove the marker can be SEEN and FLOWN TO with
-simple control before trusting the MPC with the descent.
+proven camera + detector + frame chain — only the mission node is swapped.  Its
+default and `trailer` modes retain the proven proportional descent;
+`run_px4 route` enables the integrated TrackingMPC + LandingMPC path in that
+same node without adding a second PX4 setpoint authority.
 
 Starts, in this order:
 
@@ -65,6 +65,7 @@ def generate_launch_description():
     mission = LaunchConfiguration('mission')
     trailer = LaunchConfiguration('trailer')
     radio = LaunchConfiguration('trailer_radio')
+    trailer_sync = LaunchConfiguration('trailer_input_sync_s')
     return LaunchDescription([
         # Set mission:=false to start ONLY the perception stack, and drive the
         # mission node separately with `ros2 run` so its ENTER-to-approve prompt
@@ -86,6 +87,9 @@ def generate_launch_description():
         # this exists to make "I am driving the radio myself" a supported setup
         # rather than a race.
         DeclareLaunchArgument('trailer_radio', default_value='true'),
+        # Zero keeps the proven trailer mode unchanged. The route runner passes
+        # the same non-zero local/global pairing tolerance as its mission node.
+        DeclareLaunchArgument('trailer_input_sync_s', default_value='0.0'),
         # --- camera: hardware JPEG decode on the Jetson's NVJPG block --------
         Node(
             package='aruco_landing',
@@ -143,6 +147,10 @@ def generate_launch_description():
             executable='trailer_target_node',
             name='trailer_target_node',
             output='screen',
+            parameters=[{
+                'input_sync_tolerance_s': ParameterValue(
+                    trailer_sync, value_type=float),
+            }],
             condition=IfCondition(trailer),
         ),
 

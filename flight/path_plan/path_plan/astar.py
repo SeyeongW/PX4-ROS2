@@ -138,7 +138,8 @@ class AStarPlanner3D:
                  altitude_weight: float = 0.05,
                  altitude_pref_m: float | None = None,
                  climb_weight: float = 0.5,
-                 heuristic_weight: float = 1.0):
+                 heuristic_weight: float = 1.0,
+                 exact_edges: bool = False):
         self.world = world
         self.res = float(resolution_m)
         self.origin = world.bounds_min.astype(float)
@@ -151,6 +152,7 @@ class AStarPlanner3D:
         self.z_pref = float(altitude_pref_m if altitude_pref_m is not None
                             else 0.5 * (world.bounds_min[2] + world.bounds_max[2]))
         self.w_climb = float(climb_weight)
+        self.exact_edges = bool(exact_edges)
 
     # --------------------------------------------------------- grid <-> world
     def _to_cell(self, p) -> tuple[int, int, int]:
@@ -168,9 +170,18 @@ class AStarPlanner3D:
         start = self._to_cell(start_m)
         goal = self._to_cell(goal_m)
         goal_w = self._to_world(goal)
-        if not self._cell_free(start):
+        free_cache: dict[tuple[int, int, int], bool] = {}
+
+        def cell_free(cell) -> bool:
+            if not self.exact_edges:
+                return self._cell_free(cell)
+            if cell not in free_cache:
+                free_cache[cell] = self._cell_free(cell)
+            return free_cache[cell]
+
+        if not cell_free(start):
             return AStarResult(False, np.empty((0, 3)), 0, "start cell blocked")
-        if not self._cell_free(goal):
+        if not cell_free(goal):
             return AStarResult(False, np.empty((0, 3)), 0, "goal cell blocked")
 
         clear_cache: dict = {}
@@ -191,7 +202,11 @@ class AStarPlanner3D:
             out = []
             for offset, step_cells in zip(_NEIGHBORS, _NEIGHBOR_COST):
                 nb = tuple(base + offset)
-                if not self._cell_free(nb):
+                if not cell_free(nb):
+                    continue
+                if (self.exact_edges
+                        and not self.world.segment_is_free_exact(
+                            cw, self._to_world(nb))):
                     continue
                 out.append((nb, self._edge_cost(cw, nb, clearance, step_cells)))
             return out
@@ -231,7 +246,8 @@ class AStarPlanner3D:
         """Shaped edge cost (the pluggable 'reward' function)."""
         tw = self._to_world(to_cell)
         step = step_cells * self.res                      # base geometric length
-        shortfall = max(0.0, self.clear_pref - clearance(to_cell))  # near-wall penalty
+        shortfall = (0.0 if self.w_clear == 0.0 else
+                     max(0.0, self.clear_pref - clearance(to_cell)))
         alt_dev = abs(tw[2] - self.z_pref)                # off-band altitude penalty
         climb = max(0.0, tw[2] - from_world[2])           # upward-move penalty
         return (step * (1.0 + self.w_clear * shortfall + self.w_alt * alt_dev)
@@ -244,8 +260,13 @@ class AStarPlanner3D:
         kept = [path[0]]
         anchor = 0
         for probe in range(2, len(path)):
-            if not self.world.segment_is_free(path[anchor], path[probe],
-                                               step_m=0.5 * self.res):
+            if self.exact_edges:
+                free = self.world.segment_is_free_exact(
+                    path[anchor], path[probe])
+            else:
+                free = self.world.segment_is_free(
+                    path[anchor], path[probe], step_m=0.5 * self.res)
+            if not free:
                 kept.append(path[probe - 1])
                 anchor = probe - 1
         kept.append(path[-1])

@@ -107,9 +107,13 @@ class RelativeTarget:
     """
 
     def __init__(self, *, stale_after: float = DEFAULT_STALE_AFTER_S,
-                 max_distance: float = DEFAULT_MAX_DISTANCE_M) -> None:
+                 max_distance: float = DEFAULT_MAX_DISTANCE_M,
+                 max_input_skew: float = 0.0) -> None:
         self.stale_after = float(stale_after)
         self.max_distance = float(max_distance)
+        # Zero preserves the hardware-proven trailer pipeline. The obstacle-map
+        # route opts in because its local/global anchor needs a coherent sample.
+        self.max_input_skew = float(max_input_skew)
 
         self._t_trailer: float | None = None
         self.trailer_lat = 0.0
@@ -157,6 +161,13 @@ class RelativeTarget:
             return float('inf')
         return float(t) - min(stamps)           # type: ignore[type-var]
 
+    def sample_time(self) -> float | None:
+        """Newest source time represented by a synchronized solved target."""
+        stamps = (self._t_trailer, self._t_vehicle_fix, self._t_local)
+        if any(s is None or not math.isfinite(s) for s in stamps):
+            return None
+        return max(stamps)                      # type: ignore[type-var]
+
     def blocking_reason(self, t: float) -> str | None:
         """Why no target can be produced right now, or None.
 
@@ -176,6 +187,11 @@ class RelativeTarget:
         if not self._fresh(t, self._t_local):
             return ('no vehicle local position — nothing fresh on '
                     '/mavros/local_position/pose')
+        stamps = (self._t_trailer, self._t_vehicle_fix, self._t_local)
+        if (self.max_input_skew > 0.0
+                and max(stamps) - min(stamps) > self.max_input_skew):
+            return (f'trailer/vehicle fix and local pose are not time-aligned '
+                    f'(>{self.max_input_skew:.2f} s)')
         east, north = self.offset()
         distance = math.hypot(east, north)
         if not math.isfinite(distance):

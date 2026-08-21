@@ -1,0 +1,63 @@
+# Hardware-route snapshot extracted from Wang's drone_cju_track simulation map.
+#
+# IMPORTANT: the transform and planner are testable, but this snapshot is not a
+# props-on safety map. The origin/heading came from OSM-scale alignment and the
+# 25 barriers are the simulation layout, not a field survey. Set
+# hardware_flight_approved true only after measuring the origin, heading and
+# every obstacle in the physical test area, confirming the residual map error
+# is within 0.25 m, and demonstrating at least the mission node's configured
+# route braking deceleration plus its maximum reaction/watchdog time on the
+# loaded real airframe.
+schema_version: 1
+
+site:
+  name: Cheongju University Main Complex Stadium (No. 40)
+  coordinate_frame: stadium_endpoint
+  origin_wgs84: [36.653960886920, 127.495466874950]
+  heading_deg_enu: 6.307121199814
+  horizontal_accuracy: osm_scale_visual_not_survey_grade
+  hardware_flight_approved: false
+
+terrain:
+  coordinate_frame: stadium_endpoint
+  center_m: [46, 49]
+  size_m: [128, 226]
+
+mission:
+  coordinate_frame: stadium_endpoint
+  cruise_altitude_m: 5.0
+  planner_resolution_m: 1.0
+  vehicle_clearance_xy_m: 1.0
+  # Requested geometric route margin beyond the 1 m vehicle clearance.
+  bspline_clearance_margin_m: 1.0
+  # Extra centreline room so a real follower can recover while its checked
+  # chord and stopping envelope still keep the 1 m margin above.
+  route_following_reserve_m: 0.5
+  bspline_control_spacing_m: 1.0
+  bspline_sample_spacing_m: 0.1
+  obstacles:
+    - {name: barrier_1, center_m: [33, 10, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_2, center_m: [18, 39, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_3, center_m: [21, 25, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_4, center_m: [49, 41, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_5, center_m: [31, 36, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_6, center_m: [45, 12, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_7, center_m: [39, 21, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_8, center_m: [42, 51, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_9, center_m: [17, 18, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_10, center_m: [22, 33, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_11, center_m: [44, 33, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_12, center_m: [24, 14, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_13, center_m: [39, 0, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_14, center_m: [30, 23, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_15, center_m: [49, 4, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_16, center_m: [21, 3, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_17, center_m: [15, 34, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_18, center_m: [42, 41, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_19, center_m: [35, 49, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_20, center_m: [28, 46, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_21, center_m: [12, 48, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_22, center_m: [50, 23, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_23, center_m: [12, 8, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_24, center_m: [30, 1, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_25, center_m: [12, 25, 5], size_m: [0.45, 0.35, 10]}

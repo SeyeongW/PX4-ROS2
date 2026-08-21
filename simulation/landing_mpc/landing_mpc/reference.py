@@ -90,6 +90,9 @@ class HorizonReference:
     def ready(self) -> bool:
         return self._ok
 
+    def reset(self):
+        self._ok = False
+
     def sample(self, tau: float):
         """Return absolute (pos, vel, acc) setpoint at elapsed time ``tau``.
 
@@ -116,10 +119,12 @@ def _selftest():
     # sampler reproduces the double-integrator knots at s = dt (continuity).
     dt, N = 0.1, 5
     rng = np.random.default_rng(0)
-    p0 = rng.normal(size=3); v0 = rng.normal(size=3)
+    p0 = rng.normal(size=3)
+    v0 = rng.normal(size=3)
     A = rng.normal(size=(N, 3))
     # roll out the exact double integrator to get the knots the MPC would report
-    P = np.zeros((N, 3)); V = np.zeros((N, 3))
+    P = np.zeros((N, 3))
+    V = np.zeros((N, 3))
     p, v = p0.copy(), v0.copy()
     for k in range(N):
         p = p + v * dt + 0.5 * A[k] * dt * dt

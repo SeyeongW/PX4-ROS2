@@ -92,6 +92,79 @@ class SafeFlightCorridor:
             lows[i], highs[i] = self._box_for_point(p)
         return Corridor(lows, highs)
 
+    def cover_polyline(
+            self, points_m: np.ndarray, *, max_depth: int = 8,
+    ) -> tuple[np.ndarray, Corridor]:
+        """Cover every segment of a collision-free polyline with free boxes.
+
+        A diagonal segment can be safe while its axis-aligned bounding box is
+        blocked. Split only those segments, then require every returned chord
+        to fit in at least one free convex box. A colliding or uncertifiable
+        path raises instead of producing a partial corridor.
+        """
+        points = np.asarray(points_m, float)
+        if (points.ndim != 2 or points.shape[1] != 3 or len(points) < 2
+                or not np.all(np.isfinite(points)) or max_depth < 0):
+            raise ValueError("SFC polyline must be finite Nx3 with N >= 2")
+        keep = np.r_[True, np.linalg.norm(
+            np.diff(points, axis=0), axis=1) > 1.0e-9]
+        points = points[keep]
+        if len(points) < 2:
+            raise ValueError("SFC polyline has no spatial extent")
+
+        def split(a: np.ndarray, b: np.ndarray, depth: int) -> list[np.ndarray]:
+            lo, hi = np.minimum(a, b), np.maximum(a, b)
+            if (np.all(hi - lo <= 2.0 * self.max_extent)
+                    and self.world.box_is_free(lo, hi)):
+                return [a, b]
+            if not self.world.segment_is_free_exact(a, b):
+                raise ValueError("SFC polyline contains a colliding segment")
+            if depth >= max_depth:
+                raise ValueError("SFC segment cannot be boxed safely")
+            mid = 0.5 * (a + b)
+            left = split(a, mid, depth + 1)
+            right = split(mid, b, depth + 1)
+            return [*left[:-1], *right]
+
+        refined = [points[0]]
+        for a, b in zip(points[:-1], points[1:]):
+            refined.extend(split(a, b, 0)[1:])
+        refined = np.asarray(refined, float)
+
+        lows, highs = [], []
+        index = 0
+        while index < len(refined) - 1:
+            lo = refined[index].copy()
+            hi = refined[index].copy()
+            last = None
+            for candidate in range(index + 1, len(refined)):
+                trial_lo = np.minimum(lo, refined[candidate])
+                trial_hi = np.maximum(hi, refined[candidate])
+                if (np.any(trial_hi - trial_lo > 2.0 * self.max_extent)
+                        or not self.world.box_is_free(trial_lo, trial_hi)):
+                    break
+                lo, hi, last = trial_lo, trial_hi, candidate
+            if last is None:
+                raise ValueError("SFC could not cover a polyline segment")
+            box_lo, box_hi = self._inflate(lo, hi)
+            if (not self.world.box_is_free(box_lo, box_hi)
+                    or np.any(box_lo > lo) or np.any(box_hi < hi)):
+                raise ValueError("SFC inflation produced an invalid box")
+            lows.append(box_lo)
+            highs.append(box_hi)
+            index = last
+
+        corridor = Corridor(np.asarray(lows, float), np.asarray(highs, float))
+        for a, b in zip(refined[:-1], refined[1:]):
+            covered = np.any(np.all(
+                (a >= corridor.boxes_min - 1.0e-9)
+                & (a <= corridor.boxes_max + 1.0e-9)
+                & (b >= corridor.boxes_min - 1.0e-9)
+                & (b <= corridor.boxes_max + 1.0e-9), axis=1))
+            if not covered:
+                raise ValueError("SFC left a polyline segment uncovered")
+        return refined, corridor
+
     def build(self, waypoints_m: np.ndarray) -> Corridor:
         """Resample an A* polyline at ``seed_spacing`` and box each free sample."""
         wp = np.asarray(waypoints_m, dtype=float)

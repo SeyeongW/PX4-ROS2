@@ -35,6 +35,8 @@ Publishes
 
 from __future__ import annotations
 
+import math
+
 import rclpy
 from geometry_msgs.msg import PointStamped, PoseStamped
 from rclpy.node import Node
@@ -60,7 +62,8 @@ class TrailerTargetNode(Node):
         self._read_params()
 
         self.target = RelativeTarget(stale_after=self.stale_after,
-                                     max_distance=self.max_distance)
+                                     max_distance=self.max_distance,
+                                     max_input_skew=self.input_sync_tolerance)
         self._last_block: str | None = 'starting up'
         self._published = 0
 
@@ -103,6 +106,9 @@ class TrailerTargetNode(Node):
         p('stale_after_s', DEFAULT_STALE_AFTER_S)
         # A target farther than this is refused as a bad fix, NOT clamped.
         p('max_distance_m', DEFAULT_MAX_DISTANCE_M)
+        # Disabled for the proven trailer mode. run_px4 route opts in because
+        # an absolute obstacle map cannot use a time-skewed local/global anchor.
+        p('input_sync_tolerance_s', 0.0)
         p('stats_period_s', 2.0)
 
     def _read_params(self) -> None:
@@ -115,10 +121,27 @@ class TrailerTargetNode(Node):
         self.rate_hz = float(g('rate_hz').value)
         self.stale_after = float(g('stale_after_s').value)
         self.max_distance = float(g('max_distance_m').value)
+        self.input_sync_tolerance = float(
+            g('input_sync_tolerance_s').value)
         self.stats_period = float(g('stats_period_s').value)
 
     def _now(self) -> float:
         return self.get_clock().now().nanoseconds * 1e-9
+
+    def _input_time(self, message) -> float:
+        """Source time for route mode; receipt time for proven trailer mode."""
+        now = self._now()
+        if self.input_sync_tolerance <= 0.0:
+            return now
+        try:
+            sec = int(message.header.stamp.sec)
+            nanosec = int(message.header.stamp.nanosec)
+        except (AttributeError, TypeError, ValueError):
+            return float('nan')
+        if sec < 0 or not 0 <= nanosec < 1_000_000_000:
+            return float('nan')
+        stamp = sec + nanosec * 1.0e-9
+        return stamp if stamp > 0.0 and math.isfinite(stamp) else float('nan')
 
     # -------------------------------------------------------------- callbacks
     def _on_trailer_fix(self, m: NavSatFix) -> None:
@@ -126,15 +149,15 @@ class TrailerTargetNode(Node):
         # position. trailer_gps_node already maps a 2D fix to NO_FIX, so this is
         # the single place the pipeline decides whether the number means anything.
         self.target.on_trailer_fix(
-            self._now(), lat=m.latitude, lon=m.longitude, alt=m.altitude,
+            self._input_time(m), lat=m.latitude, lon=m.longitude, alt=m.altitude,
             has_fix=m.status.status >= NavSatStatus.STATUS_FIX)
 
     def _on_vehicle_fix(self, m: NavSatFix) -> None:
-        self.target.on_vehicle_fix(self._now(), lat=m.latitude,
+        self.target.on_vehicle_fix(self._input_time(m), lat=m.latitude,
                                    lon=m.longitude, alt=m.altitude)
 
     def _on_vehicle_pose(self, m: PoseStamped) -> None:
-        self.target.on_vehicle_local(self._now(), x=m.pose.position.x,
+        self.target.on_vehicle_local(self._input_time(m), x=m.pose.position.x,
                                      y=m.pose.position.y, z=m.pose.position.z)
 
     # ------------------------------------------------------------------- loop
@@ -144,14 +167,26 @@ class TrailerTargetNode(Node):
         if solved is None:
             self._note_block(self.target.blocking_reason(now))
             return
-        self._note_block(None)
-        self._published += 1
 
         m = PointStamped()
-        m.header.stamp = self.get_clock().now().to_msg()
+        if self.input_sync_tolerance > 0.0:
+            sample_time = self.target.sample_time()
+            if sample_time is None:
+                self._note_block('source timestamps are unavailable')
+                return
+            sec = math.floor(sample_time)
+            nanosec = int(round((sample_time - sec) * 1.0e9))
+            if nanosec == 1_000_000_000:
+                sec, nanosec = sec + 1, 0
+            m.header.stamp.sec = sec
+            m.header.stamp.nanosec = nanosec
+        else:
+            m.header.stamp = self.get_clock().now().to_msg()
+        self._note_block(None)
         m.header.frame_id = self.map_frame
         m.point.x, m.point.y, m.point.z = solved
         self.target_pub.publish(m)
+        self._published += 1
 
     def _note_block(self, reason: str | None) -> None:
         """Say it once when it changes, so the log records transitions not spam."""
