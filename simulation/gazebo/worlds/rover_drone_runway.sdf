@@ -1,0 +1,123 @@
+<?xml version="1.0" ?>
+<sdf version="1.9">
+  <!-- ================================================================== -->
+  <!-- Phase 1 combined world: ArduPilot skid_rover (ground) + iris drone   -->
+  <!-- (air), on the SAME 400 m painted track as the mpc-landing demo. -->
+  <!--                                                                      -->
+  <!-- Two SITL instances drive the two vehicles through their own           -->
+  <!-- ArduPilotPlugin FDM ports (drone 9002 / rover 9012):                  -->
+  <!--   Terminal 1 (drone):  sim_vehicle.py -v ArduCopter -f JSON -I0       -->
+  <!--                          (console) (map)                              -->
+  <!--   Terminal 2 (rover):  sim_vehicle.py -v Rover (model JSON) -I1 -w    -->
+  <!--                          (console) add-param-file rover_skid.parm     -->
+  <!--   Terminal 3 (sim):    gazebo/run_rover_drone.sh                      -->
+  <!--                                                                      -->
+  <!-- The rover carries the ArUco marker on its flatbed = the drone's       -->
+  <!-- landing target. The drone spawns on the ground a few metres away (NOT -->
+  <!-- mounted): it takes off, flies to the rover and precision-lands. No     -->
+  <!-- DetachableJoint here - that mounted-launch scenario is a later phase.  -->
+  <!-- ================================================================== -->
+  <world name="rover_drone_runway">
+    <physics name="1ms" type="ignore">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+
+    <plugin filename="gz-sim-physics-system"
+      name="gz::sim::systems::Physics"/>
+    <plugin filename="gz-sim-sensors-system"
+      name="gz::sim::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+    <plugin filename="gz-sim-user-commands-system"
+      name="gz::sim::systems::UserCommands"/>
+    <plugin filename="gz-sim-scene-broadcaster-system"
+      name="gz::sim::systems::SceneBroadcaster"/>
+    <plugin filename="gz-sim-imu-system"
+      name="gz::sim::systems::Imu"/>
+    <plugin filename="gz-sim-navsat-system"
+      name="gz::sim::systems::NavSat"/>
+
+    <scene>
+      <ambient>1.0 1.0 1.0</ambient>
+      <background>0 0 0</background>
+    </scene>
+
+    <spherical_coordinates>
+      <latitude_deg>-35.363262</latitude_deg>
+      <longitude_deg>149.165237</longitude_deg>
+      <elevation>584</elevation>
+      <heading_deg>0</heading_deg>
+      <surface_model>EARTH_WGS84</surface_model>
+    </spherical_coordinates>
+
+    <light type="directional" name="sun">
+      <cast_shadows>true</cast_shadows>
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>0.8 0.8 0.8 1</diffuse>
+      <specular>0.8 0.8 0.8 1</specular>
+      <attenuation>
+        <range>1000</range>
+        <constant>0.9</constant>
+        <linear>0.01</linear>
+        <quadratic>0.001</quadratic>
+      </attenuation>
+      <direction>-0.5 0.1 -0.9</direction>
+    </light>
+
+    <!-- Black ground plate (visual only) + the 400 m track, identical to the
+         mpc-landing world so the rover drives on the same painted lane. -->
+    <model name="black_ground">
+      <static>true</static>
+      <pose>0 36.8 -0.001 0 0 0</pose>
+      <link name="link">
+        <visual name="visual">
+          <geometry><box><size>2000 2000 0.01</size></box></geometry>
+          <material>
+            <ambient>0 0 0 1</ambient>
+            <diffuse>0 0 0 1</diffuse>
+            <specular>0 0 0 1</specular>
+            <emissive>0 0 0 1</emissive>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Collision ground so the rover wheels have something to roll on (the
+         mpc-landing world omits this because its platform is kinematic;
+         here the rover is a real dynamic vehicle and needs ground contact).
+         Visual-only black plate above stays on top for the camera look. -->
+    <model name="collision_ground">
+      <static>true</static>
+      <pose>0 36.8 -0.01 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>2000 2000 0.02</size></box></geometry>
+          <surface><friction><ode><mu>1.0</mu><mu2>1.0</mu2></ode></friction></surface>
+        </collision>
+      </link>
+    </model>
+
+    <include>
+      <uri>model://running_track</uri>
+      <pose>0 0 0 0 0 0</pose>
+    </include>
+
+    <!-- Rover: the moving landing platform, on the lower straight (y=0), facing
+         +x (east) so its forward camera looks along the lane. Carries the ArUco
+         marker on its flatbed top (z=0.28) as the drone's landing target. -->
+    <include>
+      <uri>model://skid_rover</uri>
+      <pose degrees="true">3 0 0 0 0 0</pose>
+    </include>
+
+    <!-- Drone: spawns on the GROUND at the origin (3 m behind the rover), NOT
+         mounted. iris sits 0.195 m above its own origin. It takes off and flies
+         to precision-land on the rover marker. -->
+    <include>
+      <uri>model://iris_with_down_camera</uri>
+      <pose degrees="true">0 0 0.195 0 0 0</pose>
+    </include>
+
+  </world>
+</sdf>

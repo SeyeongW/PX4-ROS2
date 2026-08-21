@@ -1,0 +1,18 @@
+# SITL-only clock contract.  PX4 is driven by Gazebo lockstep, so every
+# MAVROS component must use the same /clock domain.  A wall-clock MAVROS time
+# filter periodically rebases its headers between Unix epoch and PX4 boot time
+# when the simulator real-time factor is not exactly one.
+/**:
+  ros__parameters:
+    use_sim_time: true
+
+# Gazebo drives PX4's monotonic clock directly.  MAVLINK timesync under
+# use_sim_time feeds a small simulated timestamp into an arithmetic path that
+# expects a wall-clock timestamp; MAVROS then resets about every 51 seconds
+# and stamps LOCAL_POSITION/ATTITUDE with callback time instead of the PX4
+# sample time.  PASSTHROUGH preserves PX4 time_boot_ms, which is the same
+# Gazebo simulation clock used by camera and trailer sensor headers.
+/**/time:
+  ros__parameters:
+    timesync_mode: PASSTHROUGH
+    timesync_rate: 0.0

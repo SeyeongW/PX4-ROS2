@@ -1,0 +1,386 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Gazebo Classic port of models/gimbal (gz-sim Harmonic).
+
+     Same geometry, same joint axes and limits, same PID gains.  Only the
+     simulator-specific parts change:
+
+       gz-sim-joint-position-controller-system -> gimbal_joint_position_controller
+                                                  (plugins/, gazebo_ros_pkgs has none)
+       gz-sim-joint-state-publisher-system     -> libgazebo_ros_joint_state_publisher
+       <sensor type="camera"> + <topic>        -> + libgazebo_ros_camera
+       <sensor type="imu">                     -> + libgazebo_ros_imu_sensor
+       <gz_frame_id>                           -> the plugins' <frame_name>
+       SDF 1.9                                 -> SDF 1.7
+
+     The ROS TOPIC CONTRACT IS IDENTICAL to the gz version, so
+     scripts/gimbal_keyboard_control.py and the README table apply unchanged —
+     with one simplification: gz needed ros_gz_bridge to translate and remap
+     every topic, and Classic's plugins speak ROS natively, so the bridge and
+     image_bridge nodes disappear entirely.
+
+     Meshes are NOT duplicated: model://gimbal/meshes/... resolves against the
+     same models/ directory that holds the gz version. -->
+<sdf version="1.7">
+  <model name="gimbal_classic">
+    <self_collide>false</self_collide>
+    <static>false</static>
+
+    <!-- Pin the gimbal mount to the world so it acts like a fixed camera
+         stand (standalone use; PX4 instead attaches this to the x500 drone). -->
+    <joint name='world_fix' type='fixed'>
+      <parent>world</parent>
+      <child>cgo3_mount_link</child>
+    </joint>
+
+    <!-- Gimbal mount point -->
+    <link name="cgo3_mount_link">
+      <inertial>
+        <pose>-0.02552 0 -0.08136 0 0 0</pose>
+        <mass>0.1</mass>
+        <inertia>
+          <ixx>0.001</ixx>
+          <ixy>0</ixy>
+          <ixz>0</ixz>
+          <iyy>0.001</iyy>
+          <iyz>0</iyz>
+          <izz>0.001</izz>
+        </inertia>
+      </inertial>
+      <visual name="cgo3_mount_visual">
+        <geometry>
+          <mesh>
+            <scale>0.001 0.001 0.001</scale>
+            <uri>model://gimbal/meshes/cgo3_mount_remeshed_v1.stl</uri>
+          </mesh>
+        </geometry>
+        <material>
+          <ambient>.175 .175 .175 1.0</ambient>
+          <diffuse>.175 .175 .175 1.0</diffuse>
+          <specular>.175 .175 .175 1.0</specular>
+        </material>
+      </visual>
+    </link>
+
+    <!-- Gimbal vertical arm -->
+    <link name="cgo3_vertical_arm_link">
+      <inertial>
+        <pose>0 0 -0.1283 0 0 0</pose>
+        <mass>0.1</mass>
+        <inertia>
+          <ixx>0.001</ixx>
+          <ixy>0</ixy>
+          <ixz>0</ixz>
+          <iyy>0.001</iyy>
+          <iyz>0</iyz>
+          <izz>0.001</izz>
+        </inertia>
+      </inertial>
+      <visual name='cgo3_vertical_arm_visual'>
+        <geometry>
+          <mesh>
+            <scale>0.001 0.001 0.001</scale>
+            <uri>model://gimbal/meshes/cgo3_vertical_arm_remeshed_v1.stl</uri>
+          </mesh>
+        </geometry>
+        <material>
+          <ambient>.175 .175 .175 1.0</ambient>
+          <diffuse>.175 .175 .175 1.0</diffuse>
+          <specular>.175 .175 .175 1.0</specular>
+        </material>
+      </visual>
+    </link>
+
+    <!-- Yaw joint -->
+    <joint name='cgo3_vertical_arm_joint' type='revolute'>
+      <child>cgo3_vertical_arm_link</child>
+      <parent>cgo3_mount_link</parent>
+      <pose>-0.02552 0 0 0 0 0</pose>
+      <axis>
+        <xyz>0 0 -1</xyz>
+        <limit>
+          <lower>-1e+16</lower>
+          <upper>1e+16</upper>
+          <effort>100</effort>
+          <velocity>-1</velocity>
+        </limit>
+        <dynamics>
+          <damping>0.1</damping>
+        </dynamics>
+        <use_parent_model_frame>false</use_parent_model_frame>
+      </axis>
+      <physics>
+        <ode>
+          <implicit_spring_damper>1</implicit_spring_damper>
+          <limit>
+            <cfm>0.1</cfm>
+            <erp>0.2</erp>
+          </limit>
+        </ode>
+      </physics>
+    </joint>
+
+    <!-- Gimbal horizontal arm -->
+    <link name="cgo3_horizontal_arm_link">
+      <inertial>
+        <pose>-0.0213 0 -0.162 0 0 0</pose>
+        <mass>0.1</mass>
+        <inertia>
+          <ixx>0.001</ixx>
+          <ixy>0</ixy>
+          <ixz>0</ixz>
+          <iyy>0.001</iyy>
+          <iyz>0</iyz>
+          <izz>0.001</izz>
+        </inertia>
+      </inertial>
+      <visual name='cgo3_horizontal_arm_visual'>
+        <geometry>
+          <mesh>
+            <scale>0.001 0.001 0.001</scale>
+            <uri>model://gimbal/meshes/cgo3_horizontal_arm_remeshed_v1.stl</uri>
+          </mesh>
+        </geometry>
+        <material>
+          <ambient>.175 .175 .175 1.0</ambient>
+          <diffuse>.175 .175 .175 1.0</diffuse>
+          <specular>.175 .175 .175 1.0</specular>
+        </material>
+      </visual>
+    </link>
+
+    <!-- Roll joint -->
+    <joint name='cgo3_horizontal_arm_joint' type='revolute'>
+      <child>cgo3_horizontal_arm_link</child>
+      <parent>cgo3_vertical_arm_link</parent>
+      <pose>0 0 -0.1619 0 0 0</pose>
+      <axis>
+        <xyz>-1 0 0</xyz>
+        <limit>
+          <lower>-0.785398</lower>
+          <upper>0.785398</upper>
+          <effort>100</effort>
+          <velocity>-1</velocity>
+        </limit>
+        <dynamics>
+          <damping>0.1</damping>
+        </dynamics>
+        <use_parent_model_frame>false</use_parent_model_frame>
+      </axis>
+      <physics>
+        <ode>
+          <implicit_spring_damper>1</implicit_spring_damper>
+          <limit>
+            <cfm>0.1</cfm>
+            <erp>0.2</erp>
+          </limit>
+        </ode>
+      </physics>
+    </joint>
+
+    <!-- Camera -->
+    <link name="camera_link">
+      <inertial>
+        <pose>-0.0412 0 -0.162 0 0 0</pose>
+        <mass>0.1</mass>
+        <inertia>
+          <ixx>0.001</ixx>
+          <ixy>0</ixy>
+          <ixz>0</ixz>
+          <iyy>0.001</iyy>
+          <iyz>0</iyz>
+          <izz>0.001</izz>
+        </inertia>
+      </inertial>
+      <collision name='cgo3_camera_collision'>
+        <pose>-0.0412 0 -0.162 0 0 0</pose>
+        <geometry>
+          <sphere>
+            <radius>0.035</radius>
+          </sphere>
+        </geometry>
+        <surface>
+          <friction>
+            <ode>
+              <mu>1</mu>
+              <mu2>1</mu2>
+            </ode>
+          </friction>
+          <contact>
+            <ode>
+              <kp>1e+8</kp>
+              <kd>1</kd>
+              <max_vel>0.01</max_vel>
+              <min_depth>0.001</min_depth>
+            </ode>
+          </contact>
+        </surface>
+      </collision>
+      <visual name='cgo3_camera_visual'>
+        <geometry>
+          <mesh>
+          <scale>0.001 0.001 0.001</scale>
+            <uri>model://gimbal/meshes/cgo3_camera_remeshed_v1.stl</uri>
+          </mesh>
+        </geometry>
+        <material>
+          <ambient>.175 .175 .175 1.0</ambient>
+          <diffuse>.175 .175 .175 1.0</diffuse>
+          <specular>.175 .175 .175 1.0</specular>
+        </material>
+      </visual>
+
+      <sensor name="camera_imu" type="imu">
+        <always_on>1</always_on>
+        <update_rate>250</update_rate>
+        <pose>-0.0412 0 -0.162 0 0 3.14</pose>
+        <imu>
+          <!-- Classic's SDF 1.7 IMU noise has no <dynamic_bias_stddev> /
+               <dynamic_bias_correlation_time>; the closest it models is a
+               STATIC bias drawn once per run.  The gz dynamic-bias sigma is
+               carried over as <bias_stddev> and the 1000 s correlation time
+               dropped — over any realistic session a 1000 s correlation is
+               nearly constant anyway. -->
+          <angular_velocity>
+            <x><noise type="gaussian"><mean>0</mean><stddev>0.00018665</stddev><bias_mean>0</bias_mean><bias_stddev>3.8785e-05</bias_stddev></noise></x>
+            <y><noise type="gaussian"><mean>0</mean><stddev>0.00018665</stddev><bias_mean>0</bias_mean><bias_stddev>3.8785e-05</bias_stddev></noise></y>
+            <z><noise type="gaussian"><mean>0</mean><stddev>0.00018665</stddev><bias_mean>0</bias_mean><bias_stddev>3.8785e-05</bias_stddev></noise></z>
+          </angular_velocity>
+          <linear_acceleration>
+            <x><noise type="gaussian"><mean>0</mean><stddev>0.00186</stddev><bias_mean>0</bias_mean><bias_stddev>0.006</bias_stddev></noise></x>
+            <y><noise type="gaussian"><mean>0</mean><stddev>0.00186</stddev><bias_mean>0</bias_mean><bias_stddev>0.006</bias_stddev></noise></y>
+            <z><noise type="gaussian"><mean>0</mean><stddev>0.00186</stddev><bias_mean>0</bias_mean><bias_stddev>0.006</bias_stddev></noise></z>
+          </linear_acceleration>
+        </imu>
+        <plugin name="camera_imu_plugin" filename="libgazebo_ros_imu_sensor.so">
+          <ros>
+            <namespace>/gimbal</namespace>
+            <remapping>~/out:=imu</remapping>
+          </ros>
+          <frame_name>camera_link</frame_name>
+        </plugin>
+      </sensor>
+
+      <sensor name="camera" type="camera">
+        <pose>-0.0412 0 -0.162 0 0 3.14</pose>
+        <camera>
+          <horizontal_fov>2.0</horizontal_fov>
+          <image>
+            <!-- The gz model lists <format> twice; harmless there, but written
+                 once here so the element means what it says. -->
+            <format>R8G8B8</format>
+            <width>1280</width>
+            <height>720</height>
+          </image>
+          <clip>
+            <near>0.05</near>
+            <far>15000</far>
+          </clip>
+        </camera>
+        <always_on>1</always_on>
+        <update_rate>30</update_rate>
+        <visualize>true</visualize>
+        <!-- gazebo_ros_camera defaults to <camera_name>/image_raw; remapped so
+             the topics stay exactly /gimbal/camera and /gimbal/camera_info, the
+             names the README documents and rqt_image_view is pointed at. -->
+        <plugin name="gimbal_camera_plugin" filename="libgazebo_ros_camera.so">
+          <ros>
+            <namespace>/</namespace>
+            <remapping>~/image_raw:=gimbal/camera</remapping>
+            <remapping>~/camera_info:=gimbal/camera_info</remapping>
+          </ros>
+          <camera_name>gimbal</camera_name>
+          <frame_name>camera_link</frame_name>
+          <hack_baseline>0.0</hack_baseline>
+        </plugin>
+      </sensor>
+    </link>
+
+    <!-- Pitch joint -->
+    <joint name="cgo3_camera_joint" type="revolute">
+      <child>camera_link</child>
+      <parent>cgo3_horizontal_arm_link</parent>
+      <pose>-0.0412 0 -0.162 0 0 0</pose>
+      <axis>
+        <xyz>0 1 0</xyz>
+        <limit>
+          <lower>-2.35619</lower>
+          <upper>0.7854</upper>
+          <effort>100</effort>
+          <velocity>-1</velocity>
+        </limit>
+        <dynamics>
+          <damping>0.1</damping>
+        </dynamics>
+        <use_parent_model_frame>false</use_parent_model_frame>
+      </axis>
+      <physics>
+        <ode>
+          <implicit_spring_damper>1</implicit_spring_damper>
+          <limit>
+            <cfm>0.1</cfm>
+            <erp>0.2</erp>
+          </limit>
+        </ode>
+      </physics>
+    </joint>
+
+    <!-- Joint servos.  Gains are UNCHANGED from models/gimbal/model.sdf, which
+         is the point of porting the control law rather than substituting a
+         different one.  gz took a <sub_topic> that a bridge then remapped;
+         Classic has no bridge, so the final topic is named directly. -->
+    <plugin name="gimbal_roll_controller"
+            filename="libgimbal_joint_position_controller.so">
+      <joint_name>cgo3_horizontal_arm_joint</joint_name>
+      <topic>/gimbal/roll_cmd</topic>
+      <p_gain>0.8</p_gain>
+      <i_gain>0.035</i_gain>
+      <d_gain>0.02</d_gain>
+      <i_max>0</i_max>
+      <i_min>0</i_min>
+      <cmd_max>0.3</cmd_max>
+      <cmd_min>-0.3</cmd_min>
+    </plugin>
+
+    <plugin name="gimbal_pitch_controller"
+            filename="libgimbal_joint_position_controller.so">
+      <joint_name>cgo3_camera_joint</joint_name>
+      <topic>/gimbal/pitch_cmd</topic>
+      <p_gain>0.8</p_gain>
+      <i_gain>0.01245</i_gain>
+      <d_gain>0.015</d_gain>
+      <i_max>0</i_max>
+      <i_min>0</i_min>
+      <cmd_max>0.3</cmd_max>
+      <cmd_min>-0.3</cmd_min>
+    </plugin>
+
+    <plugin name="gimbal_yaw_controller"
+            filename="libgimbal_joint_position_controller.so">
+      <joint_name>cgo3_vertical_arm_joint</joint_name>
+      <topic>/gimbal/yaw_cmd</topic>
+      <p_gain>0.3</p_gain>
+      <i_gain>0.01245</i_gain>
+      <d_gain>0.015</d_gain>
+      <i_max>0</i_max>
+      <i_min>0</i_min>
+      <cmd_max>0.3</cmd_max>
+      <cmd_min>-0.3</cmd_min>
+    </plugin>
+
+    <!-- Joint feedback.  Publishes sensor_msgs/JointState straight onto
+         /gimbal/joint_states — under gz this needed a bridge to convert
+         gz.msgs.Model and rename the topic. -->
+    <plugin name="gimbal_joint_states"
+            filename="libgazebo_ros_joint_state_publisher.so">
+      <ros>
+        <namespace>/gimbal</namespace>
+        <remapping>~/out:=joint_states</remapping>
+      </ros>
+      <joint_name>cgo3_vertical_arm_joint</joint_name>
+      <joint_name>cgo3_horizontal_arm_joint</joint_name>
+      <joint_name>cgo3_camera_joint</joint_name>
+      <update_rate>50</update_rate>
+    </plugin>
+
+  </model>
+</sdf>

@@ -1,0 +1,40 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>mpc_landing</name>
+  <version>0.1.0</version>
+  <description>
+    Hardware precision landing over MAVROS: take off to a set altitude, find the
+    ArUco marker, descend onto it under MPC. Flies simulation/landing_mpc's
+    controller unchanged so the hardware run validates what SITL validated.
+    Every step before the descent waits for an explicit operator approval.
+  </description>
+  <maintainer email="seyeong186@gmail.com">seyeongW</maintainer>
+  <license>Apache-2.0</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>std_srvs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>mavros_msgs</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <!-- started by fixed_marker_landing.launch.py -->
+  <exec_depend>usb_cam</exec_depend>
+  <exec_depend>aruco_landing</exec_depend>
+  <exec_depend>siyi_gimbal</exec_depend>
+  <!-- The MPC itself is NOT reimplemented here. This node exists to fly the
+       controller that simulation/landing_mpc already validated in SITL, so it
+       imports it: landing_mpc.mpc / .predictor / .reference. Flying a
+       lookalike would validate the lookalike. -->
+  <exec_depend>landing_mpc</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

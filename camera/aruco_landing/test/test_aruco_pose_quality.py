@@ -1,0 +1,212 @@
+import math
+from pathlib import Path
+
+import cv2
+import numpy as np
+import pytest
+import yaml
+
+from aruco_landing.aruco_pose_node import (
+    DetectionStreak,
+    PoseInnovationGate,
+    covariance_and_quality,
+    estimate_square_marker_pose,
+    marker_object_points,
+    robust_marker_depth,
+)
+
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def _synthetic_observation():
+    camera = np.array(
+        [[800.0, 0.0, 640.0], [0.0, 800.0, 480.0], [0.0, 0.0, 1.0]]
+    )
+    distortion = np.zeros(5)
+    expected_rvec = np.array([math.pi - 0.2, 0.10, 0.05])
+    expected_tvec = np.array([0.20, -0.10, 5.0])
+    corners, _ = cv2.projectPoints(
+        marker_object_points(1.0), expected_rvec, expected_tvec,
+        camera, distortion,
+    )
+    return camera, distortion, corners.reshape(4, 2), expected_tvec
+
+
+def test_ippe_pose_recovers_metric_translation_and_reprojection():
+    camera, distortion, corners, expected_tvec = _synthetic_observation()
+    estimate, reason = estimate_square_marker_pose(
+        corners, camera, distortion, 1.0
+    )
+    assert reason == "accepted"
+    assert estimate is not None
+    assert np.allclose(estimate.tvec, expected_tvec, atol=1e-5)
+    assert estimate.reprojection_error_px < 1e-3
+    assert estimate.facing_cosine > 0.9
+
+
+def test_ippe_rejects_marker_back_face():
+    camera = np.array(
+        [[800.0, 0.0, 640.0], [0.0, 800.0, 480.0], [0.0, 0.0, 1.0]]
+    )
+    distortion = np.zeros(5)
+    corners, _ = cv2.projectPoints(
+        marker_object_points(1.0), np.zeros(3), np.array([0.0, 0.0, 5.0]),
+        camera, distortion,
+    )
+    estimate, reason = estimate_square_marker_pose(
+        corners.reshape(4, 2), camera, distortion, 1.0
+    )
+    assert estimate is None
+    assert reason == "flipped_or_behind_camera"
+
+
+def test_ippe_rejects_equal_error_ambiguity(monkeypatch):
+    camera, distortion, _, _ = _synthetic_observation()
+    rvec = np.array([[math.pi], [0.0], [0.0]])
+    tvec = np.array([[0.0], [0.0], [5.0]])
+    corners, _ = cv2.projectPoints(
+        marker_object_points(1.0), rvec, tvec, camera, distortion
+    )
+    corners = corners.reshape(4, 2)
+
+    def ambiguous_solver(*args, **kwargs):
+        return 2, (rvec.copy(), rvec.copy()), (tvec.copy(), tvec.copy()), None
+
+    monkeypatch.setattr(cv2, "solvePnPGeneric", ambiguous_solver)
+    estimate, reason = estimate_square_marker_pose(
+        corners, camera, distortion, 1.0, min_ambiguity_ratio=1.15
+    )
+    assert estimate is None
+    assert reason == "ippe_ambiguity"
+
+
+def test_depth_gate_uses_scaled_polygon_and_robust_median():
+    depth = np.full((240, 320), np.nan, dtype=np.float32)
+    rgb_corners = np.array(
+        [[200, 160], [440, 160], [440, 320], [200, 320]], dtype=np.float32
+    )
+    depth[82:159, 102:219] = 5.0
+    depth[100, 120] = 0.0
+    depth[110, 130] = 75.0
+    sample = robust_marker_depth(
+        depth, rgb_corners, (480, 640), 0.2, 20.0
+    )
+    assert sample is not None
+    assert sample.median_m == pytest.approx(5.0)
+    assert sample.mad_m == pytest.approx(0.0)
+    assert sample.valid_count > 1000
+
+
+def test_covariance_quality_degrades_with_reprojection_and_depth_error():
+    camera, distortion, corners, _ = _synthetic_observation()
+    estimate, _ = estimate_square_marker_pose(corners, camera, distortion, 1.0)
+    assert estimate is not None
+    covariance_good, quality_good = covariance_and_quality(
+        estimate, camera, 500.0, 0.01, 2.5, 0.5
+    )
+    degraded = type(estimate)(
+        estimate.rvec, estimate.tvec, 2.0, 1.2, estimate.facing_cosine
+    )
+    covariance_bad, quality_bad = covariance_and_quality(
+        degraded, camera, 40.0, 0.45, 2.5, 0.5
+    )
+    assert quality_good > quality_bad
+    assert covariance_good[0, 0] < covariance_bad[0, 0]
+    assert np.all(np.diag(covariance_good) > 0.0)
+
+
+def test_timestamp_innovation_gate_rejects_outlier_and_resets_after_dropout():
+    gate = PoseInnovationGate(
+        threshold_squared=16.27,
+        process_variance_m2_s2=4.0,
+        reset_after_s=1.0,
+    )
+    variance = [0.01, 0.01, 0.02]
+    assert gate.update(1.0, [0.0, 0.0, 5.0], variance).accepted
+    assert gate.update(1.1, [0.30, 0.0, 5.0], variance).accepted
+    outlier = gate.update(1.2, [30.0, -20.0, 2.0], variance)
+    assert not outlier.accepted
+    assert outlier.mahalanobis_squared > gate.threshold_squared
+    assert gate.update(2.5, [5.0, 5.0, 5.0], variance).accepted
+
+
+def test_detection_streak_requires_contiguous_frames_and_same_id():
+    streak = DetectionStreak(minimum_frames=3, maximum_gap_s=0.2)
+    assert not streak.update(True, 0, 1.0)
+    assert not streak.update(True, 0, 1.1)
+    assert streak.update(True, 0, 1.2)
+    assert not streak.update(True, 1, 1.3)
+    assert not streak.update(False, None, 1.4)
+    assert not streak.update(True, 0, 2.0)
+
+
+def test_front_and_down_configs_have_distinct_inputs_and_outputs():
+    """The two instances must not share a topic, a frame or a depth policy.
+
+    This test previously asserted that BOTH cameras use depth, and had been
+    failing because `aruco_down.yaml` deliberately does not: the reference
+    airframe mounts the down depth camera 3 cm off-axis with a different FOV,
+    so it is not a registered per-pixel depth source for ArUco and the config
+    says so in a comment. The config was right and the assertion was stale, so
+    the policy is pinned here instead — including that `depth_required` tracks
+    whether a depth topic is actually configured, which is the pairing that
+    would silently fail closed if it ever got out of step.
+    """
+    configs = []
+    for name in ("aruco_front.yaml", "aruco_down.yaml"):
+        data = yaml.safe_load((ROOT / "aruco_landing/config" / name).read_text())
+        configs.append(next(iter(data.values()))["ros__parameters"])
+    front, down = configs
+    assert front["image_topic"] != down["image_topic"]
+    assert front["pose_topic"] != down["pose_topic"]
+    assert front["optical_frame_id"] != down["optical_frame_id"]
+
+    # front: a registered depth source, and it is required.
+    assert front["depth_topic"] == "/front_depth/image_raw"
+    assert front["depth_required"] is True
+
+    # down: no usable depth source, so depth must NOT be required — requiring
+    # a topic that is never subscribed would reject every detection.
+    assert down["depth_topic"] == ""
+    assert down["depth_required"] is False
+
+    for cfg in (front, down):
+        assert bool(cfg["depth_topic"]) == bool(cfg["depth_required"]), \
+            'depth_required must match whether a depth topic is configured'
+
+
+def test_perception_node_never_imports_gazebo_ground_truth():
+    source = (ROOT / "aruco_landing/aruco_landing/aruco_pose_node.py").read_text()
+    forbidden = ("dynamic_pose", "gz.transport", "/trailer/pose", "ground_truth")
+    assert not any(token in source for token in forbidden)
+
+
+def test_node_defaults_are_self_consistent_for_a_real_vehicle():
+    """The NODE's own defaults, not just the config files.
+
+    The existing pairing test read the YAMLs, so it never looked at
+    `_declare_parameters`. That gap let the node ship with
+    depth_topic='/down_depth/image_raw' and depth_required=True — simulator
+    assumptions on a package whose whole point is the real airframe, which has
+    no depth stream. The result is not an error: every detection is rejected for
+    missing depth, and it looks exactly like the marker not being seen.
+    """
+    import re
+    source = (ROOT / "aruco_landing/aruco_landing/aruco_pose_node.py").read_text()
+    block = source[source.index("_declare_parameters"):]
+
+    def default(key):
+        m = re.search(rf'"{key}":\s*([^,\n]+)', block)
+        assert m, f'{key} has no declared default'
+        return m.group(1).strip()
+
+    depth_topic = default("depth_topic").strip('"\'')
+    depth_required = default("depth_required")
+    assert bool(depth_topic) == (depth_required == "True"), (
+        f'depth_topic={depth_topic!r} and depth_required={depth_required} '
+        f'disagree — requiring depth with no topic rejects every detection')
+
+    # and the image topics must be the ones the flight launch actually feeds
+    assert default("image_topic").strip('"\'') == "/down_camera/image"
+    assert default("camera_info_topic").strip('"\'') == "/down_camera/camera_info"
