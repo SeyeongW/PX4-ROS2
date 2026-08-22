@@ -4,10 +4,7 @@
 # props-on safety map. The origin/heading came from OSM-scale alignment and the
 # 25 barriers are the simulation layout, not a field survey. Set
 # hardware_flight_approved true only after measuring the origin, heading and
-# every obstacle in the physical test area, confirming the residual map error
-# is within 0.25 m, and demonstrating at least the mission node's configured
-# route braking deceleration plus its maximum reaction/watchdog time on the
-# loaded real airframe.
+# every obstacle in the physical test area and confirming the map alignment.
 schema_version: 1
 
 site:
@@ -28,11 +25,6 @@ mission:
   cruise_altitude_m: 5.0
   planner_resolution_m: 1.0
   vehicle_clearance_xy_m: 1.0
-  # Requested geometric route margin beyond the 1 m vehicle clearance.
-  bspline_clearance_margin_m: 1.0
-  # Extra centreline room so a real follower can recover while its checked
-  # chord and stopping envelope still keep the 1 m margin above.
-  route_following_reserve_m: 0.5
   bspline_control_spacing_m: 1.0
   bspline_sample_spacing_m: 0.1
   obstacles:

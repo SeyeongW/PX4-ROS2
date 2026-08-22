@@ -106,7 +106,7 @@ class TrailerTargetNode(Node):
         p('stale_after_s', DEFAULT_STALE_AFTER_S)
         # A target farther than this is refused as a bad fix, NOT clamped.
         p('max_distance_m', DEFAULT_MAX_DISTANCE_M)
-        # Disabled for the proven trailer mode. run_px4 route opts in because
+        # Disabled for standalone compatibility. run_px4 trailer opts in because
         # an absolute obstacle map cannot use a time-skewed local/global anchor.
         p('input_sync_tolerance_s', 0.0)
         p('stats_period_s', 2.0)
@@ -129,7 +129,7 @@ class TrailerTargetNode(Node):
         return self.get_clock().now().nanoseconds * 1e-9
 
     def _input_time(self, message) -> float:
-        """Source time for route mode; receipt time for proven trailer mode."""
+        """Source time for planned trailer cruise; otherwise receipt time."""
         now = self._now()
         if self.input_sync_tolerance <= 0.0:
             return now

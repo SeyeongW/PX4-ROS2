@@ -5,13 +5,9 @@
 # approval, because arming is a human decision.
 #
 #   ./run_px4                 ArUco precision landing  (aruco_landing.launch.py)
-#   ./run_px4 trailer         the same landing, but FLY TO THE TRAILER FIRST:
-#                             its coordinate arrives over the 900 MHz radio,
-#                             the vehicle cruises there, then the camera takes
-#                             over for the descent.
-#   ./run_px4 route           trailer mode with Wang's A* -> SFC -> B-spline,
-#                             TrackingMPC and LandingMPC; all PX4 I/O and LAND
-#                             remain on the proven MAVROS aruco path.
+#   ./run_px4 trailer         the final real-aircraft mission: trailer GPS over
+#                             the 900 MHz radio -> A* -> SFC -> B-spline ->
+#                             TrackingMPC cruise -> proven ArUco P descent.
 #   ./run_px4 mpc             MPC precision landing     (fixed_marker_landing)
 #   ./run_px4 naive           just MAVROS + the naive takeoff/land (no camera)
 #   ./run_px4 bench           GROUND REHEARSAL of the MPC mission's SEARCH:
@@ -22,7 +18,7 @@
 #   TRAILER_DEV=/dev/ttyUSB1 ./run_px4 trailer   the radio, if it is not USB0
 #   TRAILER_LINK=0 ./run_px4 trailer          you are running trailer_gps_node
 #                                             yourself; do not start a second
-#   ROUTE_MAP_APPROVED=1 ./run_px4 route      explicit field-map approval;
+#   ROUTE_MAP_APPROVED=1 ./run_px4 trailer    explicit field-map approval;
 #                                             never set this for an unmeasured map
 #   GNSS_CHECK=on ./run_px4 mpc               put the GNSS preflight gate back
 #   GATES=all ./run_px4 mpc                   approve takeoff and search too,
@@ -41,19 +37,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 LOCAL_SETUP="$REPO_ROOT/install/local_setup.bash"
 MODE="${1:-aruco}"
-ROUTE_MODE=0
 
 case "$MODE" in
   aruco) MISSION_LAUNCH="aruco_landing.launch.py";        NODE="aruco_landing_node" ;;
-  # Same stack as aruco, plus the trailer link, plus the mission's CRUISE phase.
-  # The two travel together on purpose: the phase that flies to a coordinate is
-  # enabled exactly when the nodes that produce that coordinate are running.
+  # The one final trailer stack: proven GPS and ArUco P landing around Wang's
+  # obstacle-aware geometry and TrackingMPC cruise.
   trailer) MISSION_LAUNCH="aruco_landing.launch.py";      NODE="aruco_landing_node"
          TRAILER=1 ;;
-  # Preserve `trailer` as the proven rollback. This opt-in mode selects route
-  # geometry plus both MPCs; GPS, vision, MAVROS and LAND remain identical.
-  route) MISSION_LAUNCH="aruco_landing.launch.py";        NODE="aruco_landing_node"
-         TRAILER=1; ROUTE_MODE=1 ;;
   mpc)   MISSION_LAUNCH="fixed_marker_landing.launch.py"; NODE="mpc_landing_node" ;;
   naive) MISSION_LAUNCH="";                               NODE="naive_flight_node" ;;
   # The mpc stack exactly, with the mission node started in SEARCH and forbidden
@@ -63,9 +53,10 @@ case "$MODE" in
   bench) MISSION_LAUNCH="fixed_marker_landing.launch.py"; NODE="mpc_landing_node"
          BENCH=1 ;;
   -h|--help|help)
-    sed -n '2,37p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    sed -n '2,/^set -Eeuo pipefail$/p' "${BASH_SOURCE[0]}" \
+      | sed '$d; s/^# \{0,1\}//'
     exit 0 ;;
-  *) echo "unknown mode '$MODE' (try: aruco | trailer | route | mpc | naive | bench)" >&2
+  *) echo "unknown mode '$MODE' (try: aruco | trailer | mpc | naive | bench)" >&2
      exit 2 ;;
 esac
 BENCH="${BENCH:-0}"
@@ -75,12 +66,9 @@ TRAILER_DEV="${TRAILER_DEV:-/dev/ttyUSB0}"
 TRAILER_BAUD="${TRAILER_BAUD:-57600}"
 # Source-tree map by design: run_px4 itself is a source-tree operator script.
 ROUTE_MAP="${ROUTE_MAP:-$SCRIPT_DIR/../path_plan/config/drone_cju_route.yaml}"
-# Route-only local/global skew budget: 1.5 m/s * 0.10 s = 0.15 m.
-# With the node's 0.4 m GPS and 0.2 m anchor limits this uses 0.75 m of the
-# requested 1 m margin, leaving 0.25 m for surveyed map alignment. The proven
-# `trailer` mode still uses 0 and is unchanged.
+# Maximum source-time skew when pairing the vehicle's local and global poses.
 ROUTE_SYNC_S="${ROUTE_SYNC_S:-0.10}"
-if [[ "$ROUTE_MODE" == "1" && ! -r "$ROUTE_MAP" ]]; then
+if [[ "$TRAILER" == "1" && ! -r "$ROUTE_MAP" ]]; then
   echo "run_px4: route map is not readable: $ROUTE_MAP" >&2
   exit 1
 fi
@@ -127,10 +115,8 @@ fi
 # the CRUISE phase has to be switched on here as well as the nodes there.
 if [[ "$TRAILER" == "1" ]]; then
   [[ ${#MISSION_ARGS[@]} -gt 0 ]] || MISSION_ARGS+=(--ros-args)
-  MISSION_ARGS+=(-p cruise_to_trailer:=true)
-fi
-if [[ "$ROUTE_MODE" == "1" ]]; then
-  MISSION_ARGS+=(-p planned_cruise:=true
+  MISSION_ARGS+=(-p cruise_to_trailer:=true
+                 -p planned_cruise:=true
                  -p "route_map_yaml:=$ROUTE_MAP"
                  -p "route_pose_fix_sync_s:=$ROUTE_SYNC_S"
                  -p rate_hz:=50.0)
@@ -186,13 +172,10 @@ if [[ -n "$MISSION_LAUNCH" ]]; then
   REQUIRED_PACKAGES+=(aruco_landing siyi_gimbal)
 fi
 if [[ "$TRAILER" == "1" ]]; then
-  REQUIRED_PACKAGES+=(trailer_link)
+  REQUIRED_PACKAGES+=(trailer_link path_plan landing_mpc)
 fi
 if [[ "$NODE" == "mpc_landing_node" ]]; then
   REQUIRED_PACKAGES+=(landing_mpc)
-fi
-if [[ "$ROUTE_MODE" == "1" ]]; then
-  REQUIRED_PACKAGES+=(path_plan landing_mpc)
 fi
 for package in "${REQUIRED_PACKAGES[@]}"; do
   prefix="$(ros2 pkg prefix "$package" 2>/dev/null || true)"
@@ -276,10 +259,8 @@ if [[ "$TRAILER" == "1" ]]; then
     echo "         plugged in? (ls /dev/ttyUSB* ; override with TRAILER_DEV=...)" >&2
   fi
   LAUNCH_ARGS+=(trailer:=true "trailer_device:=$TRAILER_DEV"
-                "trailer_baud:=$TRAILER_BAUD")
-  if [[ "$ROUTE_MODE" == "1" ]]; then
-    LAUNCH_ARGS+=("trailer_input_sync_s:=$ROUTE_SYNC_S")
-  fi
+                "trailer_baud:=$TRAILER_BAUD"
+                "trailer_input_sync_s:=$ROUTE_SYNC_S")
   # TRAILER_LINK=0: the operator is already running trailer_gps_node in their
   # own terminal, so do not start a second one. One serial port, one reader —
   # the loser of that race fails quietly into a log file.

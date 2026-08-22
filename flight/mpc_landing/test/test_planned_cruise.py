@@ -5,8 +5,6 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from landing_mpc.mpc import LandingMPC
-from landing_mpc.predictor import predict_const_vel
 from landing_mpc.reference import HorizonReference
 from mpc_landing.aruco_landing_node import (
     ArucoLandingNode,
@@ -15,7 +13,18 @@ from mpc_landing.aruco_landing_node import (
     _plan_route_worker,
     _planner_worker_init,
 )
-from path_plan.cju_route import map_to_local, rotation_for_heading, route_map_info
+from path_plan.cju_route import (
+    map_to_local,
+    rotation_for_heading,
+    route_map_info,
+    safe_route_target,
+    segment_is_free,
+)
+from path_plan.mpc import TrackingMPC
+from path_plan.mpc_reference import (
+    limit_acceleration_slew,
+    path_reference_horizon,
+)
 
 
 class _Logger:
@@ -158,7 +167,7 @@ def test_route_flight_health_rejects_inaccurate_absolute_gps():
     state = SimpleNamespace(
         planned_cruise=True,
         route_map_yaml=str(route_map),
-        _route_map_info=SimpleNamespace(clearance_margin_m=1.0),
+        _route_map_info=SimpleNamespace(vehicle_clearance_m=1.0),
         _route_map_identity=(
             route_stat.st_dev, route_stat.st_ino,
             route_stat.st_size, route_stat.st_mtime_ns),
@@ -177,6 +186,7 @@ def test_route_flight_health_rejects_inaccurate_absolute_gps():
         route_sync_tolerance=0.1,
         route_gps_timeout=3.0,
         route_state_timeout=0.2,
+        _route_anchor_drift_reason=lambda: None,
     )
     assert 'exceeds route limit' in (
         ArucoLandingNode._route_flight_health_reason(state) or '')
@@ -190,9 +200,8 @@ def test_route_flight_health_rejects_inaccurate_absolute_gps():
         ArucoLandingNode._route_flight_health_reason(state) or '')
 
     state.pose_t = state.velocity_t = 10.0
-    state.route_anchor_drift = 0.5
-    assert 'error budget' in (
-        ArucoLandingNode._route_flight_health_reason(state) or '')
+    state.velocity.twist.linear.x = 1.6
+    assert ArucoLandingNode._route_flight_health_reason(state) is None
 
 
 def test_route_update_invalidates_an_active_anchor_on_health_loss():
@@ -274,99 +283,6 @@ def test_only_a_source_time_aligned_pose_fix_pair_updates_the_anchor():
     assert state._route_observed_origin_t == 1.05
 
 
-def test_route_velocity_checks_a_turn_aware_stopping_envelope():
-    pose = SimpleNamespace(pose=SimpleNamespace(position=SimpleNamespace(
-        x=0.0, y=0.0)))
-    velocity = SimpleNamespace(twist=SimpleNamespace(linear=SimpleNamespace(
-        x=1.0, y=0.0)))
-
-    checked = []
-
-    def envelope_free(_map, _origin, center, radius, **_kwargs):
-        checked.append((np.asarray(center), float(radius)))
-        return False
-
-    state = SimpleNamespace(
-        planned_cruise=True,
-        phase=Phase.CRUISE,
-        _route_flight_health_reason=lambda: None,
-        pose=pose,
-        velocity=velocity,
-        _route_active=(None, np.zeros(2), None, None, None),
-        _route_synchronized_site_origin=lambda: None,
-        _now=lambda: 0.0,
-        pose_t=0.0,
-        velocity_t=0.0,
-        rate_hz=20.0,
-        cruise_v_max=1.5,
-        cruise_accel=0.5,
-        route_brake_decel=0.25,
-        route_reaction_time=0.5,
-        _v_cmd=np.zeros(2),
-        _route_lib=SimpleNamespace(
-            stopping_envelope_is_free=envelope_free),
-        route_map_yaml='unused.yaml',
-    )
-    assert not ArucoLandingNode._route_velocity_is_safe(
-        state, np.array([0.0, 1.0]))
-    assert len(checked) == 1
-    assert np.allclose(checked[0][0], [0.0, 0.0])
-    assert checked[0][1] == 2.5
-
-    state._now = lambda: 0.1
-    assert not ArucoLandingNode._route_velocity_is_safe(
-        state, np.array([0.0, 1.0]))
-    assert checked[-1][1] == 2.6
-
-    state.velocity.twist.linear.x = 0.0
-    state._now = lambda: 0.0
-    assert not ArucoLandingNode._route_velocity_is_safe(
-        state, np.zeros(2))
-    assert checked[-1][1] == 0.0
-
-    state._v_cmd = np.array([1.0, 0.0])
-    assert not ArucoLandingNode._route_velocity_is_safe(
-        state, np.zeros(2))
-    assert checked[-1][1] == 2.5
-
-
-def test_route_bisects_the_first_slew_step_instead_of_deadlocking():
-    pose = SimpleNamespace(pose=SimpleNamespace(position=SimpleNamespace(
-        x=0.0, y=0.0)))
-    velocity = SimpleNamespace(twist=SimpleNamespace(linear=SimpleNamespace(
-        x=0.0, y=0.0)))
-    radius_limit = 0.013627
-
-    def envelope_free(_map, _origin, _center, radius, **_kwargs):
-        return float(radius) <= radius_limit
-
-    state = SimpleNamespace(
-        planned_cruise=True,
-        phase=Phase.CRUISE,
-        _route_flight_health_reason=lambda: None,
-        pose=pose,
-        velocity=velocity,
-        _v_cmd=np.zeros(2),
-        _route_active=(None, np.zeros(2), None, None, None),
-        _route_synchronized_site_origin=lambda: None,
-        _now=lambda: 0.0,
-        pose_t=0.0,
-        velocity_t=0.0,
-        route_reaction_time=0.5,
-        route_brake_decel=0.25,
-        _route_lib=SimpleNamespace(
-            stopping_envelope_is_free=envelope_free),
-        route_map_yaml='unused.yaml',
-    )
-    state._route_velocity_is_safe = lambda command: \
-        ArucoLandingNode._route_velocity_is_safe(state, command)
-    preferred = np.array([0.025, 0.0])
-    result = ArucoLandingNode._route_safe_velocity(
-        state, preferred, np.zeros(2))
-    assert 0.0 < result[0] < preferred[0]
-    assert ArucoLandingNode._route_velocity_is_safe(state, result)
-
-
 def test_route_uses_source_header_time_and_rejects_invalid_stamps():
     message = SimpleNamespace(header=SimpleNamespace(stamp=SimpleNamespace(
         sec=12, nanosec=250_000_000)))
@@ -387,7 +303,7 @@ def test_route_target_freshness_uses_source_and_receipt_time():
     state.target_sample_t = 10.11
     assert not ArucoLandingNode._fresh_target(state)
 
-    # The hardware-proven trailer mode retains its receipt-time contract.
+    # Non-planned callers retain the original receipt-time contract.
     state.planned_cruise = False
     state.target_sample_t = float('nan')
     assert ArucoLandingNode._fresh_target(state)
@@ -433,81 +349,132 @@ def test_route_worker_is_spawn_safe():
     assert np.allclose(plan.path_local_xy[-1], goal, atol=1.0e-6)
 
 
-def test_descend_dispatch_preserves_trailer_p_and_selects_route_mpc():
-    calls = []
-    state = SimpleNamespace(
-        planned_cruise=True,
-        _descend_mpc=lambda: calls.append('mpc'),
-        _descend_p=lambda: calls.append('p'))
-    ArucoLandingNode._descend(state)
-    state.planned_cruise = False
-    ArucoLandingNode._descend(state)
-    assert calls == ['mpc', 'p']
+def test_one_metre_route_streams_bounded_tracking_mpc_commands():
+    """Exercise the real 2-D CJU geometry through JO TrackingMPC at 50 Hz."""
+    map_yaml = str(
+        Path(__file__).parents[2]
+        / 'path_plan' / 'config' / 'drone_cju_route.yaml')
+    info = route_map_info(map_yaml)
+    rotation = rotation_for_heading(info.heading_deg_enu)
+    origin = np.zeros(2)
+    start = map_to_local([5.0, 0.0], origin, rotation)
+    goal = map_to_local([50.0, 50.0], origin, rotation)
+    plan = _plan_route_worker(map_yaml, start, goal, origin)
+
+    path = np.column_stack((
+        plan.path_local_xy, np.full(len(plan.arc_m), 5.0)))
+    mpc = TrackingMPC(
+        dt_s=0.1, horizon=20, v_max=1.5, a_max=0.5, j_max=2.0,
+        q_pos=4.0, q_vel=0.4, r_acc=0.05, q_terminal=20.0)
+    stream = HorizonReference(lead_s=0.1)
+    position = np.r_[start, 5.0]
+    measured_velocity = np.zeros(3)
+    progress = elapsed = 0.0
+    last_acceleration = np.zeros(3)
+    solve_t = None
+
+    while elapsed < 300.0 and np.linalg.norm(position[:2] - goal) > 1.0:
+        progress, carrot, _cross_track = safe_route_target(
+            map_yaml, origin, plan.arc_m, plan.path_local_xy,
+            position[:2], progress, 6.0, 0.25)
+        assert carrot is not None
+        target_range = float(np.linalg.norm(position[:2] - goal))
+        if solve_t is None or elapsed - solve_t >= 0.1 - 1.0e-9:
+            reference_p, reference_v = path_reference_horizon(
+                plan.arc_m, path, progress, 0.1, 20, 1.5, 0.5, 2.0,
+                target_velocity_xy=np.zeros(2),
+                target_range_xy_m=target_range)
+            result = mpc.solve(
+                position, measured_velocity,
+                reference_p, reference_v,
+                applied_acceleration=last_acceleration, output_step=1)
+            assert result.success
+            chain = np.vstack((position[:2], result.predicted_pos[:, :2]))
+            assert all(segment_is_free(map_yaml, origin, a, b)
+                       for a, b in zip(chain[:-1], chain[1:]))
+            stream.set_plan(
+                position, measured_velocity,
+                result.predicted_pos, result.predicted_vel,
+                result.predicted_acc, 0.1,
+                np.zeros(3), np.zeros(3), np.zeros(3))
+            solve_t = elapsed
+
+        command_position, velocity, acceleration = stream.sample(
+            elapsed - solve_t)
+        assert np.max(np.abs(velocity)) <= 1.5 + 1.0e-4
+        assert segment_is_free(
+            map_yaml, origin, position[:2], command_position[:2])
+
+        previous_acceleration = last_acceleration.copy()
+        last_acceleration = limit_acceleration_slew(
+            last_acceleration, acceleration, 2.0, 0.02)
+        assert np.max(np.abs(
+            last_acceleration - previous_acceleration)) <= 0.04 + 1.0e-12
+        position += measured_velocity * 0.02 \
+            + 0.5 * last_acceleration * 0.02 ** 2
+        measured_velocity += last_acceleration * 0.02
+        elapsed += 0.02
+
+    assert np.linalg.norm(position[:2] - goal) <= 1.0
+    assert elapsed < 300.0
 
 
-def test_landing_mpc_streams_bounded_recovery_from_high_relative_speed():
-    sent, holds = [], []
-    mpc = LandingMPC(
-        dt_s=0.1, horizon=20,
-        w_xy=6.0, w_z=3.0, w_vxy=20.0, w_vz=1.5,
-        w_a=0.05, w_terminal=40.0, w_jerk=0.5,
-        v_max=0.8, a_max=0.6, vz_max=0.35,
-        cone_k=2.0, j_max=1.5)
+def test_integration_accepts_jo_axiswise_velocity_contract():
+    """The hardware wrapper must not reinterpret JO's axis-wise MPC bound."""
+    sent = []
     state = SimpleNamespace(
+        _route_carrot=lambda: (np.zeros(2), 0.0),
         pose=SimpleNamespace(pose=SimpleNamespace(position=SimpleNamespace(
-            x=0.0, y=0.0, z=3.0))),
+            x=0.0, y=0.0))),
         velocity=SimpleNamespace(twist=SimpleNamespace(
             linear=SimpleNamespace(x=0.0, y=0.0, z=0.0))),
-        marker=np.array([0.6, 0.0, 0.0]),
-        marker_t=10.0,
-        marker_vel=SimpleNamespace(v=np.array([1.0, 0.0])),
-        marker_lost_abort=5.0,
-        _landing_mpc=mpc,
-        _landing_reference=HorizonReference(lead_s=0.1),
-        _landing_solve_t=None,
-        _landing_last_solve_t=None,
-        _landing_acquiring=True,
-        _landing_hold_z=3.0,
-        _last_mpc_acceleration=np.zeros(3),
-        _last_mpc_acceleration_t=None,
-        route_landing_cone=2.0,
-        route_landing_v_max=0.8,
-        route_landing_vz_max=0.35,
-        route_landing_entry_xy=0.5,
-        route_landing_entry_speed=0.3,
-        cruise_v_max=1.5,
-        touch_alt=0.4,
-        touch_xy=0.2,
-        descend_log_period=1.0,
-        _fresh_marker=lambda: True,
-        _now=lambda: 10.0,
-        _alt=lambda: 3.0,
-        _predict_const_vel=predict_const_vel,
+        _path_mpc=SimpleNamespace(dt=0.1, N=20, j_max=2.0),
+        _path_reference=SimpleNamespace(
+            ready=lambda: True,
+            sample=lambda _elapsed: (
+                np.array([0.1, 0.1, 5.0]),
+                np.array([1.1, 1.1, 0.0]),
+                np.zeros(3))),
+        _route_active=(object(),),
+        _alt=lambda: 5.0,
+        _now=lambda: 1.0,
+        _path_last_solve_t=1.0,
+        _path_solve_t=1.0,
         _route_prediction_is_safe=lambda _positions: True,
-        _route_velocity_is_safe=lambda _velocity: True,
-        _send_pva=lambda p, v, a, j: (
-            sent.append((np.asarray(p), np.asarray(v), np.asarray(a), j))
-            or True),
-        _hold=lambda: holds.append(True),
-        _to=lambda _phase: None,
-        _due=lambda *_args: False,
-        get_logger=lambda: _Logger(),
+        _send_pva=lambda _p, v, _a, _j: sent.append(np.asarray(v)) or True,
     )
-    state._reset_mpc_output = lambda: ArucoLandingNode._reset_mpc_output(
-        state)
+    assert ArucoLandingNode._route_mpc_command(state) == (True, 0.0)
+    assert np.linalg.norm(sent[0][:2]) > 1.5
 
-    ArucoLandingNode._descend_mpc(state)
 
-    assert mpc.w_xy == 6.0 and mpc.w_vxy == 20.0
-    assert len(sent) == 1 and holds == []
-    commanded_velocity = sent[0][1]
-    assert np.linalg.norm(commanded_velocity[:2]) <= state.cruise_v_max
-    # The current relative speed is physically outside 0.8 m/s. LandingMPC's
-    # feasible envelope brings it back under the bound over time; the wrapper
-    # must stream that recovery instead of deadlocking in HOLD.
-    relative_speed = np.linalg.norm(
-        commanded_velocity[:2] - state.marker_vel.v)
-    assert state.route_landing_v_max < relative_speed < 1.0
+def test_planned_trailer_descend_uses_proven_p_controller():
+    calls = []
+    state = SimpleNamespace(_descend_p=lambda: calls.append('p'))
+    ArucoLandingNode._descend(state)
+    assert calls == ['p']
+
+
+def test_marker_acquisition_counts_new_pose_frames_not_timer_ticks():
+    state = SimpleNamespace(
+        marker=object(), detected=True, _marker_seq=1,
+        _acq_last_marker_seq=0, _acq_streak=0, acquire_frames=3,
+        _fresh_marker=lambda: True)
+    for _ in range(5):
+        assert not ArucoLandingNode._marker_acquired(state)
+    assert state._acq_streak == 1
+    state._marker_seq = 2
+    assert not ArucoLandingNode._marker_acquired(state)
+    state._marker_seq = 3
+    assert ArucoLandingNode._marker_acquired(state)
+
+    # aruco_pose_node publishes pose before detected=True. A timer between the
+    # two callbacks must not consume that new pose while detected is still false.
+    state.detected = False
+    state._marker_seq = 4
+    assert not ArucoLandingNode._marker_acquired(state)
+    state.detected = True
+    assert not ArucoLandingNode._marker_acquired(state)
+    assert state._acq_streak == 1
 
 
 def _arming_state(*, armed, preflight_ok):

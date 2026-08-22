@@ -37,8 +37,7 @@ class RouteMapInfo:
     heading_deg_enu: float
     horizontal_accuracy: str
     hardware_flight_approved: bool
-    clearance_margin_m: float
-    following_reserve_m: float
+    vehicle_clearance_m: float
 
 
 @dataclass(frozen=True)
@@ -61,13 +60,6 @@ def _positive(name: str, value) -> float:
     number = float(value)
     if not math.isfinite(number) or number <= 0.0:
         raise ValueError(f'{name} must be finite and positive')
-    return number
-
-
-def _nonnegative(name: str, value) -> float:
-    number = float(value)
-    if not math.isfinite(number) or number < 0.0:
-        raise ValueError(f'{name} must be finite and non-negative')
     return number
 
 
@@ -138,18 +130,14 @@ def route_map_info(map_yaml: str) -> RouteMapInfo:
         # particular, quoted strings such as "false" are truthy in Python.
         hardware_flight_approved=(
             site.get('hardware_flight_approved', False) is True),
-        clearance_margin_m=_nonnegative(
-            'mission.bspline_clearance_margin_m',
-            mission.get('bspline_clearance_margin_m', 0.5)),
-        following_reserve_m=_nonnegative(
-            'mission.route_following_reserve_m',
-            mission.get('route_following_reserve_m', 0.0)),
+        vehicle_clearance_m=_positive(
+            'mission.vehicle_clearance_xy_m',
+            mission['vehicle_clearance_xy_m']),
     )
 
 
 @lru_cache(maxsize=24)
-def _world(map_yaml: str, *, planning: bool, following: bool = False,
-           z_half_width: float) \
+def _world(map_yaml: str, *, z_half_width: float) \
         -> tuple[dict, np.ndarray, float, WorldModel]:
     document = _document(str(map_yaml))
     mission = document['mission']
@@ -161,17 +149,6 @@ def _world(map_yaml: str, *, planning: bool, following: bool = False,
                          mission['cruise_altitude_m'])
     clearance = _positive('mission.vehicle_clearance_xy_m',
                           mission['vehicle_clearance_xy_m'])
-    margin = _nonnegative(
-        'mission.bspline_clearance_margin_m',
-        mission.get('bspline_clearance_margin_m', 0.5))
-    if planning:
-        clearance += margin
-    if following:
-        if not planning:
-            raise ValueError('following reserve requires planning clearance')
-        clearance += _nonnegative(
-            'mission.route_following_reserve_m',
-            mission.get('route_following_reserve_m', 0.0))
 
     lows, highs = [], []
     for obstacle in mission.get('obstacles', []):
@@ -227,9 +204,9 @@ def plan_route(map_yaml: str, start_local_xy, goal_local_xy,
     origin_local = _finite_vector(
         'site_origin_local_xy', site_origin_local_xy, 2)
     mission, rotation, altitude, planner_world = _world(
-        str(map_yaml), planning=True, following=True, z_half_width=0.0)
+        str(map_yaml), z_half_width=0.0)
     _, _, _, spline_world = _world(
-        str(map_yaml), planning=True, following=True, z_half_width=0.5)
+        str(map_yaml), z_half_width=0.5)
 
     start = np.r_[local_to_map(start_local, origin_local, rotation), altitude]
     goal = np.r_[local_to_map(goal_local, origin_local, rotation), altitude]
@@ -245,8 +222,8 @@ def plan_route(map_yaml: str, start_local_xy, goal_local_xy,
     planner = AStarPlanner3D(
         planner_world,
         resolution_m=resolution,
-        # Hard dilation already contains the full safety budget. A second soft
-        # clearance preference doubles it and makes moving-target replans late.
+        # The one hard vehicle clearance is the complete geometry contract.
+        # Do not add a second soft path-clearance preference here.
         clearance_weight=0.0,
         clearance_pref_m=0.0,
         altitude_pref_m=altitude,
@@ -340,8 +317,7 @@ def plan_route(map_yaml: str, start_local_xy, goal_local_xy,
 
 
 def segment_is_free(map_yaml: str, site_origin_local_xy, start_local_xy,
-                    goal_local_xy, *, planning: bool = True,
-                    following: bool = False) -> bool:
+                    goal_local_xy) -> bool:
     """Check one local-ENU horizontal chord against the immutable map."""
     try:
         origin = _finite_vector(
@@ -350,36 +326,10 @@ def segment_is_free(map_yaml: str, site_origin_local_xy, start_local_xy,
             _finite_vector('start_local_xy', start_local_xy, 2),
             _finite_vector('goal_local_xy', goal_local_xy, 2)))
         _, rotation, altitude, world = _world(
-            str(map_yaml), planning=planning, following=following,
-            z_half_width=0.0)
+            str(map_yaml), z_half_width=0.0)
         mapped = local_to_map(points, origin, rotation)
         return world.segment_is_free_exact(
             [*mapped[0], altitude], [*mapped[1], altitude])
-    except (KeyError, TypeError, ValueError):
-        return False
-
-
-def stopping_envelope_is_free(
-        map_yaml: str, site_origin_local_xy, center_local_xy, radius_m: float,
-        *, planning: bool = True) -> bool:
-    """Conservatively certify every horizontal stopping direction.
-
-    A square enclosing the reachable disk is checked against the same exact
-    rounded-obstacle world as the route.  The square is deliberately more
-    conservative than a fan of sampled rays: it also covers every curved
-    transition between the measured and newly commanded velocity directions.
-    """
-    try:
-        origin = _finite_vector(
-            'site_origin_local_xy', site_origin_local_xy, 2)
-        center = _finite_vector('center_local_xy', center_local_xy, 2)
-        radius = _nonnegative('radius_m', radius_m)
-        _, rotation, altitude, world = _world(
-            str(map_yaml), planning=planning, z_half_width=0.0)
-        mapped = local_to_map(center, origin, rotation)
-        return world.box_is_free(
-            [mapped[0] - radius, mapped[1] - radius, altitude],
-            [mapped[0] + radius, mapped[1] + radius, altitude])
     except (KeyError, TypeError, ValueError):
         return False
 
@@ -448,8 +398,7 @@ def safe_route_target(
 
     def checker(point):
         return segment_is_free(
-            map_yaml, site_origin_local_xy, position_local_xy, point,
-            planning=True)
+            map_yaml, site_origin_local_xy, position_local_xy, point)
     if checker(target):
         return progress, target, cross_track
     for offset in np.linspace(float(lookahead_m), 0.0, 21)[1:]:

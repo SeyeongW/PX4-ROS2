@@ -1,4 +1,4 @@
-# PX4-ROS2 — MPC 정밀착륙
+# PX4-ROS2 — 실기체 trailer 통합 임무
 
 무빙 ArUco 표적에 대한 **MPC 정밀착륙** 스택. 저장소는 단 하나의 기준으로 나뉩니다:
 
@@ -18,7 +18,7 @@ simulation/   시뮬레이터 전용
 
 | 패키지 | 역할 |
 |---|---|
-| **`mpc_landing`** | **게이트형 MPC 정밀착륙 미션.** 5 m 이륙 → 마커 탐색 → MPC 하강. 단계마다 조종자 승인. 기본 **PX4**(`autopilot` 파라미터로 ArduPilot 전환) |
+| **`mpc_landing`** | **최종 실기체 미션.** trailer GPS → A*/SFC/B-spline → TrackingMPC 순항 → ArUco P 착륙. PX4 I/O는 MAVROS 단일 노드가 담당 |
 | `path_plan` | A*/SFC/B-spline 전역 + MPC 지역 경로 |
 | `offboard` | C++ MAVROS offboard 제어 모음 |
 
@@ -33,42 +33,35 @@ simulation/   시뮬레이터 전용
 ### 실비행 실행
 
 ```bash
-# MAVROS — PX4 는 px4.launch, ArduPilot 은 apm.launch
-ros2 launch mavros px4.launch fcu_url:=/dev/ttyTHS1:921600   # 별도로 먼저
-ros2 launch mpc_landing flight_bringup.launch.py             # 짐벌 + 미션
+cd flight/mpc_landing
+./run_px4 trailer
 ```
 
-미션은 **단계마다 멈춰서 승인을 기다립니다.**
+이 명령 하나가 MAVROS, 900 MHz trailer GPS, 카메라, ArUco 검출기, SIYI
+짐벌과 미션 노드를 시작합니다. ARM 전 승인만 조종자가 직접 합니다.
 
 ```
-프리체크 PASS ─승인─► 시동 ─승인─► 이륙(5 m) ─승인─► 탐색
-                                                        │ 마커 발견 (자동)
-                                                        ▼
-                                                   MPC 하강 → 착륙
+프리체크 ─승인─► ARM/이륙 ─► A*/SFC/B-spline ─► TrackingMPC 순항
+                                                    │ ArUco 획득
+                                                    ▼
+                                              기존 P 제어 착륙
 ```
 
 ```bash
-ros2 topic echo /mpc_landing_node/state                          # 지금 뭘 기다리는지
-ros2 service call /mpc_landing_node/approve std_srvs/srv/Trigger # 게이트 해제
-ros2 service call /mpc_landing_node/abort   std_srvs/srv/Trigger # 중단·착륙
+ros2 topic echo /aruco_landing_node/state
+ros2 run mpc_landing approve aruco_landing_node
+ros2 run mpc_landing abort aruco_landing_node
 ```
 
-카메라 체인은 별도로 띄웁니다:
+기본 장치가 다를 때만 환경변수로 바꿉니다.
 
 ```bash
-ros2 run aruco_landing aruco_pose_node               # → /perception/down/marker_pose
+FCU_URL=/dev/ttyACM0:57600 TRAILER_DEV=/dev/ttyUSB1 ./run_px4 trailer
 ```
 
-> ### ⚠️ 카메라 소스가 아직 없습니다
-> A8 mini의 영상을 ROS 이미지 토픽으로 가져오는 노드가 없습니다. RTSP 브리지는
-> 만들었다가 뺐습니다 — 되살리려면 `git show 82854a2 -- camera/rtsp_bridge`.
->
-> 그 상태에서 `mpc_landing_node`는 프리체크의 **marker pipeline 항목만 FAIL**
-> 하고 시동을 거부합니다. 볼 수 없는 채로 이륙하지 않는다는 뜻이라 의도한
-> 동작입니다.
->
-> 짐벌 IP `192.168.144.25`는 **제어용 UDP 37260**에 쓰입니다. 영상(RTSP 8554)은
-> 별개 채널입니다.
+청주대 지도는 현장 측량 전까지 `hardware_flight_approved: false`이므로 ARM 승인이
+차단됩니다. `ROUTE_MAP_APPROVED=1`은 측량을 대신하지 않으며 실제 비행에서 임의로
+사용하면 안 됩니다.
 
 ---
 
@@ -90,27 +83,14 @@ HEADLESS=1 ./simulation/gazebo/run_gimbal.sh mission
 
 ---
 
-## 두 가지 규칙
+## 최종 실기체 제어 계약
 
-### 1. MPC는 한 벌만 존재합니다
-
-`mpc_landing`는 자체 MPC를 갖지 않고 `landing_mpc.mpc.LandingMPC`를 **그대로
-import**합니다. 실비행의 목적이 MPC 검증인데, 비슷하게 다시 짠 것을 날리면
-그 사본이 검증될 뿐이기 때문입니다.
-
-- **가중치**는 SITL 값 그대로 (`w_xy=6.0`, `w_terminal=40.0` …)
-- **한계값**만 실기체용으로 낮춤 (`v_max` 3.5 → 0.8, `vz_max` → 0.35, `a_max` → 0.6)
-
-### 2. 파라미터는 노드에만
-
-`flight/`의 런치 파일은 **파라미터를 하나도 넘기지 않습니다.** 모든 튜닝값은 노드의
-`_declare()` 안에, 이유를 적은 주석과 함께 있습니다. 런치와 소스로 나뉘면
-소스가 "지금 뭘 날리고 있나"의 답이 아니게 됩니다.
-
-일회성 실험은 편집 없이:
-```bash
-ros2 run mpc_landing mpc_landing_node --ros-args -p takeoff_alt_m:=3.0
-```
+- 경로 생성: A* → SFC → B-spline
+- 경로 추종: Wang과 같은 모델·비용함수의 `TrackingMPC`
+- 착륙: 기존 실기체 검증 ArUco P 제어
+- 장애물 팽창: `vehicle_clearance_xy_m: 1.0`만 적용
+- PX4 명령: `/mavros/setpoint_raw/local` 단일 authority
+- 운영 진입점: `./run_px4 trailer` 하나
 
 ---
 

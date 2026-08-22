@@ -21,11 +21,10 @@ antenna is not its marker — so the moment the marker is acquired, vision takes
 over completely and the coordinate is never used again.  That handover is the
 whole design: coarse where coarse is enough, vision where it is not.
 
-`planned_cruise` is the opt-in hardware integration of Wang's route mission.
-It runs the exact-checked A* -> SFC -> B-spline geometry with Wang's
-TrackingMPC in CRUISE and Wang's LandingMPC in DESCEND.  Both stream P/V/A
-through this node's existing MAVROS publisher; the proven GPS, vision, LAND and
-ground-confirmed disarm chain stays unchanged.
+`planned_cruise` is the hardware integration of Wang's route mission. It runs
+the exact-checked A* -> SFC -> B-spline geometry with Wang's TrackingMPC in
+CRUISE, then hands marker centring and descent to the existing proportional
+ArUco controller. All PX4 I/O remains on this node's MAVROS publisher.
 
 SEARCH keeps station over the coordinate rather than over a fixed patch of
 ground, so a trailer that rolls a few metres while the detector is settling stays
@@ -59,9 +58,8 @@ are not optional:
       detector's floor that is enough to lose one the nadir view could read
       perfectly well.  `_track_marker` has the measured numbers.
 
-The default `aruco` and proven `trailer` modes deliberately keep the plain
-proportional centre-and-descend below.  Only `run_px4 route` selects the two-MPC
-controller, so `run_px4 trailer` remains the known-good rollback.
+Both the marker-only mission and final `run_px4 trailer` mission use the same
+proven proportional centre-and-descend below.
 
     horizontal:  v_xy = clip(kp * (marker_xy - vehicle_xy),  |v| <= center_v_max)
     vertical:    descend at descend_speed ONLY while centred (radius <= r),
@@ -226,6 +224,8 @@ class ArucoLandingNode(Node):
         self.detected = False
         self._detector_seen = False
         self._acq_streak = 0
+        self._marker_seq = 0
+        self._acq_last_marker_seq = 0
         # How fast the marker itself is moving — the trailer's deck does not
         # hold still, and a P controller alone cannot centre on something that
         # keeps going (see VelocityEstimate).
@@ -270,12 +270,6 @@ class ArucoLandingNode(Node):
         self._path_reference = None
         self._path_solve_t = None
         self._path_last_solve_t = None
-        self._landing_mpc = None
-        self._landing_reference = None
-        self._landing_solve_t = None
-        self._landing_last_solve_t = None
-        self._landing_acquiring = True
-        self._landing_hold_z = None
         self._last_mpc_acceleration = np.zeros(3)
         self._last_mpc_acceleration_t = None
         self._target_velocity = VelocityEstimate(
@@ -283,8 +277,6 @@ class ArucoLandingNode(Node):
             gap_s=self.target_timeout)
         self._target_velocity_sample_t = float('-inf')
         if self.planned_cruise:
-            from landing_mpc.mpc import LandingMPC
-            from landing_mpc.predictor import predict_const_vel
             from landing_mpc.reference import HorizonReference
             from path_plan.mpc import TrackingMPC
             from path_plan.mpc_reference import (
@@ -296,25 +288,14 @@ class ArucoLandingNode(Node):
             self._enu_offset = enu_offset
             self._path_reference_horizon = path_reference_horizon
             self._limit_acceleration_slew = limit_acceleration_slew
-            self._predict_const_vel = predict_const_vel
-            # Same Wang equations and cost weights. Only actuator bounds are
-            # reduced to the values chosen for the real-airframe MAVROS stack.
+            # Same Wang equations and cost weights. Only the real-airframe
+            # actuator bounds are lower than the simulation defaults.
             self._path_mpc = TrackingMPC(
                 dt_s=0.1, horizon=20,
                 v_max=self.cruise_v_max, a_max=self.cruise_accel,
                 j_max=2.0, q_pos=4.0, q_vel=0.4, r_acc=0.05,
                 q_terminal=20.0)
             self._path_reference = HorizonReference(lead_s=0.1)
-            self._landing_mpc = LandingMPC(
-                dt_s=0.1, horizon=20,
-                w_xy=6.0, w_z=3.0, w_vxy=20.0, w_vz=1.5,
-                w_a=0.05, w_terminal=40.0, w_jerk=0.5,
-                v_max=self.route_landing_v_max,
-                a_max=self.route_landing_a_max,
-                vz_max=self.route_landing_vz_max,
-                cone_k=self.route_landing_cone,
-                j_max=self.route_landing_jerk)
-            self._landing_reference = HorizonReference(lead_s=0.1)
             route_path = Path(self.route_map_yaml).expanduser().resolve(
                 strict=True)
             self.route_map_yaml = str(route_path)
@@ -416,19 +397,12 @@ class ArucoLandingNode(Node):
             f'{self.marker_pose_topic}')
         if self.planned_cruise:
             info = self._route_map_info
-            localization_budget = (
-                self.route_max_hacc + self.route_anchor_drift
-                + self.cruise_v_max * self.route_sync_tolerance)
             self.get_logger().info(
                 f'route map: {info.name} | origin '
                 f'{info.origin_lat:.9f},{info.origin_lon:.9f} | heading '
-                f'{info.heading_deg_enu:.3f} deg ENU | margin '
-                f'{info.clearance_margin_m:.2f} m, localization budget '
-                f'{localization_budget:.2f} m, map reserve '
-                f'{info.clearance_margin_m - localization_budget:.2f} m, '
-                f'follower reserve {info.following_reserve_m:.2f} m | '
-                f'brake >= {self.route_brake_decel:.2f} m/s^2, reaction <= '
-                f'{self.route_reaction_time:.2f} s | worker=spawn')
+                f'{info.heading_deg_enu:.3f} deg ENU | vehicle clearance '
+                f'{info.vehicle_clearance_m:.2f} m | '
+                'worker=spawn')
             if not info.hardware_flight_approved:
                 self.get_logger().warn(
                     'route map is NOT hardware-flight-approved: '
@@ -516,22 +490,18 @@ class ArucoLandingNode(Node):
         # Target gone this long mid-cruise: stop chasing a stale coordinate and
         # start looking with the camera from wherever we got to.
         p('trailer_lost_search_s', 10.0)
-        # --- optional obstacle-aware two-MPC mission (run_px4 route) --------
-        # Geometry and both Wang MPCs run here; PX4 I/O and the final LAND stay
-        # on the hardware-proven MAVROS path.
+        # --- obstacle-aware trailer cruise (run_px4 trailer) ----------------
+        # Wang geometry and TrackingMPC run here; ArUco P descent, PX4 I/O and
+        # final LAND stay on the hardware-proven MAVROS path.
         p('planned_cruise', False)
         p('route_map_yaml', '')
         p('route_vehicle_fix_topic', '/mavros/global_position/global')
         p('route_gps_timeout_s', 3.0)
-        # Local pose/velocity drive the high-rate collision envelope and therefore
+        # Local pose/velocity drive route health and MPC collision checks, so they
         # cannot inherit the much slower GPS freshness allowance.
         p('route_state_timeout_s', 0.2)
-        # Absolute obstacles are only as well aligned as this GPS fix. This is
-        # a hard route-only gate, independent of the baseline GNSS arm option.
-        # The operator-requested route margin is 1 m. GPS error, later anchor
-        # motion and motion during pose/fix timestamp skew all share it; route
-        # startup rejects parameter values whose worst-case sum exceeds the
-        # map's configured margin.
+        # Reject an unusable absolute fix without reinterpreting the geometric
+        # vehicle clearance as a second localization or speed budget.
         p('route_max_horizontal_accuracy_m', 0.4)
         # Route anchoring uses one local-pose/global-fix pair. Refuse a pair
         # whose callback times are too far apart while the vehicle is moving.
@@ -541,27 +511,10 @@ class ArucoLandingNode(Node):
         # A valid synchronized pose/fix pair may be reused between 5 Hz global
         # fix updates; the pair itself must still meet the 0.10 s source skew.
         p('route_anchor_timeout_s', 0.3)
-        # Guaranteed MINIMUM real-airframe horizontal braking performance.
-        # This is intentionally separate from cruise_accel, which is only a
-        # maximum setpoint slew. Validate it in a contained low-speed test
-        # before marking a route map hardware-flight-approved.
-        p('route_brake_decel_m_s2', 0.25)
-        # Upper bound from a published command to companion/PX4 watchdog
-        # reaction. This, not the nominal timer period, sizes blind travel.
-        p('route_reaction_time_s', 0.5)
         p('route_timeout_s', 300.0)
         p('route_replan_period_s', 2.0)
         p('route_lookahead_m', 6.0)
         p('route_cross_track_m', 0.25)
-        # Real-airframe constraints. The LandingMPC model and all cost weights
-        # remain Wang's successful values; only these physical limits differ.
-        p('route_landing_v_max_m_s', 0.8)
-        p('route_landing_a_max_m_s2', 0.6)
-        p('route_landing_vz_max_m_s', 0.35)
-        p('route_landing_jerk_m_s3', 1.5)
-        p('route_landing_cone_k', 2.0)
-        p('route_landing_entry_xy_m', 0.5)
-        p('route_landing_entry_relative_speed_m_s', 0.3)
         # The checked-in map is an OSM/simulation snapshot. run_px4 exposes an
         # explicit override for props-off/SITL work; a props-on map should set
         # hardware_flight_approved in the YAML after field measurement.
@@ -682,29 +635,11 @@ class ArucoLandingNode(Node):
         self.route_anchor_drift = float(g('route_anchor_drift_m').value)
         self.route_anchor_timeout = float(
             g('route_anchor_timeout_s').value)
-        self.route_brake_decel = float(
-            g('route_brake_decel_m_s2').value)
-        self.route_reaction_time = float(
-            g('route_reaction_time_s').value)
         self.route_timeout = float(g('route_timeout_s').value)
         self.route_replan_period = float(
             g('route_replan_period_s').value)
         self.route_lookahead = float(g('route_lookahead_m').value)
         self.route_cross_track = float(g('route_cross_track_m').value)
-        self.route_landing_v_max = float(
-            g('route_landing_v_max_m_s').value)
-        self.route_landing_a_max = float(
-            g('route_landing_a_max_m_s2').value)
-        self.route_landing_vz_max = float(
-            g('route_landing_vz_max_m_s').value)
-        self.route_landing_jerk = float(
-            g('route_landing_jerk_m_s3').value)
-        self.route_landing_cone = float(
-            g('route_landing_cone_k').value)
-        self.route_landing_entry_xy = float(
-            g('route_landing_entry_xy_m').value)
-        self.route_landing_entry_speed = float(
-            g('route_landing_entry_relative_speed_m_s').value)
         self.allow_unapproved_route_map = bool(
             g('allow_unapproved_route_map').value)
         if self.planned_cruise and not self.cruise:
@@ -714,16 +649,8 @@ class ArucoLandingNode(Node):
         route_values = (self.route_gps_timeout, self.route_state_timeout,
                         self.route_max_hacc, self.route_sync_tolerance,
                         self.route_anchor_drift, self.route_anchor_timeout,
-                        self.route_brake_decel, self.route_reaction_time,
                         self.route_timeout, self.route_replan_period,
-                        self.route_lookahead, self.route_cross_track,
-                        self.route_landing_v_max,
-                        self.route_landing_a_max,
-                        self.route_landing_vz_max,
-                        self.route_landing_jerk,
-                        self.route_landing_cone,
-                        self.route_landing_entry_xy,
-                        self.route_landing_entry_speed)
+                        self.route_lookahead, self.route_cross_track)
         if (self.planned_cruise
                 and not all(math.isfinite(v) and v > 0.0
                             for v in route_values)):
@@ -734,10 +661,6 @@ class ArucoLandingNode(Node):
                      or not math.isfinite(self.cruise_accel)
                      or self.cruise_accel <= 0.0)):
             raise ValueError('route cruise speed and acceleration must be positive')
-        if (self.planned_cruise
-                and self.route_brake_decel > self.cruise_accel):
-            raise ValueError(
-                'route braking deceleration cannot exceed command slew limit')
         self.gimbal_aim_topic = str(g('gimbal_aim_topic').value)
         self.gimbal_attitude_topic = str(g('gimbal_attitude_topic').value)
         self.gimbal_track = bool(g('gimbal_track').value)
@@ -769,11 +692,6 @@ class ArucoLandingNode(Node):
         self.prestream_s = float(g('offboard_prestream_s').value)
         self.rate_hz = float(g('rate_hz').value)
         self.interactive = bool(g('interactive_approval').value)
-        if (self.planned_cruise
-                and self.route_reaction_time < 1.0 / self.rate_hz):
-            raise ValueError(
-                'route reaction time cannot be shorter than one control tick')
-
     # -------------------------------------------------------------- callbacks
     def _now(self) -> float:
         return self.get_clock().now().nanoseconds * 1e-9
@@ -896,6 +814,7 @@ class ArucoLandingNode(Node):
         self.marker_vel.update(p, now)
         self.marker = p
         self.marker_t = now
+        self._marker_seq += 1
 
     def _on_target(self, m: PointStamped):
         """The trailer, already in local ENU — trailer_target_node did the geodesy.
@@ -997,14 +916,15 @@ class ArucoLandingNode(Node):
         self.get_logger().info(f'{self.phase.value} -> {phase.value}')
         self.phase = phase
         self._t_phase = self._now()
+        if phase is Phase.SEARCH:
+            self._acq_streak = 0
+            self._acq_last_marker_seq = self._marker_seq
         if not self.planned_cruise:
             return
         if phase is Phase.CRUISE:
             self._reset_path_mpc()
         elif phase is Phase.DESCEND:
-            self._reset_landing_mpc()
-            self._landing_acquiring = True
-            self._landing_hold_z = self._alt() if self.pose is not None else None
+            self._reset_path_mpc()
         elif phase in (Phase.LAND, Phase.DONE):
             self._reset_mpc_output()
 
@@ -1072,6 +992,16 @@ class ArucoLandingNode(Node):
         return (self.marker is not None
                 and (self._now() - self.marker_t) < self.marker_timeout)
 
+    def _marker_acquired(self) -> bool:
+        """Count accepted camera frames, never timer ticks, toward acquisition."""
+        if not self._fresh_marker() or not self.detected:
+            self._acq_streak = 0
+            return False
+        if self._marker_seq != self._acq_last_marker_seq:
+            self._acq_last_marker_seq = self._marker_seq
+            self._acq_streak += 1
+        return self._acq_streak >= self.acquire_frames
+
     def _fresh_target(self) -> bool:
         now = self._now()
         if (self.target is None
@@ -1112,15 +1042,6 @@ class ArucoLandingNode(Node):
             self._path_reference.reset()
         self._path_solve_t = None
         self._path_last_solve_t = None
-        self._reset_mpc_output()
-
-    def _reset_landing_mpc(self) -> None:
-        if self._landing_mpc is not None:
-            self._landing_mpc.reset()
-        if self._landing_reference is not None:
-            self._landing_reference.reset()
-        self._landing_solve_t = None
-        self._landing_last_solve_t = None
         self._reset_mpc_output()
 
     def _set_yaw(self, message: PositionTarget) -> None:
@@ -1272,30 +1193,8 @@ class ArucoLandingNode(Node):
 
     def _hold(self, vz: float = 0.0) -> None:
         """Stop horizontally — by ramping down, not by dropping the command."""
-        v = self._slew_candidate(np.zeros(2))
-        if not self._route_velocity_is_safe(v):
-            v = np.zeros(2)
-        self._v_cmd = v
+        v = self._slew(np.zeros(2))
         self._send(float(v[0]), float(v[1]), vz)
-
-    def _route_safe_velocity(self, preferred, fallback) -> np.ndarray:
-        """Largest exact-safe interpolation from fallback toward preferred."""
-        preferred = np.asarray(preferred, float)
-        fallback = np.asarray(fallback, float)
-        if self._route_velocity_is_safe(preferred):
-            return preferred
-        if not self._route_velocity_is_safe(fallback):
-            return np.zeros(2)
-        best = fallback.copy()
-        low, high = 0.0, 1.0
-        for _ in range(12):
-            fraction = 0.5 * (low + high)
-            candidate = fallback + fraction * (preferred - fallback)
-            if self._route_velocity_is_safe(candidate):
-                best, low = candidate, fraction
-            else:
-                high = fraction
-        return best
 
     def _fly_to(self, target_xy, *, kp: float, v_max: float, vz: float = 0.0,
                 feed_forward=None) -> float:
@@ -1319,14 +1218,7 @@ class ArucoLandingNode(Node):
             ff = _capped(np.asarray(feed_forward, dtype=float)[:2],
                          self.marker_vel_max)
             v = _capped(v + ff, v_max + self.marker_vel_max)
-        preferred = self._slew_candidate(v)
-        braking = self._slew_candidate(np.zeros(2))
-        v = self._route_safe_velocity(preferred, braking)
-        if not np.allclose(v, preferred, atol=1.0e-9, rtol=0.0):
-            self.get_logger().error(
-                'route velocity stopping envelope is unsafe — limiting/braking',
-                throttle_duration_sec=2.0)
-        self._v_cmd = v
+        v = self._slew(v)
         self._send(float(v[0]), float(v[1]), vz)
         return distance
 
@@ -1343,12 +1235,6 @@ class ArucoLandingNode(Node):
             return f'route map is not readable: {exc}'
         if identity != self._route_map_identity:
             return 'route map changed after startup; restart the mission node'
-        margin = self._route_map_info.clearance_margin_m
-        error_budget = (self.route_max_hacc + self.route_anchor_drift
-                        + self.cruise_v_max * self.route_sync_tolerance)
-        if error_budget > margin + 1.0e-9:
-            return (f'route localization error budget {error_budget:.2f} m '
-                    f'exceeds map margin {margin:.2f} m')
         now = self._now()
         if not self.ekf.status_fresh(now):
             return 'MAVROS estimator status is missing or stale'
@@ -1380,10 +1266,6 @@ class ArucoLandingNode(Node):
             self.velocity.twist.linear.x, self.velocity.twist.linear.y)
         if not all(math.isfinite(float(value)) for value in measured_velocity):
             return 'MAVROS local velocity is non-finite'
-        measured_speed = math.hypot(*measured_velocity)
-        if measured_speed > self.cruise_v_max:
-            return (f'MAVROS horizontal speed {measured_speed:.2f} m/s exceeds '
-                    f'route error-budget limit {self.cruise_v_max:.2f} m/s')
         if abs(self.pose_t - self.velocity_t) > self.route_sync_tolerance:
             return ('MAVROS local pose and velocity are not time-aligned '
                     f'(>{self.route_sync_tolerance:.1f} s)')
@@ -1422,46 +1304,6 @@ class ArucoLandingNode(Node):
             return (f'local/global route anchor moved {drift:.2f} m '
                     f'(limit {self.route_anchor_drift:.2f} m)')
         return None
-
-    def _route_velocity_is_safe(self, command_xy) -> bool:
-        """Check a conservative stopping envelope against the route map."""
-        if (not self.planned_cruise
-                or self.phase not in (Phase.CRUISE, Phase.SEARCH,
-                                      Phase.DESCEND)):
-            return True
-        if self._route_flight_health_reason() is not None:
-            return False
-        if self.pose is None or self.velocity is None:
-            return False
-        origin = (self._route_active[1]
-                  if self._route_active is not None
-                  else self._route_synchronized_site_origin())
-        if origin is None:
-            return False
-        current = np.array([
-            self.pose.pose.position.x, self.pose.pose.position.y], float)
-        measured = np.array([
-            self.velocity.twist.linear.x,
-            self.velocity.twist.linear.y], float)
-        command = np.asarray(command_xy, float)
-        previous = np.asarray(self._v_cmd, float)
-        if (command.shape != (2,) or previous.shape != (2,)
-                or not np.all(np.isfinite(measured))
-                or not np.all(np.isfinite(command))
-                or not np.all(np.isfinite(previous))):
-            return False
-        # Cover travel since the older source sample plus the configured
-        # companion/PX4 reaction horizon, then braking at the conservative
-        # bound. The enclosing square covers every curved direction transition.
-        speed = max(float(np.linalg.norm(measured)),
-                    float(np.linalg.norm(command)),
-                    float(np.linalg.norm(previous)))
-        now = self._now()
-        state_age = max(0.0, now - self.pose_t, now - self.velocity_t)
-        radius = (speed * (state_age + self.route_reaction_time)
-                  + speed * speed / (2.0 * self.route_brake_decel))
-        return self._route_lib.stopping_envelope_is_free(
-            self.route_map_yaml, origin, current, radius, planning=True)
 
     def _route_input_reason(self) -> str | None:
         """Why a new site-frame plan cannot be anchored right now, or None."""
@@ -1591,7 +1433,7 @@ class ArucoLandingNode(Node):
 
                 def checker(a, b):
                     return self._route_lib.segment_is_free(
-                        self.route_map_yaml, origin, a, b, planning=True)
+                        self.route_map_yaml, origin, a, b)
                 joined = self._route_lib.splice_route_from_current(
                     planned.arc_m, planned.path_local_xy, current,
                     self.route_lookahead, checker)
@@ -1699,7 +1541,7 @@ class ArucoLandingNode(Node):
             self.pose.pose.position.x, self.pose.pose.position.y], float)
         chain = np.vstack((current, predicted[:, :2]))
         return all(self._route_lib.segment_is_free(
-            self.route_map_yaml, origin, a, b, planning=True)
+            self.route_map_yaml, origin, a, b)
             for a, b in zip(chain[:-1], chain[1:]))
 
     def _route_mpc_command(self) -> tuple[bool, float]:
@@ -1775,9 +1617,7 @@ class ArucoLandingNode(Node):
 
         pos, vel, acc = self._path_reference.sample(
             self._now() - self._path_solve_t)
-        if (float(np.linalg.norm(vel[:2])) > self.cruise_v_max + 1.0e-6
-                or not self._route_prediction_is_safe(np.asarray([pos]))
-                or not self._route_velocity_is_safe(vel[:2])):
+        if not self._route_prediction_is_safe(np.asarray([pos])):
             self._route_last_error = 'TrackingMPC streamed reference is unsafe'
             self._reset_path_mpc()
             self._path_last_solve_t = now
@@ -1803,8 +1643,7 @@ class ArucoLandingNode(Node):
             except RuntimeError:
                 return False
             return self._route_lib.segment_is_free(
-                self.route_map_yaml, origin, current, self.target[:2],
-                planning=True)
+                self.route_map_yaml, origin, current, self.target[:2])
         plan, origin, planned_goal, _seq, _committed = self._route_active
         return (
             float(np.linalg.norm(current - plan.path_local_xy[-1]))
@@ -1812,8 +1651,7 @@ class ArucoLandingNode(Node):
             and float(np.linalg.norm(self.target[:2] - planned_goal))
             <= self.cruise_arrive
             and self._route_lib.segment_is_free(
-                self.route_map_yaml, origin, current, self.target[:2],
-                planning=True))
+                self.route_map_yaml, origin, current, self.target[:2]))
 
     def _route_station_keep_safe(self) -> bool:
         """Prevent SEARCH's GPS station-keep from bypassing the route map."""
@@ -1829,8 +1667,7 @@ class ArucoLandingNode(Node):
         except RuntimeError:
             return False
         return self._route_lib.segment_is_free(
-            self.route_map_yaml, origin, current, self.target[:2],
-            planning=True)
+            self.route_map_yaml, origin, current, self.target[:2])
 
     # ------------------------------------------------------------- preflight
     def _preflight_ok(self, *, allow_armed: bool = False) -> bool:
@@ -1950,8 +1787,7 @@ class ArucoLandingNode(Node):
         # returns early cannot starve it. PX4 drops offboard after ~0.5 s of
         # silence. Phases that fly a real setpoint overwrite this in the same
         # tick; publishing twice is harmless, a gap is not.
-        mpc_phase = (self.planned_cruise
-                     and self.phase in (Phase.CRUISE, Phase.DESCEND))
+        mpc_phase = self.planned_cruise and self.phase is Phase.CRUISE
         if (self.phase in (Phase.READY_TO_ARM, Phase.ARMING, Phase.TAKEOFF,
                            Phase.CRUISE, Phase.SEARCH, Phase.DESCEND)
                 and not mpc_phase):
@@ -2078,14 +1914,9 @@ class ArucoLandingNode(Node):
                                  v_max=self.center_v_max, vz=vz)
             else:
                 self._hold(vz)
-            # Commit only after several CONSECUTIVE fresh detections: a live fix
-            # AND a currently-asserted detected flag both have to hold, so a lone
-            # spurious hit trips one tick and the streak resets.
-            if self._fresh_marker() and self.detected:
-                self._acq_streak += 1
-            else:
-                self._acq_streak = 0
-            if self._acq_streak >= self.acquire_frames:
+            # Count detector frames, not this 50 Hz timer. Re-reading one fresh
+            # pose five times is still one detection, not an acquisition streak.
+            if self._marker_acquired():
                 # Stop sweeping, and LEAVE THE CAMERA WHERE IT IS: the look that
                 # found the marker is by definition a look that can see it.
                 # `_track_marker` only re-points once that stops being true.
@@ -2224,180 +2055,8 @@ class ArucoLandingNode(Node):
                 f'{distance:6.2f} m{route_status}')
 
     def _descend(self) -> None:
-        """Select the route LandingMPC or the proven proportional fallback."""
-        if self.planned_cruise:
-            self._descend_mpc()
-        else:
-            self._descend_p()
-
-    def _descend_mpc(self) -> None:
-        """Land on the moving marker with Wang LandingMPC over MAVROS."""
-        if (self.pose is None or self.velocity is None
-                or self._landing_mpc is None
-                or self._landing_reference is None):
-            self._hold()
-            return
-        if not self._fresh_marker():
-            self._reset_landing_mpc()
-            self._landing_acquiring = True
-            self._landing_hold_z = self._alt()
-            lost_for = self._now() - self.marker_t
-            if lost_for > self.marker_lost_abort:
-                self.get_logger().warn(
-                    f'marker lost for {lost_for:.1f} s during LandingMPC — '
-                    'handing to LAND')
-                self._to(Phase.LAND)
-            else:
-                self._hold()
-            return
-
-        target = np.asarray(self.marker, float)
-        position = np.array([
-            self.pose.pose.position.x, self.pose.pose.position.y,
-            self._alt()], float)
-        velocity = np.array([
-            self.velocity.twist.linear.x,
-            self.velocity.twist.linear.y,
-            self.velocity.twist.linear.z], float)
-        target_velocity = np.array([
-            self.marker_vel.v[0], self.marker_vel.v[1], 0.0], float)
-        landing_state = np.r_[target, position, velocity, target_velocity]
-        if not np.all(np.isfinite(landing_state)):
-            self._reset_landing_mpc()
-            self._hold()
-            return
-
-        p_rel = position - target
-        v_rel = velocity - target_velocity
-        horizontal = float(np.linalg.norm(p_rel[:2]))
-        relative_speed = float(np.linalg.norm(v_rel[:2]))
-        height = float(p_rel[2])
-        if (0.0 <= height <= self.touch_alt
-                and horizontal <= self.touch_xy):
-            self.get_logger().info(
-                f'over the marker (h={height:.2f} m, xy={horizontal:.2f} m) '
-                '— handing to LAND')
-            self._to(Phase.LAND)
-            return
-
-        # Acquire horizontally at the current altitude.  Only after both
-        # position and relative speed are small is the descent reference opened.
-        if self._landing_acquiring:
-            self._landing_mpc.cone_k = 0.0
-            self._landing_mpc.z_ref = height
-            if self._landing_hold_z is None:
-                self._landing_hold_z = self._alt()
-        else:
-            self._landing_mpc.cone_k = self.route_landing_cone
-            self._landing_mpc.z_ref = 0.0
-            self._landing_hold_z = None
-
-        now = self._now()
-        solve_due = (
-            self._landing_last_solve_t is None
-            or now < self._landing_last_solve_t
-            or now - self._landing_last_solve_t
-            >= self._landing_mpc.dt - 1.0e-6)
-        if solve_due:
-            self._landing_last_solve_t = now
-            target_p, target_v, target_a = self._predict_const_vel(
-                target, target_velocity,
-                self._landing_mpc.dt, self._landing_mpc.N)
-            output_step = min(
-                int(self._landing_reference.lead / self._landing_mpc.dt),
-                self._landing_mpc.N - 1)
-            try:
-                result = self._landing_mpc.solve(
-                    p_rel, v_rel, target_p, target_v, target_a,
-                    applied_acceleration=self._last_mpc_acceleration,
-                    output_step=output_step)
-            except Exception as exc:
-                self._landing_reference.reset()
-                self._landing_mpc.reset()
-                self._landing_solve_t = None
-                self._reset_mpc_output()
-                self.get_logger().error(
-                    f'LandingMPC solve failed — HOLDING: {exc}',
-                    throttle_duration_sec=2.0)
-            else:
-                absolute_prediction = target_p + result.pred_rel_pos
-                accepted = (
-                    result.success
-                    and np.all(np.isfinite(np.column_stack((
-                        absolute_prediction, result.pred_rel_vel,
-                        result.pred_rel_acc))))
-                    and self._route_prediction_is_safe(absolute_prediction))
-                if accepted:
-                    self._landing_reference.set_plan(
-                        p_rel, v_rel, result.pred_rel_pos,
-                        result.pred_rel_vel, result.pred_rel_acc,
-                        self._landing_mpc.dt,
-                        target, target_velocity, np.zeros(3))
-                    self._landing_solve_t = now
-                else:
-                    self._landing_reference.reset()
-                    self._landing_mpc.reset()
-                    self._landing_solve_t = None
-                    self._reset_mpc_output()
-                    self.get_logger().error(
-                        'LandingMPC rejected its solve or predicted horizon — '
-                        'HOLDING', throttle_duration_sec=2.0)
-
-        if (not self._landing_reference.ready()
-                or self._landing_solve_t is None):
-            self._hold()
-            return
-
-        pos, vel, acc = self._landing_reference.sample(
-            self._now() - self._landing_solve_t)
-        if self._landing_hold_z is not None:
-            pos = np.asarray(pos, float).copy()
-            vel = np.asarray(vel, float).copy()
-            acc = np.asarray(acc, float).copy()
-            pos[2] = self._landing_hold_z
-            vel[2] = 0.0
-            acc[2] = 0.0
-
-        command_safe = (
-            np.all(np.isfinite(np.r_[pos, vel, acc]))
-            and float(np.linalg.norm(vel[:2])) <= self.cruise_v_max + 1.0e-6
-            and abs(float(vel[2])) <= self.route_landing_vz_max + 1.0e-6
-            and self._route_prediction_is_safe(np.asarray([pos]))
-            and self._route_velocity_is_safe(vel[:2]))
-        if (not command_safe or not self._send_pva(
-                pos, vel, acc, self._landing_mpc.j_max)):
-            self._landing_reference.reset()
-            self._landing_mpc.reset()
-            self._landing_solve_t = None
-            self._reset_mpc_output()
-            self.get_logger().error(
-                'LandingMPC streamed reference is unsafe — HOLDING',
-                throttle_duration_sec=2.0)
-            self._hold()
-            return
-
-        if (self._landing_acquiring
-                and horizontal <= self.route_landing_entry_xy
-                and relative_speed <= self.route_landing_entry_speed
-                and height >= 0.0):
-            # Keep the last streamed acceleration across this controller-state
-            # boundary; it is the jerk constraint's physical handoff value.
-            self._landing_reference.reset()
-            self._landing_solve_t = None
-            self._landing_last_solve_t = None
-            self._landing_acquiring = False
-            self._landing_hold_z = None
-            self.get_logger().info(
-                f'ArUco aligned (xy={horizontal:.2f} m, '
-                f'dv={relative_speed:.2f} m/s) — LandingMPC descent enabled')
-            return
-
-        if self._due('descend_log', self.descend_log_period):
-            self.get_logger().info(
-                f'[LANDING MPC] marker dx {-p_rel[0]:+6.2f} '
-                f'dy {-p_rel[1]:+6.2f} | xy {horizontal:5.2f} m | '
-                f'dv {relative_speed:4.2f} m/s | h {height:5.2f} m | '
-                f'{"acquiring (holding alt)" if self._landing_acquiring else "descending"}')
+        """Use the existing real-aircraft ArUco proportional controller."""
+        self._descend_p()
 
     def _descend_p(self) -> None:
         """Plain proportional centre-and-descend onto the marker.
