@@ -497,6 +497,9 @@ class ArucoLandingNode(Node):
         # at `search_alt_m` is only ~1.5 m in its short axis with the current
         # marker, so arriving loosely is arriving with the marker out of frame.
         p('cruise_arrive_m', 1.0)
+        # State-transition tolerance only: it does not reduce path speed. READY
+        # and fixed-goal HOVER open after the vehicle has actually settled.
+        p('arrival_speed_tolerance_m_s', 0.2)
         # The leash. This node REFUSES to fly farther than this, at the gate and
         # in the air — a bad fix must not become a long flight. It is the
         # mission's own limit, independent of trailer_target_node's sanity check.
@@ -636,6 +639,8 @@ class ArucoLandingNode(Node):
         self.cruise_v_max = float(g('cruise_v_max_m_s').value)
         self.cruise_accel = float(g('cruise_accel_m_s2').value)
         self.cruise_arrive = float(g('cruise_arrive_m').value)
+        self.arrival_speed = float(
+            g('arrival_speed_tolerance_m_s').value)
         self.cruise_max_dist = float(g('cruise_max_distance_m').value)
         self.cruise_timeout = float(g('cruise_timeout_s').value)
         self.cruise_log_period = float(g('cruise_log_period_s').value)
@@ -669,7 +674,8 @@ class ArucoLandingNode(Node):
                         self.route_max_hacc, self.route_sync_tolerance,
                         self.route_anchor_drift, self.route_anchor_timeout,
                         self.route_timeout, self.route_replan_period,
-                        self.route_lookahead, self.route_cross_track)
+                        self.route_lookahead, self.route_cross_track,
+                        self.arrival_speed)
         if (self.planned_cruise
                 and not all(math.isfinite(v) and v > 0.0
                             for v in route_values)):
@@ -1467,6 +1473,20 @@ class ArucoLandingNode(Node):
                         'vehicle clearance')
         return None
 
+    def _route_settled(self) -> bool:
+        """True once the fixed-goal vehicle is genuinely ready to hover."""
+        now = self._now()
+        sample_age = now - self.velocity_t
+        if (self.velocity is None or not math.isfinite(self.velocity_t)
+                or now - self.velocity_rx_t > self.route_state_timeout
+                or sample_age > self.route_state_timeout
+                or sample_age < -self.route_sync_tolerance):
+            return False
+        linear = self.velocity.twist.linear
+        velocity = np.array([linear.x, linear.y, linear.z], float)
+        return (np.all(np.isfinite(velocity))
+                and float(np.linalg.norm(velocity)) <= self.arrival_speed)
+
     def _route_preflight(self) -> list[str]:
         """Non-waivable checks for the fixed CJU map-goal route."""
         if not self.planned_cruise:
@@ -1944,7 +1964,7 @@ class ArucoLandingNode(Node):
         # silence. Phases that fly a real setpoint overwrite this in the same
         # tick; publishing twice is harmless, a gap is not.
         mpc_phase = self.planned_cruise and self.phase in (
-            Phase.MISSION, Phase.RETURN, Phase.CRUISE)
+            Phase.MISSION, Phase.HOVER, Phase.RETURN, Phase.CRUISE)
         if (self.phase in (Phase.READY_TO_ARM, Phase.ARMING, Phase.TAKEOFF,
                            Phase.READY, Phase.MISSION_PLAN, Phase.MISSION,
                            Phase.HOVER,
@@ -2031,6 +2051,8 @@ class ArucoLandingNode(Node):
             err = self._takeoff_target() - self._alt()
             if abs(err) <= self.alt_tol:
                 self._hold()
+                if self.planned_cruise and not self._route_settled():
+                    return
                 if self.planned_cruise:
                     self._to(Phase.READY)
                 else:
@@ -2048,7 +2070,8 @@ class ArucoLandingNode(Node):
         if self.phase is Phase.MISSION_PLAN:
             self._hold()
             if (self._route_goal_range(trailer_goal=False) <= self.cruise_arrive
-                    and self._route_arrival_safe(trailer_goal=False)):
+                    and self._route_arrival_safe(trailer_goal=False)
+                    and self._route_settled()):
                 self._to(Phase.HOVER)
             elif self._route_active is not None:
                 self._to(Phase.MISSION)
@@ -2065,7 +2088,9 @@ class ArucoLandingNode(Node):
             return
 
         if self.phase is Phase.HOVER:
-            self._hold()
+            commanded, _cross_track = self._route_mpc_command()
+            if not commanded:
+                self._hold()
             self._announce()
             return
 
@@ -2185,7 +2210,8 @@ class ArucoLandingNode(Node):
             return
         distance = self._range_to(goal)
         if (distance <= self.cruise_arrive
-                and self._route_arrival_safe(trailer_goal=False)):
+                and self._route_arrival_safe(trailer_goal=False)
+                and self._route_settled()):
             self._hold()
             self.get_logger().info(
                 f'at CJU map {self._route_map_info.mission_goal_xy} '

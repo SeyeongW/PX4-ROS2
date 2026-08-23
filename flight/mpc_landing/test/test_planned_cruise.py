@@ -505,6 +505,7 @@ def test_takeoff_reaches_ready_without_flying_to_the_trailer():
         _alt=lambda: 5.0,
         alt_tol=0.3,
         climb_speed=0.7,
+        _route_settled=lambda: True,
         _hold=lambda *_args: calls.append(('hold',)),
         _to=lambda phase: calls.append(('phase', phase)),
     )
@@ -512,6 +513,92 @@ def test_takeoff_reaches_ready_without_flying_to_the_trailer():
     assert ('phase', Phase.READY) in calls
     assert ('phase', Phase.RETURN) not in calls
     assert ('phase', Phase.CRUISE) not in calls
+
+
+def test_takeoff_waits_until_velocity_is_settled():
+    calls = []
+    state = SimpleNamespace(
+        phase=Phase.TAKEOFF,
+        planned_cruise=True,
+        _drain_stdin_commands=lambda: None,
+        _publish_state=lambda: None,
+        _send=lambda *_args: None,
+        _route_update=lambda: None,
+        _takeoff_target=lambda: 5.0,
+        _alt=lambda: 5.0,
+        alt_tol=0.3,
+        climb_speed=0.7,
+        _route_settled=lambda: False,
+        _hold=lambda *_args: calls.append('hold'),
+        _to=lambda phase: calls.append(phase),
+    )
+    ArucoLandingNode._tick(state)
+    assert 'hold' in calls and Phase.READY not in calls
+
+
+def test_fixed_goal_does_not_open_hover_gate_with_residual_speed():
+    calls = []
+    state = SimpleNamespace(
+        pose=SimpleNamespace(pose=SimpleNamespace(position=SimpleNamespace(
+            x=49.5, y=50.0))),
+        _route_goal_local=lambda **_kwargs: np.array([50.0, 50.0]),
+        _range_to=lambda _goal: 0.5,
+        cruise_arrive=1.0,
+        _route_arrival_safe=lambda **_kwargs: True,
+        _route_settled=lambda: False,
+        _now=lambda: 1.0,
+        _t_phase=0.0,
+        route_timeout=300.0,
+        _takeoff_target=lambda: 5.0,
+        _alt=lambda: 5.0,
+        climb_speed=0.7,
+        _route_mpc_command=lambda: (True, 0.0),
+        _hold=lambda *_args: calls.append('hold'),
+        _due=lambda *_args: False,
+        _route_map_info=SimpleNamespace(mission_goal_xy=(50.0, 50.0)),
+        cruise_log_period=3.0,
+        get_logger=lambda: _Logger(),
+        _to=lambda phase: calls.append(phase),
+    )
+    ArucoLandingNode._mission_to_goal(state)
+    assert Phase.HOVER not in calls
+    state._route_settled = lambda: True
+    ArucoLandingNode._mission_to_goal(state)
+    assert Phase.HOVER in calls
+
+
+def test_hover_keeps_the_terminal_tracking_mpc_reference():
+    calls = []
+    state = SimpleNamespace(
+        phase=Phase.HOVER,
+        planned_cruise=True,
+        _drain_stdin_commands=lambda: None,
+        _publish_state=lambda: None,
+        _route_mpc_command=lambda: calls.append('tracking_mpc') or (True, 0.0),
+        _hold=lambda: calls.append('hold'),
+        _announce=lambda: calls.append('announce'),
+    )
+    ArucoLandingNode._tick(state)
+    assert calls == ['tracking_mpc', 'announce']
+
+
+def test_route_settle_uses_full_measured_velocity():
+    state = SimpleNamespace(
+        _now=lambda: 10.0,
+        velocity=SimpleNamespace(twist=SimpleNamespace(linear=SimpleNamespace(
+            x=0.1, y=0.1, z=0.1))),
+        velocity_t=10.0,
+        velocity_rx_t=10.0,
+        route_state_timeout=0.2,
+        route_sync_tolerance=0.1,
+        arrival_speed=0.2,
+    )
+    assert ArucoLandingNode._route_settled(state)
+    state.velocity.twist.linear.z = 0.2
+    assert not ArucoLandingNode._route_settled(state)
+    state.velocity.twist.linear.z = 0.0
+    state.velocity_rx_t = 9.79
+    assert not ArucoLandingNode._route_settled(state)
 
 
 def test_mpc_setpoint_precedes_completed_route_commit_work():

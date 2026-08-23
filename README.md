@@ -132,6 +132,8 @@ HEADLESS=1 ./simulation/gazebo/run_gimbal.sh mission
 
 - 경로 생성: A* → SFC → B-spline
 - 경로 추종: Wang과 같은 모델·비용함수의 `TrackingMPC`
+- 고정 목표 도착: 1 m 안에서 실측 속도 0.2 m/s 이하일 때만 HOVER로 전환하고,
+  HOVER 중에도 TrackingMPC 종단 참조로 `(50,50)` 유지. 경로 중 속도 감속 계층 아님
 - 착륙: 기존 실기체 검증 ArUco P 제어. 현재 속도 추정은 위치 차분 저역통과이며
   시뮬레이션의 KF는 실기체 검증 경로에 임의 이식하지 않음
 - 장애물 팽창: `vehicle_clearance_xy_m: 1.0`만 적용
