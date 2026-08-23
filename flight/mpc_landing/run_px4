@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # One command to bring up the real-flight stack on the Jetson: MAVROS on the
 # PX4 USB link, then the perception + mission launch. Everything the operator
-# needs is started here. The final trailer mission waits for the operator's
-# ordered TAKEOFF, MISSION and LAND words in this terminal.
+# needs is started here; the one thing left to a second terminal is the
+# approval, because arming is a human decision.
 #
 #   ./run_px4                 ArUco precision landing  (aruco_landing.launch.py)
-#   ./run_px4 trailer         the final real-aircraft mission: trailer GPS over
-#                             900 MHz; TAKEOFF -> fixed CJU (50,50) mission ->
-#                             LAND return -> proven ArUco P descent.
+#   ./run_px4 trailer         the final real-aircraft mission, on ONE approval:
+#                             arm -> planned route to the fixed CJU (50,50)
+#                             goal -> return to the trailer radioed over
+#                             900 MHz -> proven ArUco P descent.
 #   ./run_px4 mpc             MPC precision landing     (fixed_marker_landing)
 #   ./run_px4 naive           just MAVROS + the naive takeoff/land (no camera)
 #   ./run_px4 bench           GROUND REHEARSAL of the MPC mission's SEARCH:
@@ -24,7 +25,8 @@
 #   GATES=all ./run_px4 mpc                   approve takeoff and search too,
 #                                             not just the arm (mpc only)
 #
-# Release the currently waiting command / abort from another terminal:
+# Approve / abort from another terminal (under launch, ENTER does not reach the
+# node — see the launch docstrings):
 #
 #   ros2 run mpc_landing approve aruco_landing_node
 #   ros2 run mpc_landing abort   aruco_landing_node
@@ -33,14 +35,13 @@
 set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-LOCAL_SETUP="$REPO_ROOT/install/local_setup.bash"
 MODE="${1:-aruco}"
 
 case "$MODE" in
   aruco) MISSION_LAUNCH="aruco_landing.launch.py";        NODE="aruco_landing_node" ;;
   # The one final trailer stack: proven GPS and ArUco P landing around Wang's
-  # obstacle-aware geometry and TrackingMPC cruise.
+  # obstacle-aware geometry and TrackingMPC cruise. Approve the arm and the
+  # whole thing — route, goal, return, search, descent — runs on its own.
   trailer) MISSION_LAUNCH="aruco_landing.launch.py";      NODE="aruco_landing_node"
          TRAILER=1 ;;
   mpc)   MISSION_LAUNCH="fixed_marker_landing.launch.py"; NODE="mpc_landing_node" ;;
@@ -109,9 +110,9 @@ if [[ "$BENCH" == "1" ]]; then
   [[ ${#MISSION_ARGS[@]} -gt 0 ]] || MISSION_ARGS+=(--ros-args)
   MISSION_ARGS+=(-p bench_search:=true)
 fi
-# The mission node is started by THIS script, not by the launch (so its terminal
-# reads TAKEOFF/MISSION/LAND), which is why the launch's trailer:= argument
-# cannot configure it — staged planning is switched on here too.
+# The mission node is started by THIS script, not by the launch (so ENTER can
+# approve it), which is why the launch's trailer:= argument cannot configure it
+# — the planned route has to be switched on here as well as the nodes there.
 if [[ "$TRAILER" == "1" ]]; then
   [[ ${#MISSION_ARGS[@]} -gt 0 ]] || MISSION_ARGS+=(--ros-args)
   MISSION_ARGS+=(-p cruise_to_trailer:=true
@@ -145,45 +146,12 @@ if [[ "$NODE" == "mpc_landing_node" && "$BENCH" != "1" ]]; then
     MISSION_ARGS+=(-p auto_after_arm:=true)
   fi
 fi
-# A distro-level `ros2` command does not prove this clone is overlaid. Always
-# select PX4-ROS2-main's own install so an older PX4-ROS2 workspace can never
-# supply the flight node by accident.
-if [[ ! -r "$LOCAL_SETUP" ]]; then
-  echo "run_px4: this clone has not been built: $LOCAL_SETUP is missing" >&2
-  echo "         colcon build --symlink-install, then run this command again" >&2
-  exit 1
-fi
+# The environment is normally already set by .bashrc; source it ourselves only
+# if it is not, so this also works from cron/systemd (see flight_env.sh).
 if ! command -v ros2 >/dev/null 2>&1; then
   # shellcheck disable=SC1091
   source "$SCRIPT_DIR/flight_env.sh"
-else
-  # ROS setup scripts are not nounset-safe; restore this script's strict mode
-  # immediately afterwards.
-  set +u
-  # shellcheck disable=SC1090
-  source "$LOCAL_SETUP"
-  set -u
 fi
-
-REQUIRED_PACKAGES=(mpc_landing)
-if [[ -n "$MISSION_LAUNCH" ]]; then
-  REQUIRED_PACKAGES+=(aruco_landing siyi_gimbal)
-fi
-if [[ "$TRAILER" == "1" ]]; then
-  REQUIRED_PACKAGES+=(trailer_link path_plan landing_mpc)
-fi
-if [[ "$NODE" == "mpc_landing_node" ]]; then
-  REQUIRED_PACKAGES+=(landing_mpc)
-fi
-for package in "${REQUIRED_PACKAGES[@]}"; do
-  prefix="$(ros2 pkg prefix "$package" 2>/dev/null || true)"
-  case "$prefix" in
-    "$REPO_ROOT/install"|"$REPO_ROOT/install/"*) ;;
-    *) echo "run_px4: $package is not installed from $REPO_ROOT" >&2
-       echo "         rebuild this clone before flight" >&2
-       exit 1 ;;
-  esac
-done
 
 PIDS=()
 cleanup() {
@@ -246,7 +214,7 @@ fi
 
 # --- perception (background) + mission (foreground, so ENTER approves) ------
 # The mission node runs in the FOREGROUND under `ros2 run`, not under
-# `ros2 launch`, so it inherits this terminal's stdin and its word-command
+# `ros2 launch`, so it inherits this terminal's stdin and its ENTER-to-approve
 # prompt works. The perception stack (camera + detector + gimbal + tf) goes to
 # the background via the launch with mission:=false. NOT `exec`, so the cleanup
 # trap still fires on Ctrl-C and takes MAVROS and the perception nodes with it.
@@ -291,13 +259,10 @@ if [[ "$BENCH" == "1" ]]; then
   echo "run_px4: starting $NODE in BENCH SEARCH — no arm, no setpoint, no gate."
   echo "         The GIMBAL WILL MOVE. Props off. Ctrl-C stops everything."
 else
+  echo "run_px4: starting $NODE — approve HERE by pressing ENTER (n aborts),"
+  echo "         or from another terminal: ros2 run mpc_landing approve $NODE"
   if [[ "$TRAILER" == "1" ]]; then
-    echo "run_px4: starting staged trailer mission"
-    echo "         enter here in order: TAKEOFF -> MISSION -> LAND"
-    echo "         ABORT lands now; another terminal may use the approve helper"
-  else
-    echo "run_px4: starting $NODE — follow its terminal prompt"
-    echo "         or from another terminal: ros2 run mpc_landing approve $NODE"
+    echo "         ONE approval: arm -> CJU route -> trailer return -> descent"
   fi
   if [[ "$GNSS_CHECK" != "on" ]]; then
     echo "         GNSS preflight gate is OFF — PX4's own arm check still applies."

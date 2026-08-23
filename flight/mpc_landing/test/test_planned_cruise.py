@@ -436,33 +436,109 @@ def test_new_plan_requires_target_and_anchor_samples_to_be_synchronized():
             state, trailer_goal=True) or '')
 
 
-def test_operator_commands_are_ordered_takeoff_mission_land():
-    calls = []
+def _gate_state(calls, phase=Phase.READY_TO_ARM, blockers=()):
     state = SimpleNamespace(
-        phase=Phase.READY_TO_ARM,
+        phase=phase,
         planned_cruise=True,
         _route_map_info=SimpleNamespace(mission_goal_xy=(50.0, 50.0)),
-        _route_preflight=lambda: [],
+        _route_preflight=lambda: list(blockers),
         _return_preflight=lambda: [],
-        _to=lambda phase: calls.append(('phase', phase)),
-        _begin_route=lambda phase: calls.append(('phase', phase)),
+        _to=lambda new: calls.append(('phase', new)),
+        _begin_route=lambda new: calls.append(('phase', new)),
         _begin_return=lambda: calls.append(('return',)),
         _abort=lambda reason: calls.append(('abort', reason)),
     )
-    state._expected_command = lambda: ArucoLandingNode._expected_command(state)
+    state._approve = lambda: ArucoLandingNode._approve(state)
+    return state
 
-    ok, message = ArucoLandingNode._command(state, 'MISSION')
-    assert not ok and 'expected TAKEOFF' in message
-    assert ArucoLandingNode._command(state, 'takeoff')[0]
+
+def test_the_arm_is_the_only_gate():
+    calls = []
+    state = _gate_state(calls)
+    ok, message = ArucoLandingNode._approve(state)
+    assert ok and calls[-1] == ('phase', Phase.ARMING)
+    assert 'arming' in message
+
+    # Every later phase used to be a gate with its own word. None is now, so
+    # approving there is a mistake to report, not a transition to make.
+    for phase in (Phase.READY, Phase.HOVER, Phase.MISSION, Phase.SEARCH):
+        state.phase = phase
+        before = list(calls)
+        ok, message = ArucoLandingNode._approve(state)
+        assert not ok and 'not a gate' in message
+        assert calls == before
+
+
+def test_bare_enter_approves_and_abort_words_land():
+    calls = []
+    state = _gate_state(calls)
+    assert ArucoLandingNode._command(state, '')[0]
     assert calls[-1] == ('phase', Phase.ARMING)
 
-    state.phase = Phase.READY
-    assert ArucoLandingNode._command(state, 'MISSION')[0]
-    assert calls[-1] == ('phase', Phase.MISSION_PLAN)
+    for word in ('ABORT', 'abort', 'n', 'NO'):
+        state.phase = Phase.MISSION
+        ok, _message = ArucoLandingNode._command(state, word)
+        assert ok and calls[-1][0] == 'abort'
 
-    state.phase = Phase.HOVER
-    assert ArucoLandingNode._command(state, 'land')[0]
-    assert calls[-1] == ('return',)
+
+def test_a_route_that_changed_since_precheck_blocks_the_arm():
+    calls = []
+    state = _gate_state(calls, blockers=['route map is not certified'])
+    ok, message = ArucoLandingNode._approve(state)
+    assert not ok and 'route changed since PRECHECK' in message
+    assert calls == []
+
+
+def test_ready_starts_the_mission_leg_without_an_operator():
+    calls = []
+    state = SimpleNamespace(
+        phase=Phase.READY,
+        planned_cruise=True,
+        _drain_stdin_commands=lambda: None,
+        _publish_state=lambda: None,
+        _send=lambda *_args: None,
+        _route_update=lambda: None,
+        _hold=lambda *_args: calls.append('hold'),
+        _route_preflight=lambda: [],
+        _route_map_info=SimpleNamespace(mission_goal_xy=(50.0, 50.0)),
+        takeoff_alt=5.0,
+        _now=lambda: 1.0,
+        _t_phase=0.0,
+        route_timeout=300.0,
+        get_logger=lambda: _Logger(),
+        _begin_route=lambda phase: calls.append(('phase', phase)),
+        _begin_return=lambda: calls.append(('return',)),
+        _to=lambda phase: calls.append(('phase', phase)),
+    )
+    ArucoLandingNode._tick(state)
+    assert ('phase', Phase.MISSION_PLAN) in calls
+
+
+def test_ready_gives_up_the_mission_leg_forward_not_backward():
+    calls = []
+    state = SimpleNamespace(
+        phase=Phase.READY,
+        planned_cruise=True,
+        _drain_stdin_commands=lambda: None,
+        _publish_state=lambda: None,
+        _send=lambda *_args: None,
+        _route_update=lambda: None,
+        _hold=lambda *_args: calls.append('hold'),
+        _route_preflight=lambda: ['no certified route'],
+        _route_map_info=SimpleNamespace(mission_goal_xy=(50.0, 50.0)),
+        takeoff_alt=5.0,
+        _now=lambda: 400.0,
+        _t_phase=0.0,
+        route_timeout=300.0,
+        get_logger=lambda: _Logger(),
+        _begin_route=lambda phase: calls.append(('phase', phase)),
+        _begin_return=lambda: calls.append(('return',)),
+        _to=lambda phase: calls.append(('phase', phase)),
+    )
+    ArucoLandingNode._tick(state)
+    # Forward to the landing, never back to a phase that re-enters planning.
+    assert ('return',) in calls
+    assert ('phase', Phase.MISSION_PLAN) not in calls
 
 
 def test_terminal_thread_queues_instead_of_changing_flight_state(monkeypatch):
@@ -536,7 +612,7 @@ def test_takeoff_waits_until_velocity_is_settled():
     assert 'hold' in calls and Phase.READY not in calls
 
 
-def test_fixed_goal_does_not_open_hover_gate_with_residual_speed():
+def test_fixed_goal_does_not_hand_over_with_residual_speed():
     calls = []
     state = SimpleNamespace(
         pose=SimpleNamespace(pose=SimpleNamespace(position=SimpleNamespace(
@@ -567,7 +643,7 @@ def test_fixed_goal_does_not_open_hover_gate_with_residual_speed():
     assert Phase.HOVER in calls
 
 
-def test_hover_keeps_the_terminal_tracking_mpc_reference():
+def test_hover_keeps_the_tracking_mpc_reference_and_returns_by_itself():
     calls = []
     state = SimpleNamespace(
         phase=Phase.HOVER,
@@ -576,10 +652,24 @@ def test_hover_keeps_the_terminal_tracking_mpc_reference():
         _publish_state=lambda: None,
         _route_mpc_command=lambda: calls.append('tracking_mpc') or (True, 0.0),
         _hold=lambda: calls.append('hold'),
-        _announce=lambda: calls.append('announce'),
+        _return_preflight=lambda: [],
+        _now=lambda: 1.0,
+        _t_phase=0.0,
+        trailer_lost_search=10.0,
+        get_logger=lambda: _Logger(),
+        _begin_return=lambda: calls.append('return'),
+        _to=lambda phase: calls.append(phase),
     )
     ArucoLandingNode._tick(state)
-    assert calls == ['tracking_mpc', 'announce']
+    assert calls == ['tracking_mpc', 'return']
+
+    # The trailer link is the one thing it waits on, and only for as long as a
+    # lost target is tolerated anywhere else — then it lands where it is.
+    calls.clear()
+    state._return_preflight = lambda: ['no trailer fix']
+    state._now = lambda: 100.0
+    ArucoLandingNode._tick(state)
+    assert Phase.LAND in calls
 
 
 def test_route_settle_uses_full_measured_velocity():
