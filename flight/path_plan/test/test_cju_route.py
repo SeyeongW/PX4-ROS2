@@ -43,6 +43,7 @@ def test_wang_spawn_rotation_sign_and_round_trip():
     assert info.horizontal_accuracy == 'osm_scale_visual_not_survey_grade'
     assert not info.hardware_flight_approved
     assert info.vehicle_clearance_m == pytest.approx(1.0)
+    assert info.mission_goal_xy == (50.0, 50.0)
 
 
 def test_quoted_false_cannot_approve_a_hardware_map(tmp_path):

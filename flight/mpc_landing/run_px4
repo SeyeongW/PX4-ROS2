@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # One command to bring up the real-flight stack on the Jetson: MAVROS on the
 # PX4 USB link, then the perception + mission launch. Everything the operator
-# needs is started here; the one thing left to a second terminal is the
-# approval, because arming is a human decision.
+# needs is started here. The final trailer mission waits for the operator's
+# ordered TAKEOFF, MISSION and LAND words in this terminal.
 #
 #   ./run_px4                 ArUco precision landing  (aruco_landing.launch.py)
 #   ./run_px4 trailer         the final real-aircraft mission: trailer GPS over
-#                             the 900 MHz radio -> A* -> SFC -> B-spline ->
-#                             TrackingMPC cruise -> proven ArUco P descent.
+#                             900 MHz; TAKEOFF -> fixed CJU (50,50) mission ->
+#                             LAND return -> proven ArUco P descent.
 #   ./run_px4 mpc             MPC precision landing     (fixed_marker_landing)
 #   ./run_px4 naive           just MAVROS + the naive takeoff/land (no camera)
 #   ./run_px4 bench           GROUND REHEARSAL of the MPC mission's SEARCH:
@@ -24,8 +24,7 @@
 #   GATES=all ./run_px4 mpc                   approve takeoff and search too,
 #                                             not just the arm (mpc only)
 #
-# Approve / abort from another terminal (under launch, ENTER does not reach the
-# node — see the launch docstrings):
+# Release the currently waiting command / abort from another terminal:
 #
 #   ros2 run mpc_landing approve aruco_landing_node
 #   ros2 run mpc_landing abort   aruco_landing_node
@@ -110,9 +109,9 @@ if [[ "$BENCH" == "1" ]]; then
   [[ ${#MISSION_ARGS[@]} -gt 0 ]] || MISSION_ARGS+=(--ros-args)
   MISSION_ARGS+=(-p bench_search:=true)
 fi
-# The mission node is started by THIS script, not by the launch (so ENTER can
-# approve it), which is why the launch's trailer:= argument cannot reach it —
-# the CRUISE phase has to be switched on here as well as the nodes there.
+# The mission node is started by THIS script, not by the launch (so its terminal
+# reads TAKEOFF/MISSION/LAND), which is why the launch's trailer:= argument
+# cannot configure it — staged planning is switched on here too.
 if [[ "$TRAILER" == "1" ]]; then
   [[ ${#MISSION_ARGS[@]} -gt 0 ]] || MISSION_ARGS+=(--ros-args)
   MISSION_ARGS+=(-p cruise_to_trailer:=true
@@ -128,12 +127,11 @@ if [[ "$TRAILER" == "1" ]]; then
     echo "run_px4: route map approval gate active (ROUTE_MAP_APPROVED is not 1)"
   fi
 fi
-# --- ONE approval per flight, on the mpc path ------------------------------
-# aruco_landing_node has always had exactly one gate: approve the ARM and the
-# rest of the mission runs. mpc_landing_node instead stops again after arming
+# --- legacy mpc_landing_node gates ------------------------------------------
+# mpc_landing_node stops again after arming
 # and again at altitude, which means an armed airframe sitting on the pad with
-# live props waiting for a keystroke — the state you least want to extend. So
-# the mpc modes are brought into line with the aruco one here.
+# live props waiting for a keystroke — the state you least want to extend. This
+# option belongs only to the standalone mpc_landing_node modes.
 #
 # The ARM approval is NOT affected and cannot be: mission.AUTO_RELEASABLE does
 # not contain it. `abort` still lands the vehicle from any phase.
@@ -248,7 +246,7 @@ fi
 
 # --- perception (background) + mission (foreground, so ENTER approves) ------
 # The mission node runs in the FOREGROUND under `ros2 run`, not under
-# `ros2 launch`, so it inherits this terminal's stdin and its ENTER-to-approve
+# `ros2 launch`, so it inherits this terminal's stdin and its word-command
 # prompt works. The perception stack (camera + detector + gimbal + tf) goes to
 # the background via the launch with mission:=false. NOT `exec`, so the cleanup
 # trap still fires on Ctrl-C and takes MAVROS and the perception nodes with it.
@@ -293,8 +291,14 @@ if [[ "$BENCH" == "1" ]]; then
   echo "run_px4: starting $NODE in BENCH SEARCH — no arm, no setpoint, no gate."
   echo "         The GIMBAL WILL MOVE. Props off. Ctrl-C stops everything."
 else
-  echo "run_px4: starting $NODE — approve HERE by pressing ENTER (n aborts),"
-  echo "         or from another terminal: ros2 run mpc_landing approve $NODE"
+  if [[ "$TRAILER" == "1" ]]; then
+    echo "run_px4: starting staged trailer mission"
+    echo "         enter here in order: TAKEOFF -> MISSION -> LAND"
+    echo "         ABORT lands now; another terminal may use the approve helper"
+  else
+    echo "run_px4: starting $NODE — follow its terminal prompt"
+    echo "         or from another terminal: ros2 run mpc_landing approve $NODE"
+  fi
   if [[ "$GNSS_CHECK" != "on" ]]; then
     echo "         GNSS preflight gate is OFF — PX4's own arm check still applies."
   fi

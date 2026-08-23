@@ -1,4 +1,7 @@
+import io
 import multiprocessing
+import queue
+import sys
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
@@ -117,20 +120,43 @@ def test_route_timeout_is_separate_from_the_proven_trailer_timeout():
     assert ('phase', Phase.LAND) in trailer_calls
 
 
-def test_nearby_target_still_needs_an_exact_safe_chord():
+def test_nearby_mission_goal_still_needs_an_exact_safe_chord():
     state = SimpleNamespace(
         planned_cruise=True,
         _route_map_info=SimpleNamespace(
             hardware_flight_approved=True,
-            horizontal_accuracy='surveyed'),
+            horizontal_accuracy='surveyed', mission_goal_xy=(50.0, 50.0)),
         allow_unapproved_route_map=False,
-        _route_input_reason=lambda: None,
-        _target_range=lambda: 0.5,
+        _route_input_reason=lambda **_kwargs: None,
+        _route_goal_local=lambda **_kwargs: np.array([0.5, 0.0]),
+        _range_to=lambda _goal: 0.5,
         cruise_arrive=1.0,
-        _route_arrival_safe=lambda: False,
+        _route_endpoint_reason=lambda **_kwargs: None,
+        _route_arrival_safe=lambda **_kwargs: False,
     )
     assert ArucoLandingNode._route_preflight(state) == [
-        'nearby trailer chord or endpoint is outside the certified map clearance']
+        'nearby mission-goal chord or endpoint is outside the certified map clearance']
+
+
+def test_return_arrival_uses_the_live_nearby_target_not_an_old_route_endpoint():
+    state = SimpleNamespace(
+        planned_cruise=True,
+        phase=Phase.RETURN,
+        _route_flight_health_reason=lambda: None,
+        _route_uses_trailer_goal=lambda: True,
+        _route_goal_local=lambda **_kwargs: np.array([0.5, 0.0]),
+        _fresh_target=lambda: True,
+        _range_to=lambda _goal: 0.5,
+        cruise_arrive=1.0,
+        pose=SimpleNamespace(pose=SimpleNamespace(position=SimpleNamespace(
+            x=0.0, y=0.0))),
+        _route_active=(
+            object(), np.zeros(2), np.array([20.0, 0.0]), 1, 0.0),
+        _route_lib=SimpleNamespace(segment_is_free=lambda *_args: True),
+        route_map_yaml='map.yaml',
+    )
+    assert ArucoLandingNode._route_arrival_safe(
+        state, trailer_goal=True)
 
 
 def test_unapproved_map_needs_the_explicit_route_override():
@@ -138,17 +164,56 @@ def test_unapproved_map_needs_the_explicit_route_override():
         planned_cruise=True,
         _route_map_info=SimpleNamespace(
             hardware_flight_approved=False,
-            horizontal_accuracy='not surveyed'),
+            horizontal_accuracy='not surveyed', mission_goal_xy=(50.0, 50.0)),
         allow_unapproved_route_map=False,
-        _route_input_reason=lambda: None,
-        _target_range=lambda: 0.5,
+        _route_input_reason=lambda **_kwargs: None,
+        _route_goal_local=lambda **_kwargs: np.array([0.5, 0.0]),
+        _range_to=lambda _goal: 0.5,
         cruise_arrive=1.0,
-        _route_arrival_safe=lambda: True,
+        _route_endpoint_reason=lambda **_kwargs: None,
+        _route_arrival_safe=lambda **_kwargs: True,
     )
     assert 'not hardware-flight-approved' in (
         ArucoLandingNode._route_preflight(state)[0])
     state.allow_unapproved_route_map = True
     assert ArucoLandingNode._route_preflight(state) == []
+
+
+def test_far_mission_goal_is_planned_after_mission_not_during_precheck():
+    state = SimpleNamespace(
+        planned_cruise=True,
+        _route_map_info=SimpleNamespace(
+            hardware_flight_approved=True,
+            horizontal_accuracy='surveyed', mission_goal_xy=(50.0, 50.0)),
+        allow_unapproved_route_map=False,
+        _route_input_reason=lambda **_kwargs: None,
+        _route_goal_local=lambda **_kwargs: np.array([50.0, 50.0]),
+        _range_to=lambda _goal: 70.0,
+        cruise_arrive=1.0,
+        _route_endpoint_reason=lambda **_kwargs: None,
+    )
+    assert ArucoLandingNode._route_preflight(state) == []
+
+
+def test_precheck_rejects_a_goal_outside_the_hard_clearance_map():
+    checked = []
+
+    def segment(_map, _origin, start, goal):
+        checked.append((np.asarray(start), np.asarray(goal)))
+        return len(checked) == 1
+
+    state = SimpleNamespace(
+        pose=SimpleNamespace(pose=SimpleNamespace(position=SimpleNamespace(
+            x=1.0, y=2.0))),
+        _route_synchronized_site_origin=lambda: np.zeros(2),
+        _route_goal_local=lambda **_kwargs: np.array([50.0, 50.0]),
+        _route_lib=SimpleNamespace(segment_is_free=segment),
+        route_map_yaml='map.yaml',
+    )
+    assert 'goal is blocked' in (
+        ArucoLandingNode._route_endpoint_reason(
+            state, trailer_goal=False) or '')
+    assert len(checked) == 2
 
 
 def test_route_flight_health_rejects_inaccurate_absolute_gps():
@@ -309,6 +374,47 @@ def test_route_target_freshness_uses_source_and_receipt_time():
     assert ArucoLandingNode._fresh_target(state)
 
 
+def test_fixed_map_goal_is_converted_to_local_enu_not_used_as_local_xy():
+    rotation = rotation_for_heading(30.0)
+    origin = np.array([12.0, -7.0])
+    state = SimpleNamespace(
+        phase=Phase.PRECHECK,
+        target=np.array([999.0, 999.0, 0.0]),
+        _route_uses_trailer_goal=lambda: False,
+        _route_synchronized_site_origin=lambda: origin,
+        _route_lib=SimpleNamespace(map_to_local=map_to_local),
+        _route_map_info=SimpleNamespace(mission_goal_xy=(50.0, 50.0)),
+        _route_rotation=rotation,
+    )
+    goal = ArucoLandingNode._route_goal_local(state, trailer_goal=False)
+    assert np.allclose(goal, map_to_local([50.0, 50.0], origin, rotation))
+    assert not np.allclose(goal, state.target[:2])
+    state.phase = Phase.RETURN_PLAN
+    state._route_uses_trailer_goal = (
+        lambda: ArucoLandingNode._route_uses_trailer_goal(state))
+    assert np.allclose(ArucoLandingNode._route_goal_local(state), [999.0, 999.0])
+
+
+def test_fixed_mission_route_does_not_require_a_trailer_target_timestamp():
+    state = SimpleNamespace(
+        _route_flight_health_reason=lambda: None,
+        _now=lambda: 3.0,
+        vehicle_fix=SimpleNamespace(
+            status=SimpleNamespace(status=0), latitude=36.0, longitude=127.0),
+        vehicle_fix_t=3.0,
+        vehicle_fix_rx_t=3.0,
+        route_gps_timeout=3.0,
+        route_sync_tolerance=0.1,
+        route_vehicle_fix_topic='/mavros/global_position/global',
+        _route_synchronized_site_origin=lambda: np.zeros(2),
+        _route_goal_local=lambda **_kwargs: np.array([50.0, 50.0]),
+        pose=SimpleNamespace(pose=SimpleNamespace(position=SimpleNamespace(
+            x=0.0, y=0.0))),
+    )
+    assert ArucoLandingNode._route_input_reason(
+        state, trailer_goal=False) is None
+
+
 def test_new_plan_requires_target_and_anchor_samples_to_be_synchronized():
     state = SimpleNamespace(
         _route_flight_health_reason=lambda: None,
@@ -326,7 +432,139 @@ def test_new_plan_requires_target_and_anchor_samples_to_be_synchronized():
         _fresh_target=lambda: True,
     )
     assert 'trailer target are not time-aligned' in (
-        ArucoLandingNode._route_input_reason(state) or '')
+        ArucoLandingNode._route_input_reason(
+            state, trailer_goal=True) or '')
+
+
+def test_operator_commands_are_ordered_takeoff_mission_land():
+    calls = []
+    state = SimpleNamespace(
+        phase=Phase.READY_TO_ARM,
+        planned_cruise=True,
+        _route_map_info=SimpleNamespace(mission_goal_xy=(50.0, 50.0)),
+        _route_preflight=lambda: [],
+        _return_preflight=lambda: [],
+        _to=lambda phase: calls.append(('phase', phase)),
+        _begin_route=lambda phase: calls.append(('phase', phase)),
+        _begin_return=lambda: calls.append(('return',)),
+        _abort=lambda reason: calls.append(('abort', reason)),
+    )
+    state._expected_command = lambda: ArucoLandingNode._expected_command(state)
+
+    ok, message = ArucoLandingNode._command(state, 'MISSION')
+    assert not ok and 'expected TAKEOFF' in message
+    assert ArucoLandingNode._command(state, 'takeoff')[0]
+    assert calls[-1] == ('phase', Phase.ARMING)
+
+    state.phase = Phase.READY
+    assert ArucoLandingNode._command(state, 'MISSION')[0]
+    assert calls[-1] == ('phase', Phase.MISSION_PLAN)
+
+    state.phase = Phase.HOVER
+    assert ArucoLandingNode._command(state, 'land')[0]
+    assert calls[-1] == ('return',)
+
+
+def test_terminal_thread_queues_instead_of_changing_flight_state(monkeypatch):
+    commands = queue.SimpleQueue()
+    state = SimpleNamespace(_stdin_commands=commands)
+    monkeypatch.setattr(sys, 'stdin', io.StringIO('LAND\n'))
+    ArucoLandingNode._stdin_loop(state)
+    assert commands.get_nowait() == 'LAND'
+
+
+def test_land_discards_the_fixed_route_before_return_planning():
+    calls = []
+    state = SimpleNamespace(
+        _route_active=object(),
+        _route_pending=object(),
+        _route_progress=12.0,
+        _route_last_request_t=10.0,
+        _route_last_error='old',
+        _plan_future=None,
+        _reset_path_mpc=lambda: calls.append('reset'),
+        _to=lambda phase: calls.append(phase),
+    )
+    ArucoLandingNode._begin_route(state, Phase.RETURN_PLAN)
+    assert state._route_active is None and state._route_pending is None
+    assert state._route_progress == 0.0
+    assert state._route_last_request_t == float('-inf')
+    assert calls == ['reset', Phase.RETURN_PLAN]
+
+
+def test_takeoff_reaches_ready_without_flying_to_the_trailer():
+    calls = []
+    state = SimpleNamespace(
+        phase=Phase.TAKEOFF,
+        planned_cruise=True,
+        _drain_stdin_commands=lambda: None,
+        _publish_state=lambda: None,
+        _send=lambda *_args: calls.append(('setpoint',)),
+        _route_update=lambda: None,
+        _takeoff_target=lambda: 5.0,
+        _alt=lambda: 5.0,
+        alt_tol=0.3,
+        climb_speed=0.7,
+        _hold=lambda *_args: calls.append(('hold',)),
+        _to=lambda phase: calls.append(('phase', phase)),
+    )
+    ArucoLandingNode._tick(state)
+    assert ('phase', Phase.READY) in calls
+    assert ('phase', Phase.RETURN) not in calls
+    assert ('phase', Phase.CRUISE) not in calls
+
+
+def test_mpc_setpoint_precedes_completed_route_commit_work():
+    calls = []
+    state = SimpleNamespace(
+        phase=Phase.MISSION,
+        planned_cruise=True,
+        _drain_stdin_commands=lambda: None,
+        _publish_state=lambda: None,
+        _mission_to_goal=lambda: calls.append('setpoint'),
+        _route_update=lambda: calls.append('route_update'),
+    )
+    ArucoLandingNode._tick(state)
+    assert calls == ['setpoint', 'route_update']
+
+
+def test_return_planning_timeout_lands_instead_of_hovering_forever():
+    calls = []
+    state = SimpleNamespace(
+        phase=Phase.RETURN_PLAN,
+        planned_cruise=True,
+        _drain_stdin_commands=lambda: None,
+        _publish_state=lambda: None,
+        _send=lambda *_args: calls.append('heartbeat'),
+        _route_update=lambda: None,
+        _hold=lambda: calls.append('hold'),
+        _route_goal_range=lambda **_kwargs: 20.0,
+        _route_arrival_safe=lambda **_kwargs: False,
+        _route_active=None,
+        cruise_arrive=1.0,
+        _fresh_target=lambda: True,
+        _now=lambda: 301.0,
+        _t_phase=0.0,
+        trailer_lost_search=10.0,
+        route_timeout=300.0,
+        get_logger=lambda: _Logger(),
+        _to=lambda phase: calls.append(phase),
+    )
+    ArucoLandingNode._tick(state)
+    assert Phase.LAND in calls
+
+
+def test_phase_reentry_restores_the_operator_prompt():
+    state = SimpleNamespace(
+        phase=Phase.MISSION,
+        _prompted=Phase.READY.value,
+        _announced=Phase.READY.value,
+        _now=lambda: 10.0,
+        planned_cruise=False,
+        get_logger=lambda: _Logger(),
+    )
+    ArucoLandingNode._to(state, Phase.READY)
+    assert state._prompted == state._announced == ''
 
 
 def test_route_worker_is_spawn_safe():
@@ -447,6 +685,67 @@ def test_integration_accepts_jo_axiswise_velocity_contract():
     assert np.linalg.norm(sent[0][:2]) > 1.5
 
 
+def test_trailer_velocity_braking_is_used_only_on_the_return_leg():
+    captured = {}
+
+    def horizon(*_args, **kwargs):
+        captured.update(kwargs)
+        return np.zeros((2, 3)), np.zeros((2, 3))
+
+    result = SimpleNamespace(
+        success=True,
+        predicted_pos=np.zeros((2, 3)),
+        predicted_vel=np.zeros((2, 3)),
+        predicted_acc=np.zeros((2, 3)),
+    )
+    path_reference = SimpleNamespace(
+        lead=0.1,
+        set_plan=lambda *_args: None,
+        ready=lambda: True,
+        sample=lambda _elapsed: (np.zeros(3), np.zeros(3), np.zeros(3)),
+    )
+    plan = SimpleNamespace(
+        arc_m=np.array([0.0, 1.0]),
+        path_local_xy=np.array([[0.0, 0.0], [1.0, 0.0]]),
+    )
+    state = SimpleNamespace(
+        _route_carrot=lambda: (np.zeros(2), 0.0),
+        pose=SimpleNamespace(pose=SimpleNamespace(position=SimpleNamespace(
+            x=0.0, y=0.0))),
+        velocity=SimpleNamespace(twist=SimpleNamespace(
+            linear=SimpleNamespace(x=0.0, y=0.0, z=0.0))),
+        _path_mpc=SimpleNamespace(
+            dt=0.1, N=2, j_max=2.0,
+            solve=lambda *_args, **_kwargs: result),
+        _path_reference=path_reference,
+        _route_active=(plan,),
+        _alt=lambda: 5.0,
+        _takeoff_target=lambda: 5.0,
+        _now=lambda: 1.0,
+        _path_last_solve_t=None,
+        _path_solve_t=None,
+        _path_reference_horizon=horizon,
+        cruise_v_max=1.5,
+        cruise_accel=0.5,
+        _route_progress=0.0,
+        _route_uses_trailer_goal=lambda: False,
+        _route_goal_range=lambda: 20.0,
+        _target_velocity=SimpleNamespace(v=np.array([0.7, 0.0])),
+        _last_mpc_acceleration=np.zeros(3),
+        _route_prediction_is_safe=lambda _positions: True,
+        _reset_path_mpc=lambda: None,
+        _send_pva=lambda *_args: True,
+    )
+    assert ArucoLandingNode._route_mpc_command(state)[0]
+    assert captured['target_velocity_xy'] is None
+
+    state._route_uses_trailer_goal = lambda: True
+    state._path_last_solve_t = None
+    captured.clear()
+    assert ArucoLandingNode._route_mpc_command(state)[0]
+    assert np.allclose(captured['target_velocity_xy'], [0.7, 0.0])
+
+
 def test_planned_trailer_descend_uses_proven_p_controller():
     calls = []
     state = SimpleNamespace(_descend_p=lambda: calls.append('p'))
@@ -489,6 +788,7 @@ def _arming_state(*, armed, preflight_ok):
     state = SimpleNamespace(
         phase=Phase.ARMING,
         planned_cruise=False,
+        _drain_stdin_commands=lambda: None,
         state=SimpleNamespace(armed=armed, mode='OFFBOARD'),
         _publish_state=lambda: None,
         _send=lambda *_args: calls.append(('setpoint',)),

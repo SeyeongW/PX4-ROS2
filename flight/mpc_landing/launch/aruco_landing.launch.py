@@ -4,8 +4,9 @@
 
 The perception half is identical to `fixed_marker_landing.launch.py` — the same
 proven camera + detector + frame chain — only the mission node is swapped.
-`run_px4 trailer` adds A* -> SFC -> B-spline and TrackingMPC cruise, then retains
-the proven proportional ArUco descent in the same MAVROS authority.
+`run_px4 trailer` adds the staged TAKEOFF -> fixed CJU goal -> LAND return flow.
+Both long legs use A* -> SFC -> B-spline and TrackingMPC; final descent retains
+the proven proportional ArUco controller in the same MAVROS authority.
 
 Starts, in this order:
 
@@ -17,12 +18,12 @@ Starts, in this order:
                        publishes nothing — see fixed_marker_landing.launch.py)
     aruco_landing_node the gated mission: takeoff -> search -> centre-and-descend
 
-GOING TO A TRAILER FIRST
-------------------------
+LEGACY DIRECT TRAILER LAUNCH
+----------------------------
     ros2 launch mpc_landing aruco_landing.launch.py trailer:=true
 
-adds the two-node trailer link and turns the mission's CRUISE phase on, so it
-flies to the trailer's radioed coordinate before it starts looking:
+adds the two-node trailer link and turns the legacy direct CRUISE phase on. The
+final staged real-aircraft entry point is `./run_px4 trailer`:
 
     trailer_gps_node    900 MHz MAVLink radio -> /trailer/fix
     trailer_target_node /trailer/fix + the vehicle's own fix -> /trailer/target_local
@@ -35,10 +36,11 @@ MAVROS is NOT started here — its fcu_url depends on the companion wiring:
 
     ros2 launch mavros px4.launch fcu_url:=/dev/ttyACM0:921600
 
-APPROVING THE ONE GATE
-----------------------
+APPROVING THE COMMAND GATES
+---------------------------
 `ros2 launch` does not forward stdin, so the node's ENTER prompt is inert under
-launch. Approve from a second terminal:
+launch. Release the currently waiting TAKEOFF, MISSION or LAND gate from a
+second terminal:
 
     ros2 topic echo /aruco_landing_node/state   # what it is waiting for
     ros2 run mpc_landing approve aruco_landing_node

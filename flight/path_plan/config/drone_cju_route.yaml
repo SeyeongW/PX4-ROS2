@@ -3,8 +3,9 @@
 # IMPORTANT: the transform and planner are testable, but this snapshot is not a
 # props-on safety map. The origin/heading came from OSM-scale alignment and the
 # 25 barriers are the simulation layout, not a field survey. Set
-# hardware_flight_approved true only after measuring the origin, heading and
-# every obstacle in the physical test area and confirming the map alignment.
+# hardware_flight_approved true only after measuring the origin, heading,
+# allowed terrain bounds and every obstacle, then checking the launch point,
+# goal and complete route in the physical test area.
 schema_version: 1
 
 site:
@@ -22,6 +23,7 @@ terrain:
 
 mission:
   coordinate_frame: stadium_endpoint
+  goal_m: [50, 50]
   cruise_altitude_m: 5.0
   planner_resolution_m: 1.0
   vehicle_clearance_xy_m: 1.0

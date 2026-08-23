@@ -5,26 +5,31 @@ real airframe (MAVROS wired, PX4 accepts OFFBOARD, the vehicle climbs, holds and
 lands).  This node keeps that exact skeleton and adds ONE thing: it descends
 onto an ArUco marker instead of landing where it took off.
 
-    PRECHECK ─approve─► ARM ─► TAKEOFF ─► CRUISE ─► SEARCH ─► DESCEND ─► LAND ─► DONE
-                                             │         │ marker acquired  │
-                                             │         └── timeout ───────┘► LAND
-                                             └── (off unless cruise_to_trailer)
+    PRECHECK ─TAKEOFF─► ARM ─► TAKEOFF ─► READY
+                                           │ MISSION
+                                           ▼
+                MISSION_PLAN ─► MISSION ─► map (50,50) HOVER
+                                                   │ LAND
+                                                   ▼
+        DONE ◄─ LAND ◄─ P DESCEND ◄─ SEARCH ◄─ RETURN ◄─ RETURN_PLAN
 
-GOING TO THE TRAILER FIRST
---------------------------
-With `cruise_to_trailer` the mission flies to a GNSS coordinate before it starts
-looking: `trailer_target_node` turns the trailer's radioed lat/lon into a point
-in this vehicle's own local ENU frame (`/trailer/target_local`), and CRUISE
-drives to it at cruise altitude.  GNSS gets the trailer INTO THE CAMERA'S FRAME
+FIXED GOAL FIRST, THEN THE TRAILER
+----------------------------------
+With `cruise_to_trailer` the staged mission first flies to the configured CJU
+map goal and holds. Only after the operator enters LAND does
+`trailer_target_node` turn the trailer's radioed lat/lon into a point in this
+vehicle's own local ENU frame (`/trailer/target_local`) and RETURN drive to it.
+GNSS gets the trailer INTO THE CAMERA'S FRAME
 and nothing more — two receivers disagree by a metre or two, and the trailer's
 antenna is not its marker — so the moment the marker is acquired, vision takes
 over completely and the coordinate is never used again.  That handover is the
 whole design: coarse where coarse is enough, vision where it is not.
 
 `planned_cruise` is the hardware integration of Wang's route mission. It runs
-the exact-checked A* -> SFC -> B-spline geometry with Wang's TrackingMPC in
-CRUISE, then hands marker centring and descent to the existing proportional
-ArUco controller. All PX4 I/O remains on this node's MAVROS publisher.
+the exact-checked A* -> SFC -> B-spline geometry with Wang's TrackingMPC in both
+MISSION and RETURN, then hands marker centring and descent to the existing
+proportional ArUco controller. All PX4 I/O remains on this node's MAVROS
+publisher.
 
 SEARCH keeps station over the coordinate rather than over a fixed patch of
 ground, so a trailer that rolls a few metres while the detector is settling stays
@@ -78,10 +83,12 @@ The MAVROS discipline is lifted verbatim from `naive_flight_node`: BEST_EFFORT
 sensor QoS, stream→mode→arm order, keeping the stream alive through the gate,
 ground-gated disarm, and confirming every change from telemetry.
 
-    ros2 run mpc_landing aruco_landing_node          # ENTER approves at the gate
+    ros2 run mpc_landing aruco_landing_node          # type TAKEOFF/MISSION/LAND
 
-Under `ros2 launch` stdin is not a terminal, so approve over the service:
+Under `ros2 launch` stdin is not a terminal, so publish the command or release
+the currently waiting gate through the compatibility service:
 
+    ros2 topic pub --once /aruco_landing_node/command std_msgs/msg/String "{data: TAKEOFF}"
     ros2 run mpc_landing approve aruco_landing_node
     ros2 run mpc_landing abort   aruco_landing_node  # land now, from any phase
 
@@ -102,6 +109,7 @@ Subscribes
     /trailer/target_local                  geometry_msgs/PointStamped
                                            (only with cruise_to_trailer)
     /siyi_gimbal_node/attitude             geometry_msgs/Vector3Stamped
+    ~/command                              std_msgs/String
 Publishes
     /mavros/setpoint_raw/local             mavros_msgs/PositionTarget
     /siyi_gimbal_node/aim                  geometry_msgs/Vector3Stamped
@@ -121,6 +129,7 @@ from __future__ import annotations
 
 import math
 import multiprocessing
+import queue
 import signal
 import sys
 import threading
@@ -178,10 +187,16 @@ def _plan_route_worker(map_yaml, start_xy, goal_xy, site_origin_local_xy):
 
 class Phase(str, Enum):
     PRECHECK = 'PRECHECK'          # running preflight checks
-    READY_TO_ARM = 'READY_TO_ARM'  # checks passed, waiting for the one approval
+    READY_TO_ARM = 'READY_TO_ARM'  # checks passed, waiting for TAKEOFF
     ARMING = 'ARMING'              # stream -> OFFBOARD -> arm
     TAKEOFF = 'TAKEOFF'            # climbing to takeoff_alt
-    CRUISE = 'CRUISE'              # flying to the trailer's GNSS coordinate
+    READY = 'READY'                # hover at altitude, waiting for MISSION
+    MISSION_PLAN = 'MISSION_PLAN'  # hold while the fixed-goal route is built
+    MISSION = 'MISSION'            # TrackingMPC to the fixed CJU map goal
+    HOVER = 'HOVER'                # hold at the map goal, waiting for LAND
+    RETURN_PLAN = 'RETURN_PLAN'    # hold while the first trailer route is built
+    RETURN = 'RETURN'              # TrackingMPC to the live trailer coordinate
+    CRUISE = 'CRUISE'              # legacy direct-to-trailer launch mode
     SEARCH = 'SEARCH'              # holding over it, looking for the marker
     DESCEND = 'DESCEND'            # centring on the marker and coming down
     LAND = 'LAND'                  # handed to the autopilot's LAND, disarming
@@ -305,6 +320,8 @@ class ArucoLandingNode(Node):
                 route_stat.st_size, route_stat.st_mtime_ns)
             self._route_map_info = route_lib.route_map_info(
                 self.route_map_yaml)
+            self._route_rotation = route_lib.rotation_for_heading(
+                self._route_map_info.heading_deg_enu)
             self._planner_pool = ProcessPoolExecutor(
                 max_workers=1,
                 mp_context=multiprocessing.get_context('spawn'),
@@ -379,17 +396,18 @@ class ArucoLandingNode(Node):
 
         self.create_service(Trigger, '~/approve', self._on_approve)
         self.create_service(Trigger, '~/abort', self._on_abort)
+        self.create_subscription(String, '~/command', self._on_command, 10)
 
+        self._stdin_commands = queue.SimpleQueue()
         self._stdin_ok = self.interactive and sys.stdin is not None \
             and sys.stdin.isatty()
         if self._stdin_ok:
             threading.Thread(target=self._stdin_loop, daemon=True).start()
 
         self.create_timer(1.0 / self.rate_hz, self._tick)
-        route_kind = 'A*/SFC/B-spline route to' if self.planned_cruise else 'cruise to'
-        route = (f'{route_kind} {self.target_topic} '
-                 f'(max {self.cruise_max_dist:.0f} m) | '
-                 if self.cruise else '')
+        route = (f'A*/SFC/B-spline + TrackingMPC: map '
+                 f'{self._route_map_info.mission_goal_xy} then '
+                 f'{self.target_topic} | ' if self.planned_cruise else '')
         self.get_logger().info(
             f'aruco_landing_node: PX4 mode={self.mode_name} | '
             f'takeoff/transit {self.takeoff_alt:.1f} m, search '
@@ -413,11 +431,12 @@ class ArucoLandingNode(Node):
                 'are waived; only local position still gates the ARM prompt')
         if self._stdin_ok:
             self.get_logger().info(
-                'ARM will ask on this terminal — ENTER approves, n aborts')
+                'commands on this terminal: TAKEOFF -> MISSION -> LAND; '
+                'ABORT lands now')
         else:
             self.get_logger().info(
-                f'stdin is not a terminal, so approve over the service: '
-                f'ros2 run mpc_landing approve {self.get_name()}')
+                f'stdin is not a terminal: publish /{self.get_name()}/command '
+                f'or run `ros2 run mpc_landing approve {self.get_name()}`')
 
     # ------------------------------------------------------------- parameters
     def _declare(self) -> None:
@@ -835,51 +854,102 @@ class ArucoLandingNode(Node):
 
     # ------------------------------------------------------------ terminal UI
     def _stdin_loop(self) -> None:
-        """Read the one approval from the terminal. ENTER = yes, n = abort."""
+        """Queue terminal input; the ROS timer owns every phase transition."""
         for line in sys.stdin:
-            answer = line.strip().lower()
-            if answer.startswith('n'):
-                self._abort('operator declined at the prompt')
-                print('\n  ABORTING — landing.\n', flush=True)
-                continue
-            if self.phase is Phase.READY_TO_ARM:
-                ok, message = self._approve()
-                if ok:
-                    print('\n  OK: arming and taking off.\n', flush=True)
-                else:
-                    print(f'\n  BLOCKED: {message}\n'
-                          '  resolve it, then press ENTER again.\n', flush=True)
+            self._stdin_commands.put(line.strip())
+
+    def _drain_stdin_commands(self) -> None:
+        """Execute queued terminal commands on the single ROS executor."""
+        while True:
+            try:
+                command = self._stdin_commands.get_nowait()
+            except queue.Empty:
+                return
+            ok, message = self._command(command)
+            if ok:
+                print(f'\n  OK: {message}.\n', flush=True)
             else:
-                self.get_logger().warn(
-                    f'ignored "{answer or "ENTER"}" — nothing waiting for '
-                    f'approval (phase {self.phase.value})')
+                print(f'\n  BLOCKED: {message}\n', flush=True)
 
     def _prompt(self) -> None:
-        if not self._stdin_ok or self.phase is not Phase.READY_TO_ARM:
+        command = self._expected_command()
+        if not self._stdin_ok or command is None:
             return
-        if self._prompted == Phase.READY_TO_ARM.value:
+        if self._prompted == self.phase.value:
             return
-        self._prompted = Phase.READY_TO_ARM.value
-        # The distance is in the prompt because it is the one number the operator
-        # can check against the field in front of them before saying yes.
-        leg = (f', fly {self._target_range():.0f} m to the trailer'
-               if self.cruise and self._fresh_target() else '')
-        print(f'\n{"=" * 72}\n  preflight PASSED — approve to ARM, take off to '
-              f'{self.takeoff_alt:.1f} m{leg} and land on the marker'
-              f'\n{"=" * 72}\n'
-              f'  proceed?  [ENTER = yes / n = abort]  ', end='', flush=True)
+        self._prompted = self.phase.value
+        if self.phase is Phase.READY_TO_ARM:
+            details = (f'PRECHECK PASSED — arm and climb to '
+                       f'{self.takeoff_alt:.1f} m')
+        elif self.phase is Phase.READY:
+            details = (f'holding at {self.takeoff_alt:.1f} m — fly to CJU map '
+                       f'{self._route_map_info.mission_goal_xy}')
+        else:
+            details = 'holding at the map goal — return to the live trailer and land'
+        print(f'\n{"=" * 72}\n  {details}\n{"=" * 72}\n'
+              f'  command> {command}   (ABORT lands now)\n  ',
+              end='', flush=True)
 
     # ---------------------------------------------------------------- services
-    def _approve(self) -> tuple[bool, str]:
-        if self.phase is not Phase.READY_TO_ARM:
-            return False, (f'nothing to approve — phase is {self.phase.value}, '
-                           f'which is not a gate')
-        if self.planned_cruise:
+    def _expected_command(self) -> str | None:
+        return {
+            Phase.READY_TO_ARM: 'TAKEOFF',
+            Phase.READY: 'MISSION',
+            Phase.HOVER: 'LAND',
+        }.get(self.phase)
+
+    def _command(self, command: str) -> tuple[bool, str]:
+        """Accept only TAKEOFF -> MISSION -> LAND, plus ABORT at any time."""
+        command = str(command).strip().upper()
+        if command == 'ABORT':
+            self._abort('operator entered ABORT')
+            return True, 'aborting: landing'
+        if command not in ('TAKEOFF', 'MISSION', 'LAND'):
+            expected = self._expected_command()
+            return False, (f'unknown command {command or "ENTER"!r}; '
+                           f'expected {expected or "none"}')
+        expected = self._expected_command()
+        if command != expected:
+            return False, (f'{command} rejected in {self.phase.value}; '
+                           f'expected {expected or "none"}')
+
+        if command == 'TAKEOFF':
+            if self.planned_cruise:
+                blockers = self._route_preflight()
+                if blockers:
+                    return False, ('route changed since PRECHECK: '
+                                   + '; '.join(blockers))
+            self._to(Phase.ARMING)
+            return True, 'arming and taking off'
+
+        if command == 'MISSION':
             blockers = self._route_preflight()
             if blockers:
-                return False, 'route changed since preflight: ' + '; '.join(blockers)
-        self._to(Phase.ARMING)
-        return True, 'approved: arming and taking off'
+                return False, 'mission route unavailable: ' + '; '.join(blockers)
+            self._begin_route(Phase.MISSION_PLAN)
+            return True, (f'planning A*/SFC/B-spline route to map '
+                          f'{self._route_map_info.mission_goal_xy}')
+
+        blockers = self._return_preflight()
+        if blockers:
+            return False, 'trailer return unavailable: ' + '; '.join(blockers)
+        self._begin_return()
+        return True, 'planning the live-trailer return route'
+
+    def _approve(self) -> tuple[bool, str]:
+        """Compatibility Trigger: release whichever named gate is waiting."""
+        command = self._expected_command()
+        if command is None:
+            return False, (f'nothing to approve — phase is {self.phase.value}, '
+                           'which is not a command gate')
+        return self._command(command)
+
+    def _on_command(self, message: String) -> None:
+        ok, msg = self._command(message.data)
+        if ok:
+            self.get_logger().info(msg)
+        else:
+            self.get_logger().warn(msg)
 
     def _abort(self, reason: str) -> None:
         """Land now, from any phase."""
@@ -916,12 +986,14 @@ class ArucoLandingNode(Node):
         self.get_logger().info(f'{self.phase.value} -> {phase.value}')
         self.phase = phase
         self._t_phase = self._now()
+        self._prompted = ''
+        self._announced = ''
         if phase is Phase.SEARCH:
             self._acq_streak = 0
             self._acq_last_marker_seq = self._marker_seq
         if not self.planned_cruise:
             return
-        if phase is Phase.CRUISE:
+        if phase in (Phase.MISSION, Phase.RETURN, Phase.CRUISE):
             self._reset_path_mpc()
         elif phase is Phase.DESCEND:
             self._reset_path_mpc()
@@ -1305,8 +1377,32 @@ class ArucoLandingNode(Node):
                     f'(limit {self.route_anchor_drift:.2f} m)')
         return None
 
-    def _route_input_reason(self) -> str | None:
-        """Why a new site-frame plan cannot be anchored right now, or None."""
+    def _route_uses_trailer_goal(self) -> bool:
+        return self.phase in (
+            Phase.RETURN_PLAN, Phase.RETURN, Phase.CRUISE,
+            Phase.SEARCH, Phase.DESCEND, Phase.LAND)
+
+    def _route_goal_local(self, *, trailer_goal: bool | None = None) \
+            -> np.ndarray | None:
+        """Current route goal in MAVROS Local ENU, without mixing goal sources."""
+        use_trailer = (self._route_uses_trailer_goal()
+                       if trailer_goal is None else bool(trailer_goal))
+        if use_trailer:
+            return (None if self.target is None else
+                    np.asarray(self.target[:2], float).copy())
+        origin = self._route_synchronized_site_origin()
+        if origin is None:
+            return None
+        return self._route_lib.map_to_local(
+            self._route_map_info.mission_goal_xy,
+            origin, self._route_rotation)
+
+    def _route_goal_range(self, *, trailer_goal: bool | None = None) -> float:
+        return self._range_to(self._route_goal_local(trailer_goal=trailer_goal))
+
+    def _route_input_reason(self, *, trailer_goal: bool | None = None) \
+            -> str | None:
+        """Why the selected fixed or live-target route cannot be anchored."""
         health_reason = self._route_flight_health_reason()
         if health_reason is not None:
             return health_reason
@@ -1324,23 +1420,29 @@ class ArucoLandingNode(Node):
             return 'vehicle NavSatFix latitude/longitude is non-finite'
         if self._route_synchronized_site_origin() is None:
             return 'vehicle local pose/global fix pair is not coherent or fresh'
-        if not math.isfinite(self.target_sample_t):
-            return 'trailer target has no trustworthy source timestamp'
-        if (abs(self._route_observed_origin_t - self.target_sample_t)
-                > self.route_sync_tolerance):
-            return ('vehicle local/global anchor and trailer target are not '
-                    'time-aligned '
-                    f'(>{self.route_sync_tolerance:.1f} s)')
-        if not self._fresh_target():
-            return 'trailer target is missing or stale'
+        use_trailer = (self._route_uses_trailer_goal()
+                       if trailer_goal is None else bool(trailer_goal))
+        if use_trailer:
+            if not math.isfinite(self.target_sample_t):
+                return 'trailer target has no trustworthy source timestamp'
+            if (abs(self._route_observed_origin_t - self.target_sample_t)
+                    > self.route_sync_tolerance):
+                return ('vehicle local/global anchor and trailer target are not '
+                        'time-aligned '
+                        f'(>{self.route_sync_tolerance:.1f} s)')
+            if not self._fresh_target():
+                return 'trailer target is missing or stale'
+        goal = self._route_goal_local(trailer_goal=use_trailer)
         pose_xy = (self.pose.pose.position.x, self.pose.pose.position.y)
-        if not all(math.isfinite(float(v)) for v in (*pose_xy, *self.target[:2])):
+        if (goal is None
+                or not all(math.isfinite(float(v)) for v in (*pose_xy, *goal))):
             return 'route start or goal is non-finite'
         return None
 
-    def _route_site_origin_local(self) -> np.ndarray:
+    def _route_site_origin_local(self, *, trailer_goal: bool | None = None) \
+            -> np.ndarray:
         """The fixed site's WGS84 origin expressed in MAVROS local ENU XY."""
-        reason = self._route_input_reason()
+        reason = self._route_input_reason(trailer_goal=trailer_goal)
         if reason is not None:
             raise RuntimeError(reason)
         origin = self._route_synchronized_site_origin()
@@ -1350,8 +1452,23 @@ class ArucoLandingNode(Node):
         # it from the measured local pose to locate that origin in local ENU.
         return origin
 
+    def _route_endpoint_reason(self, *, trailer_goal: bool) -> str | None:
+        """Check start and selected goal against the one hard clearance map."""
+        origin = self._route_synchronized_site_origin()
+        goal = self._route_goal_local(trailer_goal=trailer_goal)
+        if self.pose is None or origin is None or goal is None:
+            return 'route start or goal is unavailable'
+        start = np.array([
+            self.pose.pose.position.x, self.pose.pose.position.y], float)
+        for label, point in (('start', start), ('goal', goal)):
+            if not self._route_lib.segment_is_free(
+                    self.route_map_yaml, origin, point, point):
+                return (f'route {label} is blocked or outside the mapped '
+                        'vehicle clearance')
+        return None
+
     def _route_preflight(self) -> list[str]:
-        """Non-waivable checks for the opt-in obstacle-aware route."""
+        """Non-waivable checks for the fixed CJU map-goal route."""
         if not self.planned_cruise:
             return []
         reasons = []
@@ -1361,26 +1478,41 @@ class ArucoLandingNode(Node):
             reasons.append(
                 'route map is not hardware-flight-approved '
                 f'({info.horizontal_accuracy}); survey/calibrate the YAML first')
-        input_reason = self._route_input_reason()
+        input_reason = self._route_input_reason(trailer_goal=False)
         if input_reason is not None:
             reasons.append(input_reason)
             return reasons
-        if self._target_range() <= self.cruise_arrive:
-            if not self._route_arrival_safe():
+        endpoint_reason = self._route_endpoint_reason(trailer_goal=False)
+        if endpoint_reason is not None:
+            reasons.append(endpoint_reason)
+            return reasons
+        goal = self._route_goal_local(trailer_goal=False)
+        if self._range_to(goal) <= self.cruise_arrive:
+            if not self._route_arrival_safe(trailer_goal=False):
                 reasons.append(
-                    'nearby trailer chord or endpoint is outside the '
+                    'nearby mission-goal chord or endpoint is outside the '
                     'certified map clearance')
-            return reasons
-        if self._route_active is None:
-            detail = (f': {self._route_last_error}'
-                      if self._route_last_error else ' (planning)')
-            reasons.append(f'no certified A*/SFC/B-spline route{detail}')
-            return reasons
-        _plan, _origin, planned_goal, _seq, _committed = self._route_active
-        drift = float(np.linalg.norm(self.target[:2] - planned_goal))
-        if drift > self.route_lookahead:
+        return reasons
+
+    def _return_preflight(self) -> list[str]:
+        """Inputs required when LAND changes the route goal to the trailer."""
+        if not self.planned_cruise:
+            return []
+        info = self._route_map_info
+        reasons = []
+        if (not info.hardware_flight_approved
+                and not self.allow_unapproved_route_map):
             reasons.append(
-                f'certified route goal is {drift:.1f} m behind the live trailer')
+                'route map is not hardware-flight-approved '
+                f'({info.horizontal_accuracy}); survey/calibrate the YAML first')
+        reasons.extend(self._cruise_preflight())
+        input_reason = self._route_input_reason(trailer_goal=True)
+        if input_reason is not None and input_reason not in reasons:
+            reasons.append(input_reason)
+        if input_reason is None:
+            endpoint_reason = self._route_endpoint_reason(trailer_goal=True)
+            if endpoint_reason is not None:
+                reasons.append(endpoint_reason)
         return reasons
 
     def _invalidate_route(self, reason: str) -> None:
@@ -1397,12 +1529,28 @@ class ArucoLandingNode(Node):
             self.get_logger().warn(
                 f'route invalidated — {reason}; HOLD until a new anchor is planned')
 
+    def _begin_route(self, phase: Phase) -> None:
+        """Discard the previous leg before planning the selected goal."""
+        self._route_active = None
+        self._route_pending = None
+        self._route_progress = 0.0
+        self._route_last_request_t = float('-inf')
+        self._route_last_error = ''
+        self._reset_path_mpc()
+        if self._plan_future is not None and self._plan_future.cancel():
+            self._plan_future = None
+        self._to(phase)
+
+    def _begin_return(self) -> None:
+        """Drop the fixed-goal leg before selecting the live trailer goal."""
+        self._begin_route(Phase.RETURN_PLAN)
+
     def _route_update(self) -> None:
         """Poll/commit one worker result, then submit at most one new request."""
         if not self.planned_cruise:
             return
-        allowed = (Phase.PRECHECK, Phase.READY_TO_ARM, Phase.ARMING,
-                   Phase.TAKEOFF, Phase.CRUISE)
+        allowed = (Phase.MISSION_PLAN, Phase.MISSION,
+                   Phase.RETURN_PLAN, Phase.RETURN, Phase.CRUISE)
         health_reason = self._route_flight_health_reason()
         if health_reason is not None:
             self._invalidate_route(health_reason)
@@ -1462,21 +1610,22 @@ class ArucoLandingNode(Node):
         if (self.phase not in allowed or self._plan_future is not None
                 or self._planner_pool is None):
             return
+        goal = self._route_goal_local()
         reason = self._route_input_reason()
-        if reason is not None or self._target_range() <= self.cruise_arrive:
+        if (reason is not None or goal is None
+                or self._range_to(goal) <= self.cruise_arrive):
             return
         now = self._now()
         if now - self._route_last_request_t < self.route_replan_period:
             return
         if self._route_active is not None:
             _plan, _origin, active_goal, _seq, _committed = self._route_active
-            if float(np.linalg.norm(self.target[:2] - active_goal)) < max(
+            if float(np.linalg.norm(goal - active_goal)) < max(
                     0.5, self.route_cross_track):
                 return
 
         start = np.array([
             self.pose.pose.position.x, self.pose.pose.position.y], float)
-        goal = np.asarray(self.target[:2], float).copy()
         origin = self._route_site_origin_local()
         self._route_request_seq += 1
         seq = self._route_request_seq
@@ -1570,13 +1719,15 @@ class ArucoLandingNode(Node):
                 plan.path_local_xy,
                 np.full(len(plan.path_local_xy), self._takeoff_target())))
             try:
+                moving_target = self._route_uses_trailer_goal()
                 reference_p, reference_v = self._path_reference_horizon(
                     plan.arc_m, path, self._route_progress,
                     self._path_mpc.dt, self._path_mpc.N,
                     self.cruise_v_max, self.cruise_accel,
                     self._path_mpc.j_max,
-                    target_velocity_xy=self._target_velocity.v,
-                    target_range_xy_m=self._target_range(),
+                    target_velocity_xy=(self._target_velocity.v
+                                        if moving_target else None),
+                    target_range_xy_m=self._route_goal_range(),
                     relative_brake_start_m=10.0,
                     target_relative_speed_m_s=0.3)
                 output_step = min(
@@ -1625,33 +1776,33 @@ class ArucoLandingNode(Node):
         return (self._send_pva(
             pos, vel, acc, self._path_mpc.j_max), cross_track)
 
-    def _route_arrival_safe(self) -> bool:
-        """Require both live-target arrival and completion of its certified leg."""
+    def _route_arrival_safe(self, *, trailer_goal: bool | None = None) -> bool:
+        """Require arrival at the selected goal and completion of its route."""
         if not self.planned_cruise:
             return True
         if self._route_flight_health_reason() is not None:
             return False
-        if self.pose is None or self.target is None:
+        use_trailer = (self._route_uses_trailer_goal()
+                       if trailer_goal is None else bool(trailer_goal))
+        goal = self._route_goal_local(trailer_goal=use_trailer)
+        if (self.pose is None or goal is None
+                or (use_trailer and not self._fresh_target())):
+            return False
+        if self._range_to(goal) > self.cruise_arrive:
             return False
         current = np.array([
             self.pose.pose.position.x, self.pose.pose.position.y], float)
-        if self._route_active is None:
-            if self._target_range() > self.cruise_arrive:
-                return False
-            try:
-                origin = self._route_site_origin_local()
-            except RuntimeError:
-                return False
-            return self._route_lib.segment_is_free(
-                self.route_map_yaml, origin, current, self.target[:2])
-        plan, origin, planned_goal, _seq, _committed = self._route_active
-        return (
-            float(np.linalg.norm(current - plan.path_local_xy[-1]))
-            <= self.cruise_arrive
-            and float(np.linalg.norm(self.target[:2] - planned_goal))
-            <= self.cruise_arrive
-            and self._route_lib.segment_is_free(
-                self.route_map_yaml, origin, current, self.target[:2]))
+        try:
+            origin = (self._route_active[1] if self._route_active is not None
+                      else self._route_site_origin_local(
+                          trailer_goal=use_trailer))
+        except RuntimeError:
+            return False
+        # Once the live goal is inside the arrival radius, only this last exact
+        # chord matters. Requiring a moving target to remain near an older route
+        # endpoint can deadlock arrival after an otherwise successful replan.
+        return self._route_lib.segment_is_free(
+            self.route_map_yaml, origin, current, goal)
 
     def _route_station_keep_safe(self) -> bool:
         """Prevent SEARCH's GPS station-keep from bypassing the route map."""
@@ -1710,11 +1861,9 @@ class ArucoLandingNode(Node):
         if not self._detector_seen:
             overridable.append(
                 f'marker detector silent — nothing on {self.marker_detected_topic}')
-        # Cruising needs the trailer's coordinate BEFORE the arm, not after it:
-        # taking off to go somewhere and only then asking where, is a hover over
-        # the pad burning battery at best. The check is for a LIVE target, which
-        # also proves the whole chain behind it — radio, trailer fix, vehicle fix,
-        # local pose — since trailer_target_node publishes nothing without all four.
+        # PRECHECK proves the return link before takeoff even though the first leg
+        # is the fixed map goal. The trailer coordinate is not used as that goal.
+        # A live target proves radio, both fixes and the WGS84 -> Local ENU chain.
         if self.cruise:
             overridable.extend(self._cruise_preflight())
         # A missing target can be waived for an ordinary bench rehearsal, but a
@@ -1757,9 +1906,15 @@ class ArucoLandingNode(Node):
             self.get_logger().info(
                 f'preflight PASSED — {self.ekf.summary(self._now())}')
             if self.cruise and self._fresh_target():
-                self.get_logger().info(
-                    f'trailer is {self._target_range():.1f} m away — CRUISE will '
-                    f'fly there at {self.takeoff_alt:.1f} m before searching')
+                if self.planned_cruise:
+                    self.get_logger().info(
+                        f'trailer return link ready '
+                        f'({self._target_range():.1f} m); first mission goal is '
+                        f'CJU map {self._route_map_info.mission_goal_xy}')
+                else:
+                    self.get_logger().info(
+                        f'trailer is {self._target_range():.1f} m away — CRUISE '
+                        'will fly there before searching')
         return True
 
     def _cruise_preflight(self) -> list[str]:
@@ -1780,6 +1935,7 @@ class ArucoLandingNode(Node):
 
     # ------------------------------------------------------------------- loop
     def _tick(self) -> None:
+        self._drain_stdin_commands()
         self._publish_state()
 
         # Keep the offboard stream alive, unconditionally, for every armed /
@@ -1787,16 +1943,19 @@ class ArucoLandingNode(Node):
         # returns early cannot starve it. PX4 drops offboard after ~0.5 s of
         # silence. Phases that fly a real setpoint overwrite this in the same
         # tick; publishing twice is harmless, a gap is not.
-        mpc_phase = self.planned_cruise and self.phase is Phase.CRUISE
+        mpc_phase = self.planned_cruise and self.phase in (
+            Phase.MISSION, Phase.RETURN, Phase.CRUISE)
         if (self.phase in (Phase.READY_TO_ARM, Phase.ARMING, Phase.TAKEOFF,
-                           Phase.CRUISE, Phase.SEARCH, Phase.DESCEND)
+                           Phase.READY, Phase.MISSION_PLAN, Phase.MISSION,
+                           Phase.HOVER,
+                           Phase.RETURN_PLAN, Phase.RETURN, Phase.CRUISE,
+                           Phase.SEARCH, Phase.DESCEND)
                 and not mpc_phase):
             self._send(0.0, 0.0, 0.0)
 
-        # Poll only after the heartbeat above. A completed route can require
-        # hundreds of exact chord checks before commit; none may delay the first
-        # setpoint of this tick.
-        if self.planned_cruise:
+        # Poll only after the heartbeat above. Route-result validation and
+        # splice work may not delay the first setpoint of this tick.
+        if self.planned_cruise and not mpc_phase:
             self._route_update()
 
         if self.phase is Phase.PRECHECK:
@@ -1872,14 +2031,72 @@ class ArucoLandingNode(Node):
             err = self._takeoff_target() - self._alt()
             if abs(err) <= self.alt_tol:
                 self._hold()
-                self._to(Phase.CRUISE if self.cruise else Phase.SEARCH)
+                if self.planned_cruise:
+                    self._to(Phase.READY)
+                else:
+                    self._to(Phase.CRUISE if self.cruise else Phase.SEARCH)
                 return
             vz = float(np.clip(err, -self.climb_speed, self.climb_speed))
             self._hold(vz)
             return
 
+        if self.phase is Phase.READY:
+            self._hold()
+            self._announce()
+            return
+
+        if self.phase is Phase.MISSION_PLAN:
+            self._hold()
+            if (self._route_goal_range(trailer_goal=False) <= self.cruise_arrive
+                    and self._route_arrival_safe(trailer_goal=False)):
+                self._to(Phase.HOVER)
+            elif self._route_active is not None:
+                self._to(Phase.MISSION)
+            elif self._now() - self._t_phase > self.route_timeout:
+                self.get_logger().error(
+                    'fixed-goal route planning timed out — returning to READY')
+                self._to(Phase.READY)
+            return
+
+        if self.phase is Phase.MISSION:
+            self._mission_to_goal()
+            if self.phase is Phase.MISSION:
+                self._route_update()
+            return
+
+        if self.phase is Phase.HOVER:
+            self._hold()
+            self._announce()
+            return
+
+        if self.phase is Phase.RETURN_PLAN:
+            self._hold()
+            if (self._route_goal_range(trailer_goal=True) <= self.cruise_arrive
+                    and self._route_arrival_safe(trailer_goal=True)):
+                self._to(Phase.SEARCH)
+            elif self._route_active is not None:
+                self._to(Phase.RETURN)
+            elif (not self._fresh_target()
+                  and self._now() - self._t_phase > self.trailer_lost_search):
+                self.get_logger().warn(
+                    'trailer target lost while planning return — landing here')
+                self._to(Phase.LAND)
+            elif self._now() - self._t_phase > self.route_timeout:
+                self.get_logger().error(
+                    'trailer return route planning timed out — landing here')
+                self._to(Phase.LAND)
+            return
+
+        if self.phase is Phase.RETURN:
+            self._cruise_to_trailer()
+            if self.phase is Phase.RETURN:
+                self._route_update()
+            return
+
         if self.phase is Phase.CRUISE:
             self._cruise_to_trailer()
+            if self.phase is Phase.CRUISE:
+                self._route_update()
             return
 
         if self.phase is Phase.SEARCH:
@@ -1957,6 +2174,49 @@ class ArucoLandingNode(Node):
                 self.get_logger().info('disarmed — landing complete')
             return
 
+    def _mission_to_goal(self) -> None:
+        """Track the fixed CJU map goal, then hold for the LAND command."""
+        if self.pose is None:
+            self._hold()
+            return
+        goal = self._route_goal_local(trailer_goal=False)
+        if goal is None:
+            self._hold()
+            return
+        distance = self._range_to(goal)
+        if (distance <= self.cruise_arrive
+                and self._route_arrival_safe(trailer_goal=False)):
+            self._hold()
+            self.get_logger().info(
+                f'at CJU map {self._route_map_info.mission_goal_xy} '
+                f'({distance:.1f} m) — holding for LAND')
+            self._to(Phase.HOVER)
+            return
+        if self._now() - self._t_phase > self.route_timeout:
+            self._hold()
+            self.get_logger().error(
+                f'mission goal not reached within {self.route_timeout:.0f} s — '
+                'returning to READY and holding')
+            self._to(Phase.READY)
+            return
+
+        vz = float(np.clip(self._takeoff_target() - self._alt(),
+                           -self.climb_speed, self.climb_speed))
+        commanded, cross_track = self._route_mpc_command()
+        if not commanded:
+            self._hold(vz)
+            self.get_logger().error(
+                'no exact-safe TrackingMPC reference to the mission goal — '
+                'HOLDING, no straight-line fallback',
+                throttle_duration_sec=2.0)
+        if self._due('mission_log', self.cruise_log_period):
+            self.get_logger().info(
+                f'[MISSION] drone ({self.pose.pose.position.x:8.2f},'
+                f'{self.pose.pose.position.y:8.2f}) | map '
+                f'{self._route_map_info.mission_goal_xy} -> local '
+                f'({goal[0]:8.2f},{goal[1]:8.2f}) | {distance:6.2f} m | '
+                f'route xtrack {cross_track:4.2f} m')
+
     def _cruise_to_trailer(self) -> None:
         """Fly to the trailer's coordinate at takeoff altitude, then start looking.
 
@@ -1977,6 +2237,7 @@ class ArucoLandingNode(Node):
         this phase counted differently.
         """
         if self.pose is None:
+            self._hold()
             return
         elapsed = self._now() - self._t_phase
 
@@ -2112,12 +2373,14 @@ class ArucoLandingNode(Node):
         self._prompt()
         if self._stdin_ok:
             return
-        if self._announced == Phase.READY_TO_ARM.value:
+        command = self._expected_command()
+        if command is None or self._announced == self.phase.value:
             return
-        self._announced = Phase.READY_TO_ARM.value
+        self._announced = self.phase.value
         self.get_logger().warn(
-            f'>>> WAITING FOR APPROVAL — approve to ARM and take off\n'
-            f'    ros2 run mpc_landing approve {self.get_name()}')
+            f'>>> WAITING FOR {command}\n'
+            f'    terminal topic: /{self.get_name()}/command\n'
+            f'    compatibility: ros2 run mpc_landing approve {self.get_name()}')
 
     def _publish_state(self) -> None:
         self.state_pub.publish(String(data=self.phase.value))

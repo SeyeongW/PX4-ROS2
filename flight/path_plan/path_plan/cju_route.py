@@ -38,6 +38,7 @@ class RouteMapInfo:
     horizontal_accuracy: str
     hardware_flight_approved: bool
     vehicle_clearance_m: float
+    mission_goal_xy: tuple[float, float]
 
 
 @dataclass(frozen=True)
@@ -120,6 +121,7 @@ def route_map_info(map_yaml: str) -> RouteMapInfo:
         raise ValueError('site.origin_wgs84 is outside latitude/longitude bounds')
     heading = float(site['heading_deg_enu'])
     rotation_for_heading(heading)
+    goal = _finite_vector('mission.goal_m', mission['goal_m'], 2)
     return RouteMapInfo(
         name=str(site.get('name', 'unnamed site')),
         origin_lat=float(origin[0]),
@@ -133,6 +135,7 @@ def route_map_info(map_yaml: str) -> RouteMapInfo:
         vehicle_clearance_m=_positive(
             'mission.vehicle_clearance_xy_m',
             mission['vehicle_clearance_xy_m']),
+        mission_goal_xy=(float(goal[0]), float(goal[1])),
     )
 
 
