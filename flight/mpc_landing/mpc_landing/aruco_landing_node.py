@@ -535,6 +535,30 @@ class ArucoLandingNode(Node):
         p('fcu_speed_param', 'MPC_XY_VEL_MAX')
         p('fcu_accel_param', 'MPC_ACC_HOR')
         p('fcu_jerk_param', 'MPC_JERK_AUTO')
+        # --- and how much of that ceiling to use HERE ------------------------
+        # The vehicle's limit is not a target. Distance to the GOAL already
+        # shapes speed — `_s_curve_stop_speed` runs at the limit far out and
+        # slows to a stop-capable speed near the end — and this does the same
+        # for the other distance that matters, the one to the nearest obstacle.
+        #
+        # ON ACCELERATION, NOT ON SPEED, because acceleration is what throws the
+        # vehicle OFF the geometry that was certified: an acceleration `a` held
+        # for `t` puts it `0.5 a t^2` to the side of the path A*/SFC/B-spline
+        # checked. Speed along a certified path is not what closes a gap; a
+        # sideways excursion is.
+        #
+        # Linear between the two numbers below, and neither is critical — what
+        # matters is that the answer falls the right way with distance:
+        #
+        #   clearance >= obstacle_accel_full_clearance_m   full acceleration
+        #   clearance  = 0 (on the certified margin)       the floor fraction
+        #
+        # The floor is not zero: in the tightest corridor the planner is willing
+        # to certify, the tracker still needs the authority to STAY on the path,
+        # and an MPC bounded to no acceleration cannot hold a line at all.
+        p('obstacle_accel_scaling', True)
+        p('obstacle_accel_full_clearance_m', 5.0)
+        p('obstacle_accel_min_fraction', 0.25)
         # Within this -> start searching. Tight on purpose: the search footprint
         # at `search_alt_m` is only ~1.5 m in its short axis with the current
         # marker, so arriving loosely is arriving with the marker out of frame.
@@ -684,6 +708,18 @@ class ArucoLandingNode(Node):
         self.fcu_speed_param = str(g('fcu_speed_param').value)
         self.fcu_accel_param = str(g('fcu_accel_param').value)
         self.fcu_jerk_param = str(g('fcu_jerk_param').value)
+        self.obstacle_accel_scaling = bool(g('obstacle_accel_scaling').value)
+        self.obstacle_accel_full = float(
+            g('obstacle_accel_full_clearance_m').value)
+        self.obstacle_accel_min_frac = float(
+            g('obstacle_accel_min_fraction').value)
+        if not (math.isfinite(self.obstacle_accel_full)
+                and self.obstacle_accel_full > 0.0):
+            raise ValueError('obstacle_accel_full_clearance_m must be positive')
+        if not (math.isfinite(self.obstacle_accel_min_frac)
+                and 0.0 < self.obstacle_accel_min_frac <= 1.0):
+            raise ValueError(
+                'obstacle_accel_min_fraction must be within (0, 1]')
         self.cruise_arrive = float(g('cruise_arrive_m').value)
         self.arrival_speed = float(
             g('arrival_speed_tolerance_m_s').value)
@@ -1163,6 +1199,32 @@ class ArucoLandingNode(Node):
             v_max=self.cruise_v_max, a_max=self.cruise_accel,
             j_max=self.cruise_jerk, q_pos=4.0, q_vel=0.4, r_acc=0.05,
             q_terminal=20.0)
+
+    def _obstacle_accel_limit(self) -> float:
+        """How hard the vehicle may accelerate at the point it is at now.
+
+        `cruise_accel` is PX4's ceiling; this is the part of it the open ground
+        around the vehicle has earned. See `obstacle_accel_scaling` in
+        `_declare` for why this shapes acceleration and not speed.
+
+        A clearance that cannot be measured reads 0.0 from `cju_route`, which
+        lands on the floor — the conservative end — without a separate branch.
+        """
+        if not (self.obstacle_accel_scaling and self.planned_cruise):
+            return self.cruise_accel
+        if self.pose is None:
+            return self.cruise_accel * self.obstacle_accel_min_frac
+        origin = (self._route_active[1]
+                  if self._route_active is not None
+                  else self._route_synchronized_site_origin())
+        if origin is None:
+            return self.cruise_accel * self.obstacle_accel_min_frac
+        clearance = self._route_lib.clearance(
+            self.route_map_yaml, origin,
+            (self.pose.pose.position.x, self.pose.pose.position.y))
+        fraction = float(np.clip(clearance / self.obstacle_accel_full,
+                                 self.obstacle_accel_min_frac, 1.0))
+        return self.cruise_accel * fraction
 
     def _sync_limits_from_fcu(self) -> None:
         """Ask PX4 how fast and how hard this airframe may be flown.
@@ -1870,12 +1932,18 @@ class ArucoLandingNode(Node):
             path = np.column_stack((
                 plan.path_local_xy,
                 np.full(len(plan.path_local_xy), self._takeoff_target())))
+            # ONE acceleration for both, deliberately. The reference brakes on
+            # the assumption that this much deceleration is available; bounding
+            # the MPC lower than that would hand the tracker a profile it has
+            # been forbidden to fly, and the error would look like poor tuning.
+            accel = self._obstacle_accel_limit()
+            self._path_mpc.a_max = accel
             try:
                 moving_target = self._route_uses_trailer_goal()
                 reference_p, reference_v = self._path_reference_horizon(
                     plan.arc_m, path, self._route_progress,
                     self._path_mpc.dt, self._path_mpc.N,
-                    self.cruise_v_max, self.cruise_accel,
+                    self.cruise_v_max, accel,
                     self._path_mpc.j_max,
                     target_velocity_xy=(self._target_velocity.v
                                         if moving_target else None),

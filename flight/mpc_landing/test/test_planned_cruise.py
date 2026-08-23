@@ -552,6 +552,52 @@ def test_missing_limits_block_the_arm_even_with_skip_preflight():
                for _level, message in logger.messages)
 
 
+def _accel_state(clearance, *, a_max=4.0, full=5.0, floor=0.25,
+                 on=True, pose=True, origin=True):
+    state = SimpleNamespace(
+        obstacle_accel_scaling=on,
+        planned_cruise=True,
+        cruise_accel=a_max,
+        obstacle_accel_full=full,
+        obstacle_accel_min_frac=floor,
+        pose=(SimpleNamespace(pose=SimpleNamespace(position=SimpleNamespace(
+            x=10.0, y=20.0))) if pose else None),
+        route_map_yaml='/map.yaml',
+        _route_active=((None, np.zeros(2), None, 0, 0.0) if origin else None),
+        _route_synchronized_site_origin=lambda: None,
+        _route_lib=SimpleNamespace(
+            clearance=lambda *_args: float(clearance)),
+    )
+    return state
+
+
+def test_acceleration_is_the_vehicles_only_in_the_open():
+    # Far from anything: the whole of PX4's ceiling.
+    assert ArucoLandingNode._obstacle_accel_limit(_accel_state(50.0)) == 4.0
+    # Right on the certified margin: the floor, not zero — the tracker still
+    # has to be able to hold the line it was given.
+    assert ArucoLandingNode._obstacle_accel_limit(_accel_state(0.0)) == 1.0
+    # In between it falls off with distance, monotonically.
+    values = [ArucoLandingNode._obstacle_accel_limit(_accel_state(d))
+              for d in (0.0, 1.0, 2.5, 4.0, 5.0, 9.0)]
+    assert values == sorted(values)
+    assert values[-1] == values[-2] == 4.0        # clipped at full clearance
+
+
+def test_acceleration_scaling_can_be_switched_off():
+    state = _accel_state(0.0, on=False)
+    assert ArucoLandingNode._obstacle_accel_limit(state) == 4.0
+
+
+def test_an_unmeasurable_position_takes_the_floor():
+    # No pose and no origin are both "cannot measure the clearance", and the
+    # conservative answer is the same one a zero clearance gets.
+    assert ArucoLandingNode._obstacle_accel_limit(
+        _accel_state(50.0, pose=False)) == 1.0
+    assert ArucoLandingNode._obstacle_accel_limit(
+        _accel_state(50.0, origin=False)) == 1.0
+
+
 def test_the_arm_is_the_only_gate():
     calls = []
     state = _gate_state(calls)
@@ -971,8 +1017,10 @@ def test_integration_accepts_jo_axiswise_velocity_contract():
 
 def test_trailer_velocity_braking_is_used_only_on_the_return_leg():
     captured = {}
+    positional = []
 
-    def horizon(*_args, **kwargs):
+    def horizon(*args, **kwargs):
+        positional[:] = args
         captured.update(kwargs)
         return np.zeros((2, 3)), np.zeros((2, 3))
 
@@ -1011,6 +1059,8 @@ def test_trailer_velocity_braking_is_used_only_on_the_return_leg():
         _path_reference_horizon=horizon,
         cruise_v_max=1.5,
         cruise_accel=0.5,
+        # The clearance-scaled acceleration, not the vehicle's ceiling.
+        _obstacle_accel_limit=lambda: 0.25,
         _route_progress=0.0,
         _route_uses_trailer_goal=lambda: False,
         _route_goal_range=lambda: 20.0,
@@ -1022,6 +1072,10 @@ def test_trailer_velocity_braking_is_used_only_on_the_return_leg():
     )
     assert ArucoLandingNode._route_mpc_command(state)[0]
     assert captured['target_velocity_xy'] is None
+    # The reference is time-parameterised on the SAME acceleration the MPC is
+    # bounded to, or the profile asks for braking the tracker may not fly.
+    assert positional[6] == 0.25
+    assert state._path_mpc.a_max == 0.25
 
     state._route_uses_trailer_goal = lambda: True
     state._path_last_solve_t = None

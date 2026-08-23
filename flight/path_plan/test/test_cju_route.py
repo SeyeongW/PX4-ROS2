@@ -5,6 +5,7 @@ import pytest
 import yaml
 
 from path_plan.cju_route import (
+    clearance,
     local_to_map,
     map_to_local,
     plan_route,
@@ -111,3 +112,21 @@ def test_safe_carrot_shortens_a_blocked_corner_cut_and_fails_closed():
         MAP, origin, plan.arc_m, plan.path_local_xy, inside_barrier, 0.0,
         lookahead_m=6.0, cross_track_limit_m=0.25)
     assert blocked is None
+
+
+def test_clearance_falls_off_toward_an_obstacle_and_fails_closed():
+    info, rotation, origin, _start, _goal = _fixture()
+    # Straight down the mission line: clearance is a distance, so sampling it
+    # along a path that approaches the goal must never return something
+    # negative, and an unmeasurable input must read as no clearance at all.
+    samples = [clearance(MAP, origin, map_to_local([x, 0.0], origin, rotation))
+               for x in (5.0, 15.0, 30.0, 45.0)]
+    assert all(value >= 0.0 for value in samples)
+    assert all(np.isfinite(value) for value in samples)
+
+    # Fails to 0.0 — the conservative answer — exactly like segment_is_free
+    # fails to False. A caller that cannot measure must behave as if there is
+    # no room.
+    assert clearance('/no/such/map.yaml', origin, [0.0, 0.0]) == 0.0
+    assert clearance(MAP, origin, [float('nan'), 0.0]) == 0.0
+    assert clearance(MAP, [float('inf'), 0.0], [0.0, 0.0]) == 0.0

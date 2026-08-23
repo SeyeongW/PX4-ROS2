@@ -337,6 +337,30 @@ def segment_is_free(map_yaml: str, site_origin_local_xy, start_local_xy,
         return False
 
 
+def clearance(map_yaml: str, site_origin_local_xy, local_xy) -> float:
+    """Distance from one local-ENU point to the nearest obstacle, in metres.
+
+    Measured BEYOND the map's own `vehicle_clearance_xy_m`, because that is
+    what `WorldModel` subtracts: 0 here means the vehicle is exactly on the
+    hard margin the route was certified against, not touching a wall.
+
+    Fails to 0.0 — the most conservative answer — for the same reason
+    `segment_is_free` fails to False: a caller that cannot measure the
+    clearance must behave as though there is none. `_world` is lru_cached, so
+    this is cheap enough to ask on every control tick.
+    """
+    try:
+        origin = _finite_vector('site_origin_local_xy', site_origin_local_xy, 2)
+        point = _finite_vector('local_xy', local_xy, 2)
+        _, rotation, altitude, world = _world(str(map_yaml), z_half_width=0.0)
+        mapped = local_to_map(point[None, :], origin, rotation)[0]
+        return float(world.clearance([*mapped, altitude]))
+    except (KeyError, TypeError, ValueError, OSError):
+        # OSError too, unlike `segment_is_free`: this one is asked on every
+        # control tick, and a control loop is the wrong place to raise from.
+        return 0.0
+
+
 def _path_position(arc_m, path_xy, distance_m: float) -> np.ndarray:
     arc = np.asarray(arc_m, float)
     path = np.asarray(path_xy, float)
