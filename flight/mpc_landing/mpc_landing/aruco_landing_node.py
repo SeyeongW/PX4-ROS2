@@ -132,6 +132,8 @@ Services (offered)
     ~/approve, ~/abort                     std_srvs/Trigger
 Services (called)
     /mavros/set_mode, /mavros/cmd/arming, /mavros/cmd/land
+    /mavros/param/get_parameters           the airframe's own speed and
+                                           acceleration limits (see `_declare`)
 
 ALL PARAMETERS ARE DECLARED HERE, IN `_declare`, WITH THEIR VALUES.  Override for
 a one-off:
@@ -162,6 +164,9 @@ from rclpy.qos import (DurabilityPolicy, HistoryPolicy, QoSProfile,
 from sensor_msgs.msg import BatteryState, NavSatFix, NavSatStatus
 from std_msgs.msg import Bool, String
 from std_srvs.srv import Trigger
+
+from rcl_interfaces.msg import ParameterType
+from rcl_interfaces.srv import GetParameters
 
 from mavros_msgs.msg import (EstimatorStatus, ExtendedState, GPSRAW,
                              PositionTarget, State)
@@ -317,13 +322,11 @@ class ArucoLandingNode(Node):
             self._enu_offset = enu_offset
             self._path_reference_horizon = path_reference_horizon
             self._limit_acceleration_slew = limit_acceleration_slew
-            # Same Wang equations and cost weights. Only the real-airframe
-            # actuator bounds are lower than the simulation defaults.
-            self._path_mpc = TrackingMPC(
-                dt_s=0.1, horizon=20,
-                v_max=self.cruise_v_max, a_max=self.cruise_accel,
-                j_max=2.0, q_pos=4.0, q_vel=0.4, r_acc=0.05,
-                q_terminal=20.0)
+            self._tracking_mpc_cls = TrackingMPC
+            # BUILT LATER, on the limits PX4 reports. Until then it stays None,
+            # `_route_mpc_command` reports "not commanded" and the mission holds
+            # — and the arm gate refuses, so nothing flies that far.
+            self._build_path_mpc()
             self._path_reference = HorizonReference(lead_s=0.1)
             route_path = Path(self.route_map_yaml).expanduser().resolve(
                 strict=True)
@@ -407,6 +410,11 @@ class ArucoLandingNode(Node):
         self.mode_cli = self.create_client(SetMode, '/mavros/set_mode')
         self.arm_cli = self.create_client(CommandBool, '/mavros/cmd/arming')
         self.land_cli = self.create_client(CommandTOL, '/mavros/cmd/land')
+        # MAVROS republishes the FCU's parameter table as ROS parameters, so
+        # reading PX4's limits is a plain get_parameters call.
+        self.fcu_param_cli = self.create_client(
+            GetParameters, '/mavros/param/get_parameters')
+        self._fcu_limits_req = False
 
         self.create_service(Trigger, '~/approve', self._on_approve)
         self.create_service(Trigger, '~/abort', self._on_abort)
@@ -502,11 +510,31 @@ class ArucoLandingNode(Node):
         p('trailer_target_topic', '/trailer/target_local')
         p('trailer_target_timeout_s', 3.0)   # older than this is not a target
         # Gentle by design: this is a real airframe flying at a coordinate it
-        # cannot see. kp * v_max puts full speed at ~4 m of error, and the
+        # cannot see. kp * v_max puts full speed at v_max/kp of error, and the
         # acceleration limit means no setpoint step the vehicle has to snatch at.
         p('cruise_kp', 0.35)                 # horizontal P gain [1/s]
-        p('cruise_v_max_m_s', 1.5)
-        p('cruise_accel_m_s2', 0.5)          # slew limit on the commanded velocity
+        # --- how fast and how hard: PX4's numbers, not ours -------------------
+        # THE AIRFRAME'S LIMITS ARE NOT WRITTEN IN THIS FILE. They are already
+        # configured on the flight controller, where they bound the RC pilot and
+        # every autopilot mode; a second copy here is a limit that can disagree
+        # with the one actually enforcing, and the disagreement shows up in the
+        # air. So the node READS them from PX4 over MAVROS and refuses to offer
+        # the arm until it has (`_sync_limits_from_fcu`).
+        #
+        # THIS MOVES A DECISION ONTO THE VEHICLE. PX4 ships MPC_XY_VEL_MAX at
+        # 12 m/s, which is not a speed to cross a field at toward a trailer with
+        # people near it. Set it on the FCU to the speed you actually want —
+        # that is now the only place it is set, for offboard and for the pilot
+        # alike.
+        #
+        # A positive value here overrides the fetch for one run. It is an escape
+        # hatch for a bench, not a default: 0 means "ask PX4".
+        p('cruise_v_max_m_s', 0.0)
+        p('cruise_accel_m_s2', 0.0)          # also slews the commanded velocity
+        p('cruise_jerk_m_s3', 0.0)           # the tracking MPC's jerk bound
+        p('fcu_speed_param', 'MPC_XY_VEL_MAX')
+        p('fcu_accel_param', 'MPC_ACC_HOR')
+        p('fcu_jerk_param', 'MPC_JERK_AUTO')
         # Within this -> start searching. Tight on purpose: the search footprint
         # at `search_alt_m` is only ~1.5 m in its short axis with the current
         # marker, so arriving loosely is arriving with the marker out of frame.
@@ -652,6 +680,10 @@ class ArucoLandingNode(Node):
         self.cruise_kp = float(g('cruise_kp').value)
         self.cruise_v_max = float(g('cruise_v_max_m_s').value)
         self.cruise_accel = float(g('cruise_accel_m_s2').value)
+        self.cruise_jerk = float(g('cruise_jerk_m_s3').value)
+        self.fcu_speed_param = str(g('fcu_speed_param').value)
+        self.fcu_accel_param = str(g('fcu_accel_param').value)
+        self.fcu_jerk_param = str(g('fcu_jerk_param').value)
         self.cruise_arrive = float(g('cruise_arrive_m').value)
         self.arrival_speed = float(
             g('arrival_speed_tolerance_m_s').value)
@@ -694,12 +726,15 @@ class ArucoLandingNode(Node):
                 and not all(math.isfinite(v) and v > 0.0
                             for v in route_values)):
             raise ValueError('route timing and follower values must be positive')
-        if (self.planned_cruise
-                and (not math.isfinite(self.cruise_v_max)
-                     or self.cruise_v_max <= 0.0
-                     or not math.isfinite(self.cruise_accel)
-                     or self.cruise_accel <= 0.0)):
-            raise ValueError('route cruise speed and acceleration must be positive')
+        # 0 does NOT mean "no limit" here, it means "PX4 has it" — the fetch
+        # fills these in and the arm gate blocks until it has. A negative or
+        # non-finite override is still a mistake worth refusing to start on.
+        for _name, _value in (('cruise_v_max_m_s', self.cruise_v_max),
+                              ('cruise_accel_m_s2', self.cruise_accel),
+                              ('cruise_jerk_m_s3', self.cruise_jerk)):
+            if not math.isfinite(_value) or _value < 0.0:
+                raise ValueError(
+                    f'{_name} must be positive, or 0 to take PX4\'s value')
         self.gimbal_aim_topic = str(g('gimbal_aim_topic').value)
         self.gimbal_attitude_topic = str(g('gimbal_attitude_topic').value)
         self.gimbal_track = bool(g('gimbal_track').value)
@@ -1107,6 +1142,108 @@ class ArucoLandingNode(Node):
     def _reset_mpc_output(self) -> None:
         self._last_mpc_acceleration = np.zeros(3)
         self._last_mpc_acceleration_t = None
+
+    # ------------------------------------------------------- PX4 flight limits
+    def _flight_limits_ready(self) -> bool:
+        """True once every limit has a positive value to fly on."""
+        return (self.cruise_v_max > 0.0 and self.cruise_accel > 0.0
+                and self.cruise_jerk > 0.0)
+
+    def _build_path_mpc(self) -> None:
+        """Build the tracking MPC on the vehicle's own bounds.
+
+        Same Wang equations and cost weights as the simulation; only the
+        actuator bounds differ, and they are PX4's rather than a number written
+        here. No-op until the limits have arrived.
+        """
+        if not self.planned_cruise or not self._flight_limits_ready():
+            return
+        self._path_mpc = self._tracking_mpc_cls(
+            dt_s=0.1, horizon=20,
+            v_max=self.cruise_v_max, a_max=self.cruise_accel,
+            j_max=self.cruise_jerk, q_pos=4.0, q_vel=0.4, r_acc=0.05,
+            q_terminal=20.0)
+
+    def _sync_limits_from_fcu(self) -> None:
+        """Ask PX4 how fast and how hard this airframe may be flown.
+
+        Retried until it lands. PARAMETER_NOT_SET means MAVROS has not finished
+        pulling the FCU's parameter table yet, NOT that the parameter is
+        missing — `path_plan/mavros_static_path.py` hit the same thing, and
+        treating it as an error there cost a flight.
+        """
+        if self._fcu_limits_req or self._flight_limits_ready():
+            return
+        if not (self.state and self.state.connected):
+            return
+        if not self.fcu_param_cli.service_is_ready():
+            return
+        self._fcu_limits_req = True
+        future = self.fcu_param_cli.call_async(
+            GetParameters.Request(names=list(self._fcu_limit_names())))
+        future.add_done_callback(self._on_fcu_limits)
+
+    def _fcu_limit_names(self) -> tuple[str, str, str]:
+        return (self.fcu_speed_param, self.fcu_accel_param, self.fcu_jerk_param)
+
+    def _on_fcu_limits(self, future) -> None:
+        self._fcu_limits_req = False
+        names = self._fcu_limit_names()
+        try:
+            values = future.result().values
+        except Exception as exc:                       # noqa: BLE001
+            self.get_logger().warn(
+                f'could not read the PX4 flight limits ({exc}) — retrying',
+                throttle_duration_sec=5.0)
+            return
+        if len(values) != len(names):
+            self.get_logger().warn(
+                f'MAVROS returned {len(values)} of {len(names)} flight limits '
+                f'— retrying', throttle_duration_sec=5.0)
+            return
+        limits = {}
+        for name, pv in zip(names, values):
+            if pv.type == ParameterType.PARAMETER_NOT_SET:
+                self.get_logger().info(
+                    f'{name} not synced from the FCU yet — retrying',
+                    throttle_duration_sec=5.0)
+                return
+            value = (pv.double_value
+                     if pv.type == ParameterType.PARAMETER_DOUBLE
+                     else float(pv.integer_value))
+            if not math.isfinite(value) or value <= 0.0:
+                # Not something to substitute a default for: the vehicle is
+                # telling us its own limit is unusable, and inventing one here
+                # is exactly the second copy this reads PX4 to avoid.
+                self.get_logger().error(
+                    f'{name}={value} on the FCU is not a usable limit — set it '
+                    f'on the vehicle; this mission will not arm without it',
+                    throttle_duration_sec=10.0)
+                return
+            limits[name] = value
+
+        # A positive parameter here was an explicit override; PX4 fills the rest.
+        overridden = []
+        if self.cruise_v_max > 0.0:
+            overridden.append('speed')
+        else:
+            self.cruise_v_max = limits[self.fcu_speed_param]
+        if self.cruise_accel > 0.0:
+            overridden.append('acceleration')
+        else:
+            self.cruise_accel = limits[self.fcu_accel_param]
+        if self.cruise_jerk > 0.0:
+            overridden.append('jerk')
+        else:
+            self.cruise_jerk = limits[self.fcu_jerk_param]
+        note = (f' (overridden here: {", ".join(overridden)})'
+                if overridden else '')
+        self.get_logger().info(
+            f'flight limits from PX4: {self.cruise_v_max:.2f} m/s '
+            f'({self.fcu_speed_param}), {self.cruise_accel:.2f} m/s^2 '
+            f'({self.fcu_accel_param}), {self.cruise_jerk:.2f} m/s^3 '
+            f'({self.fcu_jerk_param}){note}')
+        self._build_path_mpc()
 
     def _reset_path_mpc(self) -> None:
         if self._path_mpc is not None:
@@ -1881,6 +2018,15 @@ class ArucoLandingNode(Node):
         # A live target proves radio, both fixes and the WGS84 -> Local ENU chain.
         if self.cruise:
             overridable.extend(self._cruise_preflight())
+        # PX4 OWNS THE LIMITS, so no limits means no flight — and it is a hard
+        # blocker, not a waivable one. `skip_preflight` exists to fly without a
+        # battery reading on a bench; it does not exist to fly a vehicle whose
+        # maximum speed nothing in this process knows.
+        if ((self.cruise or self.planned_cruise)
+                and not self._flight_limits_ready()):
+            reasons.append(
+                'speed and acceleration limits not read from the FCU yet ('
+                + ', '.join(self._fcu_limit_names()) + ')')
         # A missing target can be waived for an ordinary bench rehearsal, but a
         # planned route may never turn that waiver into direct obstacle-blind
         # flight. Its map/input/certification checks remain hard blockers.
@@ -1952,6 +2098,10 @@ class ArucoLandingNode(Node):
     def _tick(self) -> None:
         self._drain_stdin_commands()
         self._publish_state()
+        # Ask the FCU for its speed/acceleration limits until it answers. Cheap
+        # and self-cancelling: `_sync_limits_from_fcu` returns immediately once
+        # they are in hand.
+        self._sync_limits_from_fcu()
 
         # Keep the offboard stream alive, unconditionally, for every armed /
         # about-to-be-armed phase — BEFORE the phase logic, so a phase that

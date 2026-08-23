@@ -452,6 +452,106 @@ def _gate_state(calls, phase=Phase.READY_TO_ARM, blockers=()):
     return state
 
 
+def _pv(value, type_=None):
+    from rcl_interfaces.msg import ParameterType
+    return SimpleNamespace(
+        type=ParameterType.PARAMETER_DOUBLE if type_ is None else type_,
+        double_value=float(value), integer_value=int(value))
+
+
+def _future(values):
+    return SimpleNamespace(result=lambda: SimpleNamespace(values=values))
+
+
+def _limits_state(calls, v=0.0, a=0.0, j=0.0):
+    state = SimpleNamespace(
+        cruise_v_max=v, cruise_accel=a, cruise_jerk=j,
+        fcu_speed_param='MPC_XY_VEL_MAX',
+        fcu_accel_param='MPC_ACC_HOR',
+        fcu_jerk_param='MPC_JERK_AUTO',
+        planned_cruise=True,
+        _fcu_limits_req=True,
+        get_logger=lambda: _Logger(),
+        _build_path_mpc=lambda: calls.append('build'),
+    )
+    state._fcu_limit_names = lambda: ArucoLandingNode._fcu_limit_names(state)
+    state._flight_limits_ready = (
+        lambda: ArucoLandingNode._flight_limits_ready(state))
+    return state
+
+
+def test_the_flight_limits_come_from_px4():
+    calls = []
+    state = _limits_state(calls)
+    assert not state._flight_limits_ready()
+    ArucoLandingNode._on_fcu_limits(
+        state, _future([_pv(4.0), _pv(2.0), _pv(3.0)]))
+    assert (state.cruise_v_max, state.cruise_accel, state.cruise_jerk) == (
+        4.0, 2.0, 3.0)
+    assert calls == ['build']
+
+
+def test_a_limit_the_fcu_has_not_synced_yet_is_retried_not_defaulted():
+    from rcl_interfaces.msg import ParameterType
+    calls = []
+    state = _limits_state(calls)
+    ArucoLandingNode._on_fcu_limits(state, _future([
+        _pv(4.0), _pv(0.0, ParameterType.PARAMETER_NOT_SET), _pv(3.0)]))
+    # Nothing adopted, nothing built, and the request flag is clear so the next
+    # tick asks again. PARAMETER_NOT_SET is MAVROS still pulling the table.
+    assert state.cruise_v_max == 0.0 and calls == []
+    assert state._fcu_limits_req is False
+
+
+def test_an_unusable_fcu_limit_is_refused_rather_than_replaced():
+    calls = []
+    state = _limits_state(calls)
+    ArucoLandingNode._on_fcu_limits(
+        state, _future([_pv(0.0), _pv(2.0), _pv(3.0)]))
+    assert not state._flight_limits_ready() and calls == []
+
+
+def test_an_explicit_override_survives_the_fetch():
+    calls = []
+    state = _limits_state(calls, v=1.5)
+    ArucoLandingNode._on_fcu_limits(
+        state, _future([_pv(12.0), _pv(2.0), _pv(3.0)]))
+    assert state.cruise_v_max == 1.5      # the override, not PX4's 12
+    assert state.cruise_accel == 2.0      # the rest still PX4's
+
+
+def test_missing_limits_block_the_arm_even_with_skip_preflight():
+    logger = _Logger()
+    state = SimpleNamespace(
+        pose=SimpleNamespace(pose=SimpleNamespace(position=SimpleNamespace(
+            x=0.0, y=0.0, z=0.0))),
+        require_gnss=False,
+        state=SimpleNamespace(connected=True, armed=False),
+        require_batt=False,
+        batt=None,
+        _detector_seen=True,
+        marker_detected_topic='/perception/down/aruco_detected',
+        cruise=True,
+        planned_cruise=False,
+        _cruise_preflight=lambda: [],
+        cruise_v_max=0.0, cruise_accel=0.0, cruise_jerk=0.0,
+        fcu_speed_param='MPC_XY_VEL_MAX',
+        fcu_accel_param='MPC_ACC_HOR',
+        fcu_jerk_param='MPC_JERK_AUTO',
+        skip_preflight=True,
+        _waived=set(),
+        _now=lambda: 100.0,
+        _t_phase=0.0,
+        get_logger=lambda: logger,
+    )
+    state._fcu_limit_names = lambda: ArucoLandingNode._fcu_limit_names(state)
+    state._flight_limits_ready = (
+        lambda: ArucoLandingNode._flight_limits_ready(state))
+    assert not ArucoLandingNode._preflight_ok(state)
+    assert any('limits not read from the FCU' in message
+               for _level, message in logger.messages)
+
+
 def test_the_arm_is_the_only_gate():
     calls = []
     state = _gate_state(calls)
@@ -495,6 +595,7 @@ def test_ready_starts_the_mission_leg_without_an_operator():
         phase=Phase.READY,
         planned_cruise=True,
         _drain_stdin_commands=lambda: None,
+        _sync_limits_from_fcu=lambda: None,
         _publish_state=lambda: None,
         _send=lambda *_args: None,
         _route_update=lambda: None,
@@ -520,6 +621,7 @@ def test_ready_gives_up_the_mission_leg_forward_not_backward():
         phase=Phase.READY,
         planned_cruise=True,
         _drain_stdin_commands=lambda: None,
+        _sync_limits_from_fcu=lambda: None,
         _publish_state=lambda: None,
         _send=lambda *_args: None,
         _route_update=lambda: None,
@@ -574,6 +676,7 @@ def test_takeoff_reaches_ready_without_flying_to_the_trailer():
         phase=Phase.TAKEOFF,
         planned_cruise=True,
         _drain_stdin_commands=lambda: None,
+        _sync_limits_from_fcu=lambda: None,
         _publish_state=lambda: None,
         _send=lambda *_args: calls.append(('setpoint',)),
         _route_update=lambda: None,
@@ -597,6 +700,7 @@ def test_takeoff_waits_until_velocity_is_settled():
         phase=Phase.TAKEOFF,
         planned_cruise=True,
         _drain_stdin_commands=lambda: None,
+        _sync_limits_from_fcu=lambda: None,
         _publish_state=lambda: None,
         _send=lambda *_args: None,
         _route_update=lambda: None,
@@ -649,6 +753,7 @@ def test_hover_keeps_the_tracking_mpc_reference_and_returns_by_itself():
         phase=Phase.HOVER,
         planned_cruise=True,
         _drain_stdin_commands=lambda: None,
+        _sync_limits_from_fcu=lambda: None,
         _publish_state=lambda: None,
         _route_mpc_command=lambda: calls.append('tracking_mpc') or (True, 0.0),
         _hold=lambda: calls.append('hold'),
@@ -697,6 +802,7 @@ def test_mpc_setpoint_precedes_completed_route_commit_work():
         phase=Phase.MISSION,
         planned_cruise=True,
         _drain_stdin_commands=lambda: None,
+        _sync_limits_from_fcu=lambda: None,
         _publish_state=lambda: None,
         _mission_to_goal=lambda: calls.append('setpoint'),
         _route_update=lambda: calls.append('route_update'),
@@ -711,6 +817,7 @@ def test_return_planning_timeout_lands_instead_of_hovering_forever():
         phase=Phase.RETURN_PLAN,
         planned_cruise=True,
         _drain_stdin_commands=lambda: None,
+        _sync_limits_from_fcu=lambda: None,
         _publish_state=lambda: None,
         _send=lambda *_args: calls.append('heartbeat'),
         _route_update=lambda: None,
@@ -966,6 +1073,7 @@ def _arming_state(*, armed, preflight_ok):
         phase=Phase.ARMING,
         planned_cruise=False,
         _drain_stdin_commands=lambda: None,
+        _sync_limits_from_fcu=lambda: None,
         state=SimpleNamespace(armed=armed, mode='OFFBOARD'),
         _publish_state=lambda: None,
         _send=lambda *_args: calls.append(('setpoint',)),
