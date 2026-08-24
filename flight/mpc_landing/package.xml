@@ -18,6 +18,9 @@
   <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>mavros_msgs</exec_depend>
+  <!-- the viewer feed: /mission/obstacles, /mission/route, /mission/flown -->
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>visualization_msgs</exec_depend>
   <exec_depend>path_plan</exec_depend>
   <exec_depend>trailer_link</exec_depend>
   <exec_depend>python3-numpy</exec_depend>

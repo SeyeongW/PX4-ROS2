@@ -128,6 +128,12 @@ Publishes
     /mavros/setpoint_raw/local             mavros_msgs/PositionTarget
     /siyi_gimbal_node/aim                  geometry_msgs/Vector3Stamped
     ~/state                                std_msgs/String
+    /mission/obstacles                     visualization_msgs/MarkerArray
+                                           (latched; planned_cruise only)
+    /mission/route                         nav_msgs/Path   the certified plan
+    /mission/flown                         nav_msgs/Path   where it actually went
+    /mission/clearance                     std_msgs/Float32  m to the nearest box
+    /mission/accel_scale                   std_msgs/Float32  fraction of a_max
 Services (offered)
     ~/approve, ~/abort                     std_srvs/Trigger
 Services (called)
@@ -161,8 +167,10 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import (DurabilityPolicy, HistoryPolicy, QoSProfile,
                        ReliabilityPolicy)
+from nav_msgs.msg import Path as PathMsg      # `Path` here is pathlib's
 from sensor_msgs.msg import BatteryState, NavSatFix, NavSatStatus
-from std_msgs.msg import Bool, String
+from std_msgs.msg import Bool, ColorRGBA, Float32, String
+from visualization_msgs.msg import Marker, MarkerArray
 from std_srvs.srv import Trigger
 
 from rcl_interfaces.msg import ParameterType
@@ -406,6 +414,24 @@ class ArucoLandingNode(Node):
         self.state_pub = self.create_publisher(String, '~/state', 10)
         self.aim_pub = self.create_publisher(Vector3Stamped,
                                              self.gimbal_aim_topic, 10)
+        # ABSOLUTE, not node-relative like ~/state: the obstacle field and the
+        # route look the same whichever mission node is flying them, so one
+        # RViz config has to work for both without editing topic names.
+        # Latched, so RViz started AFTER the mission still gets the obstacles.
+        latched = QoSProfile(depth=1, history=HistoryPolicy.KEEP_LAST,
+                             reliability=ReliabilityPolicy.RELIABLE,
+                             durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        self.obstacle_pub = self.create_publisher(
+            MarkerArray, '/mission/obstacles', latched)
+        self.route_pub = self.create_publisher(PathMsg, '/mission/route', latched)
+        self.flown_pub = self.create_publisher(PathMsg, '/mission/flown', 10)
+        self.clearance_pub = self.create_publisher(
+            Float32, '/mission/clearance', 10)
+        self.accel_scale_pub = self.create_publisher(
+            Float32, '/mission/accel_scale', 10)
+        self._viz_flown: list[tuple[float, float, float]] = []
+        self._viz_route_seq = None
+        self._viz_origin = None
 
         self.mode_cli = self.create_client(SetMode, '/mavros/set_mode')
         self.arm_cli = self.create_client(CommandBool, '/mavros/cmd/arming')
@@ -556,6 +582,20 @@ class ArucoLandingNode(Node):
         # The floor is not zero: in the tightest corridor the planner is willing
         # to certify, the tracker still needs the authority to STAY on the path,
         # and an MPC bounded to no acceleration cannot hold a line at all.
+        # --- what a viewer can see -------------------------------------------
+        # The mission plans in a spawn worker and flies out of a private
+        # attribute, so without these NOTHING it decides is observable: the
+        # obstacles exist only inside `cju_route`, and the route only inside
+        # `_route_active`. They are published from HERE, not from a separate
+        # viewer node, because the site origin that places them in the
+        # vehicle's own ENU frame is derived at runtime from the fix pair — a
+        # second node re-deriving it would draw a picture that looks right and
+        # is not the one being flown.
+        p('publish_viz', True)
+        p('viz_period_s', 0.5)
+        # How much of the flown track to keep. At 2 Hz this is ~8 minutes,
+        # longer than the mission and short enough that RViz redraws it freely.
+        p('viz_flown_max_points', 1000)
         p('obstacle_accel_scaling', True)
         p('obstacle_accel_full_clearance_m', 5.0)
         p('obstacle_accel_min_fraction', 0.25)
@@ -708,6 +748,9 @@ class ArucoLandingNode(Node):
         self.fcu_speed_param = str(g('fcu_speed_param').value)
         self.fcu_accel_param = str(g('fcu_accel_param').value)
         self.fcu_jerk_param = str(g('fcu_jerk_param').value)
+        self.publish_viz = bool(g('publish_viz').value)
+        self.viz_period = float(g('viz_period_s').value)
+        self.viz_flown_max = int(g('viz_flown_max_points').value)
         self.obstacle_accel_scaling = bool(g('obstacle_accel_scaling').value)
         self.obstacle_accel_full = float(
             g('obstacle_accel_full_clearance_m').value)
@@ -1199,6 +1242,133 @@ class ArucoLandingNode(Node):
             v_max=self.cruise_v_max, a_max=self.cruise_accel,
             j_max=self.cruise_jerk, q_pos=4.0, q_vel=0.4, r_acc=0.05,
             q_terminal=20.0)
+
+    # -------------------------------------------------------------- viewer
+    def _viz_site_origin(self) -> np.ndarray | None:
+        """The origin the mission is ACTUALLY flying against, or None."""
+        if self._route_active is not None:
+            return np.asarray(self._route_active[1], float)
+        return self._route_synchronized_site_origin()
+
+    def _stamp(self):
+        return self.get_clock().now().to_msg()
+
+    def _obstacle_markers(self, origin) -> MarkerArray:
+        """The virtual field, twice: what is there and what is avoided.
+
+        The site frame is rotated from the vehicle's local ENU by the map's
+        heading, so a box that is axis-aligned on the map is NOT axis-aligned
+        here — hence a CUBE with an orientation rather than a min/max pair. Map
+        +x lands along (cos h, sin h) in local ENU, so the marker yaw IS the
+        map heading.
+
+        The second, larger and translucent copy is the box the PLANNER sees:
+        every obstacle grown by `vehicle_clearance_m` on both sides. Without it
+        a viewer cannot tell a route that swerves early from a route that
+        swerved for no reason — the gap it is respecting is invisible.
+        """
+        info = self._route_map_info
+        rotation = self._route_lib.rotation_for_heading(info.heading_deg_enu)
+        heading = math.radians(info.heading_deg_enu)
+        half = math.sin(0.5 * heading), math.cos(0.5 * heading)
+        boxes = self._route_lib.obstacle_boxes(self.route_map_yaml)
+        markers = MarkerArray()
+        for index, (name, centre, size) in enumerate(boxes):
+            local = self._route_lib.map_to_local(
+                np.asarray(centre[:2], float)[None, :], origin, rotation)[0]
+            for namespace, grow, colour in (
+                    ('obstacles', 0.0, ColorRGBA(r=0.85, g=0.25, b=0.2, a=0.9)),
+                    ('clearance', info.vehicle_clearance_m,
+                     ColorRGBA(r=0.95, g=0.65, b=0.1, a=0.18))):
+                marker = Marker()
+                marker.header.frame_id = self.map_frame
+                marker.header.stamp = self._stamp()
+                marker.ns = namespace
+                marker.id = index
+                marker.type = Marker.CUBE
+                marker.action = Marker.ADD
+                marker.pose.position.x = float(local[0])
+                marker.pose.position.y = float(local[1])
+                marker.pose.position.z = float(centre[2])
+                marker.pose.orientation.z, marker.pose.orientation.w = half
+                marker.scale.x = float(size[0]) + 2.0 * grow
+                marker.scale.y = float(size[1]) + 2.0 * grow
+                marker.scale.z = float(size[2])
+                marker.color = colour
+                marker.text = name
+                markers.markers.append(marker)
+        return markers
+
+    def _path_message(self, points) -> PathMsg:
+        message = PathMsg()
+        message.header.frame_id = self.map_frame
+        message.header.stamp = self._stamp()
+        for x, y, z in points:
+            pose = PoseStamped()
+            pose.header = message.header
+            pose.pose.position.x = float(x)
+            pose.pose.position.y = float(y)
+            pose.pose.position.z = float(z)
+            pose.pose.orientation.w = 1.0
+            message.poses.append(pose)
+        return message
+
+    def _publish_viz(self) -> None:
+        """Everything a viewer needs, at `viz_period_s`. Never blocks a setpoint.
+
+        Called after the setpoint heartbeat in `_tick` for that reason: a
+        picture is worth exactly nothing if drawing it costs the offboard
+        stream its deadline.
+        """
+        if not self.publish_viz:
+            return
+        # The flown track is sampled independently of the publish rate: it is a
+        # record of where the vehicle WAS, and thinning it by time would lose
+        # the corners, which are the part worth seeing.
+        if self.pose is not None:
+            point = (self.pose.pose.position.x, self.pose.pose.position.y,
+                     self._alt())
+            if (not self._viz_flown
+                    or math.dist(point, self._viz_flown[-1]) > 0.25):
+                self._viz_flown.append(point)
+                del self._viz_flown[:-self.viz_flown_max]
+        if not self._due('viz', self.viz_period):
+            return
+        if self._viz_flown:
+            self.flown_pub.publish(self._path_message(self._viz_flown))
+        if not self.planned_cruise:
+            return
+        origin = self._viz_site_origin()
+        if origin is None:
+            return
+        # Republish the field when the origin MOVES, not on a timer: the origin
+        # is re-derived from the fix pair every tick, so it jitters by
+        # centimetres, and redrawing 50 markers for that is noise. A metre is a
+        # different anchor and a different picture.
+        if (self._viz_origin is None
+                or float(np.linalg.norm(origin - self._viz_origin)) > 1.0):
+            self._viz_origin = np.asarray(origin, float).copy()
+            self.obstacle_pub.publish(self._obstacle_markers(origin))
+        if self._route_active is not None:
+            plan, _origin, _goal, seq, _committed = self._route_active
+            if seq != self._viz_route_seq:
+                self._viz_route_seq = seq
+                altitude = self._takeoff_target()
+                self.route_pub.publish(self._path_message(
+                    [(x, y, altitude) for x, y in plan.path_local_xy]))
+        elif self._viz_route_seq is not None:
+            self._viz_route_seq = None
+            self.route_pub.publish(self._path_message([]))
+        # The two numbers behind the acceleration the vehicle is actually being
+        # allowed — the answer to "why did it slow down there".
+        if self.pose is not None:
+            clearance = self._route_lib.clearance(
+                self.route_map_yaml, origin,
+                (self.pose.pose.position.x, self.pose.pose.position.y))
+            self.clearance_pub.publish(Float32(data=float(clearance)))
+            scale = (self._obstacle_accel_limit() / self.cruise_accel
+                     if self.cruise_accel > 0.0 else 0.0)
+            self.accel_scale_pub.publish(Float32(data=float(scale)))
 
     def _obstacle_accel_limit(self) -> float:
         """How hard the vehicle may accelerate at the point it is at now.
@@ -2190,6 +2360,7 @@ class ArucoLandingNode(Node):
         # splice work may not delay the first setpoint of this tick.
         if self.planned_cruise and not mpc_phase:
             self._route_update()
+        self._publish_viz()
 
         if self.phase is Phase.PRECHECK:
             if self._preflight_ok():

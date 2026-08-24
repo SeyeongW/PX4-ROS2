@@ -337,6 +337,30 @@ def segment_is_free(map_yaml: str, site_origin_local_xy, start_local_xy,
         return False
 
 
+@lru_cache(maxsize=8)
+def obstacle_boxes(map_yaml: str) -> tuple[tuple[str, tuple[float, float, float],
+                                                tuple[float, float, float]], ...]:
+    """The mission's obstacles as (name, centre_xyz, size_xyz) in the SITE frame.
+
+    Read from the document rather than from `_world`, because `_world` stretches
+    every obstacle to +-10 km in z to forbid overflight. That is the right box
+    to plan against and the wrong one to draw: a viewer that showed it would
+    render 25 walls to the stratosphere instead of the 10 m poles the field is
+    supposed to represent.
+    """
+    document = _document(str(map_yaml))
+    out = []
+    for index, obstacle in enumerate(document['mission'].get('obstacles', [])):
+        name = str(obstacle.get('name', f'obstacle_{index}'))
+        centre = _finite_vector(f'obstacle {name} center_m',
+                                obstacle['center_m'], 3)
+        size = _finite_vector(f'obstacle {name} size_m', obstacle['size_m'], 3)
+        if np.any(size <= 0.0):
+            raise ValueError('obstacle sizes must be positive')
+        out.append((name, tuple(map(float, centre)), tuple(map(float, size))))
+    return tuple(out)
+
+
 def clearance(map_yaml: str, site_origin_local_xy, local_xy) -> float:
     """Distance from one local-ENU point to the nearest obstacle, in metres.
 

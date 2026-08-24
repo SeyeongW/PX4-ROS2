@@ -1,4 +1,5 @@
 import io
+import math
 import multiprocessing
 import queue
 import sys
@@ -598,6 +599,54 @@ def test_an_unmeasurable_position_takes_the_floor():
         _accel_state(50.0, origin=False)) == 1.0
 
 
+def test_obstacle_markers_land_where_the_planner_thinks_they_are():
+    import path_plan.cju_route as route_lib
+    from builtin_interfaces.msg import Time
+    from pathlib import Path as _Path
+
+    map_yaml = str(_Path(__file__).parents[2] / 'path_plan' / 'config'
+                   / 'drone_cju_route.yaml')
+    info = route_lib.route_map_info(map_yaml)
+    rotation = route_lib.rotation_for_heading(info.heading_deg_enu)
+    origin = np.array([12.0, -7.0])
+    state = SimpleNamespace(
+        _route_map_info=info,
+        _route_lib=route_lib,
+        route_map_yaml=map_yaml,
+        map_frame='map',
+        _stamp=lambda: Time(),
+    )
+    markers = ArucoLandingNode._obstacle_markers(state, origin)
+    boxes = route_lib.obstacle_boxes(map_yaml)
+    assert len(markers.markers) == 2 * len(boxes)
+
+    solid = [m for m in markers.markers if m.ns == 'obstacles']
+    grown = [m for m in markers.markers if m.ns == 'clearance']
+    for marker, grown_marker, (name, centre, size) in zip(solid, grown, boxes):
+        # Every marker must convert BACK to the coordinate the planner avoids.
+        # This is the whole correctness claim of the overlay: a picture drawn
+        # against a different origin looks entirely reasonable and is a lie.
+        back = route_lib.local_to_map(
+            np.array([[marker.pose.position.x, marker.pose.position.y]]),
+            origin, rotation)[0]
+        assert np.allclose(back, centre[:2], atol=1.0e-9)
+        assert marker.text == name
+        assert (marker.scale.x, marker.scale.y) == (size[0], size[1])
+        # The grown copy is what the route is actually planned against.
+        assert grown_marker.scale.x == size[0] + 2.0 * info.vehicle_clearance_m
+        assert grown_marker.scale.z == size[2]
+
+    # And the yaw must be the map heading: a step along map +x has to come out
+    # along the marker's own +x, or every box is drawn turned the wrong way.
+    marker = solid[0]
+    yaw = 2.0 * math.atan2(marker.pose.orientation.z, marker.pose.orientation.w)
+    centre = np.asarray(boxes[0][1][:2], float)
+    step = (route_lib.map_to_local((centre + [1.0, 0.0])[None, :], origin,
+                                   rotation)[0]
+            - route_lib.map_to_local(centre[None, :], origin, rotation)[0])
+    assert np.allclose(step, [math.cos(yaw), math.sin(yaw)], atol=1.0e-9)
+
+
 def test_the_arm_is_the_only_gate():
     calls = []
     state = _gate_state(calls)
@@ -642,6 +691,7 @@ def test_ready_starts_the_mission_leg_without_an_operator():
         planned_cruise=True,
         _drain_stdin_commands=lambda: None,
         _sync_limits_from_fcu=lambda: None,
+        _publish_viz=lambda: None,
         _publish_state=lambda: None,
         _send=lambda *_args: None,
         _route_update=lambda: None,
@@ -668,6 +718,7 @@ def test_ready_gives_up_the_mission_leg_forward_not_backward():
         planned_cruise=True,
         _drain_stdin_commands=lambda: None,
         _sync_limits_from_fcu=lambda: None,
+        _publish_viz=lambda: None,
         _publish_state=lambda: None,
         _send=lambda *_args: None,
         _route_update=lambda: None,
@@ -723,6 +774,7 @@ def test_takeoff_reaches_ready_without_flying_to_the_trailer():
         planned_cruise=True,
         _drain_stdin_commands=lambda: None,
         _sync_limits_from_fcu=lambda: None,
+        _publish_viz=lambda: None,
         _publish_state=lambda: None,
         _send=lambda *_args: calls.append(('setpoint',)),
         _route_update=lambda: None,
@@ -747,6 +799,7 @@ def test_takeoff_waits_until_velocity_is_settled():
         planned_cruise=True,
         _drain_stdin_commands=lambda: None,
         _sync_limits_from_fcu=lambda: None,
+        _publish_viz=lambda: None,
         _publish_state=lambda: None,
         _send=lambda *_args: None,
         _route_update=lambda: None,
@@ -800,6 +853,7 @@ def test_hover_keeps_the_tracking_mpc_reference_and_returns_by_itself():
         planned_cruise=True,
         _drain_stdin_commands=lambda: None,
         _sync_limits_from_fcu=lambda: None,
+        _publish_viz=lambda: None,
         _publish_state=lambda: None,
         _route_mpc_command=lambda: calls.append('tracking_mpc') or (True, 0.0),
         _hold=lambda: calls.append('hold'),
@@ -849,6 +903,7 @@ def test_mpc_setpoint_precedes_completed_route_commit_work():
         planned_cruise=True,
         _drain_stdin_commands=lambda: None,
         _sync_limits_from_fcu=lambda: None,
+        _publish_viz=lambda: None,
         _publish_state=lambda: None,
         _mission_to_goal=lambda: calls.append('setpoint'),
         _route_update=lambda: calls.append('route_update'),
@@ -864,6 +919,7 @@ def test_return_planning_timeout_lands_instead_of_hovering_forever():
         planned_cruise=True,
         _drain_stdin_commands=lambda: None,
         _sync_limits_from_fcu=lambda: None,
+        _publish_viz=lambda: None,
         _publish_state=lambda: None,
         _send=lambda *_args: calls.append('heartbeat'),
         _route_update=lambda: None,
@@ -1128,6 +1184,7 @@ def _arming_state(*, armed, preflight_ok):
         planned_cruise=False,
         _drain_stdin_commands=lambda: None,
         _sync_limits_from_fcu=lambda: None,
+        _publish_viz=lambda: None,
         state=SimpleNamespace(armed=armed, mode='OFFBOARD'),
         _publish_state=lambda: None,
         _send=lambda *_args: calls.append(('setpoint',)),
