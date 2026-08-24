@@ -49,9 +49,17 @@ therefore refuses every preflight on this firmware, which is what it did:
     pos_horiz_abs         true       > GNSS demonstrably being fused
     pred_pos_horiz_abs    true      /
 
-So the flag is read together with the aiding flags rather than alone. A real
-fake_pos fallback drops velocity_horiz and pos_horiz_abs — that is the pad state
-at the top of this file, and it still blocks. A parked, fully aided EKF does not.
+The discriminator is pred_pos_horiz_abs, which PX4 sets from
+
+    _control_status.flags.gnss_pos || _control_status.flags.aux_gpos
+
+— GNSS position aiding is active RIGHT NOW. velocity_horiz and pos_horiz_abs are
+the wrong tool for this job even though they look right: both reduce to
+`!_horizontal_deadreckon_time_exceeded` (ekf.h), so they stay true for the whole
+dead-reckoning timeout after a real fallback begins. Reading them would have
+declared the vehicle healthy through exactly the window the block exists to
+catch. So const_pos_mode blocks when GNSS aiding is NOT active, and a parked,
+fully aided EKF passes.
 
 So this module answers one question — can PX4 hold position right now? — from
 telemetry the node already receives, and answers it BEFORE the operator is
@@ -118,6 +126,11 @@ class EstimatorHealth:
         self.const_pos_mode = False
         self.velocity_horiz = False
         self.pos_horiz_abs = False
+        #: pred_pos_horiz_abs: PX4's gnss_pos/aux_gpos control flag. DEFAULTS
+        #: TRUE because it only ever SUPPRESSES a block, and this module refuses
+        #: on observed state alone — a caller that cannot supply it has told us
+        #: nothing about aiding, which is not evidence of a fallback.
+        self.gnss_pos_aiding = True
         self.gps_glitch = False
 
         self._t_gps: float | None = None
@@ -129,11 +142,13 @@ class EstimatorHealth:
     # ------------------------------------------------------------------ input
     def on_status(self, t: float, *, const_pos_mode: bool,
                   velocity_horiz: bool, pos_horiz_abs: bool,
+                  gnss_pos_aiding: bool = True,
                   gps_glitch: bool = False) -> None:
         self._t_status = float(t)
         self.const_pos_mode = bool(const_pos_mode)
         self.velocity_horiz = bool(velocity_horiz)
         self.pos_horiz_abs = bool(pos_horiz_abs)
+        self.gnss_pos_aiding = bool(gnss_pos_aiding)
         self.gps_glitch = bool(gps_glitch)
 
     def on_gps(self, t: float, *, fix_type: int, satellites: int,
@@ -168,10 +183,10 @@ class EstimatorHealth:
             # const_pos_mode ALONE IS NOT EVIDENCE. See ONE FLAG, THREE CAUSES
             # above: on PX4 v1.18 it is also raised for a vehicle merely sitting
             # still, so a preflight that refuses on it refuses every preflight.
-            # The aiding flags are what separate a real fake_pos fallback from a
-            # parked-but-perfectly-aided EKF, so they qualify it here.
-            if self.const_pos_mode and not (self.velocity_horiz
-                                            and self.pos_horiz_abs):
+            # gnss_pos_aiding is what separates a real fake_pos fallback from a
+            # parked-but-perfectly-aided EKF. NOT velocity_horiz/pos_horiz_abs:
+            # those lag a fallback by the dead-reckoning timeout.
+            if self.const_pos_mode and not self.gnss_pos_aiding:
                 return ('EKF is in CONSTANT-POSITION mode — it is NOT fusing '
                         'GNSS, so the local position is dead reckoning and PX4 '
                         'will refuse OFFBOARD with "GPS speed accuracy". '

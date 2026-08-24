@@ -227,6 +227,7 @@ def test_route_flight_health_rejects_inaccurate_absolute_gps():
         const_pos_mode=False,
         velocity_horiz=True,
         pos_horiz_abs=True,
+        gnss_pos_aiding=True,
         gps_glitch=False,
         h_acc=0.41,
     )
@@ -268,6 +269,16 @@ def test_route_flight_health_rejects_inaccurate_absolute_gps():
     state.pose_t = state.velocity_t = 10.0
     state.velocity.twist.linear.x = 1.6
     assert ArucoLandingNode._route_flight_health_reason(state) is None
+
+    # The state this check actually met on the pad: PX4 v1.18 raises
+    # const_pos_mode for vehicle_at_rest, so every parked preflight looked like
+    # a fallback. Aided and parked must pass; unfused must still stop the route.
+    ekf.const_pos_mode = True
+    assert ArucoLandingNode._route_flight_health_reason(state) is None
+
+    ekf.gnss_pos_aiding = False
+    assert 'constant-position mode with GNSS unfused' in (
+        ArucoLandingNode._route_flight_health_reason(state) or '')
 
 
 def test_route_update_invalidates_an_active_anchor_on_health_loss():

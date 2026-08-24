@@ -372,6 +372,7 @@ class NaiveFlightNode(Node):
             const_pos_mode=m.const_pos_mode_status_flag,
             velocity_horiz=m.velocity_horiz_status_flag,
             pos_horiz_abs=m.pos_horiz_abs_status_flag,
+            gnss_pos_aiding=m.pred_pos_horiz_abs_status_flag,
             gps_glitch=m.gps_glitch_status_flag)
 
     def _on_gps(self, m: GPSRAW) -> None:

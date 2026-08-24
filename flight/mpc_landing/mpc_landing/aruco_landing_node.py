@@ -888,6 +888,7 @@ class ArucoLandingNode(Node):
             const_pos_mode=m.const_pos_mode_status_flag,
             velocity_horiz=m.velocity_horiz_status_flag,
             pos_horiz_abs=m.pos_horiz_abs_status_flag,
+            gnss_pos_aiding=m.pred_pos_horiz_abs_status_flag,
             gps_glitch=m.gps_glitch_status_flag)
 
     def _on_gps(self, m: GPSRAW) -> None:
@@ -1695,13 +1696,14 @@ class ArucoLandingNode(Node):
             return 'MAVROS estimator status is missing or stale'
         if not self.ekf.velocity_horiz or not self.ekf.pos_horiz_abs:
             return 'PX4 EKF has no absolute horizontal position aiding'
-        # Ordered AFTER the aiding flags on purpose: PX4 v1.18 raises
-        # const_pos_mode for a vehicle at rest as well as for a real fake_pos
-        # fallback (estimator.py), so on its own it would ground every preflight
-        # — a route check runs first while the vehicle is parked. Once the aiding
-        # flags are good the only remaining cause is a genuine fallback.
-        if self.ekf.const_pos_mode:
-            return 'PX4 EKF is in constant-position mode'
+        # QUALIFIED, not just reordered: PX4 v1.18 raises const_pos_mode for a
+        # vehicle at rest as well as for a real fake_pos fallback, and a route
+        # preflight runs while the vehicle is parked, so the bare flag grounds
+        # every flight. gnss_pos_aiding (pred_pos_horiz_abs) is the one input
+        # that tells the two apart — see ONE FLAG, THREE CAUSES in estimator.py
+        # for why the two flags checked just above cannot.
+        if self.ekf.const_pos_mode and not self.ekf.gnss_pos_aiding:
+            return 'PX4 EKF is in constant-position mode with GNSS unfused'
         if self.ekf.gps_glitch:
             return 'PX4 EKF reports a GPS glitch'
         if not self.ekf.gps_fresh(now):

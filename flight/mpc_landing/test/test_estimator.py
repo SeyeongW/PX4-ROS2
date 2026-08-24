@@ -33,12 +33,14 @@ def test_a_healthy_estimator_blocks_nothing():
 def test_the_state_that_actually_grounded_the_vehicle():
     """Pad measurements: GNSS unfused, pose still publishing, PX4 refusing.
 
-    A real fake_pos fallback drops the aiding flags with the mode — that pairing
-    is what makes it distinguishable from the parked vehicle below.
+    velocity_horiz/pos_horiz_abs are left TRUE on purpose. They are
+    `!_horizontal_deadreckon_time_exceeded`, so for the first seconds of a real
+    fallback they still read healthy — this is the window the block exists for,
+    and gnss_pos_aiding is the only input that sees into it.
     """
     h = EstimatorHealth(speed_acc_max=0.5)          # the vehicle's EKF2_REQ_SACC
-    h.on_status(0.0, const_pos_mode=True, velocity_horiz=False,
-                pos_horiz_abs=False)
+    h.on_status(0.0, const_pos_mode=True, velocity_horiz=True,
+                pos_horiz_abs=True, gnss_pos_aiding=False)
     h.on_gps(0.0, fix_type=4, satellites=12, h_acc_m=1.95, vel_acc_m_s=0.506)
 
     why = h.blocking_reason(0.0)
@@ -67,7 +69,7 @@ def test_a_parked_but_aided_vehicle_is_not_grounded():
     """
     h = EstimatorHealth()
     h.on_status(0.0, const_pos_mode=True, velocity_horiz=True,
-                pos_horiz_abs=True)
+                pos_horiz_abs=True, gnss_pos_aiding=True)
     h.on_gps(0.0, fix_type=4, satellites=17, h_acc_m=2.215, vel_acc_m_s=0.484)
 
     assert h.blocking_reason(0.0) is None
@@ -77,7 +79,7 @@ def test_a_parked_but_aided_vehicle_is_not_grounded():
 def test_stale_telemetry_is_absent_rather_than_true():
     h = EstimatorHealth(stale_after=3.0)
     h.on_status(0.0, const_pos_mode=True, velocity_horiz=False,
-                pos_horiz_abs=False)
+                pos_horiz_abs=False, gnss_pos_aiding=False)
     assert h.blocking_reason(1.0) is not None
     assert h.blocking_reason(10.0) is None
 
