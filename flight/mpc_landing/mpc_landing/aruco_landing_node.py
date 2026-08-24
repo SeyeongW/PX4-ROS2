@@ -936,7 +936,22 @@ class ArucoLandingNode(Node):
 
     def _update_route_site_origin(self) -> None:
         """Remember the newest genuinely synchronized local/global anchor."""
-        if (not self.planned_cruise or self.pose is None
+        if not self.planned_cruise:
+            return
+        # A drone-relative map is centred on the vehicle's own local ENU origin:
+        # the map origin is (0, 0) by definition, no matter where the drone
+        # launched. There is nothing to synchronize against a global fix, so the
+        # anchor is always fresh and never drifts — which is exactly what removes
+        # the GPS/pose-jitter HOLD loop the surveyed CJU map suffered from.
+        if self._route_map_info.drone_relative:
+            if self.pose is None:
+                return
+            now = self._now()
+            self._route_observed_origin = np.zeros(2)
+            self._route_observed_origin_t = now
+            self._route_observed_origin_rx_t = now
+            return
+        if (self.pose is None
                 or self.vehicle_fix is None
                 or not math.isfinite(self.pose_t)
                 or not math.isfinite(self.vehicle_fix_t)
@@ -1840,17 +1855,25 @@ class ArucoLandingNode(Node):
         if health_reason is not None:
             return health_reason
         now = self._now()
-        fix_age = now - self.vehicle_fix_t
-        if (self.vehicle_fix is None or not math.isfinite(self.vehicle_fix_t)
-                or now - self.vehicle_fix_rx_t > self.route_gps_timeout
-                or fix_age > self.route_gps_timeout
-                or fix_age < -self.route_sync_tolerance):
-            return f'{self.route_vehicle_fix_topic} is missing or stale'
-        if self.vehicle_fix.status.status < NavSatStatus.STATUS_FIX:
-            return 'vehicle NavSatFix has no valid fix'
-        fix_values = (self.vehicle_fix.latitude, self.vehicle_fix.longitude)
-        if not all(math.isfinite(float(v)) for v in fix_values):
-            return 'vehicle NavSatFix latitude/longitude is non-finite'
+        # A drone-relative map is anchored on the vehicle's own local ENU origin,
+        # not on a global fix, so it needs no GPS to place the map. The fixed
+        # goal is a pure local-frame offset from (0, 0); the trailer goal already
+        # arrives in local ENU. Skip the global-fix and anchor/target time
+        # alignment gates that only exist to bound a surveyed WGS84 anchor.
+        drone_relative = self._route_map_info.drone_relative
+        if not drone_relative:
+            fix_age = now - self.vehicle_fix_t
+            if (self.vehicle_fix is None
+                    or not math.isfinite(self.vehicle_fix_t)
+                    or now - self.vehicle_fix_rx_t > self.route_gps_timeout
+                    or fix_age > self.route_gps_timeout
+                    or fix_age < -self.route_sync_tolerance):
+                return f'{self.route_vehicle_fix_topic} is missing or stale'
+            if self.vehicle_fix.status.status < NavSatStatus.STATUS_FIX:
+                return 'vehicle NavSatFix has no valid fix'
+            fix_values = (self.vehicle_fix.latitude, self.vehicle_fix.longitude)
+            if not all(math.isfinite(float(v)) for v in fix_values):
+                return 'vehicle NavSatFix latitude/longitude is non-finite'
         if self._route_synchronized_site_origin() is None:
             return 'vehicle local pose/global fix pair is not coherent or fresh'
         use_trailer = (self._route_uses_trailer_goal()
@@ -1858,7 +1881,8 @@ class ArucoLandingNode(Node):
         if use_trailer:
             if not math.isfinite(self.target_sample_t):
                 return 'trailer target has no trustworthy source timestamp'
-            if (abs(self._route_observed_origin_t - self.target_sample_t)
+            if (not drone_relative
+                    and abs(self._route_observed_origin_t - self.target_sample_t)
                     > self.route_sync_tolerance):
                 return ('vehicle local/global anchor and trailer target are not '
                         'time-aligned '
