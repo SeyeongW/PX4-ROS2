@@ -581,10 +581,10 @@ class ArucoDetectorNode(Node):
                         marker_id, f'PAIR CONFLICT {worst:.2f}m')
                 return
 
-        # Prefer the marker that is comfortably in frame — which, as the
-        # vehicle descends, hands over from the big one to the small one all by
-        # itself.  "Best" = smallest fill, i.e. most margin before it outgrows
-        # the view; ties broken toward the larger marker (better pose accuracy).
+        # Prefer the largest reliably solved marker for pose accuracy.  Near
+        # the deck a big marker outgrows the frame and leaves ``usable``, which
+        # naturally hands control to the small centre marker.  Equal-size ties
+        # go to the marker with more view margin.
         def fill_of(c):
             return float(max(
                 np.max(np.abs(c[:, 0] - cx)) / max(cx, self._img_w - cx),

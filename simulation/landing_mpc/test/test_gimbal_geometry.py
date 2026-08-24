@@ -3,9 +3,44 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from landing_mpc.frame import gimbal_axis_flu, gimbal_joint_angles
+from landing_mpc.frame import (gimbal_axis_flu, gimbal_camera_origin_flu,
+                               gimbal_camera_origin_to_enu,
+                               gimbal_joint_angles)
 from landing_mpc.gimbal_control_node import (GimbalControlNode, _range_handoff,
                                              _rate_limit)
+from landing_mpc.marker_tf_node import ray_to_horizontal_plane
+
+
+def test_known_deck_plane_discards_noisy_aruco_range_but_keeps_its_ray():
+    origin = np.array([10.0, -3.0, 24.87])
+    short_range = np.array([4.0, 2.0, -20.0])
+    wrong_long_range = 3.7 * short_range
+
+    first = ray_to_horizontal_plane(origin, short_range, 1.811)
+    second = ray_to_horizontal_plane(origin, wrong_long_range, 1.811)
+
+    assert np.allclose(first, second)
+    assert first[2] == pytest.approx(1.811)
+    assert ray_to_horizontal_plane(origin, [1.0, 0.0, 0.0], 1.811) is None
+    assert ray_to_horizontal_plane(origin, [0.0, 0.0, 1.0], 1.811) is None
+
+
+def test_gimbal_plane_projection_starts_at_the_lens_not_base_link():
+    joints = np.zeros(3)
+    q_level = np.array([1.0, 0.0, 0.0, 0.0])
+
+    assert np.allclose(
+        gimbal_camera_origin_flu(joints), [0.0, 0.0, -0.13], atol=1e-6)
+    assert np.allclose(
+        gimbal_camera_origin_to_enu(joints, q_level),
+        [0.0, 0.0, -0.13], atol=1e-6)
+
+    moving_joints = np.array([0.6, -0.15, -1.1])
+    body_origin = gimbal_camera_origin_flu(moving_joints)
+    world_origin = gimbal_camera_origin_to_enu(moving_joints, q_level)
+    assert np.isfinite(body_origin).all()
+    assert np.linalg.norm(world_origin) == pytest.approx(
+        np.linalg.norm(body_origin))
 
 
 def test_gimbal_crosses_nadir_without_yaw_flip():
@@ -46,6 +81,28 @@ def test_range_handoff_uses_horizontal_gps_distance_and_is_continuous():
     adjacent_dot = np.sum(axes[:-1] * axes[1:], axis=1)
     jumps = np.rad2deg(np.arccos(np.clip(adjacent_dot, -1.0, 1.0)))
     assert float(np.max(jumps)) < 1.0
+
+
+def test_city_gimbal_keeps_fresh_cue_authoritative_over_transient_vision():
+    node = SimpleNamespace(
+        _cue=np.array([1.0, 2.0, 0.0]), _cue_t=9.9,
+        _vis=np.array([80.0, -40.0, 0.0]), _vis_t=9.9,
+        _valid=True, prefer_cue_aim=True,
+        vision_timeout_s=1.0, cue_timeout_s=2.0,
+        _source='nadir', _now=lambda: 10.0,
+    )
+
+    assert np.allclose(GimbalControlNode._look_at(node), node._cue)
+    assert node._source == 'cue'
+
+    node.prefer_cue_aim = False
+    assert np.allclose(GimbalControlNode._look_at(node), node._vis)
+    assert node._source == 'vision'
+
+    node.prefer_cue_aim = True
+    node._cue_t = 7.0
+    assert np.allclose(GimbalControlNode._look_at(node), node._vis)
+    assert node._source == 'vision'
 
 
 def test_gimbal_leaves_joints_uncommanded_until_land_then_tracks():
@@ -120,14 +177,8 @@ def test_gimbal_uses_literal_joint_lock_outside_ten_metres_after_land():
 
     assert np.allclose(
         GimbalControlNode._desired_joint_angles(node),
-        [0.0, 0.0, -np.pi / 2.0])
+        [4.0 * np.pi, 0.0, -np.pi / 2.0])
     assert node._source.startswith('joint lock')
-
-    # Continuous joints must unwind instead of treating 4*pi and zero as the
-    # same encoder coordinate forever.
-    step = np.deg2rad(1.8)
-    assert _rate_limit(4.0 * np.pi, 0.0, step) == pytest.approx(
-        4.0 * np.pi - step)
 
 
 def test_land_entry_joint_lock_is_slower_than_target_tracking():

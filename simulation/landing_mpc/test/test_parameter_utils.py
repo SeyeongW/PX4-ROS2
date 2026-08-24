@@ -40,6 +40,100 @@ def test_mpc_reference_and_predictor_share_the_derived_mpc_period():
     assert predicted_position[0, 0] == pytest.approx(2.0 * mpc_dt)
 
 
+def test_reference_lookahead_does_not_lead_a_moving_target_position():
+    reference = HorizonReference(lead_s=0.1)
+    zeros = np.zeros((3, 3))
+    reference.set_plan(
+        np.zeros(3), np.zeros(3), zeros, zeros, zeros, 0.1,
+        np.array([5.0, 0.0, 0.0]), np.array([9.0, 0.0, 0.0]), np.zeros(3))
+
+    position, velocity, _ = reference.sample(0.0)
+
+    assert np.allclose(position, [5.0, 0.0, 0.0])
+    assert np.allclose(velocity, [9.0, 0.0, 0.0])
+
+
+def test_landing_reference_retains_one_bounded_state_age_tick():
+    reference = HorizonReference(lead_s=0.1, state_age_s=0.02)
+    zeros = np.zeros((3, 3))
+    reference.set_plan(
+        np.zeros(3), np.zeros(3), zeros, zeros, zeros, 0.1,
+        np.array([5.0, 0.0, 0.0]), np.array([9.0, 0.0, 0.0]), np.zeros(3))
+
+    position, velocity, _ = reference.sample(0.0)
+
+    assert np.allclose(position, [5.0 + 9.0 * 0.02, 0.0, 0.0])
+    assert np.allclose(velocity, [9.0, 0.0, 0.0])
+
+
+def test_reference_state_age_is_clamped_to_the_preview_lead():
+    reference = HorizonReference(lead_s=0.1, state_age_s=1.0)
+    zeros = np.zeros((3, 3))
+    reference.set_plan(
+        np.zeros(3), np.zeros(3), zeros, zeros, zeros, 0.1,
+        np.array([5.0, 0.0, 0.0]), np.array([9.0, 0.0, 0.0]), np.zeros(3))
+
+    position, _, _ = reference.sample(0.0)
+
+    assert np.allclose(position, [5.9, 0.0, 0.0])
+
+
+def test_reference_lookahead_still_previews_the_relative_plan_consistently():
+    reference = HorizonReference(lead_s=0.1)
+    relative_acceleration = np.array([2.0, 0.0, 0.0])
+    predicted_position = np.array([
+        [0.01, 0.0, 0.0],
+        [0.04, 0.0, 0.0],
+        [0.09, 0.0, 0.0],
+    ])
+    predicted_velocity = np.array([
+        [0.2, 0.0, 0.0],
+        [0.4, 0.0, 0.0],
+        [0.6, 0.0, 0.0],
+    ])
+    predicted_acceleration = np.tile(relative_acceleration, (3, 1))
+    reference.set_plan(
+        np.zeros(3), np.zeros(3), predicted_position, predicted_velocity,
+        predicted_acceleration, 0.1, np.zeros(3), np.zeros(3), np.zeros(3))
+
+    position, velocity, acceleration = reference.sample(0.0)
+    assert np.allclose(position, [0.01, 0.0, 0.0])
+    assert np.allclose(velocity, [0.2, 0.0, 0.0])
+    assert np.allclose(acceleration, [2.0, 0.0, 0.0])
+
+    epsilon = 1.0e-6
+    before, _, _ = reference.sample(0.04 - epsilon)
+    after, _, _ = reference.sample(0.04 + epsilon)
+    _, velocity, _ = reference.sample(0.04)
+    assert np.allclose((after - before) / (2.0 * epsilon), velocity)
+
+
+def test_reference_preview_never_reverses_a_stationary_drone_during_rendezvous():
+    reference = HorizonReference(lead_s=0.1)
+    acceleration = np.array([0.2, 0.0, 0.0])
+    predicted_acceleration = np.tile(acceleration, (3, 1))
+    predicted_position = np.array([
+        [34.101, 0.0, 0.0],
+        [33.204, 0.0, 0.0],
+        [32.309, 0.0, 0.0],
+    ])
+    predicted_velocity = np.array([
+        [-8.98, 0.0, 0.0],
+        [-8.96, 0.0, 0.0],
+        [-8.94, 0.0, 0.0],
+    ])
+    reference.set_plan(
+        np.array([35.0, 0.0, 0.0]), np.array([-9.0, 0.0, 0.0]),
+        predicted_position, predicted_velocity, predicted_acceleration, 0.1,
+        np.zeros(3), np.array([9.0, 0.0, 0.0]), np.zeros(3))
+
+    position, velocity, acceleration = reference.sample(0.0)
+
+    assert position[0] > 35.0
+    assert velocity[0] > 0.0
+    assert acceleration[0] > 0.0
+
+
 def test_receding_descent_respects_the_vertical_speed_limit():
     mpc = LandingMPC(
         dt_s=0.1, horizon=20, v_max=1.0, vz_max=0.35,
@@ -125,6 +219,30 @@ def test_landing_handoff_slews_back_inside_its_acceleration_limit():
     limits = mpc._acceleration_limits(applied[0], output_step=1)
     assert np.all(np.abs(result.pred_rel_acc[:, 0]) <= limits + 1.0e-6)
     assert abs(result.pred_rel_acc[3, 0]) <= mpc.a_max + 1.0e-6
+
+
+def test_landing_warm_start_advances_with_the_receding_horizon():
+    mpc = LandingMPC(
+        dt_s=0.1, horizon=20, w_vxy=20.0, v_max=3.5,
+        a_max=1.0, vz_max=0.6, cone_k=2.0, z_ref=0.65,
+        j_max=2.0)
+    position = np.array([0.34507479, -0.33902691, 13.71263549])
+    velocity = np.array([-0.07915204, -0.17103482, -0.36850558])
+    applied = np.array([-0.143671, 0.22268622, 0.47277174])
+    target = predict_const_vel(
+        np.zeros(3), np.array([9.0, 0.0, 0.0]), mpc.dt, mpc.N)
+
+    for _ in range(25):
+        result = mpc.solve(
+            position, velocity, *target,
+            applied_acceleration=applied, output_step=1)
+        assert result.success
+        horizon = result.pred_rel_acc.T
+        assert np.allclose(mpc._warm[:, :-1], horizon[:, 1:])
+        assert np.allclose(mpc._warm[:, -1], horizon[:, -1])
+        applied = result.accel_cmd
+        position += velocity * mpc.dt + 0.5 * applied * mpc.dt ** 2
+        velocity += applied * mpc.dt
 
 
 def test_acquire_brakes_before_a_reversing_target_without_crossing():

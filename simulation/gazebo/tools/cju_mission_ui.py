@@ -20,7 +20,6 @@ from __future__ import annotations
 import argparse
 import math
 import sys
-import textwrap
 from collections import deque
 from pathlib import Path
 
@@ -78,12 +77,52 @@ def _local_to_map(points, rotation, origin, spawn):
 
 
 def _trailer_route(document, rotation, origin):
-    endpoints = np.asarray(
-        document["trailer"]["shuttle_endpoints_enu_m"], float)
-    return (endpoints - origin) @ rotation
+    trailer = document["trailer"]
+    points = trailer.get("shuttle_endpoints_enu_m")
+    if points is None:
+        points = trailer["waypoints_enu_m"]
+    points = np.asarray(points, float)
+    if (trailer.get("route_type") == "waypoints"
+            and trailer.get("patrol_mode") == "repeat"):
+        start = int(trailer.get("start_index", 0))
+        if not 0 <= start < len(points):
+            raise ValueError("trailer start_index is outside the route")
+        points = np.concatenate((points[start:], points[:start + 1]))
+    return (points - origin) @ rotation
+
+
+def _physical_obstacles(document):
+    """Return physical obstacle centre/size pairs for either map schema."""
+    mission = document["mission"]
+    if "obstacles" in mission:
+        return [
+            (np.asarray(item["center_m"][:2], float),
+             np.asarray(item["size_m"][:2], float))
+            for item in mission["obstacles"]
+        ]
+    if mission.get("obstacle_source") != "city_buildings":
+        raise ValueError("unsupported mission obstacle source")
+    obstacles = []
+    for building in document["obstacles"]["buildings"]:
+        low = np.asarray(building["aabb_xy_m"]["min"], float)
+        high = np.asarray(building["aabb_xy_m"]["max"], float)
+        obstacles.append((0.5 * (low + high), high - low))
+    return obstacles
 
 
 def _trailer_position(route, speed_m_s, time_s):
+    if len(route) > 2:
+        segments = np.diff(route, axis=0)
+        lengths = np.linalg.norm(segments, axis=1)
+        if np.any(lengths <= 0.0):
+            raise ValueError("trailer waypoint route has a zero-length leg")
+        cumulative = np.cumsum(lengths)
+        distance = (max(0.0, time_s) * speed_m_s) % float(cumulative[-1])
+        index = min(int(np.searchsorted(cumulative, distance, side="right")),
+                    len(segments) - 1)
+        previous = 0.0 if index == 0 else float(cumulative[index - 1])
+        return route[index] + segments[index] * (
+            (distance - previous) / lengths[index])
     delta = route[1] - route[0]
     length = float(np.linalg.norm(delta))
     if length <= 0.0:
@@ -202,6 +241,41 @@ def _point_message_to_local(message):
         return None
     point = np.array([message.point.x, message.point.y, message.point.z], float)
     return point if np.all(np.isfinite(point)) else None
+
+
+def _point_message_sample(message):
+    """Return one finite local point and its positive ROS timestamp."""
+    point = _point_message_to_local(message)
+    stamp_s = (float(message.header.stamp.sec)
+               + 1.0e-9 * float(message.header.stamp.nanosec))
+    return None if point is None or stamp_s <= 0.0 else (stamp_s, point)
+
+
+_RETURN_PATH_STATES = frozenset({
+    "RETURN_PLAN", "RETURN", "LANDING_ACQUIRE", "LANDING_DESCEND",
+    "PRECLAND", "DONE",
+})
+
+
+def _update_active_plan_history(data, snapshot):
+    """Replace the live plan and retain only superseded trailer-return paths."""
+    sequence, path, sfc = snapshot
+    current_sequence, current_path, _current_sfc = data["active_plan"]
+    if (sequence is not None and current_sequence is not None
+            and sequence <= current_sequence):
+        return False
+    replacing_return = (
+        sequence is not None and current_sequence is not None
+        and data["active_plan_is_return"] and len(current_path))
+    if current_sequence is not None and data["active_plan_is_return"] \
+            and len(current_path):
+        data["return_path_history"].append(current_path.copy())
+    if replacing_return:
+        data["dynamic_replans"] += 1
+    data["active_plan"] = (sequence, path, sfc)
+    data["active_plan_is_return"] = (
+        sequence is not None and data["state"] in _RETURN_PATH_STATES)
+    return True
 
 
 def _path_message_to_local(message):
@@ -332,9 +406,9 @@ def _draw_obstacles(ax, mission):
     """Draw the physical YAML AABBs without storing clearance on them."""
     from matplotlib.patches import Rectangle
 
-    for index, obstacle in enumerate(mission["obstacles"], 1):
-        center = np.asarray(obstacle["center_m"][:2], float)
-        size = np.asarray(obstacle["size_m"][:2], float)
+    document = mission if "mission" in mission else {"mission": mission}
+    for index, (center, size) in enumerate(
+            _physical_obstacles(document), 1):
         corner = center - size / 2.0
         ax.add_patch(Rectangle(
             corner, *size,
@@ -344,13 +418,13 @@ def _draw_obstacles(ax, mission):
                 fontsize=7, color="#343a40", zorder=5)
 
 
-def _figure_layout(bottom=0.14):
+def _figure_layout(bottom=0.14, info_width=1.6):
     """Keep map artists and diagnostics in non-overlapping axes."""
     import matplotlib.pyplot as plt
 
     fig = plt.figure(figsize=(11.5, 8))
     grid = fig.add_gridspec(
-        1, 2, width_ratios=(3.4, 1.6), left=0.06, right=0.98,
+        1, 2, width_ratios=(3.4, info_width), left=0.06, right=0.98,
         bottom=bottom, top=0.93, wspace=0.08)
     ax = fig.add_subplot(grid[0])
     info_ax = fig.add_subplot(grid[1])
@@ -391,7 +465,7 @@ def _make_figure(document, route, frames, plans, preview_speed):
 
     fig, ax, info_ax = _figure_layout(bottom=0.14)
     mission = document["mission"]
-    _draw_obstacles(ax, mission)
+    _draw_obstacles(ax, document)
     vehicle_radius = float(mission["vehicle_clearance_xy_m"])
     planning_clearance = (
         vehicle_radius
@@ -527,7 +601,7 @@ def _run_live(map_path):
                            ReliabilityPolicy)
     from std_msgs.msg import String
     from visualization_msgs.msg import MarkerArray
-    from matplotlib.collections import PolyCollection
+    from matplotlib.collections import LineCollection, PolyCollection
     import matplotlib.pyplot as plt
 
     map_path = Path(map_path).resolve()
@@ -536,9 +610,12 @@ def _run_live(map_path):
     route = _trailer_route(document, rotation, origin)
     expected_frame = str(document["mission"]["coordinate_frame"])
     data = {"state": "WAITING", "vehicle": None, "cue": None,
+            "vehicle_sample": None, "cue_sample": None,
+            "vehicle_velocity": None, "cue_velocity": None,
             "active_plan": (
                 None, np.empty((0, 3)), np.empty((0, 4, 2))),
-            "landing": "landing data: waiting"}
+            "active_plan_is_return": False,
+            "return_path_history": [], "dynamic_replans": 0}
     vehicle_history, cue_history = deque(maxlen=5000), deque(maxlen=5000)
 
     rclpy.init()
@@ -549,14 +626,24 @@ def _run_live(map_path):
         history=HistoryPolicy.KEEP_LAST, depth=1)
 
     def on_vehicle(message):
-        point = _point_message_to_local(message)
-        if point is not None:
-            data["vehicle"] = point
+        sample = _point_message_sample(message)
+        if sample is None:
+            return
+        previous = data["vehicle_sample"]
+        if previous is not None and sample[0] > previous[0]:
+            data["vehicle_velocity"] = (
+                (sample[1] - previous[1]) / (sample[0] - previous[0]))
+        data["vehicle_sample"], data["vehicle"] = sample, sample[1]
 
     def on_cue(message):
-        point = _point_message_to_local(message)
-        if point is not None:
-            data["cue"] = point
+        sample = _point_message_sample(message)
+        if sample is None:
+            return
+        previous = data["cue_sample"]
+        if previous is not None and sample[0] > previous[0]:
+            data["cue_velocity"] = (
+                (sample[1] - previous[1]) / (sample[0] - previous[0]))
+        data["cue_sample"], data["cue"] = sample, sample[1]
 
     def on_active_plan(message):
         try:
@@ -565,10 +652,7 @@ def _run_live(map_path):
             node.get_logger().warning(
                 f"ignored invalid active-plan message: {exc}")
             return
-        current_seq = data["active_plan"][0]
-        if snapshot[0] is None or current_seq is None \
-                or snapshot[0] > current_seq:
-            data["active_plan"] = snapshot
+        _update_active_plan_history(data, snapshot)
 
     node.create_subscription(
         PointStamped, "/mission/vehicle_position", on_vehicle, 10)
@@ -579,13 +663,10 @@ def _run_live(map_path):
     node.create_subscription(
         String, "/mission/state",
         lambda message: data.__setitem__("state", message.data), 10)
-    node.create_subscription(
-        String, "/mission/landing_diagnostics",
-        lambda message: data.__setitem__("landing", message.data), 10)
 
-    fig, ax, info_ax = _figure_layout(bottom=0.08)
+    fig, ax, info_ax = _figure_layout(bottom=0.08, info_width=1.1)
     mission = document["mission"]
-    _draw_obstacles(ax, mission)
+    _draw_obstacles(ax, document)
     vehicle_radius = float(mission["vehicle_clearance_xy_m"])
     planning_clearance = (
         vehicle_radius
@@ -597,16 +678,20 @@ def _run_live(map_path):
     ax.add_collection(sfc_collection)
 
     ax.plot(route[:, 0], route[:, 1], "--", color="#e8590c",
-            linewidth=1.5, label="trailer shuttle (YAML)")
+            linewidth=1.5, label="trailer route (YAML)")
     goal = np.asarray(mission["goal_m"], float)
     ax.scatter(*goal, marker="*", s=150, color="#fcc419",
-               edgecolor="black", label="goal (50, 50)", zorder=8)
+               edgecolor="black", label="mission goal", zorder=8)
     planned_line, = ax.plot([], [], color="#2f9e44", linewidth=2.5,
-                            label="active validated path")
+                            label="latest path", zorder=3)
+    previous_paths = LineCollection(
+        [], colors="#7048e8", linewidths=1.5, alpha=0.75, zorder=2,
+        label="previous return paths")
+    ax.add_collection(previous_paths)
     vehicle_trace, = ax.plot([], [], color="#1971c2", linewidth=1.4,
-                             label="vehicle measured")
+                             label="drone")
     cue_trace, = ax.plot([], [], color="#e8590c", linewidth=1.1,
-                         alpha=0.7, label="trailer measured")
+                         alpha=0.7, label="trailer")
     vehicle_dot, = ax.plot([], [], "o", color="#1971c2", markersize=9)
     cue_dot, = ax.plot([], [], "s", color="#e8590c", markersize=8)
     drone_radius = _draw_vehicle_radius(
@@ -616,16 +701,22 @@ def _run_live(map_path):
         family="monospace", fontsize=9)
 
     centers = np.asarray(
-        [item["center_m"][:2] for item in mission["obstacles"]], float)
+        [center for center, _size in _physical_obstacles(document)], float)
     all_points = np.vstack((route, goal[None, :], centers))
     lo, hi = all_points.min(axis=0) - 5.0, all_points.max(axis=0) + 5.0
     ax.set(xlim=(lo[0], hi[0]), ylim=(lo[1], hi[1]),
            xlabel="map x [m]", ylabel="map y [m]")
     ax.set_aspect("equal")
     ax.grid(alpha=0.2)
-    ax.set_title("CJU live mission (read-only ROS view)")
+    ax.set_title("Live mission (read-only ROS view)")
     handles, labels = ax.get_legend_handles_labels()
-    info_ax.legend(handles, labels, loc="lower left", fontsize=8,
+    essential = {
+        "trailer route (YAML)", "mission goal", "latest path",
+        "previous return paths", "drone", "trailer",
+    }
+    legend = [(handle, label) for handle, label in zip(handles, labels)
+              if label in essential]
+    info_ax.legend(*zip(*legend), loc="lower left", fontsize=8,
                    frameon=True, borderaxespad=0.0)
 
     def update(_frame):
@@ -633,7 +724,9 @@ def _run_live(map_path):
             rclpy.spin_once(node, timeout_sec=0.0)
         vehicle = data["vehicle"]
         cue = data["cue"]
-        plan_seq, path, sfc = data["active_plan"]
+        _plan_seq, path, sfc = data["active_plan"]
+        previous_paths.set_segments([
+            old_path[:, :2] for old_path in data["return_path_history"]])
         sfc_collection.set_verts(sfc)
         if len(sfc):
             _expand_axes_to_points(ax, sfc)
@@ -662,18 +755,24 @@ def _run_live(map_path):
             planned_line.set_data([], [])
         distance = (float(np.linalg.norm(vehicle[:2] - cue[:2]))
                     if vehicle is not None and cue is not None else float("nan"))
-        landing = "\n".join(
-            textwrap.fill(part.strip(), width=39)
-            for part in data["landing"].split("|") if part.strip())
+        vehicle_v = data["vehicle_velocity"]
+        cue_v = data["cue_velocity"]
+        vehicle_speed = (float(np.linalg.norm(vehicle_v[:2]))
+                         if vehicle_v is not None else float("nan"))
+        cue_speed = (float(np.linalg.norm(cue_v[:2]))
+                     if cue_v is not None else float("nan"))
+        relative_speed = (float(np.linalg.norm(vehicle_v[:2] - cue_v[:2]))
+                          if vehicle_v is not None and cue_v is not None
+                          else float("nan"))
         status.set_text(
             f"state: {data['state']}\n"
-            f"horizontal range: {distance:.1f} m\n"
-            f"{landing}\n"
-            f"active plan: {plan_seq if plan_seq is not None else 'none'}\n"
-            f"active path samples: {len(path)}\n"
-            f"active SFC boxes: {len(sfc)}\n"
-            "read-only: no flight commands")
-        return (planned_line, vehicle_trace, cue_trace, sfc_collection,
+            f"distance: {distance:.1f} m\n"
+            f"drone speed: {vehicle_speed:.1f} m/s\n"
+            f"trailer speed: {cue_speed:.1f} m/s\n"
+            f"relative speed: {relative_speed:.1f} m/s\n"
+            f"dynamic replans: {data['dynamic_replans']}")
+        return (planned_line, previous_paths, vehicle_trace, cue_trace,
+                sfc_collection,
                 vehicle_dot, cue_dot, drone_radius, status)
 
     animation = FuncAnimation(

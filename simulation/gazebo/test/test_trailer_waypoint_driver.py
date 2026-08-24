@@ -1,3 +1,4 @@
+import copy
 import importlib.util
 import math
 import sys
@@ -13,6 +14,130 @@ SPEC = importlib.util.spec_from_file_location(
 DRIVER = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = DRIVER
 SPEC.loader.exec_module(DRIVER)
+
+
+def test_stop_speed_requires_both_pose_and_command_to_settle():
+    assert DRIVER.conservative_stop_speed(None, 1.0) == 1.0
+    assert DRIVER.conservative_stop_speed(0.0, 1.0) == 1.0
+    assert DRIVER.conservative_stop_speed(1.0, 0.0) == 1.0
+    assert DRIVER.conservative_stop_speed(0.1, 0.15) == 0.15
+
+
+def test_pose_receiver_uses_gazebo_sim_time_at_accelerated_rtf():
+    receiver = DRIVER.PoseReceiver('trailer')
+    message = DRIVER.Pose_V()
+    pose = message.pose.add()
+    pose.name = 'trailer'
+    pose.orientation.w = 1.0
+    message.header.stamp.sec = 10
+    receiver.callback(message)
+
+    # A 9 m displacement over one simulation second is 9 m/s regardless of
+    # whether those callbacks arrive in half a wall-clock second at 2x RTF.
+    pose.position.x = 9.0
+    message.header.stamp.sec = 11
+    receiver.callback(message)
+
+    assert receiver.simulation_time_s() == 11.0
+    assert math.isclose(receiver.speed_xy(), 9.0, abs_tol=1.0e-9)
+
+
+def test_city_launcher_starts_the_trailer_only_after_takeoff():
+    launcher = (GAZEBO / 'run_px4_map.sh').read_text(encoding='utf-8')
+    mission_launcher = (GAZEBO / 'run_gimbal.sh').read_text(encoding='utf-8')
+    gate = "ros2 topic echo --filter 'm.landed_state in (2, 3)' --once"
+
+    assert '"$MAP" == "city" && -z "${TRAILER_START_FILE:-}"' in launcher
+    assert 'city trailer takeoff gate needs START_MAVROS=1' in launcher
+    assert gate in launcher
+    assert launcher.index(gate) < launcher.index(
+        'exec python3 -u "$SCRIPT_DIR/trailer_waypoint_driver.py"')
+    assert '--start-index "${TRAILER_START_INDEX:-0}"' in launcher
+    assert 'RESET_TRAILER_FROM_YAML' in launcher
+    assert '"/world/$WORLD_NAME/set_pose"' in launcher
+    assert 'trailer.get("start_index", 0)' in mission_launcher
+    assert 'a nonzero city trailer start_index requires DIRECT_LANDING=1' \
+        in mission_launcher
+    assert "printf 'trailer_start_index\\t%s\\n'" in mission_launcher
+    assert 'PRECLAND -> DONE (automatic cleanup enabled)' in mission_launcher
+
+
+def test_city_landing_visual_and_fast_profiles_are_explicit():
+    profiles = GAZEBO / 'profiles'
+    visual = yaml.safe_load(
+        (profiles / 'city_landing_visual.yaml').read_text(encoding='utf-8')
+    )['profile']
+    fast = yaml.safe_load(
+        (profiles / 'city_landing_fast.yaml').read_text(encoding='utf-8')
+    )['profile']
+
+    assert visual == {
+        'name': 'city_landing_visual',
+        'coordinates': '../maps/city_coordinates_uav.yaml',
+        'direct_landing': False,
+        'auto_sequence': True,
+        'simulation_speed_factor': 1.0,
+        'gps_position_rate_hz': 5.0,
+        'gps_status_rate_hz': 1.0,
+        'gps_input_timeout_s': 1.0,
+        'gps_cue_timeout_s': 1.0,
+        'headless': False,
+        'aruco_view': True,
+        'mission_view': True,
+        'exit_on_done': False,
+    }
+    assert fast == {
+        'name': 'city_landing_fast',
+        'coordinates': '../maps/city_coordinates_uav.yaml',
+        'direct_landing': False,
+        'auto_sequence': True,
+        'simulation_speed_factor': 5.0,
+        'gps_position_rate_hz': 10.0,
+        'gps_status_rate_hz': 2.0,
+        'gps_input_timeout_s': 2.0,
+        'gps_cue_timeout_s': 2.0,
+        'headless': True,
+        'aruco_view': False,
+        'mission_view': True,
+        'exit_on_done': True,
+    }
+    launcher = (GAZEBO / 'run_city_landing.sh').read_text(encoding='utf-8')
+    assert 'PX4_SIM_SPEED_FACTOR="${PROFILE_CONFIG[4]}"' in launcher
+    assert 'PX4_MAP_COORDINATES="${PROFILE_CONFIG[1]}"' in launcher
+    assert 'AUTO_SEQUENCE="${PROFILE_CONFIG[3]}"' in launcher
+    assert 'GPS_SIM_POSITION_RATE_HZ="${PROFILE_CONFIG[9]}"' in launcher
+    assert 'GPS_CUE_TIMEOUT_S="${PROFILE_CONFIG[12]}"' in launcher
+    assert 'return repr(value)' in launcher
+    assert 'DONE_WAIT_PID=$!' in (
+        GAZEBO / 'run_gimbal.sh').read_text(encoding='utf-8')
+    assert '( "${HEADLESS:-0}" != "1" || -n "${MISSION_VIEW+x}" )' in (
+        GAZEBO / 'run_gimbal.sh').read_text(encoding='utf-8')
+
+
+def test_quick_landing_yaml_only_changes_the_direct_runtime_geometry():
+    standard = yaml.safe_load(
+        (GAZEBO / 'maps/city_coordinates_uav.yaml').read_text(encoding='utf-8')
+    )
+    quick = yaml.safe_load(
+        (GAZEBO / 'maps/city_coordinates_uav_quick_landing.yaml').read_text(
+            encoding='utf-8'
+        )
+    )
+    trailer = quick['trailer']
+    assert trailer['start_index'] == 12
+    assert trailer['acceleration_m_s2'] == 0.4
+    assert [trailer['spawn_pose_enu'][axis] for axis in ('x', 'y')] \
+        == trailer['waypoints_enu_m'][12]
+
+    normalized = copy.deepcopy(quick)
+    normalized['map']['name'] = standard['map']['name']
+    normalized['trailer']['spawn_pose_enu'] = copy.deepcopy(
+        standard['trailer']['spawn_pose_enu']
+    )
+    normalized['trailer']['acceleration_m_s2'] = \
+        standard['trailer']['acceleration_m_s2']
+    normalized['trailer']['start_index'] = standard['trailer']['start_index']
+    assert normalized == standard
 
 
 def test_linear_shuttle_repeats_fifty_metres_forward_then_reverse():
@@ -52,3 +177,156 @@ def test_linear_shuttle_repeats_fifty_metres_forward_then_reverse():
 
     route.command(*route.start, speed, trailer['acceleration_m_s2'])
     assert route.completed_legs == 2 and route.completed_loops == 1
+
+
+def test_city_patrol_repeats_the_full_black_road_with_stop_turns():
+    document = yaml.safe_load(
+        (GAZEBO / 'maps/city_coordinates_uav.yaml').read_text(encoding='utf-8'))
+    trailer = document['trailer']
+    expected = [
+        [-150.0, 507.0], [-191.0, 511.5], [-202.3, 483.6],
+        [-272.1, 307.1], [-305.8, 171.8], [-312.1, 159.7],
+        [-378.8, 168.0], [-467.1, 168.6], [-550.9, 159.1],
+        [-527.4, 55.6], [-516.0, -47.3], [-513.5, -510.3],
+        [-321.7, -510.9], [-320.4, -322.3], [512.2, -318.5],
+        [512.2, -96.2], [505.5, 49.0], [261.3, 53.7],
+        [54.9, 48.6], [57.5, 117.8], [70.8, 232.8],
+        [116.5, 438.0], [16.8, 458.8],
+    ]
+
+    assert trailer['model_uri'] == 'model://moving_platform_aruco_velocity'
+    assert trailer['route_type'] == 'waypoints'
+    assert trailer['patrol_mode'] == 'repeat'
+    assert trailer['cruise_speed_m_s'] == 7.0
+    assert trailer['acceleration_m_s2'] == 9.0
+    assert trailer['start_index'] == 0
+    assert trailer['command_rate_hz'] == 50.0
+    assert trailer['stop_at_waypoints'] is True
+    assert trailer['turn_speed_tolerance_m_s'] == 0.2
+    assert trailer['stop_waypoint_indices'] == [1, 5, 8, 11, 12, 13, 14, 16, 18, 21]
+    assert 'corner_radius_m' not in trailer
+    assert trailer['waypoints_enu_m'] == expected
+    assert [trailer['spawn_pose_enu'][axis] for axis in ('x', 'y')] == expected[0]
+
+    closed_patrol = expected + [expected[0]]
+    patrol_length = sum(
+        math.dist(first, second)
+        for first, second in zip(closed_patrol, closed_patrol[1:]))
+    assert math.isclose(patrol_length, 4028.839, abs_tol=1.0e-3)
+
+
+def test_stop_turn_route_brakes_stops_then_accelerates_on_the_next_straight():
+    route = DRIVER.StopTurnWaypointRoute(
+        [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0)],
+        waypoint_tolerance_m=0.5,
+        turn_speed_tolerance_m_s=0.2,
+    )
+
+    # At 9 m/s and 9 m/s^2, braking starts 4.5 m before the tolerance edge.
+    assert np.allclose(route.command(0.0, 0.0, 0.0, 9.0, 9.0), [9.0, 0.0])
+    assert np.allclose(route.command(5.0, 0.0, 9.0, 9.0, 9.0), [9.0, 0.0])
+    braking = route.command(8.0, 0.0, 9.0, 9.0, 9.0)
+    assert 0.0 < braking[0] < 9.0 and braking[1] == 0.0
+
+    # Reaching a corner while moving commands zero and does not turn early.
+    assert route.command(10.0, 0.0, 1.0, 9.0, 9.0) == (0.0, 0.0)
+    assert route.target_index == 1
+
+    # Once almost stopped, one full zero cycle precedes the next straight.
+    assert route.command(10.0, 0.0, 0.1, 9.0, 9.0) == (0.0, 0.0)
+    assert np.allclose(route.command(10.0, 0.0, 0.0, 9.0, 9.0), [0.0, 9.0])
+    assert route.target_index == 2
+    for _ in range(3):
+        route.command(10.0, 10.0, 0.0, 9.0, 9.0)
+    assert route.target_index == 0
+    for _ in range(3):
+        route.command(0.0, 0.0, 0.0, 9.0, 9.0)
+    assert route.completed_loops == 1
+
+
+def test_stop_turn_route_latches_a_crossed_corner_and_counts_from_start_index():
+    route = DRIVER.StopTurnWaypointRoute(
+        [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0)],
+        waypoint_tolerance_m=0.5,
+        turn_speed_tolerance_m_s=0.2,
+        start_index=1,
+        stop_waypoint_indices=[0, 1, 2],
+    )
+
+    # A delayed pose has crossed target 2. STOPPING remains latched even as
+    # Euclidean distance grows on the far side, so it never commands reverse.
+    assert route.command(10.0, 10.7, 9.0, 9.0, 9.0) == (0.0, 0.0)
+    assert route.command(10.0, 12.0, 1.0, 9.0, 9.0) == (0.0, 0.0)
+    assert route.target_index == 2
+    assert route.command(10.0, 12.0, 0.0, 9.0, 9.0) == (0.0, 0.0)
+    route.command(10.0, 12.0, 0.0, 9.0, 9.0)
+    assert route.target_index == 0
+    assert route.completed_loops == 0
+
+    for _ in range(3):
+        route.command(0.0, 0.0, 0.0, 9.0, 9.0)
+    for _ in range(3):
+        route.command(10.0, 0.0, 0.0, 9.0, 9.0)
+    assert route.completed_loops == 1
+
+
+def test_stop_turn_route_passes_shape_points_without_stopping():
+    route = DRIVER.StopTurnWaypointRoute(
+        [(0.0, 0.0), (10.0, 0.0), (20.0, 1.0), (20.0, 10.0)],
+        waypoint_tolerance_m=0.5,
+        turn_speed_tolerance_m_s=0.2,
+        stop_waypoint_indices=[1, 3],
+    )
+
+    # Complete the real corner at index 1.
+    route.command(10.0, 0.0, 0.0, 9.0, 9.0)
+    route.command(10.0, 0.0, 0.0, 9.0, 9.0)
+    command = route.command(10.0, 0.0, 0.0, 9.0, 9.0)
+    assert route.target_index == 2 and math.isclose(np.linalg.norm(command), 9.0)
+
+    # Index 2 only shapes the road centreline, so it advances at cruise speed.
+    command = route.command(20.0, 1.0, 9.0, 9.0, 9.0)
+    assert route.target_index == 3
+    assert math.isclose(np.linalg.norm(command), 9.0)
+
+
+def test_city_stop_turn_route_completes_one_acceleration_limited_loop():
+    document = yaml.safe_load(
+        (GAZEBO / 'maps/city_coordinates_uav.yaml').read_text(encoding='utf-8'))
+    trailer = document['trailer']
+    waypoints = [tuple(point) for point in trailer['waypoints_enu_m']]
+    stops = set(trailer['stop_waypoint_indices'])
+    route = DRIVER.StopTurnWaypointRoute(
+        waypoints,
+        trailer['waypoint_tolerance_m'],
+        trailer['turn_speed_tolerance_m_s'],
+        stop_waypoint_indices=trailer['stop_waypoint_indices'],
+    )
+    position = np.asarray(waypoints[0], dtype=float)
+    velocity = np.zeros(2, dtype=float)
+    dt = 1.0 / trailer['command_rate_hz']
+    acceleration = trailer['acceleration_m_s2']
+
+    for _ in range(30_000):
+        old_target = route.target_index
+        desired = np.asarray(route.command(
+            *position,
+            float(np.linalg.norm(velocity)),
+            trailer['cruise_speed_m_s'],
+            acceleration,
+        ))
+        if route.target_index != old_target and old_target in stops:
+            assert np.linalg.norm(velocity) <= trailer['turn_speed_tolerance_m_s']
+        delta = desired - velocity
+        delta_norm = float(np.linalg.norm(delta))
+        limit = acceleration * dt
+        if delta_norm > limit:
+            delta *= limit / delta_norm
+        assert np.linalg.norm(delta) / dt <= acceleration + 1.0e-9
+        velocity += delta
+        position += velocity * dt
+        if route.completed_loops == 1:
+            break
+
+    assert route.completed_loops == 1
+    assert route.reached_waypoints == len(waypoints)

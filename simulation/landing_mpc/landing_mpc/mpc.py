@@ -282,8 +282,10 @@ class LandingMPC:
         failed[2] = not s
         ok &= s
 
-        # keep a warm start only for axes that actually converged
-        self._warm = U.copy()
+        # The next solve starts one MPC step later, so advance the previous
+        # optimum by one knot instead of replaying a time-stale horizon.
+        self._warm[:, :-1] = U[:, 1:]
+        self._warm[:, -1] = U[:, -1]
         for ax in range(3):
             if failed[ax]:
                 self._warm[ax] = 0.0

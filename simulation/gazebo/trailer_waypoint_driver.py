@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 import math
+import os
 from pathlib import Path
 import signal
 import sys
@@ -44,11 +45,30 @@ def quaternion_rpy(x: float, y: float, z: float, w: float) -> tuple[float, float
     return roll, pitch, math.atan2(siny, cosy)
 
 
+def conservative_stop_speed(
+    measured_speed_m_s: float | None,
+    commanded_speed_m_s: float,
+) -> float:
+    if measured_speed_m_s is None:
+        return commanded_speed_m_s
+    return max(measured_speed_m_s, commanded_speed_m_s)
+
+
+def pose_v_sim_time_s(message: Pose_V) -> float | None:
+    """Return Gazebo simulation time carried by a Pose_V message."""
+    stamp = message.header.stamp
+    value = float(stamp.sec) + float(stamp.nsec) * 1.0e-9
+    return value if math.isfinite(value) and value >= 0.0 else None
+
+
 class PoseReceiver:
     def __init__(self, entity_name: str):
         self.entity_name = entity_name
         self.lock = threading.Lock()
         self.value: tuple[float, float, float, float, float, float] | None = None
+        self.received_monotonic: float | None = None
+        self.received_sim_time_s: float | None = None
+        self.xy_speed_m_s: float | None = None
 
     def callback(self, message: Pose_V) -> None:
         for pose in message.pose:
@@ -58,16 +78,47 @@ class PoseReceiver:
             roll, pitch, yaw = quaternion_rpy(
                 orientation.x, orientation.y, orientation.z, orientation.w
             )
+            now = time.monotonic()
+            sim_time_s = pose_v_sim_time_s(message)
             with self.lock:
+                if self.value is not None and self.received_monotonic is not None:
+                    dt = None
+                    if (sim_time_s is not None
+                            and self.received_sim_time_s is not None
+                            and sim_time_s > self.received_sim_time_s):
+                        dt = sim_time_s - self.received_sim_time_s
+                    elif sim_time_s is None or self.received_sim_time_s is None:
+                        dt = now - self.received_monotonic
+                    if dt is not None and dt > 1.0e-6:
+                        self.xy_speed_m_s = math.hypot(
+                            pose.position.x - self.value[0],
+                            pose.position.y - self.value[1],
+                        ) / dt
                 self.value = (
                     pose.position.x, pose.position.y, pose.position.z,
                     roll, pitch, yaw,
                 )
+                self.received_monotonic = now
+                self.received_sim_time_s = sim_time_s
             return
 
     def get(self) -> tuple[float, float, float, float, float, float] | None:
         with self.lock:
             return self.value
+
+    def age_s(self, now: float) -> float:
+        with self.lock:
+            if self.received_monotonic is None:
+                return math.inf
+            return max(0.0, now - self.received_monotonic)
+
+    def speed_xy(self) -> float | None:
+        with self.lock:
+            return self.xy_speed_m_s
+
+    def simulation_time_s(self) -> float | None:
+        with self.lock:
+            return self.received_sim_time_s
 
 
 @dataclass(frozen=True)
@@ -208,6 +259,118 @@ class RoundedSquareRoute:
         direction_y = tangent_y + radial_correction * radial_unit_y
         norm = math.hypot(direction_x, direction_y)
         return direction_x / norm, direction_y / norm
+
+
+class StopTurnWaypointRoute:
+    """Straight waypoint patrol that brakes to a stop before each turn."""
+
+    def __init__(
+        self,
+        waypoints: list[tuple[float, float]],
+        waypoint_tolerance_m: float,
+        turn_speed_tolerance_m_s: float,
+        start_index: int = 0,
+        stop_waypoint_indices: list[int] | None = None,
+    ) -> None:
+        if len(waypoints) < 2:
+            raise ValueError("stop-turn route requires at least two waypoints")
+        if not 0 <= start_index < len(waypoints):
+            raise ValueError("stop-turn start index is outside the route")
+        if not math.isfinite(waypoint_tolerance_m) \
+                or waypoint_tolerance_m <= 0.0:
+            raise ValueError("waypoint tolerance must be finite and positive")
+        if not math.isfinite(turn_speed_tolerance_m_s) \
+                or turn_speed_tolerance_m_s < 0.0:
+            raise ValueError(
+                "turn speed tolerance must be finite and non-negative"
+            )
+        self._waypoints = tuple(waypoints)
+        self._waypoint_tolerance_m = waypoint_tolerance_m
+        self._turn_speed_tolerance_m_s = turn_speed_tolerance_m_s
+        if stop_waypoint_indices is None:
+            stop_waypoint_indices = list(range(len(waypoints)))
+        if any(not 0 <= index < len(waypoints) for index in stop_waypoint_indices):
+            raise ValueError("stop waypoint index is outside the route")
+        self._stop_waypoint_indices = frozenset(stop_waypoint_indices)
+        self._start_index = start_index
+        # The entity is spawned at start_index; the first target is the next
+        # waypoint, so the spawn itself is not counted as a completed corner.
+        self._target_index = (start_index + 1) % len(waypoints)
+        self._stopping = False
+        self._settled_zero_cycle = False
+        self.completed_loops = 0
+        self.reached_waypoints = 0
+
+    @property
+    def target_index(self) -> int:
+        return self._target_index
+
+    def command(
+        self,
+        x: float,
+        y: float,
+        current_speed_m_s: float,
+        cruise_speed_m_s: float,
+        acceleration_m_s2: float,
+    ) -> tuple[float, float]:
+        target_x, target_y = self._waypoints[self._target_index]
+        dx, dy = target_x - x, target_y - y
+        distance = math.hypot(dx, dy)
+
+        if self._stopping:
+            if current_speed_m_s > self._turn_speed_tolerance_m_s:
+                return 0.0, 0.0
+            if not self._settled_zero_cycle:
+                self._settled_zero_cycle = True
+                return 0.0, 0.0
+            self._advance(x, y)
+            target_x, target_y = self._waypoints[self._target_index]
+            dx, dy = target_x - x, target_y - y
+            distance = math.hypot(dx, dy)
+
+        stop_here = self._target_index in self._stop_waypoint_indices
+        start = self._waypoints[(self._target_index - 1) % len(self._waypoints)]
+        leg_x = target_x - start[0]
+        leg_y = target_y - start[1]
+        leg_length = math.hypot(leg_x, leg_y)
+        remaining_along = (
+            dx * leg_x + dy * leg_y
+        ) / max(leg_length, 1.0e-9)
+        if distance <= self._waypoint_tolerance_m \
+                or remaining_along <= self._waypoint_tolerance_m:
+            if stop_here:
+                self._stopping = True
+                self._settled_zero_cycle = False
+                return 0.0, 0.0
+            self._advance(x, y)
+            target_x, target_y = self._waypoints[self._target_index]
+            dx, dy = target_x - x, target_y - y
+            distance = math.hypot(dx, dy)
+            stop_here = self._target_index in self._stop_waypoint_indices
+
+        if distance <= 1.0e-9:
+            return 0.0, 0.0
+        target_speed = cruise_speed_m_s
+        if stop_here:
+            braking_distance = max(distance - self._waypoint_tolerance_m, 0.0)
+            target_speed = min(
+                cruise_speed_m_s,
+                math.sqrt(2.0 * acceleration_m_s2 * braking_distance),
+            )
+        return target_speed * dx / distance, target_speed * dy / distance
+
+    def _advance(self, x: float, y: float) -> None:
+        completed_index = self._target_index
+        self.reached_waypoints += 1
+        self._target_index = (self._target_index + 1) % len(self._waypoints)
+        if completed_index == self._start_index:
+            self.completed_loops += 1
+        self._stopping = False
+        self._settled_zero_cycle = False
+        print(
+            f"waypoint_reached={completed_index} "
+            f"x={x:.3f} y={y:.3f}"
+        )
 
 
 class LinearShuttleRoute:
@@ -850,12 +1013,21 @@ def main() -> int:
     )
     tolerance = float(trailer["waypoint_tolerance_m"])
     acceleration = float(trailer.get("acceleration_m_s2", 1.0))
+    try:
+        simulation_speed_factor = float(
+            os.environ.get("PX4_SIM_SPEED_FACTOR", "1.0")
+        )
+    except ValueError:
+        parser.error("PX4_SIM_SPEED_FACTOR must be numeric")
     if not math.isfinite(speed) or speed <= 0.0:
         parser.error("trailer cruise speed must be finite and positive")
     if not math.isfinite(command_rate_hz) or command_rate_hz <= 0.0:
         parser.error("trailer command rate must be finite and positive")
     if not math.isfinite(acceleration) or acceleration <= 0.0:
         parser.error("trailer acceleration must be finite and positive")
+    if (not math.isfinite(simulation_speed_factor)
+            or simulation_speed_factor <= 0.0):
+        parser.error("PX4_SIM_SPEED_FACTOR must be finite and positive")
     if shuttle_route is not None \
             and shuttle_route.creep_speed_m_s > speed:
         parser.error(
@@ -870,6 +1042,23 @@ def main() -> int:
                 waypoints,
                 float(trailer["corner_radius_m"]),
                 tolerance,
+            )
+        except ValueError as exc:
+            parser.error(str(exc))
+    stop_turn_route = None
+    if route_type == "waypoints" and bool(trailer.get("stop_at_waypoints", False)):
+        if rounded_route is not None:
+            parser.error("stop-turn and rounded routes are mutually exclusive")
+        try:
+            stop_turn_route = StopTurnWaypointRoute(
+                waypoints,
+                tolerance,
+                float(trailer.get("turn_speed_tolerance_m_s", 0.20)),
+                args.start_index,
+                [int(index) for index in trailer.get(
+                    "stop_waypoint_indices",
+                    range(len(waypoints)),
+                )],
             )
         except ValueError as exc:
             parser.error(str(exc))
@@ -913,7 +1102,8 @@ def main() -> int:
         )
     print(
         f"command_topic={topic} pose_topic={pose_topic} "
-        f"command_rate_hz={command_rate_hz:.3f}"
+        f"command_rate_hz={command_rate_hz:.3f} "
+        f"simulation_speed_factor={simulation_speed_factor:.3f}"
     )
     start = time.monotonic()
     while receiver.get() is None and not STOP.is_set():
@@ -958,6 +1148,7 @@ def main() -> int:
     reached = 0
     previous_velocity = np.zeros(3, dtype=np.float64)
     previous_time = time.monotonic()
+    previous_sim_time = receiver.simulation_time_s()
     max_abs_z_error = max_abs_roll = max_abs_pitch = 0.0
     max_abs_yaw_error = 0.0
     max_forward_along_speed_m_s = 0.0
@@ -965,6 +1156,10 @@ def main() -> int:
     tracking_error_samples = 0
     excessive_tilt_samples = 0
     period = 1.0 / command_rate_hz
+    # Poll twice as fast as the requested simulation-time command rate.  If
+    # polling and the pose publisher share the same period, scheduler phase can
+    # miss a just-late stamp and accidentally degrade 50 Hz control to 25 Hz.
+    poll_period = period / (2.0 * max(1.0, simulation_speed_factor))
 
     try:
         while not STOP.is_set():
@@ -974,10 +1169,25 @@ def main() -> int:
                 return 3
             pose = receiver.get()
             if pose is None:
-                time.sleep(period)
+                time.sleep(poll_period)
                 continue
+            sim_time = receiver.simulation_time_s()
+            sim_elapsed = None
+            if sim_time is not None and previous_sim_time is not None:
+                if sim_time < previous_sim_time:
+                    previous_sim_time = sim_time
+                else:
+                    sim_elapsed = sim_time - previous_sim_time
+                    # Publish at the YAML rate in simulation time even when
+                    # Gazebo runs faster (or cannot sustain the requested RTF).
+                    if sim_elapsed + 1.0e-9 < period:
+                        time.sleep(poll_period)
+                        continue
             x, y, z, roll, pitch, yaw = pose
-            if shuttle_route is not None:
+            pose_fresh = receiver.age_s(now) <= max(0.10, 2.5 * period)
+            if not pose_fresh:
+                desired_vx = desired_vy = 0.0
+            elif shuttle_route is not None:
                 desired_vx, desired_vy = shuttle_route.command(
                     x,
                     y,
@@ -1010,6 +1220,22 @@ def main() -> int:
                     break
                 desired_vx = speed * direction_x
                 desired_vy = speed * direction_y
+            elif stop_turn_route is not None:
+                measured_speed = receiver.speed_xy()
+                desired_vx, desired_vy = stop_turn_route.command(
+                    x,
+                    y,
+                    conservative_stop_speed(
+                        measured_speed,
+                        float(np.linalg.norm(previous_velocity[:2])),
+                    ),
+                    speed,
+                    acceleration,
+                )
+                reached = stop_turn_route.reached_waypoints
+                completed_loops = stop_turn_route.completed_loops
+                if args.loops > 0 and completed_loops >= args.loops:
+                    break
             else:
                 target_x, target_y = waypoints[index]
                 dx, dy = target_x - x, target_y - y
@@ -1042,12 +1268,25 @@ def main() -> int:
             )
             desired_vz = max(-2.5, min(2.5, 5.0 * (expected_z - z)))
 
-            dt = max(now - previous_time, 1e-3)
+            elapsed = (
+                sim_elapsed
+                if sim_elapsed is not None and sim_elapsed > 0.0
+                else (now - previous_time) * simulation_speed_factor
+            )
+            dt = min(max(elapsed, 1e-3), 2.0 * period)
             desired = np.array([desired_vx, desired_vy, desired_vz], dtype=np.float64)
-            max_delta = np.array(
-                [acceleration, acceleration, 3.0], dtype=np.float64
-            ) * dt
-            delta = np.clip(desired - previous_velocity, -max_delta, max_delta)
+            delta = desired - previous_velocity
+            if stop_turn_route is not None:
+                horizontal_norm = float(np.linalg.norm(delta[:2]))
+                horizontal_limit = acceleration * dt
+                if horizontal_norm > horizontal_limit:
+                    delta[:2] *= horizontal_limit / horizontal_norm
+                delta[2] = float(np.clip(delta[2], -3.0 * dt, 3.0 * dt))
+            else:
+                max_delta = np.array(
+                    [acceleration, acceleration, 3.0], dtype=np.float64
+                ) * dt
+                delta = np.clip(delta, -max_delta, max_delta)
             command = previous_velocity + delta
             if shuttle_route is not None:
                 along_speed_m_s = (
@@ -1070,6 +1309,7 @@ def main() -> int:
             )
             previous_velocity = command
             previous_time = now
+            previous_sim_time = sim_time
 
             z_error = abs(z - expected_z)
             max_abs_z_error = max(max_abs_z_error, z_error)
@@ -1087,11 +1327,11 @@ def main() -> int:
                 tracking_error_samples += 1
             if abs(roll) > math.radians(3.0) or abs(pitch) > math.radians(3.0):
                 excessive_tilt_samples += 1
-            time.sleep(max(0.0, period - (time.monotonic() - now)))
+            time.sleep(max(0.0, poll_period - (time.monotonic() - now)))
     finally:
         for _ in range(5):
             publish_velocity(publisher, 0.0, 0.0, 0.0)
-            time.sleep(0.02)
+            time.sleep(0.02 / max(1.0, simulation_speed_factor))
 
     route_complete = args.loops > 0 and completed_loops >= args.loops
     if STOP.is_set() and not route_complete:

@@ -312,6 +312,24 @@ def gimbal_tf_chain(yaw, roll, pitch):
     ]
 
 
+def gimbal_camera_origin_flu(joints):
+    """Return the gimbal lens origin relative to ``base_link`` in body FLU."""
+    yaw, roll, pitch = joints
+    rotation = np.eye(3)
+    translation = np.zeros(3)
+    for _parent, child, xyz, quat in gimbal_tf_chain(yaw, roll, pitch):
+        if child == 'gimbal_camera_optical_frame':
+            break
+        translation = translation + rotation @ np.asarray(xyz, float)
+        rotation = rotation @ quat_to_rot(quat)
+    return translation
+
+
+def gimbal_camera_origin_to_enu(joints, q):
+    """Rotate the body-relative gimbal lens origin into PX4-local ENU."""
+    return flu_dir_to_enu(gimbal_camera_origin_flu(joints), q)
+
+
 def gimbal_joint_offset_to_enu(p_opt, joints, q):
     """Marker offset in the gimbal camera -> local ENU, staying in PX4's frame.
 

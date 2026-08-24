@@ -67,12 +67,12 @@ Environment:
   GIMBAL=1                Fly the map's gimbal_variant vehicle instead of the
                           baseline one (moving-landing map only): identical
                           sensors plus a slung, tilt-decoupled camera
-  DRIVE_TRAILER=1         Drive the mountain, 1 km shuttle, or CJU stadium route
-  TRAILER_SPEED_M_S=...   Override moving-landing trailer speed for one run
+  DRIVE_TRAILER=1         Drive the city, mountain, 1 km shuttle, or CJU route
+  TRAILER_SPEED_M_S=...   Override the map-defined trailer speed for one run
+  TRAILER_START_INDEX=... Start a waypoint route from this YAML waypoint
+  RESET_TRAILER_FROM_YAML=1  Apply the YAML trailer spawn before PX4 starts
   TRAILER_ROUTE_LOOPS=1   Stop the driver after one complete route (0=repeat)
   TRAILER_ROUTE=slope     Mountain-only terrain-follow safeguard test
-  PX4_GZ_PLATFORM_VEL=... City SEO trailer speed (default: 0 m/s)
-  PX4_GZ_PLATFORM_HEADING_DEG=...  City SEO trailer heading (default: 0 deg/east)
   USE_NVIDIA=0            Disable NVIDIA PRIME render variables
   GZ_PARTITION=...        Gazebo transport partition (shared with PX4)
   PHYSICS_ENGINE=...      Override physics engine (mpc-landing/city default: DART)
@@ -130,6 +130,7 @@ parameter_ranges = {
     "MPC_LAND_CRWL": (0.1, 5.0),
     "LNDMC_Z_VEL_MAX": (0.01, 5.0),
     "LNDMC_XY_VEL_MAX": (0.01, 20.0),
+    "SIM_BAT_DRAIN": (1.0, 86400.0),
     "COM_DISARM_LAND": (0.0, 60.0),
     "PLD_BTOUT": (0.0, 50.0),
     "PLD_HACC_RAD": (0.0, 10.0),
@@ -260,20 +261,11 @@ export GZ_SIM_RESOURCE_PATH="$SCRIPT_DIR/models:$SCRIPT_DIR/worlds${GZ_SIM_RESOU
 export GZ_IP="${GZ_IP:-127.0.0.1}"
 export GZ_PARTITION="${GZ_PARTITION:-px4_ros2_${USER:-user}}"
 
-# SEO's MovingPlatformController is loaded by the Gazebo server and reads the
-# PX4 model name at plugin Configure time. Export it before starting gz sim,
-# not only on the later PX4 command. The city remains spawn-only by default;
-# an operator may explicitly set a non-zero speed for a motion experiment.
 export PX4_SIM_MODEL="$SIM_MODEL"
-if [[ "$MAP" == "city" ]]; then
-  export PX4_GZ_PLATFORM_VEL="${PX4_GZ_PLATFORM_VEL:-0}"
-  export PX4_GZ_PLATFORM_HEADING_DEG="${PX4_GZ_PLATFORM_HEADING_DEG:-0}"
-fi
-if [[ "$MAP" == "city" || "$MAP" == "mpc-landing" || \
-      "$MOVING_LANDING_PROFILE" == "1" ]]; then
+if [[ "$MAP" == "mpc-landing" ]]; then
   for asset in model.sdf model.config; do
     [[ -f "$SCRIPT_DIR/models/moving_platform_aruco/$asset" ]] || {
-      echo "ERROR: SEO trailer asset is missing: $SCRIPT_DIR/models/moving_platform_aruco/$asset" >&2
+      echo "ERROR: landing trailer asset is missing: $SCRIPT_DIR/models/moving_platform_aruco/$asset" >&2
       exit 3
     }
   done
@@ -282,11 +274,11 @@ if [[ "$MAP" == "city" || "$MAP" == "mpc-landing" || \
     exit 3
   }
 fi
-if [[ "$MOVING_LANDING_PROFILE" == "1" ]]; then
+if [[ "$MAP" == "city" || "$MOVING_LANDING_PROFILE" == "1" ]]; then
   MOVING_MODELS=(moving_platform_aruco_velocity)
   if [[ "$MAP" == "cju-track" ]]; then
     MOVING_MODELS+=(drone_cju_track_stadium drone_cju_track_running_track)
-  else
+  elif [[ "$MAP" == "mpc-landing-moving" ]]; then
     MOVING_MODELS+=(mpc_perimeter_patrol_field)
   fi
   for model in "${MOVING_MODELS[@]}"; do
@@ -296,6 +288,12 @@ if [[ "$MOVING_LANDING_PROFILE" == "1" ]]; then
         exit 3
       }
     done
+  done
+  for marker_id in 0 1 2; do
+    [[ -f "$SCRIPT_DIR/models/aruco_marker_${marker_id}/materials/textures/aruco_${marker_id}.png" ]] || {
+      echo "ERROR: ArUco ID $marker_id texture is missing" >&2
+      exit 3
+    }
   done
   if [[ "$MAP" == "cju-track" ]]; then
     CJU_MESH_ASSETS=(
@@ -599,9 +597,8 @@ echo "Expected entity  : $ENTITY_NAME"
 echo "GZ_PARTITION     : $GZ_PARTITION"
 echo "Physics          : $PHYSICS_ENGINE"
 if [[ "$MAP" == "city" ]]; then
-  echo "SEO trailer      : moving_platform_aruco as trailer"
-  echo "Trailer control  : ${PX4_GZ_PLATFORM_VEL} m/s @ ${PX4_GZ_PLATFORM_HEADING_DEG} deg"
-  echo "Trailer noise    : stock SEO perturbations start after PX4 spawn"
+  echo "Landing trailer  : deterministic three-marker velocity model"
+  echo "Trailer route    : full-city black-road stop-turn patrol (DRIVE_TRAILER=1)"
 elif [[ "$MAP" == "mpc-landing" ]]; then
   echo "Landing trailer  : measured odometry model held at 0 m/s"
   echo "Pair separation  : exactly 10 m on the northeast diagonal"
@@ -643,6 +640,38 @@ if [[ "$ready" != "1" ]]; then
   echo "ERROR: timed out waiting for Gazebo world '$WORLD_NAME'." >&2
   tail -80 "$GAZEBO_LOG" >&2 || true
   exit 5
+fi
+
+if [[ "${RESET_TRAILER_FROM_YAML:-0}" == "1" ]]; then
+  IFS=, read -r trailer_x trailer_y trailer_z trailer_roll trailer_pitch trailer_yaw \
+    <<<"$TRAILER_SPAWN_POSE"
+  read -r trailer_qx trailer_qy trailer_qz trailer_qw < <(
+    python3 - "$trailer_roll" "$trailer_pitch" "$trailer_yaw" <<'PY'
+import math
+import sys
+
+roll, pitch, yaw = map(float, sys.argv[1:])
+cr, sr = math.cos(roll / 2.0), math.sin(roll / 2.0)
+cp, sp = math.cos(pitch / 2.0), math.sin(pitch / 2.0)
+cy, sy = math.cos(yaw / 2.0), math.sin(yaw / 2.0)
+print(
+    sr * cp * cy - cr * sp * sy,
+    cr * sp * cy + sr * cp * sy,
+    cr * cp * sy - sr * sp * cy,
+    cr * cp * cy + sr * sp * sy,
+)
+PY
+  )
+  trailer_pose_reply="$(gz service -s "/world/$WORLD_NAME/set_pose" \
+    --reqtype gz.msgs.Pose --reptype gz.msgs.Boolean --timeout 5000 \
+    --req "name: 'trailer', position: {x: $trailer_x, y: $trailer_y, z: $trailer_z}, orientation: {x: $trailer_qx, y: $trailer_qy, z: $trailer_qz, w: $trailer_qw}" \
+    2>&1 || true)"
+  if ! grep -q 'data: true' <<<"$trailer_pose_reply"; then
+    echo "ERROR: could not apply YAML trailer spawn before PX4 startup." >&2
+    echo "$trailer_pose_reply" >&2
+    exit 5
+  fi
+  echo "Trailer spawn    : reset from YAML at ENU ($TRAILER_SPAWN_POSE)"
 fi
 
 # A user's persisted Gazebo GUI state can override the SDF camera pose. Apply
@@ -746,8 +775,13 @@ if [[ "${START_XRCE:-0}" == "1" ]]; then
 fi
 
 if [[ "${DRIVE_TRAILER:-0}" == "1" ]]; then
-  if [[ "$MAP" == "city" || "$MAP" == "mpc-landing" ]]; then
+  if [[ "$MAP" == "mpc-landing" ]]; then
     echo "ERROR: the $MAP trailer is intentionally stationary; leave DRIVE_TRAILER=0." >&2
+    exit 6
+  fi
+  if [[ "$MAP" == "city" && -z "${TRAILER_START_FILE:-}" \
+      && "${START_MAVROS:-1}" != "1" ]]; then
+    echo "ERROR: the city trailer takeoff gate needs START_MAVROS=1." >&2
     exit 6
   fi
   python3 -c 'import gz.transport13, gz.msgs10.pose_v_pb2, yaml' >/dev/null 2>&1 || {
@@ -755,8 +789,9 @@ if [[ "${DRIVE_TRAILER:-0}" == "1" ]]; then
     exit 6
   }
   TRAILER_ARGS=("$MAP" --coordinates "$COORDINATES" \
-    --loops "${TRAILER_ROUTE_LOOPS:-0}" --route "${TRAILER_ROUTE:-flat}")
-  if [[ "$MOVING_LANDING_PROFILE" == "1" ]]; then
+    --loops "${TRAILER_ROUTE_LOOPS:-0}" --route "${TRAILER_ROUTE:-flat}" \
+    --start-index "${TRAILER_START_INDEX:-0}")
+  if [[ "$MAP" == "city" || "$MOVING_LANDING_PROFILE" == "1" ]]; then
     # The model root is already calibrated to z=0 for the 2.051 m marker
     # surface. Do not apply the mountain driver's terrain-clearance offset.
     TRAILER_ARGS+=(--no-terrain-follow --rate "${TRAILER_COMMAND_RATE_HZ:-50}")
@@ -770,7 +805,7 @@ if [[ "${DRIVE_TRAILER:-0}" == "1" ]]; then
   echo "Trailer route    : waiting for PX4 entity (log: $TRAILER_LOG)"
 else
   if [[ "$MAP" == "city" ]]; then
-    echo "Trailer          : SEO model at ENU ($TRAILER_SPAWN_POSE), zero mean speed by default"
+    echo "Trailer          : stationary at patrol start (set DRIVE_TRAILER=1)"
   elif [[ "$MAP" == "mpc-landing" ]]; then
     echo "Trailer          : static at ENU ($TRAILER_SPAWN_POSE)"
   elif [[ "$MOVING_LANDING_PROFILE" == "1" ]]; then
@@ -945,13 +980,21 @@ SPAWN_CHECK_PID=$!
 if [[ "${DRIVE_TRAILER:-0}" == "1" ]]; then
   # Keep the map-defined initial spawn geometry until the aircraft exists.
   # This avoids giving the trailer a head start during PX4 startup. The CJU
-  # word-command launcher additionally supplies a gate held until `mission`.
+  # word-command launcher additionally supplies a gate held until `takeoff`.
   (
     for _ in {1..45}; do
       if gz model --list 2>/dev/null | grep -Fq -- "$ENTITY_NAME"; then
         if [[ -n "${TRAILER_START_FILE:-}" ]]; then
-          echo "Trailer route    : PX4 entity confirmed; waiting for mission clearance"
+          echo "Trailer route    : PX4 entity confirmed; waiting for takeoff clearance"
           while [[ ! -e "$TRAILER_START_FILE" ]]; do sleep 0.1; done
+        elif [[ "$MAP" == "city" ]]; then
+          echo "Trailer route    : PX4 entity confirmed; waiting for vehicle takeoff"
+          set +u
+          # shellcheck disable=SC1090
+          source "$ROS_SETUP"
+          set -u
+          ros2 topic echo --filter 'm.landed_state in (2, 3)' --once \
+            /mavros/extended_state mavros_msgs/msg/ExtendedState >/dev/null
         fi
         echo "Trailer route    : starting"
         exec python3 -u "$SCRIPT_DIR/trailer_waypoint_driver.py" \

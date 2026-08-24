@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import math
 import sys
 import time
 from pathlib import Path
@@ -36,9 +37,9 @@ from path_plan.bspline_optimizer import BsplineOptimizer
 from path_plan.mpc_ros import UnicycleMPC, Weights
 from path_plan.world_model import WorldModel, _find_buildings
 
-REPO = Path(__file__).resolve().parents[2]
+REPO = Path(__file__).resolve().parents[3]
 OUT = Path(__file__).resolve().parents[1] / "figures"
-DEFAULT_SCENARIO = REPO / "gazebo/maps/city_uav_trailer_loop.yaml"
+DEFAULT_SCENARIO = REPO / "simulation/gazebo/maps/city_uav_trailer_loop.yaml"
 _CORNER_S = {"SE": 0.0, "NE": 2.0, "NW": 4.0, "SW": 6.0}   # x H units along the loop
 
 # Make every figure's text bold (titles, axis labels, tick labels, legend).
@@ -55,7 +56,8 @@ C_OBST = "#9aa4ad"    # buildings
 C_SFC = "#1c7ed6"     # SFC corridor (filled, faint)
 C_ASTAR = "#f59f00"   # A* waypoints
 C_BSPL = "#2f9e44"    # B-spline reference path
-C_MPC = "#ae3ec9"     # MPC-tracked drone path
+C_MPC = "#ae3ec9"     # MPC receding-horizon predictions
+C_FINAL = "#1971c2"   # final executed drone path
 C_TRAIL = "#e8590c"   # trailer (loop + actual path)
 
 
@@ -117,18 +119,25 @@ def run_sim(scenario: dict, res_override=None, verbose=True):
     tr = scenario["trailer"]
     pu = scenario["pursuit"]
     floor, ceil = d["cruise_floor_m"], d["cruise_ceiling_m"]
-    cruise_z = 0.5 * (floor + ceil)
+    cruise_z = float(d.get("cruise_altitude_m", 0.5 * (floor + ceil)))
     res = float(res_override or pu["astar_resolution_m"])
 
     world = WorldModel.from_city_yaml(
-        base, inflation_xy_m=d["inflation_xy_m"], ground_clearance_m=floor,
+        base, xy_clearance_m=d["vehicle_clearance_xy_m"],
+        ground_clearance_m=floor,
         ceiling_m=ceil, overfly_allowed=d["overfly_allowed"])
     planner = AStarPlanner3D(world, resolution_m=res)
-    optimizer = BsplineOptimizer(world, cruise_speed_m_s=d["cruise_speed_m_s"],
-                                 ctrl_spacing_m=8.0, max_vel=d["cruise_speed_m_s"] + 1.0,
+    speed_limit = float(d.get("max_speed_m_s", d["cruise_speed_m_s"]))
+    optimizer = BsplineOptimizer(world, cruise_speed_m_s=None,
+                                 ctrl_spacing_m=float(pu.get("bspline_control_spacing_m", 8.0)),
+                                 max_vel=speed_limit,
                                  lambda_feas=2.0)
-    mpc = UnicycleMPC(dt_s=pu["sim_dt_s"], horizon=15, v_ref=d["cruise_speed_m_s"],
-                      v_max=d["cruise_speed_m_s"] + 1.0, max_iter=20,
+    mpc = UnicycleMPC(dt_s=pu["sim_dt_s"],
+                      horizon=int(pu.get("mpc_horizon", 15)),
+                      v_ref=float(pu.get(
+                          "mpc_reference_speed_m_s", d["cruise_speed_m_s"])),
+                      v_max=speed_limit,
+                      max_iter=int(pu.get("mpc_max_iter", 20)),
                       weights=Weights(cte=6.0, epsi=4.0, v=1.0, omega=1.0,
                                       a=0.05, domega=6.0, da=0.5))
     trailer = Trailer(tr)
@@ -155,7 +164,15 @@ def run_sim(scenario: dict, res_override=None, verbose=True):
     step_idx = 0
     splines_log = []
     mpc_log = []
-    while t <= t_max:
+    mpc_times = []
+    plan_stats = []
+    initial_target = trailer.pos(t)
+    initial_distance = float(np.linalg.norm(drone[:2] - initial_target))
+    log.append(_row(
+        t, drone, speed, 0.0, yaw, 0.0, initial_target, trailer.speed,
+        initial_distance, replan_count, "pursuit", False, math.nan, math.nan,
+        math.nan, False, math.nan, math.nan))
+    while t < t_max - 1.0e-9:
         tpos = trailer.pos(t)
         dist = float(np.linalg.norm(drone[:2] - tpos))
         
@@ -164,29 +181,45 @@ def run_sim(scenario: dict, res_override=None, verbose=True):
             print(f"Simulating: SimTime={t:.1f}s / {t_max:.1f}s | RealTime={real_t:.1f}s | dist={dist:.2f}m")
         step_idx += 1
 
-        if dist < cap:
-            captured = True
-            if spline is None:
-                track_err = 0.0
-                track_err_dense = 0.0
-            else:
-                track_err = float(np.min(np.linalg.norm(sp_tp[:, :2] - drone[:2], axis=1)))
-                track_err_dense = float(np.min(np.linalg.norm(dense_tp[:, :2] - drone[:2], axis=1)))
-            log.append(_row(t, drone, speed, 0.0, yaw, 0.0, tpos, trailer.speed, dist,
-                            replan_count, "capture", True, track_err, track_err_dense))
-            break
-
         phase = "homing" if dist <= homing else "pursuit"
         # real-time global replan toward the trailer's current position
         if phase == "pursuit" and (spline is None or t - last_replan >= replan_period):
+            plan_wall0 = time.perf_counter()
+            astar_wall0 = plan_wall0
             leg = planner.plan(drone, np.array([tpos[0], tpos[1], cruise_z]))
+            astar_ms = 1000.0 * (time.perf_counter() - astar_wall0)
+            bspline_ms = math.nan
+            sfc_ms = math.nan
+            accepted = False
             if leg.success and len(leg.waypoints_m) >= 2:
-                opt = optimizer.optimize(leg.waypoints_m)
-                spline = opt.spline
-                sp_tp, sp_tt = _sample_spline(spline)
-                _, dense_tp, _, _ = spline.sample(4000)
-                splines_log.append((t, np.copy(sp_tp), opt.corridor, np.copy(leg.waypoints_m)))
-                replan_count += 1
+                guide = leg.waypoints_m.copy()
+                guide[:, 2] = cruise_z
+                guide[0], guide[-1] = drone, [tpos[0], tpos[1], cruise_z]
+                bspline_wall0 = time.perf_counter()
+                opt = optimizer.optimize(guide)
+                bspline_ms = 1000.0 * (time.perf_counter() - bspline_wall0)
+                sfc_ms = opt.sfc_generation_time_ms
+                if opt.accepted:
+                    spline = opt.spline
+                    sp_tp, sp_tt = _sample_spline(spline)
+                    _, dense_tp, _, _ = spline.sample(4000)
+                    splines_log.append((t, np.copy(sp_tp), opt.corridor,
+                                        np.copy(guide)))
+                    replan_count += 1
+                    accepted = True
+            plan_stats.append({
+                "attempt_index": len(plan_stats) + 1,
+                "simulation_time_s": round(t, 3),
+                "accepted": int(accepted),
+                "astar_success": int(bool(leg.success)),
+                "astar_expanded": int(leg.expanded),
+                "astar_waypoints": int(len(leg.waypoints_m)),
+                "astar_solve_ms": astar_ms,
+                "bspline_solve_ms": bspline_ms,
+                "bspline_solve_scope": "optimizer_total_including_sfc",
+                "sfc_generation_time_ms": sfc_ms,
+                "total_plan_ms": 1000.0 * (time.perf_counter() - plan_wall0),
+            })
             last_replan = t
 
         # MPC reference: home straight at the trailer when close, else track spline
@@ -196,8 +229,11 @@ def run_sim(scenario: dict, res_override=None, verbose=True):
         else:
             ref = _horizon_from_samples(sp_tp, sp_tt, drone, mpc.N, dt)
 
+        mpc_wall0 = time.perf_counter()
         out = mpc.solve(drone, yaw, speed, drone[2], ref)
+        mpc_solve_ms = 1000.0 * (time.perf_counter() - mpc_wall0)
         mpc_log.append(np.copy(out.predicted_xy))
+        mpc_times.append(t)
         v = out.velocity_world
         yaw_rate = out.yaw_rate
         new_speed = float(np.hypot(v[0], v[1]))
@@ -206,26 +242,41 @@ def run_sim(scenario: dict, res_override=None, verbose=True):
         drone = drone + v * dt
         yaw += yaw_rate * dt
         speed = new_speed
-        
+
         if phase == "homing" or spline is None:
-            track_err = 0.0
-            track_err_dense = 0.0
+            track_err = math.nan
+            track_err_dense = math.nan
         else:
             track_err = float(np.min(np.linalg.norm(sp_tp[:, :2] - drone[:2], axis=1)))
             track_err_dense = float(np.min(np.linalg.norm(dense_tp[:, :2] - drone[:2], axis=1)))
 
-        log.append(_row(t, drone, speed, accel, yaw, yaw_rate, tpos, trailer.speed, dist,
-                        replan_count, phase, False, track_err, track_err_dense))
-        t += dt
+        t_next = t + dt
+        tpos_next = trailer.pos(t_next)
+        dist_next = float(np.linalg.norm(drone[:2] - tpos_next))
+        captured = dist_next < cap
+        row_phase = "capture" if captured else phase
+        log.append(_row(
+            t_next, drone, speed, accel, yaw, yaw_rate, tpos_next,
+            trailer.speed, dist_next, replan_count, row_phase, captured,
+            track_err if not captured else math.nan,
+            track_err_dense if not captured else math.nan,
+            mpc_solve_ms, out.success, out.cte0, out.epsi0))
+        t = t_next
+        if captured:
+            break
 
     if verbose:
         print(f"\nsim {'CAPTURED' if captured else 'timed out'} at t={t:.1f}s "
               f"(dist={log[-1]['dist_xy_m']:.2f} m), replans={replan_count}, "
               f"steps={len(log)}, wall={time.time()-wall0:.1f}s")
-    return log, captured, world, trailer, splines_log, mpc_log
+    return (log, captured, world, trailer, splines_log, mpc_log,
+            plan_stats, mpc_times)
 
 
-def _row(t, drone, speed, accel, yaw, yaw_rate, tpos, tspeed, dist, replans, phase, captured, track_err=0.0, track_err_dense=0.0):
+def _row(t, drone, speed, accel, yaw, yaw_rate, tpos, tspeed, dist,
+         replans, phase, captured, track_err=math.nan,
+         track_err_dense=math.nan, mpc_solve_ms=math.nan, mpc_success=False,
+         mpc_cte=math.nan, mpc_epsi=math.nan):
     return dict(t_s=round(t, 3), drone_x=round(float(drone[0]), 3),
                 drone_y=round(float(drone[1]), 3), drone_z=round(float(drone[2]), 3),
                 drone_speed_mps=round(speed, 4), drone_accel_mps2=round(accel, 4),
@@ -234,7 +285,11 @@ def _row(t, drone, speed, accel, yaw, yaw_rate, tpos, tspeed, dist, replans, pha
                 trailer_speed_mps=round(float(tspeed), 4),
                 dist_xy_m=round(float(dist), 4), replan_count=replans,
                 phase=phase, captured=int(captured), track_err_m=round(track_err, 4),
-                track_err_dense_m=round(track_err_dense, 4))
+                track_err_dense_m=round(track_err_dense, 4),
+                mpc_solve_ms=round(mpc_solve_ms, 6),
+                mpc_success=int(bool(mpc_success)),
+                mpc_cte_m=round(mpc_cte, 6),
+                mpc_epsi_rad=round(mpc_epsi, 6))
 
 
 def save_csv(log, path):
@@ -245,7 +300,8 @@ def save_csv(log, path):
     print(f"CSV written: {path}  ({len(log)} rows)")
 
 
-def _fig_topdown(log, world, trailer, splines_log, mpc_log, out_path):
+def _fig_topdown(log, world, trailer, splines_log, mpc_log, out_path,
+                 no_final_path=None):
     import matplotlib.pyplot as plt
     from matplotlib.patches import Rectangle
     dx = np.array([r["drone_x"] for r in log]); dy = np.array([r["drone_y"] for r in log])
@@ -265,24 +321,28 @@ def _fig_topdown(log, world, trailer, splines_log, mpc_log, out_path):
     loop = np.array([square_loop_pos(v, trailer.half) for v in s])
     ax.plot(loop[:, 0], loop[:, 1], ":", color=C_TRAIL, lw=1.5, label="trailer loop", zorder=1)
 
-    # 1. SFC Corridors & Historical Paths (filled, faint — same look as the pipeline fig)
-    ax.plot([], [], "-", color=C_SFC, alpha=0.6, lw=2, label="SFC corridor", zorder=2)
+    # 1. Every dynamic A*/B-spline replan.  SFC boxes are intentionally left
+    # out of this comparison figure so they cannot be mistaken for a fifth
+    # path (the dedicated 3-D/SFC figures below still retain them).
     for i, (t_gen, sp_tp, corridor, wp) in enumerate(splines_log):
-        for lo, hi in zip(corridor.boxes_min, corridor.boxes_max):
-            ax.add_patch(Rectangle((lo[0], lo[1]), hi[0]-lo[0], hi[1]-lo[1],
-                                   facecolor=C_SFC, edgecolor=C_SFC,
-                                   alpha=0.12, lw=0.8, zorder=2))
-
         # A* waypoints
         ax.plot(wp[:, 0], wp[:, 1], "-o", color=C_ASTAR, ms=5, lw=1.2, alpha=0.7,
-                label="A* waypoints" if i == 0 else "", zorder=3)
+                label="A*" if i == 0 else "", zorder=3)
 
         # B-spline reference
         ax.plot(sp_tp[:, 0], sp_tp[:, 1], "-", color=C_BSPL, alpha=0.85, lw=2.4,
-                label="B-spline path" if i == 0 else "", zorder=4)
+                label="B-spline" if i == 0 else "", zorder=4)
 
-    # 4. Actual Paths (drone = MPC tracked, trailer)
-    ax.plot(dx, dy, "--", color=C_MPC, lw=2.5, label="MPC tracked", zorder=5)
+    # 2. Receding MPC horizons (sampled only for legibility).
+    horizon_stride = max(1, len(mpc_log) // 100)
+    for index in range(0, len(mpc_log), horizon_stride):
+        horizon = np.asarray(mpc_log[index], float)
+        ax.plot(horizon[:, 0], horizon[:, 1], "--", color=C_MPC, lw=1.4,
+                alpha=0.58, label="MPC" if index == 0 else "", zorder=7)
+
+    # 3. Applied closed-loop trajectory: the study's final path.
+    final_line, = ax.plot(dx, dy, "-", color=C_FINAL, lw=2.8,
+                          label="Final path", zorder=6)
     ax.plot(tx, ty, "-", color=C_TRAIL, lw=2.5, label="trailer path", zorder=5)
 
     # 5. Start/End Markers
@@ -291,13 +351,28 @@ def _fig_topdown(log, world, trailer, splines_log, mpc_log, out_path):
             label="capture" if captured else "trailer end", zorder=6)
             
     ax.set_aspect("equal"); ax.set_xlabel("E x [m]"); ax.set_ylabel("N y [m]")
-    ax.set_title(f"Moving-trailer pursuit ({'CAPTURED' if captured else 'timeout'})")
+    fig_map.suptitle("Gazebo filght planned", fontsize=18, y=0.98)
+    ax.set_title(
+        f"City YAML dynamic pursuit | drone {max(r['drone_speed_mps'] for r in log):.1f} m/s max | "
+        f"trailer {trailer.speed:.1f} m/s | "
+        f"{'CAPTURED' if captured else 'timeout'}",
+        fontsize=10, pad=10)
     ax.legend(loc="upper left", framealpha=0.9, fontsize=10)
     
-    fig_map.tight_layout()
+    fig_map.tight_layout(rect=(0.0, 0.0, 1.0, 0.96))
     fig_map.savefig(out_path, dpi=130)
+    if no_final_path is not None:
+        final_line.set_visible(False)
+        handles, labels = ax.get_legend_handles_labels()
+        visible = [(handle, label) for handle, label in zip(handles, labels)
+                   if label != "Final path"]
+        ax.legend(*zip(*visible), loc="upper left", framealpha=0.9,
+                  fontsize=10)
+        fig_map.savefig(no_final_path, dpi=130)
     plt.close(fig_map)
     print(f"Figure 5 (Map): {out_path}")
+    if no_final_path is not None:
+        print(f"Figure 5 (Map, no final path): {no_final_path}")
 
 def _fig_profiles(log, out_path, band=None):
     import matplotlib.pyplot as plt
@@ -400,8 +475,12 @@ def _fig_mpc(log, splines_log, out_path):
     t = np.array([r["t_s"] for r in log])
     dx = np.array([r["drone_x"] for r in log])
     dy = np.array([r["drone_y"] for r in log])
-    err = np.array([r["track_err_m"] for r in log])
-    err_dense = np.array([r.get("track_err_dense_m", 0.0) for r in log])
+    valid = np.array([
+        r["phase"] == "pursuit" and np.isfinite(r["track_err_dense_m"])
+        for r in log])
+    t_error = t[valid]
+    err = np.array([r["track_err_m"] for r in log])[valid]
+    err_dense = np.array([r["track_err_dense_m"] for r in log])[valid]
 
     fig, (a1, a2) = plt.subplots(1, 2, figsize=(13, 5.5))
     # SFC corridor boxes under the tracked path (so the corridor the drone flew
@@ -419,8 +498,10 @@ def _fig_mpc(log, splines_log, out_path):
     a1.set_title("mpc_ros unicycle MPC — closed-loop tracking (top-down)")
     a1.legend(); a1.grid(alpha=0.3)
 
-    a2.plot(t, err, color="#b2f252", lw=1.5, alpha=0.6, label="Raw (Sawtooth artifact)")
-    a2.plot(t, err_dense, color="#2b8a3e", lw=2.0, label="True Error (Dense Spline)")
+    a2.plot(t_error, err, color="#b2f252", lw=1.5, alpha=0.6,
+            label="Raw (Sawtooth artifact)")
+    a2.plot(t_error, err_dense, color="#2b8a3e", lw=2.0,
+            label="True Error (Dense Spline)")
     a2.set_xlabel("time [s]"); a2.set_ylabel("lateral tracking error [m]")
     a2.set_title(f"Tracking error (mean {err_dense.mean():.2f} m, max {err_dense.max():.2f} m)")
     a2.legend(); a2.grid(alpha=0.3)
@@ -490,12 +571,16 @@ def main():
     OUT.mkdir(exist_ok=True)
 
     scenario = yaml.safe_load(Path(args.scenario).read_text())
-    log, captured, world, trailer, splines_log, mpc_log = run_sim(scenario, res_override=args.res)
+    (log, captured, world, trailer, splines_log, mpc_log,
+     _plan_stats, _mpc_times) = run_sim(scenario, res_override=args.res)
     save_csv(log, args.csv)
 
     foots = raw_footprints(REPO / scenario["base_map"])
     band = (scenario["drone"]["cruise_floor_m"], scenario["drone"]["cruise_ceiling_m"])
-    _fig_topdown(log, world, trailer, splines_log, mpc_log, OUT / "5_pursuit_map.png")
+    _fig_topdown(
+        log, world, trailer, splines_log, mpc_log,
+        OUT / "Gazebo_filght_planned_4_paths.png",
+        OUT / "Gazebo_filght_planned_3_paths.png")
     _fig_profiles(log, OUT / "6_pursuit_profiles.png", band=band)
     _fig_mpc(log, splines_log, OUT / "7_pursuit_mpc.png")
     _fig_3d(log, foots, splines_log, trailer, OUT / "8_pursuit_3d.png")

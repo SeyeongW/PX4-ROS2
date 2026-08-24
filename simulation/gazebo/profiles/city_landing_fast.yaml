@@ -1,0 +1,17 @@
+schema_version: 1
+profile:
+  name: city_landing_fast
+  coordinates: ../maps/city_coordinates_uav.yaml
+  direct_landing: false
+  auto_sequence: true
+  # Accelerated YAML route-map profile requested for quick playback.
+  simulation_speed_factor: 5.0
+  # Preserve the simulated GPS cue under the higher callback load.
+  gps_position_rate_hz: 10.0
+  gps_status_rate_hz: 2.0
+  gps_input_timeout_s: 2.0
+  gps_cue_timeout_s: 2.0
+  headless: true
+  aruco_view: false
+  mission_view: true
+  exit_on_done: true

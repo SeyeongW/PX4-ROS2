@@ -40,6 +40,8 @@ def test_control_spacing_is_an_upper_bound():
     interpolation_intervals = len(result.spline.q) - 3
     assert result.accepted
     assert length / interpolation_intervals <= spacing
+    assert np.isfinite(result.sfc_generation_time_ms)
+    assert result.sfc_generation_time_ms >= 0.0
 
 
 @pytest.mark.parametrize("solver_success, nonfinite", [

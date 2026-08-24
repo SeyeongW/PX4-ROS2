@@ -2,6 +2,7 @@ import collections
 import math
 import threading
 from collections import deque
+from pathlib import Path
 from types import SimpleNamespace
 
 from builtin_interfaces.msg import Time
@@ -372,3 +373,11 @@ def test_radio_probe_recognizes_position_stream():
     headline, _ = verdict(
         collections.Counter({GPS_MSG: 20, POSITION_MSG: 50}), 3, 14)
     assert 'POSITION IS ARRIVING' in headline
+
+
+def test_jo_field_runner_passes_the_city_distance_gate():
+    runner = Path(__file__).resolve().parents[1] / 'run_gps_cue.sh'
+    text = runner.read_text(encoding='utf-8')
+
+    assert 'GPS_MAX_DISTANCE_M="${GPS_MAX_DISTANCE_M:-2000.0}"' in text
+    assert '-p max_distance_m:="$GPS_MAX_DISTANCE_M"' in text

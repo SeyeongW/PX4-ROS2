@@ -7,6 +7,7 @@ Subscribes
 Publishes
     ~/cmd_vel     geometry_msgs/TwistStamped  world velocity + yaw-rate setpoint
     ~/mpc_preview nav_msgs/Path               predicted horizon (RViz)
+    ~/safety_radius visualization_msgs/Marker current vehicle-clearance disk (RViz)
 
 The horizontal motion is tracked with a unicycle model (inputs yaw-rate + accel),
 so the vehicle noses along the path and the forward depth camera looks ahead.
@@ -26,6 +27,7 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Range
 from std_msgs.msg import Float32MultiArray
+from visualization_msgs.msg import Marker
 
 from .mpc import depth_avoidance_offset
 from .mpc_ros import UnicycleMPC, Weights
@@ -58,6 +60,7 @@ class MPCNode(Node):
         self.trigger_m = p("depth_trigger_m", 10.0).value
         self.emergency_m = p("depth_emergency_m", 4.0).value
         self.lateral_m = p("avoid_lateral_m", 7.0).value
+        self.vehicle_clearance = float(p("vehicle_clearance_xy_m", 1.0).value)
 
         self._traj_t = self._traj_p = self._traj_v = None
         self._pos = np.zeros(3)
@@ -68,6 +71,7 @@ class MPCNode(Node):
 
         self.cmd_pub = self.create_publisher(TwistStamped, "~/cmd_vel", 10)
         self.preview_pub = self.create_publisher(Path, "~/mpc_preview", 10)
+        self.safety_pub = self.create_publisher(Marker, "~/safety_radius", 10)
         best_effort = QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT)
         self.create_subscription(Float32MultiArray, "~/trajectory", self._on_traj, 1)
         self.create_subscription(Odometry, "~/odometry", self._on_odom, best_effort)
@@ -86,6 +90,23 @@ class MPCNode(Node):
         self._yaw = _yaw_from_quaternion(msg.pose.pose.orientation)
         self._speed = math.hypot(lin.x, lin.y)
         self._have_state = True
+
+        marker = Marker()
+        marker.header = msg.header
+        marker.header.frame_id = FRAME
+        marker.ns = "vehicle_clearance"
+        marker.id = 0
+        marker.type = Marker.CYLINDER
+        marker.action = Marker.ADD
+        marker.pose.position = pos
+        marker.pose.orientation.w = 1.0
+        marker.scale.x = marker.scale.y = 2.0 * self.vehicle_clearance
+        marker.scale.z = 0.05
+        marker.color.r = 0.10
+        marker.color.g = 0.55
+        marker.color.b = 1.0
+        marker.color.a = 0.30
+        self.safety_pub.publish(marker)
 
     def _on_depth(self, msg: Range):
         self._depth = float(msg.range)

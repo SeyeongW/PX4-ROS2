@@ -18,6 +18,11 @@ frames:
     z_axis: up
     yaw: counter_clockwise_from_east_rad
     units: m
+    origin_enu_m:
+    - 0.0
+    - 0.0
+    - 0.0
+    heading_deg_enu: 0.0
   px4_local:
     convention: NED
     origin_enu_m:
@@ -30,6 +35,15 @@ frames:
       y_east_m: x_enu - origin_x
       z_down_m: -(z_enu - origin_z)
       yaw_ned_rad: normalize(pi/2 - yaw_enu)
+  mavros_local:
+    convention: ENU
+    x_axis: east
+    y_axis: north
+    z_axis: up
+    origin_enu_m:
+    - 587.0
+    - 580.0
+    - 0.24
 px4_vehicle:
   airframe_autostart_id: 4001
   simulation_model: gz_x500_city_rgbd_lidar
@@ -93,6 +107,10 @@ px4_vehicle:
       - 0.1
       - 100.0
       nominal_update_rate_hz: 50.0
+  gimbal_variant:
+    simulation_model: gz_x500_gimbal_rgbd_lidar
+    runtime_entity_name: x500_gimbal_rgbd_lidar_0
+    model_source: px4_models/x500_gimbal_rgbd_lidar/model.sdf
   forward_sensors:
     rgb_camera:
       parent_link: base_link
@@ -133,8 +151,35 @@ px4_vehicle:
       encoding: mono8
       metric_encoding: 32FC1
       nominal_update_rate_hz: 12.0
+  sitl_parameter_overrides:
+    MIS_TAKEOFF_ALT: 10.0
+    MPC_TKO_SPEED: 2.0
+    MPC_XY_CRUISE: 12.0
+    MPC_XY_VEL_MAX: 12.0
+    MPC_ACC_HOR: 3.0
+    MPC_JERK_AUTO: 4.0
+    SIM_BAT_DRAIN: 3600.0
+    MPC_LAND_SPEED: 0.7
+    MPC_LAND_CRWL: 0.1
+    LNDMC_Z_VEL_MAX: 0.08
+    LNDMC_XY_VEL_MAX: 12.0
+    COM_DISARM_LAND: 2.0
+    PLD_BTOUT: 0.5
+    PLD_HACC_RAD: 0.5
+    PLD_VEL_THR: 0.3
+    PLD_FAPPR_ALT: 0.0
+    PLD_SRCH_ALT: 5.0
+    PLD_SRCH_TOUT: 10.0
+    PLD_MAX_SRCH: 3
 terrain:
   type: completely_flat_heightmap_and_box_collision
+  coordinate_frame: gazebo_world
+  center_m:
+  - 0.0
+  - 0.0
+  size_m:
+  - 1300.0
+  - 1300.0
   image: gazebo/worlds/applepark_city_uav/mesh/height_map_city_uav.png
   road_texture: gazebo/worlds/applepark_city_uav/mesh/road_surface_city_uav.png
   normal_map: gazebo/worlds/applepark_city_uav/mesh/normal_map_city_uav.png
@@ -157,6 +202,7 @@ terrain:
   - 0.0
   - 0.0
   texture_boundary_extension: edge_clamp_feather_to_neutral
+  southeast_texture_repair: diagonal_edge_clamp_with_osm_road_restore
 spawn:
   name: city_drone_spawn
   gazebo_spawn_pose_enu:
@@ -169,10 +215,10 @@ spawn:
   surface: flat_ground_z0_no_visual_pad
 trailer:
   entity_name: trailer
-  model_uri: model://moving_platform_aruco
+  model_uri: model://moving_platform_aruco_velocity
   spawn_pose_enu:
-    x: -587.0
-    y: -512.0
+    x: -150.0
+    y: 507.0
     z: 0.0
     roll: 0.0
     pitch: 0.0
@@ -180,20 +226,94 @@ trailer:
   body_footprint_m:
   - 5.0
   - 5.0
-  command_topic: /model/flat_platform/cmd_vel
+  command_topic: /model/trailer/cmd_vel
   pose_topic: /world/applepark_city_uav/dynamic_pose/info
   waypoints_enu_m:
-  - - -587.0
-    - -512.0
-  source_branch_model: seo:gazebo/models/moving_platform_aruco
-  motion: stationary_spawn_only
+  - - -150.0
+    - 507.0
+  - - -191.0
+    - 511.5
+  - - -202.3
+    - 483.6
+  - - -272.1
+    - 307.1
+  - - -305.8
+    - 171.8
+  - - -312.1
+    - 159.7
+  - - -378.8
+    - 168.0
+  - - -467.1
+    - 168.6
+  - - -550.9
+    - 159.1
+  - - -527.4
+    - 55.6
+  - - -516.0
+    - -47.3
+  - - -513.5
+    - -510.3
+  - - -321.7
+    - -510.9
+  - - -320.4
+    - -322.3
+  - - 512.2
+    - -318.5
+  - - 512.2
+    - -96.2
+  - - 505.5
+    - 49.0
+  - - 261.3
+    - 53.7
+  - - 54.9
+    - 48.6
+  - - 57.5
+    - 117.8
+  - - 70.8
+    - 232.8
+  - - 116.5
+    - 438.0
+  - - 16.8
+    - 458.8
+  cruise_speed_m_s: 7.0
+  waypoint_tolerance_m: 0.5
+  route_surface: full_city_black_asphalt_closed_loop
+  source_branch_model: gazebo/models/moving_platform_aruco_velocity
+  motion: repeated_black_road_waypoint_patrol
+  route_type: waypoints
+  patrol_mode: repeat
+  acceleration_m_s2: 9.0
+  start_index: 0
+  command_rate_hz: 50.0
+  stop_at_waypoints: true
+  turn_speed_tolerance_m_s: 0.2
+  stop_waypoint_indices:
+  - 1
+  - 5
+  - 8
+  - 11
+  - 12
+  - 13
+  - 14
+  - 16
+  - 18
+  - 21
   deck_height_m: 2.05
-  marker_size_m: 1.0
-  controller_plugin: libMovingPlatformController.so
+  marker_surface_height_m: 2.051
+  aruco_dictionary: DICT_4X4_50
+  marker_size_m: 1.3
+  aruco_marker_id: 0
+  small_marker_size_m: 0.3
+  small_aruco_marker_id: 1
+  marker_offset_m:
+  - -1.1
+  - 0.0
+  marker_2_offset_m:
+  - 1.1
+  - 0.0
+  controller_plugin: gz-sim-velocity-control-system
   controller_link_name: platform_link
-  controller_velocity_m_s: 0.0
-  controller_heading_deg: 0.0
-  controller_noise_active_after_px4_spawn: true
+  odometry_topic: /model/trailer/odometry
   surface: exact_z0_flat_city_datum
 obstacles:
   summary:
@@ -12765,7 +12885,7 @@ source_sha256:
   source_city_coordinates_yaml: 751910b50b4ccb5fb01423f8ad0ba5f516be8e382fe10e6ec53d2dff59844a72
   building_visual_collision_dae: 3692d96187c9b512d2a29bb4c8bb3d3e91442819c3d88672f7c755d985d0fb7e
   terrain_heightmap: 7ddf3453a8bb15c66c10871141829dcfdf73d96eb890ea83f6bbc1ebaae8b248
-  road_texture: d423372455090e91130f47dd9302525b9459056cf618d5241be9e8ca20601a1e
+  road_texture: 720e6c9c5f5fc6a25af370fce19d4ef94a8329b09fbe4eedc03e6a1f92121c5c
   normal_map: 7617614592a2c8fb502a2bfaa43d4450b63f84171d6c3b6e2c6871742624644c
   astar_building_vertices_csv: a4ae9bd04c4836fce04a7cb0479a2313aaa75a577a8dd6c9977d84745b443b0a
 derivation:
@@ -12787,7 +12907,7 @@ derivation:
     retained_count: 205
     removed_fraction: 0.2518248175182482
     method: '25% deterministic spatial-random filter: 5x5 Hamilton quotas and SHA-256(seed, building ID) ranking,
-      with building_265 forced out to keep the fixed A* goal free; retained IDs and XY unchanged'
+      with the established building_265 quota substitution; retained IDs and XY unchanged'
     protected_ids:
     - building_001
     - building_009
@@ -12956,14 +13076,14 @@ derivation:
     - 587.0
     - 580.0
     global_goal:
-    - 200.0
-    - -128.0
+    - -165.0
+    - 0.0
     trailer_spawn:
-    - -587.0
-    - -512.0
+    - -150.0
+    - 507.0
     trailer_destination:
-    - -128.0
-    - -128.0
+    - 16.8
+    - 458.8
   mesh:
     vertices: 21096
     triangles: 7032
@@ -12985,3 +13105,27 @@ derivation:
     maximum_outward_error_m: 0.0
     maximum_undercoverage_m: 0.0
     courtyard_holes_preserved: true
+mission:
+  coordinate_frame: gazebo_world
+  command_topic: /mission/command
+  command_sequence:
+  - takeoff
+  - mission
+  - land
+  cruise_altitude_m: 10.0
+  goal_m:
+  - -165.0
+  - 0.0
+  hover_duration_s: 3.0
+  planner_resolution_m: 8.0
+  vehicle_clearance_xy_m: 1.0
+  bspline_clearance_margin_m: 0.0
+  bspline_control_spacing_m: 3.0
+  bspline_sample_spacing_m: 0.2
+  mpc_path_lookahead_m: 15.0
+  mpc_path_cross_track_m: 1.0
+  return_replan_min_period_s: 2.0
+  return_staging_enabled: false
+  terminal_route_match_tolerance_m: 2.0
+  landing_alignment_margin_s: 20.0
+  obstacle_source: city_buildings

@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+import yaml
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -133,6 +134,21 @@ def test_aabb_residual_is_physical_euclidean_distance_minus_clearance():
     assert (sample, obstacle) == (0, 0)
     assert inside == pytest.approx(-1.0)
     assert boundary == pytest.approx(0.0)
+
+
+def test_city_buildings_are_normalized_for_clearance_reporting():
+    document = yaml.safe_load((
+        ROOT / "simulation/gazebo/maps/city_coordinates_uav.yaml").read_text())
+
+    obstacles = EXPORT._physical_obstacles(document)
+
+    first = document['obstacles']['buildings'][0]
+    low = np.asarray(first['aabb_xy_m']['min'])
+    high = np.asarray(first['aabb_xy_m']['max'])
+    assert len(obstacles) == 205
+    assert obstacles[0]['name'] == first['id']
+    assert np.allclose(obstacles[0]['center_m'], 0.5 * (low + high))
+    assert np.allclose(obstacles[0]['size_m'], high - low)
 
 
 def test_quality_classification_is_fail_first_and_explains_reasons():

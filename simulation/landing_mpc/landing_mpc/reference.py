@@ -22,20 +22,34 @@ continuous & piecewise linear, acceleration piecewise constant.  Sampling it
 yields position/velocity/acceleration setpoints that are mutually CONSISTENT,
 which is what PX4's position-led controller needs to move smoothly.
 
-The MPC solves in RELATIVE coordinates; the absolute setpoint adds the target's
-own predicted motion at the same continuous time tau (target model = const
-velocity or const acceleration, also a polynomial, evaluated exactly):
+The MPC solves in RELATIVE coordinates.  First reconstruct its absolute drone
+trajectory q at the preview clock tau_p = tau + L.  PX4 already adds the
+streamed velocity as feed-forward, so subtract the solve-time drone velocity's
+inertial displacement over L-D instead of feeding it through PX4's position P
+term a second time.  D is the bounded age of the vehicle state when the
+setpoint reaches PX4; retaining v_d0*D places the command at the controller's
+current position instead of one transport interval behind it:
 
-    p_cmd(tau) = p_t(tau) + p_rel(tau)                                        (4)
-    v_cmd(tau) = v_t(tau) + v_rel(tau)
-    a_cmd(tau) = a_t(tau) + a_rel(tau)
+    v_d0        = v_t(0) + v_rel(0)
+    p_cmd(tau)  = p_t(tau_p) + p_rel(tau_p) - v_d0 * (L - D)                  (4)
+    v_cmd(tau)  = v_t(tau_p) + v_rel(tau_p)
+    a_cmd(tau)  = a_t(tau_p) + a_rel(tau_p)
+
+The subtraction is constant for the life of a plan, so position, velocity and
+acceleration remain mutually derivative-consistent.  D is clamped to [0,L].
+It removes the artificial v_d0*L position carrot at constant velocity while
+retaining only the state-age compensation and the small acceleration preview
+that made L=0 unable to start a chase.
 
 Symbols:
     dt      MPC step (horizon knot spacing) [s]
     N       horizon length (number of steps); plan spans [0, N*dt]
     t_k     = k*dt, the k-th knot time from the solve instant [s]
-    tau     elapsed time since the solve instant, clamped to [0, N*dt] [s]
-    s       intra-step time, s = tau - t_k in [0, dt] [s]
+    tau     elapsed time since the solve instant [s]
+    L       fixed absolute-plan look-ahead [s]
+    D       bounded vehicle-state age at PX4 consumption [s]
+    tau_p   preview clock, clamp(tau + L, 0, N*dt) [s]
+    s       intra-step time, s = tau_p - t_k in [0, dt] [s]
     p_k,v_k relative position/velocity knots (3,) [m], [m/s]
     a_k     relative acceleration held over step k (3,) [m/s^2]
     p_t,v_t,a_t  target predicted position/velocity/accel at tau [m],[m/s],[m/s^2]
@@ -54,18 +68,23 @@ class HorizonReference:
     The target is extrapolated analytically from its state at the solve instant.
     """
 
-    def __init__(self, lead_s: float = 0.0):
-        """``lead_s`` (L) is a constant look-ahead added to every sample.
+    def __init__(self, lead_s: float = 0.0, state_age_s: float = 0.0):
+        """``lead_s`` (L) is a constant look-ahead for the absolute plan.
 
         Without it the command at tau = 0 is the drone's CURRENT state ("stay
         put"), and it only pulls forward as tau grows — so the effective
         look-ahead sawtooths between 0 and the solve period on every re-plan,
         exciting an oscillation at the solve rate.  Sampling at tau + L keeps
         the commanded point a fixed L seconds ahead of *now*, continuously
-        across re-plans.  L = one MPC step is the natural choice.
+        across re-plans.  Position subtracts the solve-time vehicle velocity
+        over ``L-D``, where ``D=state_age_s`` is the bounded age of that state
+        when PX4 consumes the command.  This prevents double-counting constant
+        motion without anchoring the position setpoint behind the vehicle.  L
+        = one MPC step and D = one control tick are the natural runtime choices.
         """
         self._ok = False
         self.lead = float(lead_s)
+        self.state_age = float(state_age_s)
 
     def set_plan(self, p_rel0, v_rel0, pred_pos, pred_vel, pred_acc, dt,
                  p_t0, v_t0, a_t0):
@@ -85,6 +104,12 @@ class HorizonReference:
         self.p_t0 = np.asarray(p_t0, float)
         self.v_t0 = np.asarray(v_t0, float)
         self.a_t0 = np.asarray(a_t0, float)
+        preview_lead = float(np.clip(self.lead, 0.0, self.T))
+        compensated_lead = max(
+            0.0, preview_lead - float(np.clip(
+                self.state_age, 0.0, preview_lead)))
+        self._position_lead_compensation = (
+            self.v_t0 + self.Vk[0]) * compensated_lead
         self._ok = True
 
     def ready(self) -> bool:
@@ -99,19 +124,21 @@ class HorizonReference:
         Implements eqs. (1)-(4): pick the active step, evaluate the exact
         quadratic in relative coords, add the analytic target extrapolation.
         """
-        tau = float(np.clip(tau + self.lead, 0.0, self.T))   # constant look-ahead
-        j = min(int(tau / self.dt), self.N - 1)     # active step index
-        s = tau - j * self.dt                        # intra-step time in [0, dt]
+        tau_preview = float(np.clip(tau + self.lead, 0.0, self.T))
+        j = min(int(tau_preview / self.dt), self.N - 1)  # active step index
+        s = tau_preview - j * self.dt                # intra-step time in [0, dt]
 
         a_rel = self.Ak[j]                                   # (1)
         v_rel = self.Vk[j] + a_rel * s                       # (2)
         p_rel = self.Pk[j] + self.Vk[j] * s + 0.5 * a_rel * s * s   # (3)
 
-        p_t = self.p_t0 + self.v_t0 * tau + 0.5 * self.a_t0 * tau * tau
-        v_t = self.v_t0 + self.a_t0 * tau
+        p_t = (self.p_t0 + self.v_t0 * tau_preview
+               + 0.5 * self.a_t0 * tau_preview * tau_preview)
+        v_t = self.v_t0 + self.a_t0 * tau_preview
         a_t = self.a_t0
 
-        return p_t + p_rel, v_t + v_rel, a_t + a_rel         # (4)
+        return (p_t + p_rel - self._position_lead_compensation,
+                v_t + v_rel, a_t + a_rel)                    # (4)
 
 
 def _selftest():

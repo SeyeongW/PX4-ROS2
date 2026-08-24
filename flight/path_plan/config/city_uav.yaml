@@ -4,7 +4,7 @@
 /astar_planner:
   ros__parameters:
     resolution_m: 4.0           # finer keeps the path centred; needed for clean B-spline convergence
-    inflation_xy_m: 1.0         # wall clearance: path-centre >= 1 m from any wall
+    vehicle_clearance_xy_m: 5.0 # paper city inflation; runtime hard radius stays 1.0 m
     roof_clearance_m: 10.0
     cruise_floor_m: 20.0
     cruise_ceiling_m: 30.0
@@ -26,7 +26,7 @@
 
 /sfc_builder:
   ros__parameters:
-    inflation_xy_m: 1.0
+    vehicle_clearance_xy_m: 5.0
     roof_clearance_m: 10.0
     cruise_floor_m: 20.0
     cruise_ceiling_m: 30.0
@@ -38,15 +38,15 @@
 /bspline_optimizer:
   ros__parameters:
     # obstacle model must match the other nodes (used for the rebound collision check)
-    inflation_xy_m: 1.0
+    vehicle_clearance_xy_m: 5.0
     roof_clearance_m: 10.0
     cruise_floor_m: 20.0
     cruise_ceiling_m: 30.0
     overfly_allowed: false
     # ego-planner corridor B-spline optimizer (L-BFGS + rebound).
-    cruise_speed_m_s: 4.0
+    cruise_speed_m_s: 10.0
     ctrl_spacing_m: 5.0     # control-point spacing (also one free box each)
-    max_vel_m_s: 5.0
+    max_vel_m_s: 10.0       # City flight speed limit
     max_acc_m_s2: 3.0
     lambda_smooth: 1.0      # jerk
     lambda_dist: 0.5        # corridor rebound
@@ -58,11 +58,14 @@
 
 /tracking_mpc:
   ros__parameters:
+    # Runtime hard vehicle radius. A*/SFC/B-spline keep the paper's 5 m
+    # city inflation above; this controller does not weaken that corridor.
+    vehicle_clearance_xy_m: 1.0
     # mpc_ros-style unicycle tracking MPC (inputs: yaw-rate omega, accel a).
     dt_s: 0.1
     horizon: 20
-    v_ref_m_s: 4.0
-    v_max_m_s: 5.0
+    v_ref_m_s: 10.0
+    v_max_m_s: 10.0
     omega_max_rad_s: 1.2
     a_max_m_s2: 3.0
     z_kp: 0.8            # altitude-hold P gain (decoupled vertical)

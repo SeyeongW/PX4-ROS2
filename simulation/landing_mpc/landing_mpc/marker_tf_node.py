@@ -48,11 +48,11 @@ Two things this node exists to get right:
 Filtering and velocity estimation deliberately live in `marker_kf_node`, not
 here: this node is a pure geometric transform.
 
-KNOWN OFFSET: the camera offset is added to the vehicle position rather than to
-the LENS position, and on the gimbal vehicle the lens sits 0.13 m below
-base_link.  Measured in flight as a 0.125 m shortfall in the reported marker z
-(1.686 m against a true 1.811 m).  It is left in because `use_deck_z` pins z
-anyway, and the horizontal component of the lever arm is under 5 cm.
+For the gimbal camera with ``use_deck_z=true`` the transform uses the actual
+lens origin and intersects the measured camera ray with that known plane.  This
+deliberately throws away solvePnP range, which is the least reliable part of a
+20--30 pixel marker pose.  The body-camera path stays backward-compatible;
+``use_deck_z=false`` remains the raw-range diagnostic path.
 """
 
 from __future__ import annotations
@@ -65,12 +65,14 @@ from rclpy.executors import ExternalShutdownException
 from geometry_msgs.msg import PointStamped, PoseStamped
 from rclpy.node import Node
 from rclpy.qos import (DurabilityPolicy, HistoryPolicy, QoSProfile,
-                       ReliabilityPolicy)
-from sensor_msgs.msg import JointState
+                       ReliabilityPolicy, qos_profile_sensor_data)
+from sensor_msgs.msg import Imu, JointState
 
 from px4_msgs.msg import VehicleAttitude, VehicleLocalPosition
 
 from .frame import (LOCAL_ENU_FRAME_ID, camera_offset_to_enu,
+                    gimbal_camera_offset_to_enu,
+                    gimbal_camera_origin_to_enu,
                     gimbal_joint_offset_to_enu)
 from .parameter_utils import (
     DEFAULT_DECK_Z_M,
@@ -103,6 +105,29 @@ def sample_at(hist, t):
     return hist[-1][1]
 
 
+def ray_to_horizontal_plane(origin_enu, ray_enu, plane_z_m):
+    """Intersect a forward camera ray with a known horizontal world plane.
+
+    ArUco pose range is ill-conditioned when a marker is only a few pixels
+    wide.  The pixel still gives a useful ray, and the deck height is known, so
+    use only that direction.  ``None`` is fail-closed for a parallel ray or an
+    intersection behind the camera.
+    """
+    origin = np.asarray(origin_enu, float)
+    ray = np.asarray(ray_enu, float)
+    plane_z = float(plane_z_m)
+    if (origin.shape != (3,) or ray.shape != (3,)
+            or not np.all(np.isfinite(np.r_[origin, ray, plane_z]))
+            or abs(float(ray[2])) < 1.0e-9):
+        return None
+    scale = (plane_z - float(origin[2])) / float(ray[2])
+    if not np.isfinite(scale) or scale <= 0.0:
+        return None
+    point = origin + scale * ray
+    point[2] = plane_z
+    return point
+
+
 class MarkerTfNode(Node):
     def __init__(self):
         super().__init__('marker_tf_node')
@@ -123,6 +148,16 @@ class MarkerTfNode(Node):
             raise ValueError(
                 f"camera_frame must be 'body' or 'gimbal', got "
                 f"'{self.camera_frame}'")
+        self.gimbal_attitude_source = str(
+            p('gimbal_attitude_source', 'joints_px4').value)
+        if self.gimbal_attitude_source not in ('joints_px4', 'camera_imu'):
+            raise ValueError(
+                'gimbal_attitude_source must be joints_px4 or camera_imu, got '
+                f"'{self.gimbal_attitude_source}'")
+        if (self.camera_frame != 'gimbal'
+                and self.gimbal_attitude_source != 'joints_px4'):
+            raise ValueError(
+                'gimbal_attitude_source applies only to camera_frame=gimbal')
         joint_topic = str(
             p('joint_state_topic', '/gimbal/joint_state').value)
         if self.camera_frame == 'gimbal':
@@ -131,6 +166,7 @@ class MarkerTfNode(Node):
         self._pos_hist = deque()
         self._att_hist = deque()
         self._joint_hist = deque()
+        self._camera_att_hist = deque()
 
         self.meas_pub = self.create_publisher(PointStamped, '/marker/measured', 10)
         self.create_subscription(PoseStamped, '/aruco/pose_cam', self._on_pose, 10)
@@ -141,13 +177,24 @@ class MarkerTfNode(Node):
         if self.camera_frame == 'gimbal':
             self.create_subscription(JointState, joint_topic,
                                      self._on_joints, 10)
+            if self.gimbal_attitude_source == 'camera_imu':
+                camera_imu_topic = require_nonempty(
+                    'camera_imu_topic',
+                    p('camera_imu_topic', '/gimbal_camera/imu').value)
+                self.create_subscription(
+                    Imu, camera_imu_topic, self._on_camera_imu,
+                    qos_profile_sensor_data)
         if not self.get_parameter('use_sim_time').value:
             self.get_logger().warn(
                 'use_sim_time=false: image stamps are sim time, so the pose '
                 'interpolation will be wrong. Launch with -p use_sim_time:=true')
-        rotation_source = ('the airframe attitude + gimbal joints'
-                           if self.camera_frame == 'gimbal'
-                           else 'the airframe attitude')
+        rotation_source = (
+            'the camera IMU'
+            if (self.camera_frame == 'gimbal'
+                and self.gimbal_attitude_source == 'camera_imu')
+            else ('the airframe attitude + gimbal joints'
+                  if self.camera_frame == 'gimbal'
+                  else 'the airframe attitude'))
         self.get_logger().info(
             f'marker_tf_node: /aruco/pose_cam + vehicle state -> '
             f'/marker/measured (camera_frame={self.camera_frame}, rotating '
@@ -180,6 +227,12 @@ class MarkerTfNode(Node):
         if len(msg.position) >= 3:
             self._push(self._joint_hist, np.array(msg.position[:3], float))
 
+    def _on_camera_imu(self, msg):
+        q = msg.orientation
+        self._push(
+            self._camera_att_hist,
+            np.array([q.w, q.x, q.y, q.z], float))
+
     def _warn_no_joints(self):
         """Loud, because the alternative is silently dropping every detection.
 
@@ -196,28 +249,66 @@ class MarkerTfNode(Node):
     def _on_pose(self, msg: PoseStamped):
         if not self._pos_hist:
             return
-        if not self._att_hist:
+        use_camera_imu = (
+            self.camera_frame == 'gimbal'
+            and self.gimbal_attitude_source == 'camera_imu')
+        if not use_camera_imu and not self._att_hist:
             return
-        if self.camera_frame == 'gimbal' and not self._joint_hist:
+        if (self.camera_frame == 'gimbal' and not use_camera_imu
+                and not self._joint_hist):
             self._warn_no_joints()
+            return
+        if use_camera_imu and not self._camera_att_hist:
+            self.get_logger().warn(
+                'gimbal_attitude_source=camera_imu but no camera IMU sample '
+                'yet; detections are being discarded',
+                throttle_duration_sec=5.0)
             return
         t_img = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
         p_d = sample_at(self._pos_hist, t_img)
-        q = sample_at(self._att_hist, t_img)
-        q = q / max(float(np.linalg.norm(q)), 1e-9)
 
         p_opt = np.array([msg.pose.position.x, msg.pose.position.y,
                           msg.pose.position.z])
         if self.camera_frame == 'gimbal':
-            # Interpolated to the image stamp for the same reason the vehicle
-            # state is: during a slew the joints move several degrees per frame.
-            joints = sample_at(self._joint_hist, t_img)
-            offset = gimbal_joint_offset_to_enu(p_opt, joints, q)
+            if use_camera_imu:
+                q_camera = sample_at(self._camera_att_hist, t_img)
+                q_camera = q_camera / max(
+                    float(np.linalg.norm(q_camera)), 1.0e-9)
+                offset = gimbal_camera_offset_to_enu(p_opt, q_camera)
+                # The lens lever is 0.13 m against a 23 m ray.  Using the PX4
+                # base position here avoids mixing its yaw with Gazebo's
+                # world-referenced camera IMU; the resulting city-SITL XY
+                # error measured 3 cm, versus 1.1 m for that mixed frame.
+                camera_origin = p_d
+            else:
+                # Interpolated to the image stamp for the same reason the
+                # vehicle state is: during a slew the joints move several
+                # degrees per frame.
+                q = sample_at(self._att_hist, t_img)
+                q = q / max(float(np.linalg.norm(q)), 1e-9)
+                joints = sample_at(self._joint_hist, t_img)
+                offset = gimbal_joint_offset_to_enu(p_opt, joints, q)
+                camera_origin = (
+                    p_d + gimbal_camera_origin_to_enu(joints, q))
         else:
+            q = sample_at(self._att_hist, t_img)
+            q = q / max(float(np.linalg.norm(q)), 1e-9)
             offset = camera_offset_to_enu(p_opt, q)
-        marker = p_d + offset
-        if self.use_deck_z:
-            marker[2] = self.deck_z
+            camera_origin = p_d
+        if self.use_deck_z and self.camera_frame == 'gimbal':
+            marker = ray_to_horizontal_plane(
+                camera_origin, offset, self.deck_z)
+            if marker is None:
+                self.get_logger().warn(
+                    'marker ray does not meet the known deck plane in front '
+                    'of the camera; dropping the fix',
+                    throttle_duration_sec=2.0)
+                return
+        else:
+            # Preserve the body-camera contract and the raw-range diagnostic.
+            marker = p_d + offset
+            if self.use_deck_z:
+                marker[2] = self.deck_z
 
         pm = PointStamped()
         pm.header.stamp = msg.header.stamp

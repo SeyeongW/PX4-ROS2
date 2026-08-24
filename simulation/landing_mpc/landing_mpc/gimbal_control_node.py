@@ -165,6 +165,12 @@ class GimbalControlNode(Node):
             'vision_timeout_s', p('vision_timeout_s', 1.0).value)
         self.cue_timeout_s = require_positive(
             'cue_timeout_s', p('cue_timeout_s', 2.0).value)
+        # GPS is the stable pointing reference in accelerated city SITL.  A
+        # briefly valid but still-converging visual track must not drag the
+        # lens away from the deck and thereby destroy its own measurements.
+        # Hardware profiles keep the historical vision-first behaviour.
+        self.prefer_cue_aim = bool(
+            p('prefer_cue_aim', False).value)
         # Use horizontal drone-to-trailer range from the shared GPS/cue frame:
         # remain stable outside 10 m, blend for one metre, then point directly.
         # Both distances remain parameters because camera/FOV hardware may change.
@@ -303,17 +309,25 @@ class GimbalControlNode(Node):
     def _look_at(self):
         """The point to aim at, in local ENU, or None to hold nadir.
 
-        Vision wins when it is valid and fresh; otherwise the cue carries the
-        aim through the long approach, which is precisely the phase where the
-        fixed camera lost the marker.  Aiming at the cue before the marker is
-        resolvable is what lets vision acquire at all.
+        Vision normally wins when it is valid and fresh; otherwise the cue
+        carries the aim through the long approach.  The accelerated city
+        profile can instead keep a fresh GPS cue authoritative so a transient
+        KF estimate cannot point the camera away from the marker it needs.
         """
         now = self._now()
-        if (self._valid and self._vis is not None
-                and now - self._vis_t < self.vision_timeout_s):
+        cue_fresh = (
+            self._cue is not None and self._cue_t is not None
+            and now - self._cue_t < self.cue_timeout_s)
+        vision_fresh = (
+            self._valid and self._vis is not None and self._vis_t is not None
+            and now - self._vis_t < self.vision_timeout_s)
+        if getattr(self, 'prefer_cue_aim', False) and cue_fresh:
+            self._source = 'cue'
+            return self._cue
+        if vision_fresh:
             self._source = 'vision'
             return self._vis
-        if self._cue is not None and now - self._cue_t < self.cue_timeout_s:
+        if cue_fresh:
             self._source = 'cue'
             return self._cue
         self._source = 'nadir'
@@ -359,7 +373,10 @@ class GimbalControlNode(Node):
         if np.allclose(desired_axis, [0.0, 0.0, -1.0]):
             if not self._source.startswith('joint lock'):
                 self._source = f'joint lock ({self._source})'
-            return 0.0, 0.0, -math.pi / 2.0
+            # Yaw is undefined at nadir.  Hold the continuous joint coordinate
+            # instead of unwinding it to zero, which only creates a needless
+            # slew when cue tracking resumes.
+            return self._yaw, 0.0, -math.pi / 2.0
         return gimbal_joint_angles(
             desired_axis, yaw_hold=self._yaw,
             pitch_hold=self._pitch)

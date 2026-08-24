@@ -1,0 +1,15 @@
+schema_version: 1
+profile:
+  name: city_landing_visual
+  coordinates: ../maps/city_coordinates_uav.yaml
+  direct_landing: false
+  auto_sequence: true
+  simulation_speed_factor: 1.0
+  gps_position_rate_hz: 5.0
+  gps_status_rate_hz: 1.0
+  gps_input_timeout_s: 1.0
+  gps_cue_timeout_s: 1.0
+  headless: false
+  aruco_view: true
+  mission_view: true
+  exit_on_done: false

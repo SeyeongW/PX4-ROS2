@@ -8,13 +8,14 @@ is no static preview-drone substitute in either world.
 ```bash
 git clone -b jo https://github.com/SeyeongW/PX4-ROS2.git
 cd PX4-ROS2
-./gazebo/setup_px4_sitl.sh       # first PC / one time only
-./gazebo/run_px4_map.sh city
+./simulation/gazebo/setup_px4_sitl.sh       # first PC / one time only
+DRIVE_TRAILER=1 ./simulation/gazebo/run_px4_map.sh city
 # or
-./gazebo/run_px4_map.sh mountain
+./simulation/gazebo/run_px4_map.sh mountain
 
-# Mountain-only optional trailer route
-DRIVE_TRAILER=1 TRAILER_ROUTE_LOOPS=1 ./gazebo/run_px4_map.sh mountain
+# Optional one-loop validation instead of the default infinite city patrol
+DRIVE_TRAILER=1 TRAILER_ROUTE_LOOPS=1 \
+  ./simulation/gazebo/run_px4_map.sh city
 ```
 
 The setup helper pins a new checkout to the tested PX4 `v1.17.0`, runs PX4's
@@ -36,8 +37,8 @@ In GUI mode this 1 km profile starts with a whole-course overview that remains
 freely controllable; it is not locked to the vehicle. Set `FOLLOW_DRONE=1`
 only when an explicit PX4 follow view is wanted.
 
-Map-only inspection is still available with `./gazebo/run_world.sh city` or
-`mountain`; the city trailer is stationary at `(-587,-512)`, and those commands
+Map-only inspection is still available with `./simulation/gazebo/run_world.sh city` or
+`mountain`; the city trailer is stationary at `(-150,507)`, and those commands
 intentionally contain no PX4 drone. Use `run_px4_map.sh` whenever a flyable PX4
 vehicle is required.
 
@@ -132,8 +133,9 @@ GZ_SIM_RESOURCE_PATH="$PWD/gazebo/models:$PWD/gazebo/worlds" __NV_PRIME_RENDER_O
   the former dark affine-fill border is replaced by a smooth
   edge-clamped fade without changing any building coordinate
 - A* polygon rings and vertical limits are exported deterministically to
-  `gazebo/maps/city_uav_building_vertices.csv`; the fixed goal is
-  `(200,-128)` and its former blocking structure (`building_265`) is removed
+  `gazebo/maps/city_uav_building_vertices.csv`; the 10 m-altitude mission goal
+  is the free point `(-165,0)` between buildings with the configured 1 m
+  planning clearance
 - DART cannot load this city's DAE directly as collision in Gazebo Harmonic
   8.14, so the DAE remains visual-only while exact DART-supported polyline
   prisms provide physical buildings without destabilizing PX4 flight
@@ -205,16 +207,19 @@ For the actual PX4-controlled x500 with downward monocular camera, run:
 
 ## Trailer waypoint control
 
-The city now uses `seo`'s default `moving_platform_aruco` PX4 landing-platform
-trailer (5 x 5 m deck, 2.05 m top, 1 x 1 m ArUco marker). Its original
-`MovingPlatformController` is retained, while the city launcher defaults
-`PX4_GZ_PLATFORM_VEL=0`, so its commanded mean speed is zero unless the
-operator explicitly requests motion. The stock SEO controller still adds
-small force/torque perturbations after the PX4 vehicle appears; map-only runs
-remain fixed while the controller waits for that vehicle. It is not a wheeled vehicle. The
-mountain retains its optional VelocityControl landing-platform route. The
-standalone mountain driver uses Gazebo Transport directly and does not require
-MAVROS:
+The city uses the deterministic three-marker `moving_platform_aruco_velocity`
+model. With `DRIVE_TRAILER=1`, the existing Gazebo Transport driver repeats an
+exact 4,028.84 m closed patrol over the full-city black roads; without that
+flag it stays at `(-150,507)`. The 23 guide points follow the road centre, but
+only the 10 real intersections are stop-turn corners. On each straight the
+platform cruises at 7 m/s, starts braking about 2.72 m before a stop, reaches at most
+0.2 m/s, holds one zero-command cycle, changes direction, and accelerates back
+to 7 m/s at 9 m/s². No circular/fillet corner mode is active. The platform is
+kinematic rather than wheeled.
+The mountain keeps its own optional route, using the same dependency-free
+driver:
+
+![Archived city 9 m/s black-road trailer patrol](validation/path_planning/city_9ms_trailer_patrol.png)
 
 ```bash
 # Terminal 1

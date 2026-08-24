@@ -5,20 +5,22 @@
 # unchanged base map; only the trailer motion + pursuit settings live here.
 # Used by:  path_plan/tools/pursuit_sim.py
 
-base_map: gazebo/maps/city_coordinates_uav.yaml   # buildings + geofence (unchanged)
+base_map: simulation/gazebo/maps/city_coordinates_uav.yaml  # physical map, unchanged
 
 drone:
-  spawn_enu_m: [587.0, 580.0, 15.0]   # NE corner (base-map spawn), mid-band cruise 15 m
-  cruise_floor_m: 10.0                # 10-20 m cruise band (same as visualize_pipeline)
-  cruise_ceiling_m: 20.0
-  cruise_speed_m_s: 10.0               # faster than the trailer so it can intercept
-  inflation_xy_m: 1.0                 # 1 m wall clearance
-  overfly_allowed: true               # climb within the 10-20 m band to overfly buildings
+  spawn_enu_m: [587.0, 580.0, 10.0]   # NE city-map start
+  cruise_altitude_m: 10.0             # fixed study altitude
+  cruise_floor_m: 9.9                 # narrow numerical band around 10 m
+  cruise_ceiling_m: 10.1
+  cruise_speed_m_s: 12.0              # requested drone ceiling
+  max_speed_m_s: 12.0
+  vehicle_clearance_xy_m: 1.0         # requested planning reserve
+  overfly_allowed: false              # buildings remain full-height no-fly columns
 
 trailer:
   motion: perimeter_square_loop
   half_size_m: 600.0                  # loop runs along x,y = ±600 (building-clear ring)
-  speed_m_s: 6.0
+  speed_m_s: 10.0
   start_corner: SW                    # start opposite the NE drone spawn -> real chase
   direction: ccw
   deck_height_m: 1.25
@@ -26,8 +28,13 @@ trailer:
 
 pursuit:
   capture_radius_m: 5.0               # success when drone-trailer xy distance < this
-  replan_period_s: 10.0              # global A*->SFC->B-spline replan cadence (open chase)
+  replan_period_s: 2.0               # live global A*->SFC->B-spline cadence
   terminal_homing_m: 40.0            # inside this range the MPC homes straight at the trailer
-  astar_resolution_m: 10.0
+  astar_resolution_m: 8.0            # matches the active city mission YAML
+  bspline_control_spacing_m: 3.0
+  mpc_horizon: 20
+  mpc_max_iter: 40
+  # Match the requested reference to the hard 12 m/s ceiling.
+  mpc_reference_speed_m_s: 12.0
   sim_dt_s: 0.1                       # = MPC control step
   max_sim_time_s: 500.0

@@ -301,6 +301,25 @@ def _minimum_aabb_residual(points, obstacles, clearance_m):
             int(sample_index), int(obstacle_index))
 
 
+def _physical_obstacles(document):
+    """Normalize CJU barriers or city building AABBs for reporting."""
+    mission = document["mission"]
+    if "obstacles" in mission:
+        return mission["obstacles"]
+    if mission.get("obstacle_source") != "city_buildings":
+        raise ValueError("unsupported mission obstacle source")
+    normalized = []
+    for building in document["obstacles"]["buildings"]:
+        low = np.asarray(building["aabb_xy_m"]["min"], float)
+        high = np.asarray(building["aabb_xy_m"]["max"], float)
+        normalized.append({
+            "name": str(building["id"]),
+            "center_m": (0.5 * (low + high)).tolist(),
+            "size_m": (high - low).tolist(),
+        })
+    return normalized
+
+
 def classify_quality(fail_reasons, warn_reasons):
     fail_reasons = list(fail_reasons)
     warn_reasons = list(warn_reasons)
@@ -684,13 +703,14 @@ def export_run(run_dir: Path) -> tuple[Path, Path, Path]:
     clearance = float(mission.get(
         "vehicle_clearance_xy_m", mission.get("obstacle_clearance_m")))
     armed_map_xy = map_xy[armed_indices_actual]
+    physical_obstacles = _physical_obstacles(document)
     physical_distance, _, _ = _minimum_aabb_residual(
-        armed_map_xy, mission["obstacles"], 0.0)
+        armed_map_xy, physical_obstacles, 0.0)
     clearance_residual, clearance_sample_i, clearance_obstacle_i = (
         _minimum_aabb_residual(
-            armed_map_xy, mission["obstacles"], clearance))
+            armed_map_xy, physical_obstacles, clearance))
     clearance_actual_i = armed_indices_actual[clearance_sample_i]
-    obstacle_name = mission["obstacles"][clearance_obstacle_i]["name"]
+    obstacle_name = physical_obstacles[clearance_obstacle_i]["name"]
     actual_max_gap = float(np.nanmax(np.diff(at)))
     speed_jump_bins = sum(int(row["speed_jump_flag"]) for row in rows)
     accel_spike_bins = sum(int(row["accel_spike_flag"]) for row in rows)

@@ -42,7 +42,7 @@ from typing import Iterable, Sequence
 from xml.etree import ElementTree as ET
 
 import yaml
-from PIL import Image
+from PIL import Image, ImageDraw
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -65,25 +65,146 @@ REPORT_DIR = REPO_ROOT / "reports/city_uav_expansion"
 Point = tuple[float, float]
 Ring = list[Point]
 
-# Opposite diagonal road-end staging sites. The active city keeps the drone in
-# the north-east and the larger trailer on the wider south-west asphalt strip.
-# Passages and spawn safety come from empty road space, not moved buildings.
+# The drone keeps its original north-east spawn.  The trailer starts at the
+# former plotted W6 and follows one closed circuit on the existing black roads.
+# The first three legs retain the requested approximately 400/200/600 m turn
+# sequence; the remaining vertices close through the road network instead of
+# reversing at an endpoint.
 SPAWN_XY: Point = (587.0, 580.0)
-MISSION_GOAL_XY: Point = (200.0, -128.0)
-TRAILER_SPAWN_XY: Point = (-587.0, -512.0)
-TRAILER_DESTINATION_XY: Point = (-128.0, -128.0)
+MISSION_GOAL_XY: Point = (-165.0, 0.0)
+TRAILER_PATROL_WAYPOINTS: tuple[Point, ...] = (
+    (-150.0, 507.0),
+    (-191.0, 511.5),
+    (-202.3, 483.6),
+    (-272.1, 307.1),
+    (-305.8, 171.8),
+    (-312.1, 159.7),
+    (-378.8, 168.0),
+    (-467.1, 168.6),
+    (-550.9, 159.1),
+    (-527.4, 55.6),
+    (-516.0, -47.3),
+    (-513.5, -510.3),
+    (-321.7, -510.9),
+    (-320.4, -322.3),
+    (512.2, -318.5),
+    (512.2, -96.2),
+    (505.5, 49.0),
+    (261.3, 53.7),
+    (54.9, 48.6),
+    (57.5, 117.8),
+    (70.8, 232.8),
+    (116.5, 438.0),
+    (16.8, 458.8),
+)
+TRAILER_STOP_WAYPOINT_INDICES = (1, 5, 8, 11, 12, 13, 14, 16, 18, 21)
+TRAILER_SPAWN_XY: Point = TRAILER_PATROL_WAYPOINTS[0]
+TRAILER_DESTINATION_XY: Point = TRAILER_PATROL_WAYPOINTS[-1]
+TRAILER_CRUISE_SPEED_M_S = 7.0
+TRAILER_ACCELERATION_M_S2 = 9.0
+TRAILER_START_INDEX = 0
+TRAILER_COMMAND_RATE_HZ = 50.0
+TRAILER_WAYPOINT_TOLERANCE_M = 0.5
+TRAILER_TURN_SPEED_TOLERANCE_M_S = 0.20
+
+# The checked-in source raster has a diagonal south-east no-data wedge even
+# though its OSM roads continue through it.  These source-aligned centre lines
+# restore only the missing streets; no network access is needed at generation
+# time.  Coordinates are the map's 2.5x ENU transform of OSM ways 8938698,
+# 8948327, 8960843 and 377583671.
+SOUTHEAST_RESTORED_ROADS: tuple[tuple[float, tuple[Point, ...]], ...] = (
+    (
+        14.0,
+        (
+            (55.8, -512.6),
+            (511.1, -509.6),
+            (512.5, -348.6),
+            (512.7, -320.1),
+            (638.4, -322.6),
+        ),
+    ),
+    (
+        22.0,
+        (
+            (645.6, 142.7),
+            (638.4, -322.6),
+            (636.8, -454.8),
+            (632.0, -625.0),
+        ),
+    ),
+)
 
 # A conservative initial contract for a yaw-invariant 1 m x 1 m vehicle.
 R_BODY_XY_M = math.sqrt(0.5**2 + 0.5**2)
 R_HARD_M = 1.45
 R_PREFERRED_M = 2.15
 TAKEOFF_POSITION_ERROR_M = 0.50
-# The new deck is 5.5 x 3.0 m and remains yaw-aligned in this kinematic
-# validation profile.  Use the larger horizontal half-extent for the swept
-# route check, then add the UAV hard radius and route margin below.
-TRAILER_HALF_WIDTH_M = 2.75
-TRAILER_ROUTE_MARGIN_M = 1.00
 PX4_BASE_LINK_Z_OFFSET_M = 0.24
+
+CITY_GAZEBO_WORLD_FRAME = {
+    "convention": "ENU",
+    "x_axis": "east",
+    "y_axis": "north",
+    "z_axis": "up",
+    "yaw": "counter_clockwise_from_east_rad",
+    "units": "m",
+    "origin_enu_m": [0.0, 0.0, 0.0],
+    "heading_deg_enu": 0.0,
+}
+CITY_MAVROS_LOCAL_FRAME = {
+    "convention": "ENU",
+    "x_axis": "east",
+    "y_axis": "north",
+    "z_axis": "up",
+    "origin_enu_m": [SPAWN_XY[0], SPAWN_XY[1], PX4_BASE_LINK_Z_OFFSET_M],
+}
+CITY_GIMBAL_VARIANT = {
+    "simulation_model": "gz_x500_gimbal_rgbd_lidar",
+    "runtime_entity_name": "x500_gimbal_rgbd_lidar_0",
+    "model_source": "px4_models/x500_gimbal_rgbd_lidar/model.sdf",
+}
+CITY_SITL_PARAMETER_OVERRIDES = {
+    "MIS_TAKEOFF_ALT": 10.0,
+    "MPC_TKO_SPEED": 2.0,
+    "MPC_XY_CRUISE": 12.0,
+    "MPC_XY_VEL_MAX": 12.0,
+    "MPC_ACC_HOR": 3.0,
+    "MPC_JERK_AUTO": 4.0,
+    "SIM_BAT_DRAIN": 3600.0,
+    "MPC_LAND_SPEED": 0.7,
+    "MPC_LAND_CRWL": 0.1,
+    "LNDMC_Z_VEL_MAX": 0.08,
+    "LNDMC_XY_VEL_MAX": 12.0,
+    "COM_DISARM_LAND": 2.0,
+    "PLD_BTOUT": 0.5,
+    "PLD_HACC_RAD": 0.5,
+    "PLD_VEL_THR": 0.3,
+    "PLD_FAPPR_ALT": 0.0,
+    "PLD_SRCH_ALT": 5.0,
+    "PLD_SRCH_TOUT": 10.0,
+    "PLD_MAX_SRCH": 3,
+}
+CITY_MISSION_PROFILE = {
+    "coordinate_frame": "gazebo_world",
+    "command_topic": "/mission/command",
+    "command_sequence": ["takeoff", "mission", "land"],
+    "cruise_altitude_m": 10.0,
+    "goal_m": list(MISSION_GOAL_XY),
+    "hover_duration_s": 3.0,
+    "planner_resolution_m": 8.0,
+    "vehicle_clearance_xy_m": 1.0,
+    # The configured 1 m vehicle radius is the complete planning clearance.
+    "bspline_clearance_margin_m": 0.0,
+    "bspline_control_spacing_m": 3.0,
+    "bspline_sample_spacing_m": 0.2,
+    "mpc_path_lookahead_m": 15.0,
+    "mpc_path_cross_track_m": 1.0,
+    "return_replan_min_period_s": 2.0,
+    "return_staging_enabled": False,
+    "terminal_route_match_tolerance_m": 2.0,
+    "landing_alignment_margin_s": 20.0,
+    "obstacle_source": "city_buildings",
+}
 
 DEFAULT_SPACING_SCALE = 2.5
 DEFAULT_FOOTPRINT_SCALE = 2.5
@@ -131,16 +252,14 @@ REDUCTION_PROTECTED_IDS = (
     "building_141", "building_147", "building_171", "building_190", "building_202",
     "building_213",
 )
-# The requested A* destination (200, -128) lies inside building_265 in the
-# source-derived layout.  Force exactly that obstacle out while keeping the
-# same per-cell quota and 205-building total; the next hash-ranked building in
-# the same grid cell is retained instead.  This changes only one member of the
-# otherwise spatial-random selection.
+# Preserve the established 205-building active set: building_265 remains the
+# one quota substitution, so changing a mission coordinate never reshapes the
+# city or invalidates the checked-in geometry assets.
 MISSION_CLEARANCE_REMOVAL_IDS = ("building_265",)
 REDUCTION_METHOD = (
     "25% deterministic spatial-random filter: 5x5 Hamilton quotas and "
-    "SHA-256(seed, building ID) ranking, with building_265 forced out to "
-    "keep the fixed A* goal free; retained IDs and XY unchanged"
+    "SHA-256(seed, building ID) ranking, with the established building_265 "
+    "quota substitution; retained IDs and XY unchanged"
 )
 DEFAULT_NEIGHBOR_RADIUS_M = 35.0
 DEFAULT_MAP_MARGIN_M = 20.0
@@ -647,37 +766,12 @@ def polyline_clearance(waypoints: Sequence[Point], buildings: Sequence[BuildingG
 
 
 def choose_trailer_route(buildings: Sequence[BuildingGeometry]) -> tuple[tuple[Point, ...], float]:
-    """Find the shortest deterministic rectilinear route with swept-width clearance.
-
-    Only the start and destination are contracts; the prompt does not require
-    the trailer to drive through buildings on the straight chord between them.
-    Candidate cross streets are evaluated at 5 m increments.  This is a
-    bounded geometry-generation search, not a runtime global planner.
-    """
-    required = TRAILER_HALF_WIDTH_M + R_HARD_M + TRAILER_ROUTE_MARGIN_M
-    direct = (TRAILER_SPAWN_XY, TRAILER_DESTINATION_XY)
-    direct_clearance = polyline_clearance(direct, buildings)
-    if direct_clearance >= required:
-        return direct, direct_clearance
-
-    candidates: list[tuple[float, tuple[Point, ...], float]] = []
-    for detour_y_integer in range(-300, 301, 5):
-        detour_y = float(detour_y_integer)
-        route = (
-            TRAILER_SPAWN_XY,
-            (TRAILER_SPAWN_XY[0], detour_y),
-            (TRAILER_DESTINATION_XY[0], detour_y),
-            TRAILER_DESTINATION_XY,
-        )
-        clearance = polyline_clearance(route, buildings)
-        if clearance + EPS < required:
-            continue
-        length = sum(math.dist(start, end) for start, end in zip(route, route[1:]))
-        candidates.append((length, route, clearance))
-    if not candidates:
-        return direct, direct_clearance
-    _, route, clearance = min(candidates, key=lambda item: (item[0], item[1][1][1]))
-    return route, clearance
+    """Return the checked black-road patrol and its building clearance."""
+    closed_patrol = TRAILER_PATROL_WAYPOINTS + (TRAILER_PATROL_WAYPOINTS[0],)
+    return (
+        TRAILER_PATROL_WAYPOINTS,
+        polyline_clearance(closed_patrol, buildings),
+    )
 
 
 def evaluate_candidate(
@@ -711,7 +805,7 @@ def evaluate_candidate(
     # The active branch is a map-geometry profile, not a corridor planner.
     # The user explicitly keeps building centers / count and accepts narrow
     # inter-building gaps.  Only the two actual runtime spawn sites are gating;
-    # the historical goal and stationary-trailer endpoint stay informational.
+    # the historical goal and patrol endpoint stay informational.
     for name in ("spawn", "trailer_spawn"):
         clearance = point_clearances[name]
         if clearance < required_point_clearance:
@@ -995,7 +1089,7 @@ def write_vertex_csv(buildings: Sequence[BuildingGeometry], path: Path) -> int:
 
 def determine_bounds(buildings: Sequence[BuildingGeometry], margin: float) -> tuple[float, float, float, float]:
     all_points = [point for building in buildings for point in building.transformed.outer]
-    all_points.extend([SPAWN_XY, MISSION_GOAL_XY, TRAILER_SPAWN_XY, TRAILER_DESTINATION_XY])
+    all_points.extend([SPAWN_XY, MISSION_GOAL_XY, *TRAILER_PATROL_WAYPOINTS])
     extent = max(max(abs(point[0]), abs(point[1])) for point in all_points) + margin
     half_size = max(MINIMUM_MAP_HALF_SIZE_M, math.ceil(extent / 10.0) * 10.0)
     return -half_size, -half_size, half_size, half_size
@@ -1097,7 +1191,88 @@ def write_textures(bounds: tuple[float, float, float, float], spacing_scale: flo
     pixels = np.asarray(road, dtype=np.float32)
     neutral = np.asarray(NEUTRAL_GROUND_RGB, dtype=np.float32)
     pixels = pixels * (1.0 - blend[:, :, None]) + neutral * blend[:, :, None]
+
+    # The checked-in source raster contains a diagonal no-data wedge in the
+    # south-east.  Replace only that blank wedge with the neutral city ground,
+    # feather its edge, then redraw the OSM-aligned roads that continue through
+    # it.  This is deterministic and does not fetch network data at build time.
+    world_x = x_coordinates[None, :]
+    world_y = y_coordinates[:, None]
+    diagonal_signed_distance = world_y - (world_x - 930.0)
+    projected_x = world_x + 0.5 * diagonal_signed_distance
+    projected_y = world_y - 0.5 * diagonal_signed_distance
+    projected_columns = np.clip(
+        np.rint((projected_x - xmin) / (xmax - xmin) * (output_size - 1)),
+        0,
+        output_size - 1,
+    ).astype(np.int32)
+    projected_rows = np.clip(
+        np.rint((ymax - projected_y) / (ymax - ymin) * (output_size - 1)),
+        0,
+        output_size - 1,
+    ).astype(np.int32)
+    projected_pixels = pixels[projected_rows, projected_columns]
+    diagonal_blend = np.clip(
+        (100.0 - diagonal_signed_distance) / 100.0,
+        0.0,
+        1.0,
+    )
+    diagonal_blend = (
+        diagonal_blend
+        * diagonal_blend
+        * (3.0 - 2.0 * diagonal_blend)
+    )
+    pixels = (
+        pixels * (1.0 - diagonal_blend[:, :, None])
+        + projected_pixels * diagonal_blend[:, :, None]
+    )
+    # Preserve the finite-map neutral outer edge after the diagonal edge clamp.
+    pixels = pixels * (1.0 - blend[:, :, None]) + neutral * blend[:, :, None]
     road = Image.fromarray(np.rint(pixels).astype(np.uint8), mode="RGB")
+
+    restored = road.copy()
+    restored_draw = ImageDraw.Draw(restored)
+    restored_mask = Image.new("L", road.size, 0)
+    mask_draw = ImageDraw.Draw(restored_mask)
+
+    def road_pixel(point: Point) -> tuple[int, int]:
+        return (
+            round((point[0] - xmin) / (xmax - xmin) * (output_size - 1)),
+            round((ymax - point[1]) / (ymax - ymin) * (output_size - 1)),
+        )
+
+    def width_pixels(width_m: float) -> int:
+        return max(1, round(width_m / (xmax - xmin) * (output_size - 1)))
+
+    for asphalt_width_m, centerline in SOUTHEAST_RESTORED_ROADS:
+        points = [road_pixel(point) for point in centerline]
+        outer_width = width_pixels(asphalt_width_m + 16.0)
+        shoulder_width = width_pixels(asphalt_width_m + 8.0)
+        asphalt_width = width_pixels(asphalt_width_m)
+        restored_draw.line(points, fill=(185, 181, 165), width=outer_width, joint="curve")
+        restored_draw.line(points, fill=NEUTRAL_GROUND_RGB, width=shoulder_width, joint="curve")
+        restored_draw.line(points, fill=(58, 63, 68), width=asphalt_width, joint="curve")
+        mask_draw.line(points, fill=255, width=outer_width, joint="curve")
+
+    wedge_road_blend = np.clip(
+        (100.0 - diagonal_signed_distance) / 20.0,
+        0.0,
+        1.0,
+    )
+    restored_alpha = (
+        np.asarray(restored_mask, dtype=np.float32)
+        * wedge_road_blend
+    )
+    edge_distance = np.minimum(
+        np.minimum(world_x - xmin, xmax - world_x),
+        np.minimum(world_y - ymin, ymax - world_y),
+    )
+    restored_alpha *= np.clip(edge_distance / 10.0, 0.0, 1.0)
+    restored_mask = Image.fromarray(
+        np.rint(restored_alpha).astype(np.uint8),
+        mode="L",
+    )
+    road = Image.composite(restored, road, restored_mask)
     road.save(OUTPUT_ROAD, optimize=True)
     Image.new("L", (FLAT_HEIGHTMAP_PIXELS, FLAT_HEIGHTMAP_PIXELS), color=255).save(
         OUTPUT_HEIGHT, optimize=True
@@ -1231,10 +1406,9 @@ def write_world(
     <frame name="mission_goal"><pose>{fmt(MISSION_GOAL_XY[0])} {fmt(MISSION_GOAL_XY[1])} 0 0 0 0</pose></frame>
     <frame name="trailer_spawn"><pose>{fmt(TRAILER_SPAWN_XY[0])} {fmt(TRAILER_SPAWN_XY[1])} 0 0 0 0</pose></frame>
     <frame name="trailer_destination"><pose>{fmt(TRAILER_DESTINATION_XY[0])} {fmt(TRAILER_DESTINATION_XY[1])} 0 0 0 0</pose></frame>
-    <!-- SEO branch's default PX4 moving-platform trailer. The city launcher
-         pins its mean controller velocity to zero. The stock SEO controller
-         still applies its built-in perturbations after the PX4 entity spawns. -->
-    <include><uri>model://moving_platform_aruco</uri><name>trailer</name><pose>{fmt(TRAILER_SPAWN_XY[0])} {fmt(TRAILER_SPAWN_XY[1])} 0 0 0 0</pose></include>
+    <!-- Repository-owned deterministic three-marker trailer. It remains
+         stationary unless run_px4_map.sh starts the waypoint driver. -->
+    <include><uri>model://moving_platform_aruco_velocity</uri><name>trailer</name><pose>{fmt(TRAILER_SPAWN_XY[0])} {fmt(TRAILER_SPAWN_XY[1])} 0 0 0 0</pose></include>
     <!-- PX4 SITL spawns the real sensor-equipped vehicle dynamically. -->
   </world>
 </sdf>
@@ -1336,6 +1510,9 @@ def write_yaml(
     map_size = bounds[2] - bounds[0]
     output["terrain"] = {
         "type": "completely_flat_heightmap_and_box_collision",
+        "coordinate_frame": "gazebo_world",
+        "center_m": [0.0, 0.0],
+        "size_m": [map_size, map_size],
         "image": "gazebo/worlds/applepark_city_uav/mesh/height_map_city_uav.png",
         "road_texture": "gazebo/worlds/applepark_city_uav/mesh/road_surface_city_uav.png",
         "normal_map": "gazebo/worlds/applepark_city_uav/mesh/normal_map_city_uav.png",
@@ -1354,15 +1531,25 @@ def write_yaml(
         "height_formula_m": "0.0 (all visual pixels=255; box top z=0)",
         "height_range_m": [0.0, 0.0],
         "texture_boundary_extension": "edge_clamp_feather_to_neutral",
+        "southeast_texture_repair": "diagonal_edge_clamp_with_osm_road_restore",
     }
     output["spawn"]["gazebo_spawn_pose_enu"].update({"x": SPAWN_XY[0], "y": SPAWN_XY[1], "z": 0.0})
     output["spawn"]["surface"] = "flat_ground_z0_no_visual_pad"
     output["spawn"].pop("pad", None)
+    output["frames"]["gazebo_world"] = copy.deepcopy(
+        CITY_GAZEBO_WORLD_FRAME
+    )
     output["frames"]["px4_local"]["origin_enu_m"] = [
         SPAWN_XY[0], SPAWN_XY[1], PX4_BASE_LINK_Z_OFFSET_M
     ]
     output["frames"]["px4_local"]["origin_reference"] = (
         "PX4 x500 base_link at rest (model root + 0.24 m)"
+    )
+    output["frames"]["mavros_local"] = copy.deepcopy(
+        CITY_MAVROS_LOCAL_FRAME
+    )
+    output["px4_vehicle"]["gimbal_variant"] = copy.deepcopy(
+        CITY_GIMBAL_VARIANT
     )
     output["px4_vehicle"]["forward_sensors"] = {
         "rgb_camera": {
@@ -1429,11 +1616,19 @@ def write_yaml(
             "nominal_update_rate_hz": 50.0,
         },
     }
+    # The trailer cruises at 7 m/s while the drone remains capped at 12 m/s.
+    # The remaining values are the complete
+    # moving-deck SITL contract, not generator-only defaults that may disappear
+    # on the next map refresh.
+    output["px4_vehicle"]["sitl_parameter_overrides"] = copy.deepcopy(
+        CITY_SITL_PARAMETER_OVERRIDES
+    )
+    output["mission"] = copy.deepcopy(CITY_MISSION_PROFILE)
     output["trailer"].update(
         {
             "entity_name": "trailer",
-            "model_uri": "model://moving_platform_aruco",
-            "source_branch_model": "seo:gazebo/models/moving_platform_aruco",
+            "model_uri": "model://moving_platform_aruco_velocity",
+            "source_branch_model": "gazebo/models/moving_platform_aruco_velocity",
             "spawn_pose_enu": {
                 "x": TRAILER_SPAWN_XY[0],
                 "y": TRAILER_SPAWN_XY[1],
@@ -1442,22 +1637,36 @@ def write_yaml(
                 "pitch": 0.0,
                 "yaw": 0.0,
             },
-            "motion": "stationary_spawn_only",
-            "waypoints_enu_m": [list(TRAILER_SPAWN_XY)],
+            "motion": "repeated_black_road_waypoint_patrol",
+            "route_type": "waypoints",
+            "patrol_mode": "repeat",
+            "waypoints_enu_m": [list(point) for point in TRAILER_PATROL_WAYPOINTS],
+            "cruise_speed_m_s": TRAILER_CRUISE_SPEED_M_S,
+            "acceleration_m_s2": TRAILER_ACCELERATION_M_S2,
+            "start_index": TRAILER_START_INDEX,
+            "command_rate_hz": TRAILER_COMMAND_RATE_HZ,
+            "waypoint_tolerance_m": TRAILER_WAYPOINT_TOLERANCE_M,
+            "stop_at_waypoints": True,
+            "turn_speed_tolerance_m_s": TRAILER_TURN_SPEED_TOLERANCE_M_S,
+            "stop_waypoint_indices": list(TRAILER_STOP_WAYPOINT_INDICES),
             "body_footprint_m": [5.0, 5.0],
             "deck_height_m": 2.05,
-            "marker_size_m": 1.0,
-            "controller_plugin": "libMovingPlatformController.so",
+            "marker_surface_height_m": 2.051,
+            "aruco_dictionary": "DICT_4X4_50",
+            "marker_size_m": 1.3,
+            "aruco_marker_id": 0,
+            "small_marker_size_m": 0.30,
+            "small_aruco_marker_id": 1,
+            "marker_offset_m": [-1.1, 0.0],
+            "marker_2_offset_m": [1.1, 0.0],
+            "controller_plugin": "gz-sim-velocity-control-system",
             "controller_link_name": "platform_link",
-            "controller_velocity_m_s": 0.0,
-            "controller_heading_deg": 0.0,
-            "controller_noise_active_after_px4_spawn": True,
+            "command_topic": "/model/trailer/cmd_vel",
             "pose_topic": "/world/applepark_city_uav/dynamic_pose/info",
+            "odometry_topic": "/model/trailer/odometry",
+            "route_surface": "full_city_black_asphalt_closed_loop",
         }
     )
-    output["trailer"].pop("cruise_speed_m_s", None)
-    output["trailer"].pop("waypoint_tolerance_m", None)
-    output["trailer"].pop("route_surface", None)
     output["trailer"]["surface"] = "exact_z0_flat_city_datum"
     output_buildings: list[dict] = []
     source_by_id = {record["id"]: record for record in source["obstacles"]["buildings"]}
@@ -1650,7 +1859,9 @@ def write_reports(
         selected_evaluation = next(item for item in evaluations if item.scale == buildings[0].footprint_scale)
         mission_checks = (
             ("mission_point", "drone_spawn", "buildings", selected_evaluation.spawn_clearance_m, R_PREFERRED_M + TAKEOFF_POSITION_ERROR_M),
-            ("mission_point", "global_goal", "buildings", selected_evaluation.goal_clearance_m, R_PREFERRED_M + TAKEOFF_POSITION_ERROR_M),
+            ("mission_point", "global_goal", "buildings", selected_evaluation.goal_clearance_m,
+             CITY_MISSION_PROFILE["vehicle_clearance_xy_m"]
+             + CITY_MISSION_PROFILE["bspline_clearance_margin_m"]),
             ("mission_point", "trailer_spawn", "buildings", selected_evaluation.trailer_spawn_clearance_m, R_PREFERRED_M + TAKEOFF_POSITION_ERROR_M),
         )
         for kind, first, second, measured, required in mission_checks:
@@ -1769,7 +1980,7 @@ def write_reports(
             "trailer_spawn": selected.trailer_spawn_clearance_m,
         },
         "spatial_random_reduction": removal_grid_audit(source_buildings, removed_building_ids),
-        "trailer_motion": "stationary_spawn_only",
+        "trailer_motion": "repeated_black_road_waypoint_patrol",
         "fixed_coordinates_enu_m": {
             "drone_spawn": list(SPAWN_XY),
             "global_goal": list(MISSION_GOAL_XY),

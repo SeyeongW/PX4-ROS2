@@ -45,8 +45,15 @@ def test_gimbal_launch_wires_marker_sizes_and_deck_z_consistently():
     context.launch_configurations.update({
         'marker_sizes_m': '[1.3, 1.3, 0.30]',
         'max_pair_disagreement_m': '0.75',
+        'min_marker_px': '20.0',
+        'debug_dir': '/tmp/aruco-debug',
+        'gimbal_attitude_source': 'camera_imu',
         'marker_size_m': '9.9',
         'deck_z': '2.25',
+        'aim_start_range_m': '40.0',
+        'aim_full_range_m': '20.0',
+        'prefer_cue_aim': 'true',
+        'entry_fix_window_s': '1.0',
         'model_name': 'test_vehicle',
         'world': 'test_world',
         'use_deck_z': 'true',
@@ -68,14 +75,35 @@ def test_gimbal_launch_wires_marker_sizes_and_deck_z_consistently():
     assert 'marker_size_m' not in detector
     assert detector['marker_sizes_m'] == [1.3, 1.3, 0.3]
     assert detector['max_pair_disagreement_m'] == pytest.approx(0.75)
+    assert detector['min_marker_px'] == pytest.approx(20.0)
+    assert detector['debug_dir'] == '/tmp/aruco-debug'
     declared_arguments = {
-        action.name
+        action.name: action
         for action in module.generate_launch_description().entities
         if isinstance(action, DeclareLaunchArgument)
     }
     assert 'marker_size_m' in declared_arguments
     assert 'max_pair_disagreement_m' in declared_arguments
+    assert 'min_marker_px' in declared_arguments
+    assert 'debug_dir' in declared_arguments
+    assert 'gimbal_attitude_source' in declared_arguments
+    assert 'entry_fix_window_s' in declared_arguments
+    assert 'prefer_cue_aim' in declared_arguments
+    default_context = LaunchContext()
+    declared_arguments['min_marker_px'].execute(default_context)
+    assert default_context.launch_configurations['min_marker_px'] == '30.0'
 
     for executable in (
             'gimbal_control_node', 'marker_tf_node', 'marker_kf_node'):
         assert parameters(executable)['deck_z'] == pytest.approx(2.25)
+    assert parameters('marker_kf_node')[
+        'entry_fix_window_s'] == pytest.approx(1.0)
+    assert parameters('marker_tf_node')[
+        'gimbal_attitude_source'] == 'camera_imu'
+    assert parameters('marker_tf_node')[
+        'camera_imu_topic'] == '/gimbal_camera/imu'
+    assert parameters('gimbal_control_node')[
+        'aim_start_range_m'] == pytest.approx(40.0)
+    assert parameters('gimbal_control_node')[
+        'aim_full_range_m'] == pytest.approx(20.0)
+    assert parameters('gimbal_control_node')['prefer_cue_aim'] is True

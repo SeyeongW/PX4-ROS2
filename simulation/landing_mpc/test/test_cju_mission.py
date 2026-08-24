@@ -23,6 +23,7 @@ from path_plan.world_model import WorldModel
 from landing_mpc.frame import LOCAL_ENU_FRAME_ID
 import landing_mpc.mission_manager_node as mission_module
 from landing_mpc.mission_manager_node import (MissionManagerNode,
+                                              _forward_cyclic_route_position,
                                               _forward_endpoint_eta_s,
                                               _mpc_prediction_is_safe,
                                               _mission_segment_is_free,
@@ -36,6 +37,8 @@ from landing_mpc.trailer_cue_node import TrailerCueNode
 
 GAZEBO = Path(__file__).parents[2] / 'gazebo'
 MAP = GAZEBO / 'maps/drone_cju_track.yaml'
+CITY_MAP = GAZEBO / 'maps/city_coordinates_uav.yaml'
+QUICK_CITY_MAP = GAZEBO / 'maps/city_coordinates_uav_quick_landing.yaml'
 WORLD = GAZEBO / 'worlds/drone_cju.world'
 TRACK_MODEL = (GAZEBO / 'models/drone_cju_track_running_track/model.sdf')
 STADIUM_MODEL = GAZEBO / 'models/drone_cju_track_stadium/model.sdf'
@@ -169,6 +172,108 @@ def test_cju_clearance_uses_configured_xy_radius():
     planning_only[0] += half[0] + clearance + 0.5 * margin
     assert world.is_free(planning_only)[0]
     assert not planning_world.is_free(planning_only)[0]
+
+
+def test_city_mission_profile_uses_gazebo_enu_buildings_and_map_bounds():
+    document = yaml.safe_load(CITY_MAP.read_text(encoding='utf-8'))
+    rotation, spawn, origin, altitude, world = (
+        mission_module._mission_collision_contract(str(CITY_MAP)))
+    _, _, _, _, planning_world = mission_module._mission_collision_contract(
+        str(CITY_MAP), True)
+    first = document['obstacles']['buildings'][0]
+
+    assert document['mission']['obstacle_source'] == 'city_buildings'
+    assert np.allclose(rotation, np.eye(2))
+    assert np.allclose(spawn, [587.0, 580.0])
+    assert np.allclose(origin, [0.0, 0.0])
+    assert altitude == 10.0
+    assert world.boxes_min.shape == world.boxes_max.shape == (205, 3)
+    assert np.allclose(world.bounds_min[:2], [-650.0, -650.0])
+    assert np.allclose(world.bounds_max[:2], [650.0, 650.0])
+    assert world.xy_clearance_m == 1.0
+    assert planning_world.xy_clearance_m == 1.0
+    assert np.allclose(world.boxes_min[0, :2], first['aabb_xy_m']['min'])
+    assert np.allclose(world.boxes_max[0, :2], first['aabb_xy_m']['max'])
+    centre = 0.5 * (world.boxes_min[0] + world.boxes_max[0])
+    centre[2] = altitude
+    assert not world.is_free(centre)[0]
+    assert world.is_free([[587.0, 580.0, altitude],
+                          [-165.0, 0.0, altitude]]).all()
+    assert document['mission']['goal_m'] == [-165.0, 0.0]
+
+
+def test_city_obstacle_profile_runs_astar_sfc_and_bspline(tmp_path):
+    city = tmp_path / 'small_city.yaml'
+    city.write_text(
+        """
+map:
+  bounds_enu_m: {x: [-5, 15], y: [-5, 5]}
+frames:
+  gazebo_world: {convention: ENU}
+terrain:
+  collision_geometry: {top_z_m: 0}
+spawn:
+  gazebo_spawn_pose_enu: {x: 0, y: 0, z: 0}
+mission:
+  coordinate_frame: gazebo_world
+  obstacle_source: city_buildings
+  cruise_altitude_m: 2
+  goal_m: [10, 0]
+  planner_resolution_m: 1
+  vehicle_clearance_xy_m: 0.5
+  bspline_clearance_margin_m: 0.25
+  bspline_control_spacing_m: 1
+  bspline_sample_spacing_m: 0.2
+obstacles:
+  buildings:
+    - footprint:
+        outer: [[4, -0.75], [6, -0.75], [6, 0.75], [4, 0.75]]
+      foundation_z_m: 0
+      roof_z_m: 3
+""",
+        encoding='utf-8')
+
+    arc, path, expanded, diagnostics = _plan_global_path(
+        city, include_diagnostics=True)
+    rotation, spawn, origin, altitude, world = (
+        mission_module._mission_collision_contract(str(city), True))
+    map_path = np.column_stack((
+        (path[:, :2] + spawn - origin) @ rotation,
+        np.full(len(path), altitude)))
+
+    assert expanded > 0
+    assert np.allclose(path[0], [0.0, 0.0, 2.0])
+    assert np.allclose(path[-1], [10.0, 0.0, 2.0])
+    assert np.all(np.diff(arc) > 0.0)
+    assert all(world.segment_is_free(a, b)
+               for a, b in zip(map_path[:-1], map_path[1:]))
+    assert len(diagnostics['sfc_boxes_min_map']) > 0
+    assert math.isfinite(diagnostics['sfc_generation_time_ms'])
+    assert diagnostics['sfc_generation_time_ms'] >= 0.0
+
+
+def test_city_runtime_cospawn_plan_accepts_a_small_real_takeoff_offset(
+        tmp_path):
+    document = yaml.safe_load(CITY_MAP.read_text(encoding='utf-8'))
+    trailer = document['trailer']['spawn_pose_enu']
+    spawn = document['spawn']['gazebo_spawn_pose_enu']
+    base_link_offset = (
+        document['frames']['px4_local']['origin_enu_m'][2] - spawn['z'])
+    spawn.update(x=trailer['x'], y=trailer['y'], z=0.0)
+    origin = [trailer['x'], trailer['y'], base_link_offset]
+    document['frames']['px4_local']['origin_enu_m'] = origin
+    document['frames']['mavros_local']['origin_enu_m'] = origin
+    runtime_map = tmp_path / 'runtime_city.yaml'
+    runtime_map.write_text(yaml.safe_dump(document), encoding='utf-8')
+
+    arc, path, expanded, diagnostics = _plan_global_path(
+        runtime_map, [0.08, 0.0, 10.0], include_diagnostics=True)
+
+    assert expanded > 0
+    assert np.allclose(path[0], [0.08, 0.0, 10.0])
+    assert np.allclose(path[-1], [-15.0, -507.0, 10.0])
+    assert 500.0 < arc[-1] < 550.0
+    assert len(diagnostics['sfc_boxes_min_map']) > 0
 
 
 def test_cju_yaml_astar_avoids_configured_barriers_outbound_and_return():
@@ -449,6 +554,8 @@ def test_active_path_and_sfc_commit_as_one_plan_number():
         [0.0, 0.0, 5.0], [10.0, 0.0, 5.0],
     ])
     arc, path, diagnostics = mission_module._active_path_sfc(MAP, input_path)
+    assert math.isfinite(diagnostics['sfc_generation_time_ms'])
+    assert diagnostics['sfc_generation_time_ms'] >= 0.0
     state = SimpleNamespace(
         mission_map_yaml=str(MAP),
         _active_plan_seq=0,
@@ -509,6 +616,92 @@ def test_active_plan_ui_rejects_mixed_or_malformed_snapshot():
         UI._active_plan_marker_snapshot(message, frame)
 
 
+def test_live_ui_keeps_only_superseded_return_plans_in_history():
+    empty_sfc = np.empty((0, 4, 2))
+    mission_path = np.array([[0.0, 0.0, 10.0], [1.0, 0.0, 10.0]])
+    first_return = np.array([[1.0, 0.0, 10.0], [2.0, 1.0, 10.0]])
+    latest_return = np.array([[1.5, 0.5, 10.0], [3.0, 2.0, 10.0]])
+    data = {
+        'state': 'MISSION',
+        'active_plan': (None, np.empty((0, 3)), empty_sfc),
+        'active_plan_is_return': False,
+        'return_path_history': [],
+        'dynamic_replans': 0,
+    }
+
+    assert UI._update_active_plan_history(
+        data, (1, mission_path, empty_sfc))
+    data['state'] = 'RETURN_PLAN'
+    assert UI._update_active_plan_history(
+        data, (2, first_return, empty_sfc))
+    assert data['return_path_history'] == []
+
+    data['state'] = 'RETURN'
+    assert UI._update_active_plan_history(
+        data, (3, latest_return, empty_sfc))
+    assert len(data['return_path_history']) == 1
+    assert data['dynamic_replans'] == 1
+    assert np.array_equal(data['return_path_history'][0], first_return)
+    assert not UI._update_active_plan_history(
+        data, (3, latest_return + 10.0, empty_sfc))
+    assert len(data['return_path_history']) == 1
+
+    assert UI._update_active_plan_history(
+        data, (None, np.empty((0, 3)), empty_sfc))
+    assert len(data['return_path_history']) == 2
+    assert data['dynamic_replans'] == 1
+    assert np.array_equal(data['return_path_history'][-1], latest_return)
+    assert data['active_plan'][0] is None
+
+
+def test_path_reference_horizon_hard_caps_straight_flight_at_twelve():
+    arc = np.array([0.0, 200.0])
+    path = np.array([[0.0, 0.0, 5.0], [200.0, 0.0, 5.0]])
+
+    positions, velocities = _path_reference_horizon(
+        arc, path, 0.0, 0.1, 5, 20.0, 3.0, 2.0)
+
+    assert np.allclose(np.linalg.norm(velocities, axis=1), 12.0)
+    assert np.allclose(positions[:, 0], 1.2 * np.arange(1.0, 6.0))
+
+
+def test_path_reference_horizon_obeys_tight_curve_acceleration_limit():
+    arc = np.array([0.0, 10.0, 20.0, 110.0])
+    path = np.array([[0.0, 0.0, 5.0],
+                     [10.0, 0.0, 5.0],
+                     [10.0, 10.0, 5.0],
+                     [10.0, 100.0, 5.0]])
+    curvature = math.sqrt(2.0) / 10.0
+
+    _, velocities = _path_reference_horizon(
+        arc, path, 10.0, 0.01, 1, 10.0, 3.0, 2.0)
+
+    assert np.linalg.norm(velocities[0]) <= math.sqrt(
+        3.0 / curvature) + 1.0e-12
+
+
+def test_path_speed_envelope_brakes_backward_and_accelerates_forward():
+    path = np.array([[0.0, 0.0, 5.0],
+                     [5.0, 0.0, 5.0],
+                     [5.0, 1.0, 5.0],
+                     [5.0, 6.0, 5.0],
+                     [5.0, 106.0, 5.0]])
+    arc = np.r_[0.0, np.cumsum(np.linalg.norm(
+        np.diff(path, axis=0), axis=1))]
+    acceleration = 2.0
+
+    speeds = mission_module._path_speed_envelope(
+        arc, path, 10.0, acceleration)
+    intervals = np.diff(arc)
+
+    assert speeds[0] < 10.0       # braking propagated before the corner
+    assert speeds[2] < 10.0       # acceleration propagated after the corner
+    assert np.all(speeds[1:] ** 2 - speeds[:-1] ** 2
+                  <= 2.0 * acceleration * intervals + 1.0e-12)
+    assert np.all(speeds[:-1] ** 2 - speeds[1:] ** 2
+                  <= 2.0 * acceleration * intervals + 1.0e-12)
+
+
 def test_path_reference_horizon_brakes_at_the_bspline_endpoint():
     arc = np.array([0.0, 5.0, 10.0])
     path = np.column_stack((arc, np.zeros(3), np.ones(3) * 5.0))
@@ -532,6 +725,20 @@ def test_path_reference_horizon_brakes_at_the_bspline_endpoint():
     assert mission_module._s_curve_stop_speed(1.5, 3.0, 2.0) < 3.0
 
 
+@pytest.mark.parametrize(
+    ('speed', 'expected_distance'), [
+        (0.25, 0.25 ** 1.5 / math.sqrt(2.0)),
+        (10.0, 52.5),
+    ])
+def test_s_curve_stop_speed_and_distance_are_inverse(
+        speed, expected_distance):
+    distance = mission_module._s_curve_stop_distance(speed, 1.0, 2.0)
+
+    assert distance == pytest.approx(expected_distance)
+    assert mission_module._s_curve_stop_speed(
+        distance, 1.0, 2.0) == pytest.approx(speed)
+
+
 def test_return_relative_braking_is_identity_outside_ten_metres():
     arc = np.array([0.0, 20.0])
     path = np.array([[0.0, 0.0, 5.0], [20.0, 0.0, 5.0]])
@@ -545,6 +752,37 @@ def test_return_relative_braking_is_identity_outside_ten_metres():
 
     assert np.array_equal(outside[0], legacy[0])
     assert np.array_equal(outside[1], legacy[1])
+
+
+def test_far_moving_target_pursuit_keeps_curvature_braking():
+    arc = np.array([0.0, 10.0, 20.0, 120.0])
+    path = np.array([[0.0, 0.0, 5.0],
+                     [10.0, 0.0, 5.0],
+                     [10.0, 10.0, 5.0],
+                     [10.0, 110.0, 5.0]])
+
+    _, velocities = _path_reference_horizon(
+        arc, path, 9.5, 0.1, 10, 12.0, 2.0, 2.0,
+        target_velocity_xy=np.array([9.0, 0.0]),
+        target_range_xy_m=50.0,
+        relative_brake_start_m=10.0)
+
+    speeds = np.linalg.norm(velocities[:, :2], axis=1)
+    assert np.any(speeds < 9.0)
+    assert np.all(speeds <= 12.0 + 1.0e-12)
+
+
+def test_far_moving_target_pursuit_uses_twelve_on_a_straight():
+    arc = np.array([0.0, 200.0])
+    path = np.array([[0.0, 0.0, 5.0], [200.0, 0.0, 5.0]])
+
+    _, velocities = _path_reference_horizon(
+        arc, path, 0.0, 0.1, 10, 12.0, 3.0, 4.0,
+        target_velocity_xy=np.array([9.0, 0.0]),
+        target_range_xy_m=50.0,
+        relative_brake_start_m=10.0)
+
+    assert np.allclose(np.linalg.norm(velocities[:, :2], axis=1), 12.0)
 
 
 def test_return_relative_braking_slows_on_the_bspline_consistently():
@@ -597,6 +835,197 @@ def test_mpc_prediction_checks_every_horizon_chord(monkeypatch):
     assert np.allclose(checked[1][0], prediction[0])
 
 
+def test_mapless_landing_checks_only_finite_segments():
+    start = np.array([0.0, 0.0, 6.0])
+    goal = np.array([1.0, 0.0, 6.0])
+
+    assert _mission_segment_is_free('', start, goal)
+    assert mission_module._mission_planning_segment_is_free('', start, goal)
+    assert not _mission_segment_is_free('', start, [math.nan, 0.0, 6.0])
+
+
+def test_mpc_horizontal_speed_requires_the_absolute_xy_cap_for_whole_horizon():
+    check = mission_module._mpc_horizontal_speed_is_safe
+
+    assert check(np.array([[6.0, 8.0, 0.0], [10.0, 0.0, 1.0]]), 10.0)
+    landing_limit = mission_module._GPS_PREACQUIRE_SPEED_LIMIT_M_S
+    assert landing_limit == 12.0
+    assert check(np.array([[12.0, 0.0, 0.0]]), landing_limit)
+    assert not check(np.array([[12.01, 0.0, 0.0]]), landing_limit)
+    assert not check(np.array([[10.0, 0.01, 0.0]]), 10.0)
+    assert not check(
+        np.array([[10.1, 0.0, 0.0], [9.9, 0.0, 0.0]]), 10.0)
+    assert not check(
+        np.array([[10.3, 0.0, 0.0], [9.9, 0.0, 0.0]]), 10.0)
+    assert not check(
+        np.array([[10.1, 0.0, 0.0], [10.05, 0.0, 0.0]]), 10.0)
+    assert not check(
+        np.array([[9.9, 0.0, 0.0], [10.19, 0.0, 0.0],
+                  [9.9, 0.0, 0.0]]), 10.0)
+    assert not check(np.array([[math.nan, 0.0, 0.0]]), 10.0)
+    assert not check(np.array([1.0, 0.0, 0.0]), 10.0)
+
+
+def test_city_speed_layers_keep_their_separate_limits():
+    launcher = MISSION_LAUNCHER.read_text(encoding='utf-8')
+    city = yaml.safe_load(CITY_MAP.read_text(encoding='utf-8'))
+    px4 = city['px4_vehicle']['sitl_parameter_overrides']
+
+    assert '-p path_mpc_speed_m_s:=12.0' in launcher
+    assert '-p path_mpc_v_max_m_s:=12.0' in launcher
+    assert '-p path_mpc_a_max_m_s2:=3.0' in launcher
+    assert '-p path_mpc_jerk_m_s3:=4.0' in launcher
+    assert '-p path_speed_profile_a_max_m_s2:=3.0' in launcher
+    assert '-p landing_mpc_v_max_m_s:=5.0' in launcher
+    assert '-p entry_fix_window_s:="${CITY_ENTRY_FIX_WINDOW_S:-2.0}"' in launcher
+    assert '-p bias_max_m:=1.0' in launcher
+    assert px4['MIS_TAKEOFF_ALT'] == 10.0
+    assert px4['MPC_XY_CRUISE'] == 12.0
+    assert px4['MPC_XY_VEL_MAX'] == 12.0
+    assert px4['MPC_ACC_HOR'] == 3.0
+    assert px4['MPC_JERK_AUTO'] == 4.0
+    assert px4['LNDMC_XY_VEL_MAX'] == 12.0
+    assert city['mission']['cruise_altitude_m'] == 10.0
+    assert city['mission']['hover_duration_s'] == 3.0
+    assert city['mission']['return_staging_enabled'] is False
+    assert city['trailer']['cruise_speed_m_s'] == 7.0
+    assert city['trailer']['cruise_speed_m_s'] + 5.0 == 12.0
+    assert mission_module._GPS_PREACQUIRE_SPEED_LIMIT_M_S == 12.0
+    assert mission_module._PATH_HARD_SPEED_LIMIT_M_S == 12.0
+
+
+def test_mpc_stream_speed_never_starts_a_new_overspeed():
+    check = mission_module._mpc_stream_speed_is_safe
+
+    assert check([6.0, 8.0, 0.0], 10.0)
+    assert not check([10.01, 0.0, 0.0], 10.0)
+    assert not check([10.1, 0.0, 0.0], 10.0)
+    assert not check([10.22, 0.0, 0.0], 10.0)
+
+
+def test_tracking_mpc_recovery_stream_cannot_ratchet_above_its_xy_cap(
+        monkeypatch):
+    class RecoveringMpc:
+        N = 4
+        j_max = 2.0
+        v_max = 9.0
+
+        def __init__(self):
+            self.calls = 0
+            self.reset_count = 0
+
+        def solve(self, *_args, **_kwargs):
+            self.calls += 1
+            direction = np.array([0.6, 0.8, 0.0])
+            speeds = ([8.60, 8.58, 8.56, 8.54] if self.calls == 1
+                      else [10.4, 9.6, 9.2, self.v_max])
+            return SimpleNamespace(
+                success=True,
+                predicted_pos=np.array([
+                    [1.0, 0.0, 5.0], [2.0, 0.0, 5.0],
+                    [3.0, 0.0, 5.0], [4.0, 0.0, 5.0]]),
+                predicted_vel=np.asarray(speeds)[:, None] * direction,
+                predicted_acc=np.tile(-0.2 * direction, (self.N, 1)))
+
+        def reset(self):
+            self.reset_count += 1
+
+    clock = [0.0]
+    sent = []
+    controller = RecoveringMpc()
+    state = SimpleNamespace(
+        state='MISSION',
+        p_d=np.array([0.0, 0.0, 5.0]),
+        v_d=8.62 * np.array([0.6, 0.8, 0.0]),
+        _mission_arc_m=np.array([0.0, 4.0]),
+        _mission_path=np.array([[0.0, 0.0, 5.0], [4.0, 0.0, 5.0]]),
+        _mission_progress_m=0.0,
+        _mission_lookahead=1.0,
+        _mission_cross_track=0.25,
+        mission_map_yaml=str(MAP),
+        _path_mpc=controller,
+        _path_reference=mission_module.HorizonReference(lead_s=0.1),
+        _path_solve_t=None,
+        _path_failure_hold=None,
+        _last_sent_acceleration=np.zeros(3),
+        _last_sent_acceleration_t=None,
+        mpc_dt=0.1,
+        dt=0.02,
+        _path_mpc_speed=8.0,
+        _path_mpc_a_max=2.0,
+        _path_speed_profile_a_max=1.0,
+        _now=lambda: clock[0],
+        _send=lambda pos, vel, acc: sent.append((
+            np.asarray(pos).copy(), np.asarray(vel).copy(),
+            np.asarray(acc).copy())),
+        _send_goto=lambda *_: pytest.fail(
+            'unavoidable overspeed recovery must remain continuous MPC PVA'),
+        get_logger=lambda: SimpleNamespace(
+            warn=lambda *_args, **_kwargs: None),
+    )
+    monkeypatch.setattr(
+        mission_module, '_safe_spatial_path_target',
+        lambda *_args, **_kwargs: (0.0, np.array([1.0, 0.0, 5.0])))
+    monkeypatch.setattr(
+        MissionManagerNode, '_tracking_path_reference',
+        lambda _self, *_args, **_kwargs: (
+            np.zeros((controller.N, 3)),
+            np.zeros((controller.N, 3))))
+    monkeypatch.setattr(
+        mission_module, '_mpc_prediction_is_safe',
+        lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        mission_module, '_mission_planning_segment_is_free', lambda *_: True)
+
+    assert MissionManagerNode._follow_path(state)
+    expected = state._path_reference.sample(0.1)
+    clock[0] = 0.1
+    state.v_d = 10.5 * np.array([0.6, 0.8, 0.0])
+    assert MissionManagerNode._follow_path(state)
+
+    assert controller.calls >= 2
+    assert controller.reset_count == 0
+    assert state._path_solve_t == 0.0
+    assert len(sent) == 2
+    velocities = np.asarray([command[1][:2] for command in sent])
+    speeds = np.linalg.norm(velocities, axis=1)
+    assert np.all(speeds <= controller.v_max + 1.0e-6)
+    assert np.allclose(sent[-1][0], expected[0])
+    assert np.allclose(sent[-1][1], expected[1])
+    assert speeds[1] <= speeds[0] + 1.0e-6
+    assert all(command[2][0] < 0.0 and command[2][1] < 0.0
+               for command in sent)
+
+
+def test_collision_contracts_are_prewarmed_with_runtime_cache_keys(
+        monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        mission_module, '_mission_collision_contract',
+        lambda *args: calls.append(args))
+
+    mission_module._prewarm_mission_collision_contracts(MAP)
+
+    assert calls == [(str(MAP),), (str(MAP), True)]
+
+
+def test_tracking_prediction_can_require_the_planning_reserve(monkeypatch):
+    hard_calls = []
+    planning_calls = []
+    monkeypatch.setattr(
+        mission_module, '_mission_segment_is_free',
+        lambda *_: hard_calls.append(True) or True)
+    monkeypatch.setattr(
+        mission_module, '_mission_planning_segment_is_free',
+        lambda *_: planning_calls.append(True) or True)
+
+    assert _mpc_prediction_is_safe(
+        MAP, np.array([0.0, 0.0, 5.0]),
+        np.array([[1.0, 0.0, 5.0], [2.0, 0.0, 5.0]]), planning=True)
+    assert planning_calls == [True, True]
+    assert hard_calls == []
+
+
 def test_ui_keeps_physical_obstacles_raw_and_clearance_on_the_drone():
     import matplotlib.pyplot as plt
 
@@ -623,6 +1052,35 @@ def test_ui_keeps_physical_obstacles_raw_and_clearance_on_the_drone():
     plt.close(fig)
 
 
+def test_city_ui_uses_waypoint_route_and_raw_building_boxes():
+    document = yaml.safe_load(CITY_MAP.read_text(encoding='utf-8'))
+    rotation, origin, spawn = UI._frame_contract(document)
+    route = UI._trailer_route(document, rotation, origin)
+    obstacles = UI._physical_obstacles(document)
+
+    assert route.shape == (24, 2)
+    assert np.allclose(route[:-1], document['trailer']['waypoints_enu_m'])
+    assert np.allclose(route[-1], route[0])
+    speed = float(document['trailer']['cruise_speed_m_s'])
+    first_leg_s = np.linalg.norm(route[1] - route[0]) / speed
+    loop_s = np.linalg.norm(np.diff(route, axis=0), axis=1).sum() / speed
+    assert np.allclose(
+        UI._trailer_position(route, speed, first_leg_s), route[1])
+    assert np.allclose(UI._trailer_position(route, speed, loop_s), route[0])
+
+    quick = yaml.safe_load(QUICK_CITY_MAP.read_text(encoding='utf-8'))
+    rotation, origin, _spawn = UI._frame_contract(quick)
+    quick_route = UI._trailer_route(quick, rotation, origin)
+    start = quick['trailer']['start_index']
+    assert quick_route.shape == (24, 2)
+    assert np.allclose(quick_route[0], quick['trailer']['waypoints_enu_m'][start])
+    assert np.allclose(quick_route[-1], quick_route[0])
+    assert len(obstacles) == 205
+    assert np.allclose(
+        UI._local_to_map([[0.0, 0.0, 10.0]], rotation, origin, spawn)[0],
+        [587.0, 580.0])
+
+
 def test_ui_places_diagnostics_to_the_right_of_the_map():
     import matplotlib.pyplot as plt
 
@@ -641,6 +1099,12 @@ def test_live_ui_rejects_bad_frames_and_publishes_valid_ned_as_local_enu():
     point.header.frame_id = LOCAL_ENU_FRAME_ID
     point.point.x, point.point.y, point.point.z = 7.0, 4.0, 5.0
     assert np.allclose(UI._point_message_to_local(point), [7.0, 4.0, 5.0])
+    assert UI._point_message_sample(point) is None
+    point.header.stamp.sec = 2
+    point.header.stamp.nanosec = 500_000_000
+    stamp_s, sampled = UI._point_message_sample(point)
+    assert stamp_s == 2.5
+    assert np.allclose(sampled, [7.0, 4.0, 5.0])
     point.header.frame_id = 'map'
     assert UI._point_message_to_local(point) is None
     point.header.frame_id = LOCAL_ENU_FRAME_ID
@@ -701,12 +1165,25 @@ def test_world_and_yaml_share_stadium_obstacles_and_spawns():
     map_launcher = MAP_LAUNCHER.read_text(encoding='utf-8')
     assert 'commands=(takeoff mission land)' in launcher
     assert 'wait_for_states READY 120' in launcher
+    takeoff_case = launcher.split('      takeoff)', 1)[1].split(
+        '      mission)', 1)[0]
+    mission_case = launcher.split('      mission)', 1)[1].split(
+        '      land)', 1)[0]
+    assert takeoff_case.count('touch "$TRAILER_START_FILE"') == 1
+    assert takeoff_case.index('wait_for_states READY 120') < takeoff_case.index(
+        'touch "$TRAILER_START_FILE"')
+    assert 'touch "$TRAILER_START_FILE"' not in mission_case
+    assert 'waiting for takeoff clearance' in map_launcher
     assert "send_until_state mission 'MISSION_PLAN|MISSION|HOVER'" in launcher
     assert "wait_for_states 'MISSION|HOVER' 120" in launcher
-    assert 'wait_for_states HOVER 180' in launcher
+    assert 'DEFAULT_MISSION_HOVER_TIMEOUT_S=180' in launcher
+    assert 'DEFAULT_MISSION_HOVER_TIMEOUT_S=300' in launcher
+    assert 'MISSION_HOVER_TIMEOUT_S:-$DEFAULT_MISSION_HOVER_TIMEOUT_S' in launcher
     assert ("send_until_state land 'RETURN_PLAN|RETURN|LANDING_ACQUIRE|"
             "LANDING_DESCEND|PRECLAND|DONE'" in launcher)
-    assert 'wait_for_states DONE 180' in launcher
+    assert 'DEFAULT_LANDING_DONE_TIMEOUT_S=180' in launcher
+    assert 'DEFAULT_LANDING_DONE_TIMEOUT_S=600' in launcher
+    assert 'LANDING_DONE_TIMEOUT_S:-$DEFAULT_LANDING_DONE_TIMEOUT_S' in launcher
     assert '반복 순찰' not in launcher
     assert 'approach_alt' not in launcher
     assert 'acquire_xy' not in launcher
@@ -715,6 +1192,27 @@ def test_world_and_yaml_share_stadium_obstacles_and_spawns():
     assert ("printf 'flight_control_owner\\t%s\\n' "
             "'mission_manager_mpc_then_px4_precland'" in launcher)
     assert 'PX4 NAV_PRECLAND' in launcher
+    assert "printf -v LANDING_TARGET_SPEED_ARG '%.9f'" in launcher
+    assert '-p landing_target_min_speed_m_s:="$LANDING_TARGET_SPEED_ARG"' in launcher
+    assert 'TAKEOFF -> LANDING_ACQUIRE ' in launcher
+    assert 'RESET_TRAILER_FROM_YAML="$RESET_TRAILER_FOR_RUN"' in launcher
+    assert 'TRAILER_START_INDEX="${TRAILER_START_INDEX:-0}"' in launcher
+    assert 'LANDING_TAKEOFF_ALT=25.0' not in launcher
+    assert 'moving_trailer_marker_surface' in launcher
+    assert '-p landing_gps_preacquire_range_m:=35.0' in launcher
+    assert '-p landing_mpc_v_max_m_s:=5.0' in launcher
+    assert '-p path_mpc_a_max_m_s2:=3.0' in launcher
+    assert '-p path_mpc_jerk_m_s3:=4.0' in launcher
+    assert '-p path_speed_profile_a_max_m_s2:=3.0' in launcher
+    assert 'GIMBAL_AIM_START_RANGE_M:-60.0' in launcher
+    assert 'GIMBAL_AIM_FULL_RANGE_M:-35.0' in launcher
+    assert 'aim_start_range_m:="$GIMBAL_AIM_START"' in launcher
+    assert 'aim_full_range_m:="$GIMBAL_AIM_FULL"' in launcher
+    assert 'prefer_cue_aim:=true' in launcher
+    assert 'CITY_MIN_MARKER_PX:-20.0' in launcher
+    assert 'min_marker_px:="${CITY_MIN_MARKER_PX:-20.0}"' in launcher
+    assert 'debug_dir:="$PX4_MAP_RUNTIME_DIR/aruco_debug"' in launcher
+    assert 'gimbal_attitude_source:=camera_imu' in launcher
     assert '--live --map "$LANDING_COORDINATES"' in launcher
     assert '${MISSION_VIEW:-1}' in launcher
     assert "retry_command 'geometry B-spline/TrackingMPC 상태 확인'" in launcher
@@ -1008,6 +1506,7 @@ def test_cju_map_contains_only_requested_facilities():
 def test_land_uses_astar_until_observation_based_landing_mpc_is_ready(
         monkeypatch):
     warnings = []
+    staging_goal = np.array([4.0, 5.0, 3.0])
     logger = SimpleNamespace(
         warn=lambda message: warnings.append(message),
         error=lambda *_: None,
@@ -1020,6 +1519,8 @@ def test_land_uses_astar_until_observation_based_landing_mpc_is_ready(
         _plan_future=None,
         p_d=np.array([0.0, 0.0, 3.0]),
         cue=np.zeros(3),
+        _return_staging_goal=staging_goal,
+        _return_staging=False,
         mission_map_yaml=str(MAP),
         _t_solve=1.0,
         state='PRECHECK',
@@ -1057,7 +1558,8 @@ def test_land_uses_astar_until_observation_based_landing_mpc_is_ready(
     MissionManagerNode._on_command(state, SimpleNamespace(data='land'))
     assert state.state == 'RETURN_PLAN'
     assert len(plans) == 1 and plans[-1][1] is True
-    assert np.allclose(plans[-1][0], state.cue)
+    assert np.allclose(plans[-1][0], staging_goal)
+    assert state._return_staging
     MissionManagerNode._on_command(state, SimpleNamespace(data='land'))
     assert len(plans) == 1
 
@@ -1065,8 +1567,60 @@ def test_land_uses_astar_until_observation_based_landing_mpc_is_ready(
     state.state = 'HOVER'
     landing_ready[0] = True
     MissionManagerNode._on_command(state, SimpleNamespace(data='land'))
+    assert state.state == 'RETURN_PLAN'
+    assert len(plans) == 1
+    assert np.allclose(plans[-1][0], staging_goal)
+
+    # Profiles without a fixed staging contract retain direct vision entry.
+    plans.clear()
+    state.state = 'HOVER'
+    state._return_staging_goal = None
+    state._return_staging = False
+    MissionManagerNode._on_command(state, SimpleNamespace(data='land'))
     assert state.state == 'LANDING_ACQUIRE'
     assert plans == []
+
+    # Disabling staging in YAML must win even if a stale/precomputed staging
+    # coordinate exists on the node.
+    plans.clear()
+    state.state = 'HOVER'
+    state._return_staging_goal = staging_goal
+    state._return_staging_enabled = False
+    state._return_staging = False
+    state.cue = np.array([7.0, 8.0, 0.0])
+    landing_ready[0] = False
+    MissionManagerNode._on_command(state, SimpleNamespace(data='land'))
+    assert state.state == 'RETURN_PLAN'
+    assert len(plans) == 1 and plans[-1][1] is True
+    assert np.allclose(plans[-1][0], state.cue)
+    assert not state._return_staging
+
+
+def test_land_waits_for_the_configured_three_second_hover():
+    now = [12.99]
+    state = SimpleNamespace(
+        auto_start=False,
+        mission_command_topic='/mission/command',
+        _takeoff_requested=False,
+        state='HOVER',
+        _mission_hover_duration=3.0,
+        _hover_since=10.0,
+        _now=lambda: now[0],
+        _return_staging_goal=None,
+        _return_staging=False,
+        _cue_fresh=lambda: True,
+        _landing_mpc_entry_ready=lambda: True,
+        get_logger=lambda: SimpleNamespace(warn=lambda *_: None),
+    )
+    state._enter_landing_mpc = lambda: setattr(
+        state, 'state', 'LANDING_ACQUIRE') or True
+
+    MissionManagerNode._on_command(state, SimpleNamespace(data='land'))
+    assert state.state == 'HOVER'
+
+    now[0] = 13.0
+    MissionManagerNode._on_command(state, SimpleNamespace(data='land'))
+    assert state.state == 'LANDING_ACQUIRE'
 
 
 def test_nonfinite_trailer_velocity_never_reaches_setpoints():
@@ -1122,6 +1676,29 @@ def test_trailer_cue_requires_fresh_px4_local_enu_position_and_velocity():
     assert not MissionManagerNode._cue_fresh(state)
     assert np.allclose(state.cue_v, 0.0)
     assert warnings
+
+
+def test_landing_cue_projects_five_hz_sample_to_now_without_extrapolating_stale():
+    now = [10.18]
+    state = SimpleNamespace(
+        cue=np.array([1.0, -2.0, 1.811]),
+        cue_v=np.array([9.0, 0.0, 0.0]),
+        _t_cue_source=10.0,
+        cue_timeout_s=1.0,
+        _precland_target_timeout=0.5,
+        _now=lambda: now[0],
+    )
+
+    assert np.allclose(
+        MissionManagerNode._cue_at_now(state), [2.62, -2.0, 1.811])
+
+    now[0] = 9.99
+    assert np.allclose(
+        MissionManagerNode._cue_at_now(state), state.cue)
+
+    now[0] = 11.0
+    assert np.allclose(
+        MissionManagerNode._cue_at_now(state), [5.5, -2.0, 1.811])
 
 
 def test_planning_state_keeps_offboard_heartbeat_and_hold_setpoint():
@@ -1182,6 +1759,175 @@ def test_initial_return_plan_enters_landing_before_the_worker_finishes():
     assert entered == [True]
     assert PendingPlan.cancelled
     assert state._plan_future is None
+
+
+@pytest.mark.parametrize(
+    ('raw_goal', 'expected_goal', 'expected_lead'), [
+        ([10.0, 1.42, 0.0], [100.0, 1.42, 0.0], 10.0),
+        ([95.0, 0.0, 0.0], [100.0, 0.0, 0.0], 5.0 / 9.0),
+    ])
+def test_noncyclic_return_plan_caps_zero_terminal_goal_at_waypoint(
+        raw_goal, expected_goal, expected_lead):
+    submissions = []
+    published = []
+    goal = np.asarray(raw_goal, float)
+    state = SimpleNamespace(
+        state='HOVER',
+        p_d=np.array([0.0, 0.0, 5.0]),
+        cue_v=np.array([9.0, 0.0, 0.0]),
+        _terminal_waypoints_local=np.array([[0.0, 0.0], [100.0, 0.0]]),
+        _terminal_route_cyclic=False,
+        _terminal_waypoint_tolerance=0.5,
+        _terminal_route_match_tolerance=2.0,
+        _terminal_min_cruise_speed=8.8,
+        _return_plan_lead_s=2.0,
+        _return_replan_min_period=2.0,
+        _path_mpc_speed=10.0,
+        _path_speed_profile_a_max=1.0,
+        _path_mpc=SimpleNamespace(j_max=2.0),
+        _mission_path=None,
+        _plan_future=None,
+        _planner_pool=SimpleNamespace(submit=lambda *args, **_kwargs: (
+            submissions.append(args) or SimpleNamespace(cancel=lambda: None))),
+        _publish_planned_path=published.append,
+        mission_map_yaml=str(MAP),
+        _now=lambda: 12.0,
+    )
+    state._set_state = lambda new, why='': setattr(state, 'state', new)
+
+    MissionManagerNode._start_global_plan(state, goal, return_route=True)
+
+    assert np.allclose(goal, raw_goal)
+    assert np.allclose(submissions[0][3], expected_goal)
+    assert np.allclose(state._plan_goal, submissions[0][3])
+    assert state._plan_goal_lead_s == pytest.approx(expected_lead)
+    assert state._last_return_plan_t == 12.0
+    assert published == [None]
+
+
+def test_cyclic_return_plan_projects_lead_through_the_next_leg():
+    submissions = []
+    goal = np.array([95.0, 1.42, 0.0])
+    state = SimpleNamespace(
+        state='HOVER',
+        p_d=np.array([0.0, 0.0, 5.0]),
+        cue_v=np.array([9.0, 0.0, 0.0]),
+        _terminal_waypoints_local=np.array([
+            [0.0, 0.0], [100.0, 0.0],
+            [100.0, 100.0], [0.0, 100.0],
+        ]),
+        _terminal_route_cyclic=True,
+        _terminal_waypoint_tolerance=0.5,
+        _terminal_route_match_tolerance=2.0,
+        _terminal_min_cruise_speed=8.8,
+        _return_plan_lead_s=2.0,
+        _return_replan_min_period=2.0,
+        _path_mpc_speed=10.0,
+        _path_speed_profile_a_max=1.0,
+        _path_mpc=SimpleNamespace(j_max=2.0),
+        _mission_path=None,
+        _plan_future=None,
+        _planner_pool=SimpleNamespace(submit=lambda *args, **_kwargs: (
+            submissions.append(args) or SimpleNamespace(cancel=lambda: None))),
+        _publish_planned_path=lambda *_: None,
+        mission_map_yaml=str(MAP),
+        _now=lambda: 12.0,
+    )
+    state._set_state = lambda new, why='': setattr(state, 'state', new)
+
+    MissionManagerNode._start_global_plan(state, goal, return_route=True)
+
+    assert state._plan_goal_lead_s == pytest.approx(71.0 / 6.0)
+    assert np.allclose(submissions[0][3], [98.5, 100.0, 0.0])
+    assert np.allclose(goal, [95.0, 1.42, 0.0])
+
+
+def test_outbound_plan_anchors_xy_to_the_yaml_spawn_not_ekf_noise():
+    submissions = []
+    measured = np.array([0.03, -0.04, 9.9])
+    state = SimpleNamespace(
+        state='READY',
+        p_d=measured.copy(),
+        _mission_path=None,
+        _plan_future=None,
+        _planner_pool=SimpleNamespace(submit=lambda *args, **_kwargs: (
+            submissions.append(args) or SimpleNamespace(cancel=lambda: None))),
+        _publish_planned_path=lambda *_: None,
+        mission_map_yaml=str(MAP),
+        _now=lambda: 12.0,
+    )
+    state._set_state = lambda new, why='': setattr(state, 'state', new)
+
+    MissionManagerNode._start_global_plan(
+        state, None, return_route=False)
+
+    assert np.allclose(submissions[0][2], [0.0, 0.0, measured[2]])
+    assert np.allclose(state._plan_start, [0.0, 0.0, measured[2]])
+    assert np.allclose(state._hold_pos, measured)
+
+
+def test_staging_return_plan_skips_the_moving_goal_stale_gate(monkeypatch):
+    class CompletedPlan:
+        @staticmethod
+        def done():
+            return True
+
+        @staticmethod
+        def result():
+            return (
+                np.array([0.0, 10.0]),
+                np.array([[0.0, 0.0, 5.0], [10.0, 0.0, 5.0]]),
+                7,
+                {},
+            )
+
+    commits = []
+    retries = []
+    state = SimpleNamespace(
+        k=0,
+        state='RETURN_PLAN',
+        state_pub=SimpleNamespace(publish=lambda _: None),
+        _ocm=lambda: None,
+        _send=lambda *_: None,
+        _status=SimpleNamespace(
+            nav_state=VehicleStatus.NAVIGATION_STATE_OFFBOARD),
+        p_d=np.array([0.0, 0.0, 5.0]),
+        cue=np.zeros(3),
+        cue_v=np.array([9.0, 0.0, 0.0]),
+        _cue_fresh=lambda: True,
+        _landing_mpc_entry_ready=lambda: False,
+        _mission_path=None,
+        _hold_pos=np.array([0.0, 0.0, 5.0]),
+        _plan_future=CompletedPlan(),
+        _plan_start=np.array([0.0, 0.0, 5.0]),
+        _plan_goal=np.array([500.0, 0.0, 5.0]),
+        _plan_goal_lead_s=0.0,
+        _plan_endpoint_residual_m=math.nan,
+        _plan_started_t=0.0,
+        _return_plan_lead_s=2.0,
+        _return_replan_min_period=2.0,
+        _return_staging=True,
+        mission_tolerance=0.7,
+        mission_map_yaml=str(MAP),
+        _now=lambda: 3.0,
+        _start_global_plan=lambda *args, **kwargs: retries.append(
+            (args, kwargs)),
+        get_logger=lambda: SimpleNamespace(
+            info=lambda *_args, **_kwargs: None,
+            error=lambda *_args, **_kwargs: None),
+    )
+    state._set_state = lambda new, why='': setattr(state, 'state', new)
+    monkeypatch.setattr(
+        MissionManagerNode, '_commit_active_path',
+        lambda _self, *args, **kwargs: commits.append((args, kwargs)))
+
+    MissionManagerNode._tick(state)
+
+    assert state.state == 'RETURN'
+    assert state._return_plan_lead_s == 3.0
+    assert math.isnan(state._plan_endpoint_residual_m)
+    assert len(commits) == 1
+    assert retries == []
 
 
 def test_rolling_return_plan_follows_old_path_then_atomically_swaps(monkeypatch):
@@ -1260,9 +2006,11 @@ def test_rolling_return_plan_follows_old_path_then_atomically_swaps(monkeypatch)
     assert gotos[0][0] < gotos[1][0] < gotos[2][0]
 
     state.p_d = np.array([2.0, 0.0, 4.87])
+    now[0] = 5.0
     state._plan_future = CompletedPlan()
     MissionManagerNode._tick(state)
     assert state.state == 'RETURN'
+    assert state._last_return_plan_t == 5.0
     assert len(gotos) == 4
     assert len(published) == 1
     assert np.allclose(state._mission_path[0, :2], state.p_d[:2])
@@ -1274,16 +2022,19 @@ def test_rolling_return_plan_follows_old_path_then_atomically_swaps(monkeypatch)
     state._send_goto = lambda *_: events.append('goto')
     state._start_global_plan = lambda goal, *, return_route: events.append(
         ('plan', np.asarray(goal).copy(), return_route))
-    state._last_return_plan_t = 0.0
     state._return_replan_min_period = 2.0
     state.cue = np.array([21.0, 0.0, 0.0])
-    now[0] = 2.0
     monkeypatch.setattr(
         mission_module, '_mission_planning_segment_is_free', lambda *_: True)
+    now[0] = 6.999
     MissionManagerNode._tick(state)
-    assert events[0] == 'goto'
-    assert events[1][0] == 'plan' and events[1][2]
-    assert np.allclose(events[1][1], [21.0, 0.0, 0.0])
+    assert events == ['goto']
+
+    now[0] = 7.0
+    MissionManagerNode._tick(state)
+    assert events[1] == 'goto'
+    assert events[2][0] == 'plan' and events[2][2]
+    assert np.allclose(events[2][1], [21.0, 0.0, 0.0])
     assert len(published) == 1
     assert np.allclose(
         state._mission_path[-1], CompletedPlan.result()[1][-1])
@@ -1348,6 +2099,236 @@ def test_rolling_return_rejects_an_unreachable_replacement(monkeypatch):
     assert published == []
 
 
+@pytest.mark.parametrize('shadow_accepts', [False, True])
+def test_rolling_return_shadow_mpc_controls_atomic_swap(
+        monkeypatch, shadow_accepts):
+    class CompletedPlan:
+        @staticmethod
+        def done():
+            return True
+
+        @staticmethod
+        def result():
+            return (
+                np.array([0.0, 10.0]),
+                np.array([[0.0, 1.0, 5.0], [10.0, 1.0, 5.0]]),
+                7,
+            )
+
+    old_path = np.array([[0.0, 0.0, 5.0], [10.0, 0.0, 5.0]])
+    published = []
+    transitions = []
+    reference_plans = []
+    candidate_mpc = object()
+    shadow_result = SimpleNamespace(
+        predicted_pos=np.array([[2.0, 0.5, 5.0]]),
+        predicted_vel=np.array([[1.0, 0.0, 0.0]]),
+        predicted_acc=np.zeros((1, 3)),
+    )
+    prepared = (candidate_mpc, shadow_result) if shadow_accepts else None
+    state = SimpleNamespace(
+        k=0,
+        state='RETURN_PLAN',
+        state_pub=SimpleNamespace(publish=lambda _: None),
+        _ocm=lambda: None,
+        _send=lambda *_: None,
+        _status=SimpleNamespace(
+            nav_state=VehicleStatus.NAVIGATION_STATE_OFFBOARD),
+        p_d=np.array([1.0, 0.0, 5.0]),
+        v_d=np.zeros(3),
+        cue=np.array([28.0, 0.0, 0.0]),
+        cue_v=np.array([9.0, 0.0, 0.0]),
+        _cue_fresh=lambda: True,
+        _plan_future=CompletedPlan(),
+        _plan_goal=np.array([80.5, 0.0, 0.0]),
+        _plan_goal_lead_s=47.0 / 6.0,
+        _plan_started_t=0.0,
+        _return_replan_min_period=2.0,
+        _mission_arc_m=np.array([0.0, 10.0]),
+        _mission_path=old_path,
+        _mission_progress_m=0.0,
+        _mission_lookahead=2.0,
+        _mission_cross_track=0.25,
+        _path_mpc=object(),
+        _path_reference=SimpleNamespace(
+            set_plan=lambda *args: reference_plans.append(args)),
+        _path_solve_t=None,
+        mpc_dt=0.1,
+        mission_map_yaml=str(MAP),
+        _publish_planned_path=published.append,
+        _now=lambda: 2.0,
+        get_logger=lambda: SimpleNamespace(
+            info=lambda *_args, **_kwargs: None,
+            warn=lambda *_args, **_kwargs: None,
+            error=lambda *_args, **_kwargs: None),
+    )
+    state._set_state = lambda new, why='': (
+        transitions.append((new, why)), setattr(state, 'state', new))
+    state._landing_mpc_entry_ready = lambda: False
+    state._follow_path = lambda: True
+    monkeypatch.setattr(
+        mission_module, '_mission_planning_segment_is_free', lambda *_: True)
+    monkeypatch.setattr(
+        mission_module, '_active_path_sfc',
+        lambda _map, path: (
+            np.r_[0.0, np.cumsum(np.linalg.norm(
+                np.diff(path, axis=0), axis=1))], path, {}))
+    monkeypatch.setattr(
+        MissionManagerNode, '_shadow_tracking_plan', lambda *_: prepared)
+
+    MissionManagerNode._tick(state)
+
+    assert state.state == 'RETURN'
+    assert state._plan_endpoint_residual_m == pytest.approx(0.0)
+    if shadow_accepts:
+        assert state._mission_path is not old_path
+        assert state._path_mpc is candidate_mpc
+        assert len(reference_plans) == len(published) == 1
+        assert transitions[-1][1] == (
+            '(validated geometry B-spline -> TrackingMPC)')
+    else:
+        assert state._mission_path is old_path
+        assert reference_plans == published == []
+        assert transitions[-1][1] == '(keep prior route; unsafe swap)'
+
+
+@pytest.mark.parametrize(
+    ('prior_safe', 'expected_state', 'expected_reason'), [
+        (True, 'RETURN', '(keep prior route; stale result)'),
+        (False, 'ABORT', '(stale result and no safe prior route)'),
+    ])
+def test_stale_rolling_result_keeps_the_old_path_sfc_pair(
+        prior_safe, expected_state, expected_reason):
+    class CompletedPlan:
+        @staticmethod
+        def done():
+            return True
+
+        @staticmethod
+        def result():
+            return np.array([0.0, 1.0]), np.array([
+                [0.0, 1.0, 5.0], [1.0, 1.0, 5.0]]), 1
+
+    old_path = np.array([[0.0, 0.0, 5.0], [10.0, 0.0, 5.0]])
+    old_sfc = {'contract': 'old'}
+    replans = []
+    published = []
+    gotos = []
+    transitions = []
+    state = SimpleNamespace(
+        k=0,
+        state='RETURN_PLAN',
+        state_pub=SimpleNamespace(publish=lambda _: None),
+        _ocm=lambda: None,
+        _send=lambda *_: None,
+        _send_goto=lambda target: gotos.append(np.asarray(target).copy()),
+        _status=SimpleNamespace(
+            nav_state=VehicleStatus.NAVIGATION_STATE_OFFBOARD),
+        p_d=np.array([1.0, 0.0, 5.0]),
+        cue=np.array([20.0, 0.0, 0.0]),
+        cue_v=np.array([9.0, 0.0, 0.0]),
+        _cue_fresh=lambda: True,
+        _landing_mpc_entry_ready=lambda: False,
+        _follow_path=lambda: prior_safe,
+        _plan_future=CompletedPlan(),
+        _plan_goal=np.zeros(3),
+        _plan_started_t=1.0,
+        _return_replan_min_period=2.0,
+        _mission_path=old_path,
+        _active_sfc_diagnostics=old_sfc,
+        _publish_planned_path=published.append,
+        _start_global_plan=lambda goal, *, return_route: replans.append(
+            (np.asarray(goal).copy(), return_route)),
+        _now=lambda: 13.0,
+        get_logger=lambda: SimpleNamespace(
+            warn=lambda *_args, **_kwargs: None,
+            error=lambda *_args, **_kwargs: None),
+    )
+    state._set_state = lambda new, why='': (
+        transitions.append((new, why)), setattr(state, 'state', new))
+
+    MissionManagerNode._tick(state)
+
+    assert state.state == expected_state
+    assert transitions[-1] == (expected_state, expected_reason)
+    assert state._mission_path is old_path
+    assert state._active_sfc_diagnostics is old_sfc
+    assert state._plan_future is None
+    assert state._plan_endpoint_residual_m == pytest.approx(20.0)
+    assert state._return_plan_lead_s == 12.0
+    assert replans == published == []
+    assert len(gotos) == int(not prior_safe)
+
+
+def test_stale_initial_return_retries_with_the_measured_planner_lead():
+    class CompletedPlan:
+        @staticmethod
+        def done():
+            return True
+
+        @staticmethod
+        def result():
+            return np.array([0.0, 1.0]), np.array([
+                [0.0, 1.0, 5.0], [1.0, 1.0, 5.0]]), 1
+
+    class PendingPlan:
+        @staticmethod
+        def cancel():
+            return None
+
+    submissions = []
+    published = []
+    state = SimpleNamespace(
+        k=0,
+        state='RETURN_PLAN',
+        state_pub=SimpleNamespace(publish=lambda _: None),
+        _ocm=lambda: None,
+        _send=lambda *_: None,
+        _status=SimpleNamespace(
+            nav_state=VehicleStatus.NAVIGATION_STATE_OFFBOARD),
+        p_d=np.array([1.0, 0.0, 5.0]),
+        _hold_pos=np.array([1.0, 0.0, 5.0]),
+        cue=np.array([20.0, 0.0, 0.0]),
+        cue_v=np.array([9.0, 0.0, 0.0]),
+        _cue_fresh=lambda: True,
+        _landing_mpc_entry_ready=lambda: False,
+        _plan_future=CompletedPlan(),
+        _plan_goal=np.zeros(3),
+        _plan_started_t=1.0,
+        _return_replan_min_period=2.0,
+        _mission_path=None,
+        _terminal_waypoints_local=np.array([[0.0, 0.0], [100.0, 0.0]]),
+        _terminal_waypoint_tolerance=0.5,
+        _terminal_route_match_tolerance=2.0,
+        _terminal_min_cruise_speed=8.8,
+        _path_mpc_speed=10.0,
+        _path_speed_profile_a_max=1.0,
+        _path_mpc=SimpleNamespace(j_max=2.0),
+        _planner_pool=SimpleNamespace(submit=lambda *args, **_kwargs: (
+            submissions.append(args) or PendingPlan())),
+        _publish_planned_path=published.append,
+        mission_map_yaml=str(MAP),
+        mission_tolerance=0.7,
+        _now=lambda: 13.0,
+        get_logger=lambda: SimpleNamespace(
+            warn=lambda *_args, **_kwargs: None,
+            error=lambda *_args, **_kwargs: None),
+    )
+    state._set_state = lambda new, why='': setattr(state, 'state', new)
+    state._start_global_plan = lambda goal, *, return_route: (
+        MissionManagerNode._start_global_plan(
+            state, goal, return_route=return_route))
+
+    MissionManagerNode._tick(state)
+
+    assert state.state == 'RETURN_PLAN'
+    assert state._return_plan_lead_s == 12.0
+    assert state._plan_goal_lead_s == pytest.approx(80.0 / 9.0)
+    assert np.allclose(submissions[0][3], [100.0, 0.0, 0.0])
+    assert published == [None]
+    assert isinstance(state._plan_future, PendingPlan)
+
+
 def test_failed_return_plan_holds_in_abort_without_retry(monkeypatch):
     class FailedPlan:
         @staticmethod
@@ -1405,7 +2386,11 @@ def test_failed_return_plan_holds_in_abort_without_retry(monkeypatch):
     state._send_goto = lambda target: sent.append(np.asarray(target).copy())
     state.mission_map_yaml = str(MAP)
     monkeypatch.setattr(
-        mission_module, '_mission_segment_is_free', lambda *_: True)
+        mission_module, '_mission_planning_segment_is_free',
+        lambda *_: True)
+    monkeypatch.setattr(
+        mission_module, '_mission_segment_is_free',
+        lambda *_: True)
     MissionManagerNode._tick(state)
     assert state.state == 'RETURN'
     assert len(sent) == 1
@@ -1511,6 +2496,19 @@ def test_phase1_observes_px4_takeoff_without_offboard_setpoints():
     assert state.state == 'READY'
     assert np.allclose(state._hold_pos, state.p_d)
 
+    entered = []
+    state.state = 'TAKEOFF'
+    state.auto_start = True
+    state._planner_pool = object()
+    state._landing_target_min_speed = 9.0
+    state._cue_fresh = lambda: True
+    state._enter_landing_mpc = lambda: entered.append(True)
+    state._enter_precland = forbidden
+    state._start_global_plan = forbidden
+    MissionManagerNode._tick(state)
+    assert entered == [True]
+    assert state.state == 'TAKEOFF'
+
 
 def test_native_handoff_never_reclaims_control_after_mode_exit():
     forbidden = lambda *_: (_ for _ in ()).throw(
@@ -1598,6 +2596,7 @@ def test_phase2_goal_completion_waits_until_slow_then_holds():
 
 def test_hover_keeps_terminal_tracking_mpc_reference_and_holds_on_failure():
     sends = []
+    gotos = []
     follows = []
     state = SimpleNamespace(
         k=0,
@@ -1610,6 +2609,7 @@ def test_hover_keeps_terminal_tracking_mpc_reference_and_holds_on_failure():
         _hold_pos=np.array([1.0, 2.0, 5.0]),
         _follow_path=lambda: follows.append(True) or True,
         _send=lambda *args: sends.append(args),
+        _send_goto=lambda target: gotos.append(np.asarray(target).copy()),
     )
 
     MissionManagerNode._tick(state)
@@ -1620,7 +2620,8 @@ def test_hover_keeps_terminal_tracking_mpc_reference_and_holds_on_failure():
     state._follow_path = lambda: False
     MissionManagerNode._tick(state)
     assert np.allclose(state._hold_pos, state.p_d)
-    assert len(sends) == 1 and np.allclose(sends[0][0], state.p_d)
+    assert sends == []
+    assert np.allclose(gotos, [state.p_d])
 
 
 def test_phase3_replans_until_observation_based_landing_mpc_is_ready(
@@ -1657,7 +2658,7 @@ def test_phase3_replans_until_observation_based_landing_mpc_is_ready(
         _plan_future=None,
         _publish_planned_path=lambda *_: None,
         get_logger=lambda: SimpleNamespace(
-            info=lambda *_: None, warn=lambda *_: None),
+            info=lambda *_: None, warn=lambda *_args, **_kwargs: None),
     )
     landing_ready = [False]
     state._landing_mpc_entry_ready = lambda: landing_ready[0]
@@ -1676,7 +2677,7 @@ def test_phase3_replans_until_observation_based_landing_mpc_is_ready(
         mission_module, '_mission_segment_is_free',
         lambda _map, _start, goal: not np.allclose(goal, state.cue))
     monkeypatch.setattr(
-        mission_module, '_mission_planning_segment_is_free', lambda *_: False)
+        mission_module, '_mission_planning_segment_is_free', lambda *_: True)
     MissionManagerNode._tick(state)
     assert len(replans) == 1 and replans[0][1]
 
@@ -1687,6 +2688,98 @@ def test_phase3_replans_until_observation_based_landing_mpc_is_ready(
     MissionManagerNode._tick(state)
     assert state.state == 'LANDING_ACQUIRE'
     assert replans == []
+
+
+def test_staging_return_enters_gps_preacquire_only_after_all_gates(
+        monkeypatch):
+    replans = []
+    published = []
+    fresh = [False]
+    runway_clear = [False]
+    chord_clear = [False]
+    state = SimpleNamespace(
+        k=0,
+        state='RETURN',
+        state_pub=SimpleNamespace(publish=lambda _: None),
+        _ocm=lambda: None,
+        _status=SimpleNamespace(
+            nav_state=VehicleStatus.NAVIGATION_STATE_OFFBOARD),
+        p_d=np.array([0.0, 0.0, 5.0]),
+        v_d=np.zeros(3),
+        cue=np.array([20.0, 0.0, 0.0]),
+        cue_v=np.array([-9.0, 0.0, 0.0]),
+        _cue_fresh=lambda: True,
+        _landing_target_fresh=lambda: fresh[0],
+        mission_map_yaml=str(MAP),
+        _mission_arc_m=np.array([0.0, 10.0]),
+        _mission_path=np.array([
+            [0.0, 0.0, 5.0], [10.0, 0.0, 5.0]]),
+        _mission_progress_m=0.0,
+        mission_tolerance=0.7,
+        settle_v_tol=0.3,
+        _last_return_plan_t=0.0,
+        _return_replan_min_period=2.0,
+        _return_staging=True,
+        _return_staging_arrived=False,
+        _return_staging_goal=np.array([10.0, 0.0, 5.0]),
+        _landing_gps_preacquire_range=35.0,
+        _now=lambda: 10.0,
+        _follow_path=lambda: True,
+        _start_global_plan=lambda *args, **kwargs: replans.append(
+            (args, kwargs)),
+        # A camera track may already exist at the wider city aim range, but
+        # fixed staging must still use the protected GPS pre-acquire branch.
+        _landing_mpc_entry_ready=lambda: True,
+        _landing_mpc=SimpleNamespace(reset=lambda: None),
+        _landing_reference=SimpleNamespace(reset=lambda: None),
+        _publish_planned_path=published.append,
+    )
+    state._set_state = lambda new, why='': setattr(state, 'state', new)
+    state._enter_landing_mpc = lambda **kwargs: (
+        MissionManagerNode._enter_landing_mpc(state, **kwargs))
+    monkeypatch.setattr(
+        MissionManagerNode, '_terminal_runway_status',
+        lambda *_args, **_kwargs: (runway_clear[0], 60.0))
+    monkeypatch.setattr(
+        mission_module, '_mission_planning_segment_is_free',
+        lambda *_: chord_clear[0])
+
+    MissionManagerNode._tick(state)
+    assert state.state == 'RETURN'
+    assert replans == []
+
+    state._return_staging_arrived = True
+    MissionManagerNode._tick(state)
+    assert state.state == 'RETURN'
+
+    fresh[0] = True
+    state.cue[0] = 36.0
+    MissionManagerNode._tick(state)
+    assert state.state == 'RETURN'
+
+    state.cue[0] = 20.0
+    state.cue_v[0] = 9.0
+    MissionManagerNode._tick(state)
+    assert state.state == 'RETURN'
+
+    state.cue_v[0] = -9.0
+    MissionManagerNode._tick(state)
+    assert state.state == 'RETURN'
+
+    runway_clear[0] = True
+    MissionManagerNode._tick(state)
+    assert state.state == 'RETURN'
+
+    chord_clear[0] = True
+    MissionManagerNode._tick(state)
+
+    assert state.state == 'LANDING_ACQUIRE'
+    assert not state._return_staging
+    assert not state._return_staging_arrived
+    assert state._gps_preacquire_active
+    assert state._landing_hold_z == 5.0
+    assert replans == []
+    assert published == [None]
 
 
 def test_return_schedules_paper_pipeline_from_latest_cue_every_two_seconds(
@@ -1752,10 +2845,20 @@ def test_return_schedules_paper_pipeline_from_latest_cue_every_two_seconds(
     assert len(replans) == 1 and len(sent) == 3
 
     state.cue = np.array([33.0, 0.0, 0.0])
+    state.v_d = np.array([6.0, 0.0, 0.0])
+    state._path_mpc_speed = 12.0
+    state._path_mpc_a_max = 3.0
+    state._return_intercept_deadline_t = 30.0
     now[0] = 14.0
     MissionManagerNode._tick(state)
-    assert len(replans) == 2 and len(sent) == 4
+    assert len(replans) == 1 and len(sent) == 4
+    assert state._return_intercept_lock_active
+
+    state._return_intercept_deadline_t = 14.5
+    MissionManagerNode._tick(state)
+    assert len(replans) == 2 and len(sent) == 5
     assert np.allclose(replans[-1][0], [33.0, 0.0, 0.0])
+    assert not state._return_intercept_lock_active
 
 
 def test_landing_target_pose_maps_fresh_local_enu_to_px4_ned():
@@ -1860,25 +2963,230 @@ def test_precland_runway_waits_for_endpoint_reversal_to_finish():
     state = SimpleNamespace(
         cue=np.array([0.0, 35.0, 0.0]),
         cue_v=np.array([0.0, 1.0, 0.0]),
-        _shuttle_endpoints_local=endpoints,
-        _shuttle_endpoint_tolerance=0.2,
-        _shuttle_min_terminal_speed=0.7,
+        _terminal_waypoints_local=endpoints,
+        _terminal_waypoint_tolerance=0.2,
+        _terminal_route_match_tolerance=0.2,
+        _terminal_min_cruise_speed=0.7,
         _precland_runway_required_s=10.5,
         _precland_commit_height=0.65,
         _landing_mpc_vz_max=0.6,
     )
     clear, eta = MissionManagerNode._terminal_runway_status(state)
     assert clear and eta == pytest.approx(15.0)
+    clear, eta = MissionManagerNode._terminal_runway_status(
+        state, preparation_s=4.5)
+    assert clear and eta == pytest.approx(15.0)
+    clear, eta = MissionManagerNode._terminal_runway_status(
+        state, preparation_s=4.51)
+    assert not clear and eta == pytest.approx(15.0)
     clear, eta = MissionManagerNode._terminal_runway_status(state, 5.0)
     assert not clear and eta == pytest.approx(15.0)
 
 
-def test_precland_allows_only_a_bounded_aligned_camera_blind_commit():
+def test_cyclic_route_projection_crosses_turns_and_fails_closed():
+    route = np.array([
+        [0.0, 0.0], [10.0, 0.0], [10.0, 0.0],
+        [10.0, 10.0], [0.0, 10.0],
+    ])
+
+    projected = _forward_cyclic_route_position(
+        [9.0, 0.0], [2.0, 0.0], route, 2.0, 0.2, 1.0, 0.5)
+
+    assert np.allclose(projected, [10.0, 3.0])
+    assert _forward_cyclic_route_position(
+        [0.0, 0.0], [1.0, 0.0], np.zeros((2, 2)),
+        1.0, 0.2, 0.5) is None
+    assert _forward_cyclic_route_position(
+        [0.0, 0.0], [1.0, 0.0], route,
+        math.nan, 0.2, 0.5) is None
+
+
+def _city_terminal_waypoints_local():
+    document = yaml.safe_load(CITY_MAP.read_text(encoding='utf-8'))
+    spawn = document['spawn']['gazebo_spawn_pose_enu']
+    spawn_xy = np.array([spawn['x'], spawn['y']])
+    waypoints = np.asarray(document['trailer']['waypoints_enu_m'], float)
+    return document, waypoints - spawn_xy
+
+
+def _city_terminal_min_speed(document):
+    speed = float(document['trailer']['cruise_speed_m_s'])
+    tolerance = float(
+        document['px4_vehicle']['sitl_parameter_overrides']['PLD_VEL_THR'])
+    return speed - tolerance
+
+
+def test_city_landing_staging_uses_longest_leg_and_required_runway():
+    document, waypoints = _city_terminal_waypoints_local()
+    speed = document['trailer']['cruise_speed_m_s']
+    acquire_altitude = document['mission']['cruise_altitude_m']
+    stop_distance = mission_module._s_curve_stop_distance(
+        speed, 2.0, 2.0)
+    speed_change_s = 2.0 * stop_distance / speed
+    entry_window_s = mission_module.DEFAULT_ENTRY_FIX_WINDOW_S
+    alignment_margin_s = document['mission']['landing_alignment_margin_s']
+    required_s = (
+        10.5 + (acquire_altitude - 0.65) / 0.6
+        + speed_change_s + entry_window_s
+        + alignment_margin_s)
+
+    staging = mission_module._landing_staging_point(
+        waypoints, speed, required_s)
+    longest_leg = waypoints[14] - waypoints[13]
+    direction = longest_leg / np.linalg.norm(longest_leg)
+
+    assert np.allclose(
+        staging, waypoints[14] - speed * required_s * direction)
+    assert np.linalg.norm(waypoints[14] - staging) == pytest.approx(
+        speed * required_s)
+    assert speed_change_s == pytest.approx(4.5)
+    assert entry_window_s == pytest.approx(0.5)
+    assert alignment_margin_s == pytest.approx(20.0)
+    assert acquire_altitude == pytest.approx(10.0)
+    assert np.linalg.norm(waypoints[14] - staging) == pytest.approx(
+        357.5833333333)
+
+
+    # The GPS cue uses the marker/deck height in PX4-local ENU.  At the 35 m
+    # pre-acquire boundary the corrected staging point leaves 33.0 s for
+    # velocity matching before the complete descent/PRECLAND runway expires.
+    deck_z = (
+        document['trailer']['spawn_pose_enu']['z']
+        + document['trailer']['marker_surface_height_m']
+        - document['frames']['mavros_local']['origin_enu_m'][2])
+    landing_required_s = (
+        10.5 + (acquire_altitude - deck_z - 0.65) / 0.6)
+    entry_eta_s = (
+        np.linalg.norm(waypoints[14] - staging) + 35.0) / speed
+    assert deck_z == pytest.approx(1.811)
+    assert entry_eta_s - landing_required_s == pytest.approx(
+        33.0183333333)
+    assert mission_module._landing_staging_point(
+        [[0.0, 0.0], [1.0, 0.0]], speed, required_s) is None
+
+
+def _city_terminal_state(waypoints, position, velocity):
+    document = yaml.safe_load(CITY_MAP.read_text(encoding='utf-8'))
+    return SimpleNamespace(
+        cue=np.r_[position, 0.0],
+        cue_v=np.r_[velocity, 0.0],
+        _terminal_waypoints_local=waypoints,
+        _terminal_waypoint_tolerance=0.5,
+        _terminal_route_match_tolerance=2.0,
+        _terminal_min_cruise_speed=_city_terminal_min_speed(document),
+        _precland_runway_required_s=10.5,
+        _precland_commit_height=0.65,
+        _landing_mpc_vz_max=0.6,
+    )
+
+
+def test_city_terminal_eta_uses_the_current_straight_leg_only():
+    document, waypoints = _city_terminal_waypoints_local()
+    start, end = waypoints[13:15]
+    leg = end - start
+    direction = leg / np.linalg.norm(leg)
+    position = start + 0.25 * leg
+    velocity = document['trailer']['cruise_speed_m_s'] * direction
+    speed = document['trailer']['cruise_speed_m_s']
+
+    eta = _forward_endpoint_eta_s(
+        position, velocity, waypoints, 0.5,
+        _city_terminal_min_speed(document))
+
+    assert eta == pytest.approx(0.75 * np.linalg.norm(leg) / speed)
+    assert np.allclose(waypoints[0], [-737.0, -73.0])
+
+
+def test_city_route_match_tolerance_accepts_142cm_gps_cross_track():
+    document, waypoints = _city_terminal_waypoints_local()
+    start, end = waypoints[13:15]
+    leg = end - start
+    direction = leg / np.linalg.norm(leg)
+    normal = np.array([-direction[1], direction[0]])
+    position = start + 0.25 * leg + 1.42 * normal
+    speed = document['trailer']['cruise_speed_m_s']
+    velocity = speed * direction
+    route_tolerance = document['mission'][
+        'terminal_route_match_tolerance_m']
+
+    accepted = _forward_endpoint_eta_s(
+        position, velocity, waypoints, 0.5,
+        _city_terminal_min_speed(document), route_tolerance)
+    rejected = _forward_endpoint_eta_s(
+        position, velocity, waypoints, 0.5,
+        _city_terminal_min_speed(document), 0.5)
+
+    assert route_tolerance == 2.0
+    assert accepted == pytest.approx(0.75 * np.linalg.norm(leg) / speed)
+    assert rejected == 0.0
+
+
+def test_city_long_leg_eta_tolerates_small_gps_velocity_angle_noise():
+    document, waypoints = _city_terminal_waypoints_local()
+    leg = waypoints[14] - waypoints[13]
+    direction = leg / np.linalg.norm(leg)
+    normal = np.array([-direction[1], direction[0]])
+    speed = document['trailer']['cruise_speed_m_s']
+    noisy_velocity = speed * direction + 0.02 * normal
+
+    eta = _forward_endpoint_eta_s(
+        waypoints[13], noisy_velocity, waypoints, 0.5,
+        _city_terminal_min_speed(document))
+
+    assert eta == pytest.approx(np.linalg.norm(leg)
+                                / np.linalg.norm(noisy_velocity))
+
+
+def test_city_terminal_gate_holds_for_an_imminent_turn_or_stop():
+    document, waypoints = _city_terminal_waypoints_local()
+    leg = waypoints[14] - waypoints[13]
+    direction = leg / np.linalg.norm(leg)
+    state = _city_terminal_state(
+        waypoints, waypoints[14] - 2.0 * direction,
+        document['trailer']['cruise_speed_m_s'] * direction)
+
+    clear, eta = MissionManagerNode._terminal_runway_status(state)
+    assert not clear and eta == pytest.approx(
+        2.0 / document['trailer']['cruise_speed_m_s'])
+
+    state.cue_v[:2] = (
+        _city_terminal_min_speed(document) - 0.01) * direction
+    clear, eta = MissionManagerNode._terminal_runway_status(state)
+    assert not clear and eta == 0.0
+
+
+def test_city_terminal_gate_rejects_short_runway_from_25_metres():
+    document, waypoints = _city_terminal_waypoints_local()
+    leg = waypoints[12] - waypoints[11]
+    direction = leg / np.linalg.norm(leg)
+    speed = document['trailer']['cruise_speed_m_s']
+    state = _city_terminal_state(waypoints, waypoints[11], speed * direction)
+
+    clear, eta = MissionManagerNode._terminal_runway_status(state, 25.0)
+
+    assert not clear
+    assert eta == pytest.approx(np.linalg.norm(leg) / speed)
+
+
+def test_city_terminal_gate_accepts_a_long_clear_leg_from_25_metres():
+    document, waypoints = _city_terminal_waypoints_local()
+    leg = waypoints[14] - waypoints[13]
+    direction = leg / np.linalg.norm(leg)
+    speed = document['trailer']['cruise_speed_m_s']
+    state = _city_terminal_state(waypoints, waypoints[13], speed * direction)
+
+    clear, eta = MissionManagerNode._terminal_runway_status(state, 25.0)
+
+    assert clear
+    assert eta == pytest.approx(np.linalg.norm(leg) / speed)
+
+
+def test_precland_latches_a_bounded_aligned_camera_blind_commit():
     now = [10.0]
     state = SimpleNamespace(
         cue=np.zeros(3),
         cue_v=np.array([1.0, 0.0, 0.0]),
-        p_d=np.array([0.1, 0.0, 0.3]),
+        p_d=np.array([0.1, 0.0, 0.64]),
         v_d=np.array([1.0, 0.0, 0.0]),
         _bias=np.zeros(3),
         _landing_xy_tol=0.5,
@@ -1899,18 +3207,29 @@ def test_precland_allows_only_a_bounded_aligned_camera_blind_commit():
     assert np.isclose(state._precland_commit_until, 18.0)
 
     state._vision_measurement_fresh = lambda: False
-    now[0] = 11.0
+    now[0] = 10.36
+    state.p_d[2] = 0.66
     assert MissionManagerNode._precland_target_allowed(state)
+    # A small vertical estimator rebound must not command a reacquisition
+    # climb after the qualified low-altitude handoff.
     state.v_d[0] = 1.31
     assert not MissionManagerNode._precland_target_allowed(state)
     state.v_d[0] = 1.0
+    state.p_d[0] = 0.51
+    assert not MissionManagerNode._precland_target_allowed(state)
+    state.p_d[0] = 0.1
     now[0] = 18.01
+    assert not MissionManagerNode._precland_target_allowed(state)
+
+    state._precland_commit_until = None
+    now[0] = 11.0
     assert not MissionManagerNode._precland_target_allowed(state)
 
 
 def test_precland_loss_reclaims_offboard_from_the_current_state():
     reset = []
     state = SimpleNamespace(
+        state='PRECLAND',
         p_d=np.array([2.0, 3.0, 0.2]),
         cue=np.array([2.0, 3.0, 0.0]),
         _landing_mpc_handoff_height=1.5,
@@ -1921,6 +3240,7 @@ def test_precland_loss_reclaims_offboard_from_the_current_state():
         _native_precland_accepted=True,
         _last_offboard_cmd=1.0,
         _precland_commit_until=11.0,
+        _gps_preacquire_active=True,
         _now=lambda: 10.0,
     )
     state._set_state = lambda new, why='': setattr(state, 'state', new)
@@ -1933,11 +3253,18 @@ def test_precland_loss_reclaims_offboard_from_the_current_state():
     assert np.allclose(state._hold_pos, [2.0, 3.0, 0.2])
     assert not state._native_precland_accepted
     assert state._precland_commit_until is None
+    assert state._gps_preacquire_active
+
+    state.get_logger = lambda: SimpleNamespace(info=lambda *_: None)
+    state._log_experiment_metrics = lambda: None
+    MissionManagerNode._set_state(state, 'DONE')
+    assert not state._gps_preacquire_active
 
 
 def test_landing_mpc_entry_uses_observation_and_safety_not_distance(
         monkeypatch):
     safety = [True]
+    runway_clear = [True]
     state = SimpleNamespace(
         p_d=np.array([0.0, 0.0, 5.0]),
         cue=np.array([3.58, 0.0, 0.0]),
@@ -1945,12 +3272,18 @@ def test_landing_mpc_entry_uses_observation_and_safety_not_distance(
         cue_v=np.zeros(3),
         vis_entry_valid=True,
         mission_map_yaml=str(MAP),
+        _landing_gps_preacquire_range=35.0,
+        _landing_target_min_speed=0.0,
         _landing_target_fresh=lambda: True,
         _vision_measurement_fresh=lambda: True,
+        _vision_correction_converged=lambda: True,
     )
     monkeypatch.setattr(
         mission_module, '_mission_planning_segment_is_free',
         lambda *_: safety[0])
+    monkeypatch.setattr(
+        MissionManagerNode, '_terminal_runway_status',
+        lambda *_args, **_kwargs: (runway_clear[0], 60.0))
 
     assert MissionManagerNode._landing_mpc_entry_ready(state)
     state.cue[0] = 80.0
@@ -1959,10 +3292,131 @@ def test_landing_mpc_entry_uses_observation_and_safety_not_distance(
     assert not MissionManagerNode._landing_mpc_entry_ready(state)
     safety[0] = True
     state.vis_entry_valid = False
+    state._vision_correction_converged = lambda: False
     assert not MissionManagerNode._landing_mpc_entry_ready(state)
+    # Moving-deck acquisition may begin before vision, but only after the
+    # route controller has closed to the configured GPS handoff range.
+    state._landing_target_min_speed = 9.0
+    assert not MissionManagerNode._landing_mpc_entry_ready(state)
+    # A fresh visual track may extend entry beyond the GPS range, but it must
+    # never bypass the same moving-route runway gate.
+    state.vis_entry_valid = True
+    state._vision_measurement_fresh = lambda: True
+    state._vision_correction_converged = lambda: True
+    runway_clear[0] = False
+    assert not MissionManagerNode._landing_mpc_entry_ready(state)
+    runway_clear[0] = True
+    assert MissionManagerNode._landing_mpc_entry_ready(state)
+    state.vis_entry_valid = False
+    state._vision_correction_converged = lambda: False
+    state.cue[0] = 35.0
+    assert MissionManagerNode._landing_mpc_entry_ready(state)
+    state.v_d[0] = 0.0
+    assert not MissionManagerNode._landing_mpc_entry_ready(state)
+    state.v_d[0] = 3.84
+    runway_clear[0] = False
+    assert not MissionManagerNode._landing_mpc_entry_ready(state)
+    runway_clear[0] = True
+    state._landing_gps_preacquire_range = 0.0
+    assert not MissionManagerNode._landing_mpc_entry_ready(state)
+    state._landing_gps_preacquire_range = 35.0
+    safety[0] = False
+    assert not MissionManagerNode._landing_mpc_entry_ready(state)
+    safety[0] = True
+    state._landing_target_fresh = lambda: False
+    assert not MissionManagerNode._landing_mpc_entry_ready(state)
+    state._landing_target_fresh = lambda: True
+    state._landing_target_min_speed = 0.0
     state.vis_entry_valid = True
     state._vision_measurement_fresh = lambda: False
+    state._vision_correction_converged = lambda: False
     assert not MissionManagerNode._landing_mpc_entry_ready(state)
+
+
+def test_direct_moving_target_entry_enables_gps_safety_mode(monkeypatch):
+    resets = []
+    published = []
+    transitions = []
+    state = SimpleNamespace(
+        p_d=np.array([0.0, 0.0, 10.0]),
+        v_d=np.array([12.0, 0.0, 0.0]),
+        cue=np.array([20.0, 0.0, 0.0]),
+        cue_v=np.array([9.0, 0.0, 0.0]),
+        vis_entry_valid=False,
+        mission_map_yaml=str(MAP),
+        _landing_gps_preacquire_range=35.0,
+        _landing_target_min_speed=9.0,
+        _landing_target_fresh=lambda: True,
+        _vision_measurement_fresh=lambda: False,
+        _vision_correction_converged=lambda: False,
+        state='RETURN',
+        _return_staging=True,
+        _return_staging_arrived=True,
+        _landing_mpc=SimpleNamespace(
+            reset=lambda: resets.append('mpc')),
+        _landing_reference=SimpleNamespace(
+            reset=lambda: resets.append('reference')),
+        _publish_planned_path=published.append,
+    )
+    state._landing_mpc_entry_ready = lambda: (
+        MissionManagerNode._landing_mpc_entry_ready(state))
+    state._set_state = lambda new, why='': transitions.append((new, why))
+    monkeypatch.setattr(
+        mission_module, '_mission_planning_segment_is_free', lambda *_: True)
+    monkeypatch.setattr(
+        MissionManagerNode, '_terminal_runway_status',
+        lambda *_args, **_kwargs: (True, 60.0))
+
+    assert MissionManagerNode._enter_landing_mpc(state)
+
+    assert state._gps_preacquire_active
+    assert not state._return_staging
+    assert not state._return_staging_arrived
+    assert state._landing_hold_z == 10.0
+    assert resets == ['mpc', 'reference']
+    assert published == [None]
+    assert transitions == [(
+        'LANDING_ACQUIRE',
+        '(GPS velocity pre-acquire; hold altitude for ArUco)')]
+
+
+def test_takeoff_direct_entry_preserves_stationary_trailer_release(monkeypatch):
+    transitions = []
+    state = SimpleNamespace(
+        state='TAKEOFF',
+        auto_start=True,
+        p_d=np.array([0.0, 0.0, 10.0]),
+        v_d=np.zeros(3),
+        cue=np.array([0.0, 0.0, 0.0]),
+        cue_v=np.zeros(3),
+        vis_entry_valid=False,
+        mission_map_yaml=str(MAP),
+        _landing_gps_preacquire_range=35.0,
+        _landing_target_min_speed=9.0,
+        _landing_target_fresh=lambda: True,
+        _vision_measurement_fresh=lambda: False,
+        _vision_correction_converged=lambda: False,
+        _return_staging=False,
+        _return_staging_arrived=False,
+        _landing_mpc=SimpleNamespace(reset=lambda: None),
+        _landing_reference=SimpleNamespace(reset=lambda: None),
+        _publish_planned_path=lambda *_: None,
+    )
+    state._landing_mpc_entry_ready = lambda: (
+        MissionManagerNode._landing_mpc_entry_ready(state))
+    state._set_state = lambda new, why='': transitions.append((new, why))
+    monkeypatch.setattr(
+        mission_module, '_mission_planning_segment_is_free', lambda *_: True)
+    monkeypatch.setattr(
+        MissionManagerNode, '_terminal_runway_status',
+        lambda *_args, **_kwargs: (False, 0.0))
+
+    assert MissionManagerNode._enter_landing_mpc(state)
+
+    assert not state._gps_preacquire_active
+    assert transitions == [(
+        'LANDING_ACQUIRE',
+        '(direct moving-target ACQUIRE; hold altitude for ArUco)')]
 
 
 def test_fresh_vision_needs_no_depression_angle():
@@ -1980,6 +3434,373 @@ def test_fresh_vision_needs_no_depression_angle():
     state.vis_entry_valid = False
     assert not MissionManagerNode._vision_measurement_fresh(state)
     assert MissionManagerNode._vision_track_usable(state)
+
+
+def test_vision_bias_waits_for_kf_velocity_convergence():
+    state = SimpleNamespace(
+        cue=np.array([10.0, 20.0, 0.0]),
+        cue_v=np.array([7.0, 0.0, 0.0]),
+        vis=np.array([10.6, 20.0, 0.0]),
+        vis_v=np.zeros(3),
+        vis_valid=True,
+        vis_entry_valid=True,
+        _t_vis=1.0,
+        vis_fresh=0.5,
+        _now=lambda: 1.0,
+        _landing_v_tol=0.3,
+        _bias=np.zeros(3),
+        bias_max=5.0,
+        bias_tau=1.5,
+        bias_rate=0.3,
+        dt=0.02,
+        _t_cue_source=None,
+        state='LANDING_ACQUIRE',
+        _landing_bias_locked=False,
+    )
+
+    assert not MissionManagerNode._vision_velocity_converged(state)
+    target, _ = MissionManagerNode._target(state)
+    assert np.allclose(target, state.cue)
+    assert np.allclose(state._bias, 0.0)
+
+    state.vis_v = state.cue_v.copy()
+    assert MissionManagerNode._vision_velocity_converged(state)
+    target, _ = MissionManagerNode._target(state)
+    assert np.allclose(target[:2], [10.006, 20.0])
+    assert np.allclose(state._bias[:2], [0.006, 0.0])
+
+    state._landing_bias_locked = True
+    state.vis = np.array([10.9, 20.0, 0.0])
+    target, _ = MissionManagerNode._target(state)
+    assert np.allclose(target[:2], [10.006, 20.0])
+    assert np.allclose(state._bias[:2], [0.006, 0.0])
+
+
+def test_gps_preacquire_holds_altitude_and_matches_velocity_until_vision_aligns(
+        monkeypatch):
+    class FakeMpc:
+        N = 2
+        j_max = 2.0
+        cone_k = 2.0
+        z_ref = 1.5
+        a_max = 1.0
+
+        def __init__(self):
+            self.reset_count = 0
+
+        def reset(self):
+            self.reset_count += 1
+
+        def solve(self, p_rel, v_rel, *_, **_kwargs):
+            return SimpleNamespace(
+                success=True,
+                pred_rel_pos=np.tile(np.asarray(p_rel, float), (2, 1)),
+                pred_rel_vel=np.tile(np.asarray(v_rel, float), (2, 1)),
+                pred_rel_acc=np.zeros((2, 3)),
+            )
+
+    sent = []
+    gotos = []
+    prediction_modes = []
+    planning_streams = []
+    now = [10.0]
+    status = VehicleStatus()
+    status.arming_state = VehicleStatus.ARMING_STATE_ARMED
+    status.nav_state = VehicleStatus.NAVIGATION_STATE_OFFBOARD
+    status.failsafe = False
+    status.failure_detector_status = VehicleStatus.FAILURE_NONE
+    state = SimpleNamespace(
+        state='LANDING_ACQUIRE',
+        p_d=np.array([0.0, 0.0, 25.0]),
+        v_d=np.array([9.0, 0.0, 0.0]),
+        cue=np.array([0.0, 0.0, 2.0]),
+        cue_v=np.array([9.0, 0.0, 0.0]),
+        mission_map_yaml=str(MAP),
+        _landing_mpc=FakeMpc(),
+        _landing_reference=mission_module.HorizonReference(lead_s=0.1),
+        _landing_solve_t=None,
+        _landing_last_solve_t=None,
+        _landing_failure_hold=None,
+        _gps_preacquire_active=True,
+        _landing_hold_z=25.0,
+        _landing_mpc_cone=2.0,
+        _path_mpc_a_max=3.0,
+        # Route tracking is capped below the terminal GPS matching speed.
+        _path_mpc_v_max=8.0,
+        _landing_mpc_a_max=1.0,
+        _landing_mpc_vz_max=0.6,
+        _landing_xy_tol=0.5,
+        _landing_v_tol=0.3,
+        _landing_target_min_speed=9.0,
+        _precland_commit_height=0.65,
+        _local_valid=True,
+        _t_position=now[0],
+        _status=status,
+        _t_status=now[0],
+        armed=True,
+        mpc_dt=0.1,
+        dt=0.02,
+        _last_sent_acceleration=np.zeros(3),
+        _last_sent_acceleration_t=9.98,
+        vis_entry_valid=False,
+        _landing_target_fresh=lambda: True,
+        _vision_correction_converged=lambda: state.vis_entry_valid,
+        _vision_measurement_fresh=lambda: state.vis_entry_valid,
+        _target=lambda: (state.cue.copy(), state.cue_v.copy()),
+        _now=lambda: now[0],
+        _send=lambda pos, vel=None, acc=None: sent.append(
+            (np.asarray(pos).copy(), np.asarray(vel).copy(),
+             np.asarray(acc).copy())),
+        _send_goto=lambda pos: gotos.append(np.asarray(pos).copy()),
+        _enter_precland=lambda *_: pytest.fail(
+            'GPS pre-acquire must not skip to PRECLAND'),
+        get_logger=lambda: SimpleNamespace(
+            warn=lambda *_args, **_kwargs: None),
+    )
+    state._set_state = lambda new, why='': setattr(state, 'state', new)
+    monkeypatch.setattr(
+        mission_module, '_mpc_prediction_is_safe',
+        lambda *_args, **kwargs: (
+            prediction_modes.append(kwargs.get('planning', False)) or True))
+    monkeypatch.setattr(
+        mission_module, '_mission_planning_segment_is_free',
+        lambda *_: planning_streams.append(True) or True)
+    monkeypatch.setattr(
+        mission_module, '_mission_segment_is_free',
+        lambda *_: pytest.fail(
+            'GPS pre-acquire used hard instead of planning clearance'))
+    monkeypatch.setattr(
+        MissionManagerNode, '_terminal_runway_status',
+        lambda *_args, **_kwargs: (True, 60.0))
+
+    MissionManagerNode._run_landing_mpc(state)
+
+    assert state.state == 'LANDING_ACQUIRE'
+    assert sent[-1][0][2] == 25.0
+    assert sent[-1][1] == pytest.approx([9.0, 0.0, 0.0])
+    assert sent[-1][2][2] == 0.0
+
+    state.vis_entry_valid = True
+    state.p_d[0] = 1.0
+    now[0] += 0.1
+    state._t_position = now[0]
+    MissionManagerNode._run_landing_mpc(state)
+    assert state.state == 'LANDING_ACQUIRE'
+
+    state.p_d[0] = 0.0
+    state.cue_v[0] = state.v_d[0] = 8.8
+    now[0] += 0.1
+    state._t_position = now[0]
+    MissionManagerNode._run_landing_mpc(state)
+    assert state.state == 'LANDING_ACQUIRE'
+
+    state.cue_v[0] = state.v_d[0] = 9.0
+    now[0] += 0.1
+    state._t_position = now[0]
+    MissionManagerNode._run_landing_mpc(state)
+    assert state.state == 'LANDING_DESCEND'
+    assert state._gps_preacquire_active
+    transition_reference = state._landing_reference
+    transition_solve_t = state._landing_solve_t
+    assert transition_reference.ready()
+    assert transition_solve_t == now[0]
+    assert prediction_modes == [True, True, True, True]
+    assert planning_streams == [True, True, True, True]
+
+    # A one-frame correction residual must stop vertical motion without
+    # throwing away the certified horizontal P/V/A and falling back to Goto.
+    monkeypatch.setattr(
+        MissionManagerNode, '_vision_track_usable', lambda *_: False)
+    state.vis_entry_valid = False
+    now[0] += 0.02
+    state._t_position = now[0]
+    expected_pos, expected_vel, expected_acc = transition_reference.sample(
+        now[0] - transition_solve_t)
+    MissionManagerNode._run_landing_mpc(state)
+
+    assert state.state == 'LANDING_ACQUIRE'
+    assert state._landing_reference is transition_reference
+    assert state._landing_reference.ready()
+    assert state._landing_solve_t == transition_solve_t
+    assert state._landing_mpc.reset_count == 0
+    assert gotos == []
+    assert np.allclose(sent[-1][0][:2], expected_pos[:2])
+    assert np.allclose(sent[-1][1][:2], expected_vel[:2])
+    assert np.allclose(sent[-1][2][:2], expected_acc[:2])
+    assert sent[-1][0][2] == state.p_d[2]
+    assert sent[-1][1][2] == 0.0
+    assert sent[-1][2][2] == 0.0
+
+    state.state = 'LANDING_ACQUIRE'
+    state._gps_preacquire_active = True
+    state._landing_reference.reset()
+    state._landing_solve_t = None
+    state._landing_last_solve_t = None
+    state._landing_failure_hold = None
+    state.cue_v[0] = state.v_d[0] = 12.01
+    first_hold = state.p_d.copy()
+    now[0] += 0.1
+    MissionManagerNode._run_landing_mpc(state)
+    state.p_d = np.array([1.0, 1.0, 24.0])
+    now[0] += 0.1
+    MissionManagerNode._run_landing_mpc(state)
+
+    assert np.allclose(gotos, [first_hold, first_hold])
+    assert np.allclose(state._landing_failure_hold, first_hold)
+    assert not state._landing_reference.ready()
+    assert state._landing_solve_t is None
+
+
+@pytest.mark.parametrize('staging_enabled', [True, False])
+def test_gps_preacquire_runway_expiry_honours_return_mode(
+        monkeypatch, staging_enabled):
+    gotos = []
+    path = np.array([[0.0, 0.0, 25.0], [10.0, 0.0, 25.0]])
+    state = SimpleNamespace(
+        state='LANDING_ACQUIRE',
+        p_d=np.array([3.0, 0.0, 25.0]),
+        v_d=np.array([7.0, 0.0, 0.0]),
+        cue=np.array([5.0, 0.0, 2.0]),
+        cue_v=np.array([9.0, 0.0, 0.0]),
+        _landing_target_fresh=lambda: True,
+        _target=lambda: (state.cue.copy(), state.cue_v.copy()),
+        _gps_preacquire_active=True,
+        _landing_mpc=SimpleNamespace(reset=lambda: None),
+        _landing_reference=SimpleNamespace(reset=lambda: None),
+        _landing_solve_t=1.0,
+        _landing_last_solve_t=1.0,
+        _landing_hold_z=25.0,
+        _landing_failure_hold=None,
+        _bias=np.array([1.0, -1.0, 0.0]),
+        _path_failure_hold=None,
+        _return_staging_enabled=staging_enabled,
+        _return_staging=False,
+        _return_staging_arrived=False,
+        _return_intercept_deadline_t=12.0,
+        _return_intercept_lock_active=True,
+        _last_return_plan_t=8.0,
+        _mission_path=path,
+        _send_goto=lambda target: gotos.append(np.asarray(target).copy()),
+        get_logger=lambda: SimpleNamespace(warn=lambda *_args, **_kwargs: None),
+    )
+    state._set_state = lambda new, why='': setattr(state, 'state', new)
+    monkeypatch.setattr(
+        MissionManagerNode, '_terminal_runway_status',
+        lambda *_args, **_kwargs: (False, 4.0))
+
+    MissionManagerNode._run_landing_mpc(state)
+
+    assert state.state == 'RETURN'
+    assert state._return_staging is staging_enabled
+    assert not state._return_staging_arrived
+    assert not state._gps_preacquire_active
+    assert np.allclose(state._bias, 0.0)
+    assert np.allclose(state._path_failure_hold, [3.0, 0.0, 25.0])
+    assert np.allclose(gotos, [[3.0, 0.0, 25.0]])
+    assert state._mission_path is path
+    if staging_enabled:
+        assert state._return_intercept_deadline_t == 12.0
+        assert state._return_intercept_lock_active
+        assert state._last_return_plan_t == 8.0
+    else:
+        assert state._return_intercept_deadline_t is None
+        assert not state._return_intercept_lock_active
+        assert state._last_return_plan_t is None
+
+
+def test_staging_descent_coast_reacquire_expires_to_fixed_restage(
+        monkeypatch):
+    class FakeMpc:
+        N = 2
+        j_max = 2.0
+        cone_k = 2.0
+        z_ref = 0.65
+        a_max = 1.0
+
+        def reset(self):
+            pass
+
+        def solve(self, p_rel, v_rel, *_, **_kwargs):
+            return SimpleNamespace(
+                success=True,
+                pred_rel_pos=np.tile(np.asarray(p_rel, float), (2, 1)),
+                pred_rel_vel=np.tile(np.asarray(v_rel, float), (2, 1)),
+                pred_rel_acc=np.zeros((2, 3)),
+            )
+
+    sent = []
+    gotos = []
+    runway_clear = [True]
+    path = np.array([[0.0, 0.0, 25.0], [10.0, 0.0, 25.0]])
+    state = SimpleNamespace(
+        state='LANDING_DESCEND',
+        p_d=np.array([3.0, 0.0, 20.0]),
+        v_d=np.array([9.0, 0.0, 0.0]),
+        cue=np.array([3.0, 0.0, 2.0]),
+        cue_v=np.array([9.0, 0.0, 0.0]),
+        mission_map_yaml=str(MAP),
+        _landing_target_fresh=lambda: True,
+        _target=lambda: (state.cue.copy(), state.cue_v.copy()),
+        _vision_correction_converged=lambda: False,
+        _vision_measurement_fresh=lambda: False,
+        _gps_preacquire_active=True,
+        _landing_mpc=FakeMpc(),
+        _landing_reference=mission_module.HorizonReference(lead_s=0.1),
+        _landing_solve_t=None,
+        _landing_last_solve_t=None,
+        _landing_hold_z=None,
+        _landing_failure_hold=None,
+        _path_failure_hold=None,
+        _return_staging=False,
+        _return_staging_arrived=False,
+        _mission_path=path,
+        _landing_mpc_cone=2.0,
+        _path_mpc_a_max=3.0,
+        _landing_mpc_a_max=1.0,
+        _landing_xy_tol=0.5,
+        _landing_v_tol=0.3,
+        _precland_commit_height=0.65,
+        mpc_dt=0.1,
+        dt=0.02,
+        _last_sent_acceleration=np.zeros(3),
+        _last_sent_acceleration_t=9.98,
+        _now=lambda: 10.0,
+        _send=lambda pos, vel=None, acc=None: sent.append(
+            (np.asarray(pos).copy(), np.asarray(vel).copy(),
+             np.asarray(acc).copy())),
+        _send_goto=lambda target: gotos.append(np.asarray(target).copy()),
+        get_logger=lambda: SimpleNamespace(
+            warn=lambda *_args, **_kwargs: None),
+    )
+    state._set_state = lambda new, why='': setattr(state, 'state', new)
+    monkeypatch.setattr(
+        MissionManagerNode, '_terminal_runway_status',
+        lambda *_args, **_kwargs: (runway_clear[0], 60.0))
+    monkeypatch.setattr(
+        MissionManagerNode, '_vision_track_usable', lambda *_: False)
+    monkeypatch.setattr(
+        mission_module, '_mpc_prediction_is_safe',
+        lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        mission_module, '_mission_planning_segment_is_free', lambda *_: True)
+
+    MissionManagerNode._run_landing_mpc(state)
+
+    assert state.state == 'LANDING_ACQUIRE'
+    assert state._gps_preacquire_active
+    assert len(sent) == 1 and gotos == []
+
+    runway_clear[0] = False
+    first_hold = state.p_d.copy()
+    MissionManagerNode._run_landing_mpc(state)
+
+    assert state.state == 'RETURN'
+    assert state._return_staging and not state._return_staging_arrived
+    assert not state._gps_preacquire_active
+    assert len(sent) == 1
+    assert np.allclose(gotos, [first_hold])
+    assert np.allclose(state._path_failure_hold, first_hold)
+    assert state._mission_path is path
 
 
 def test_landing_mpc_acquires_without_descent_then_hands_low_altitude_to_px4(
@@ -2010,6 +3831,7 @@ def test_landing_mpc_acquires_without_descent_then_hands_low_altitude_to_px4(
         def __init__(self):
             self._ready = False
             self.lead = 0.1
+            self.T = 0.2
 
         def ready(self):
             return self._ready
@@ -2025,10 +3847,13 @@ def test_landing_mpc_acquires_without_descent_then_hands_low_altitude_to_px4(
                     np.array([0.0, 0.0, -0.2]))
 
     sent = []
+    gotos = []
     precland = []
     runway_clear = [False]
     runway_heights = []
-    track_converged = [True]
+    correction_ready = [True]
+    measurement_fresh = [True]
+    track_usable = [True]
     now = [10.0]
     state = SimpleNamespace(
         k=0,
@@ -2048,6 +3873,7 @@ def test_landing_mpc_acquires_without_descent_then_hands_low_altitude_to_px4(
         _landing_mpc_cone=2.0,
         _path_mpc_a_max=3.0,
         _landing_mpc_a_max=1.0,
+        _landing_mpc_vz_max=0.6,
         _landing_xy_tol=0.5,
         _landing_v_tol=0.3,
         _mpc_solve_every=5,
@@ -2058,11 +3884,13 @@ def test_landing_mpc_acquires_without_descent_then_hands_low_altitude_to_px4(
         vis_entry_valid=True,
         _landing_target_fresh=lambda: True,
         _target=lambda: (state.cue.copy(), state.cue_v.copy()),
-        _vision_correction_converged=lambda: state.vis_entry_valid,
+        _vision_correction_converged=lambda: correction_ready[0],
+        _vision_measurement_fresh=lambda: measurement_fresh[0],
         _now=lambda: now[0],
         _send=lambda pos, vel=None, acc=None: sent.append(
             (np.asarray(pos).copy(), np.asarray(vel).copy(),
              np.asarray(acc).copy())),
+        _send_goto=lambda pos: gotos.append(np.asarray(pos).copy()),
         _enter_precland=lambda distance: precland.append(distance) or True,
         get_logger=lambda: SimpleNamespace(warn=lambda *_args, **_kwargs: None),
     )
@@ -2077,8 +3905,8 @@ def test_landing_mpc_acquires_without_descent_then_hands_low_altitude_to_px4(
     monkeypatch.setattr(
         MissionManagerNode, '_terminal_runway_status', runway_status)
     monkeypatch.setattr(
-        MissionManagerNode, '_vision_track_converged',
-        lambda _self: track_converged[0])
+        MissionManagerNode, '_vision_track_usable',
+        lambda _self: track_usable[0])
 
     MissionManagerNode._run_landing_mpc(state)
     assert state.state == 'LANDING_ACQUIRE'
@@ -2094,15 +3922,19 @@ def test_landing_mpc_acquires_without_descent_then_hands_low_altitude_to_px4(
     assert state.state == 'LANDING_DESCEND'
     assert runway_heights[-1] == 5.0
 
+    # Once DESCEND is entered, a fresh ArUco measurement keeps descent live
+    # even while its slowly learned cue correction crosses the entry bound.
+    correction_ready[0] = False
     state._landing_reference.reset()
     now[0] = 10.04
     MissionManagerNode._run_landing_mpc(state)
     assert state._landing_mpc.a_max == 1.0
-    assert state._landing_mpc.z_ref == 0.65
+    assert state._landing_mpc.z_ref == pytest.approx(0.53)
     assert state._landing_mpc.solve_count == 1
     assert precland == []
 
     state.vis_entry_valid = False
+    measurement_fresh[0] = False
     state.p_d[2] = 1.0
     state._last_sent_acceleration[2] = -0.4
     state._last_sent_acceleration_t = 10.08
@@ -2114,7 +3946,7 @@ def test_landing_mpc_acquires_without_descent_then_hands_low_altitude_to_px4(
     assert sent[-1][1][2] == pytest.approx(0.0)
     assert sent[-1][2][2] == pytest.approx(0.0)
 
-    track_converged[0] = False
+    track_usable[0] = False
     now[0] = 10.2
     MissionManagerNode._run_landing_mpc(state)
     assert state._landing_mpc.solve_count == 3
@@ -2132,6 +3964,8 @@ def test_landing_mpc_acquires_without_descent_then_hands_low_altitude_to_px4(
     assert sent[-1][0][2] == pytest.approx(1.0)
 
     state.vis_entry_valid = True
+    correction_ready[0] = True
+    measurement_fresh[0] = True
     now[0] = 10.4
     MissionManagerNode._run_landing_mpc(state)
     assert state._landing_mpc.solve_count == 5
@@ -2207,6 +4041,7 @@ def test_precland_handoff_sends_one_native_px4_command(monkeypatch):
         state='RETURN',
         p_d=np.array([0.0, 0.0, 5.0]),
         _last_safe_goto=np.array([0.5, 0.0, 5.0]),
+        _gps_preacquire_active=False,
         mission_map_yaml=str(MAP),
         _cmd=lambda *args: commands.append(args),
         _publish_landing_target=lambda: targets.append(True) or True,
@@ -2365,6 +4200,89 @@ def test_mission_follows_bspline_by_space_and_sends_goto_only():
     assert np.allclose(sent_goto[-1], [1.0, 0.0, 5.0])
 
 
+def test_static_path_hands_terminal_braking_to_one_fixed_goto(monkeypatch):
+    class Controller:
+        j_max = 2.0
+
+        def __init__(self):
+            self.resets = 0
+
+        def reset(self):
+            self.resets += 1
+
+    controller = Controller()
+    reference = mission_module.HorizonReference(lead_s=0.1)
+    gotos = []
+    state = SimpleNamespace(
+        state='MISSION',
+        p_d=np.array([30.0, 0.0, 5.0]),
+        v_d=np.array([2.5, 0.0, 0.0]),
+        _mission_arc_m=np.array([0.0, 20.0, 40.0]),
+        _mission_path=np.array([
+            [0.0, 0.0, 5.0], [20.0, 0.0, 5.0], [40.0, 0.0, 5.0]]),
+        _mission_progress_m=0.0,
+        _mission_lookahead=15.0,
+        _mission_cross_track=1.0,
+        mission_tolerance=0.7,
+        mission_map_yaml=str(MAP),
+        _path_mpc=controller,
+        _path_mpc_a_max=2.0,
+        _path_mpc_speed=6.0,
+        _path_speed_profile_a_max=1.0,
+        _path_reference=reference,
+        _path_solve_t=1.0,
+        _path_failure_hold=np.array([1.0, 1.0, 5.0]),
+        _path_terminal_goto=None,
+        _path_terminal_goto_enabled=True,
+        _send_goto=lambda target: gotos.append(np.asarray(target).copy()),
+        get_logger=lambda: SimpleNamespace(info=lambda *_args: None),
+    )
+    monkeypatch.setattr(
+        mission_module, '_mission_planning_segment_is_free', lambda *_: True)
+    monkeypatch.setattr(
+        mission_module, '_mission_segment_is_free', lambda *_: True)
+
+    assert MissionManagerNode._follow_path(state)
+    assert np.allclose(state._path_terminal_goto, [40.0, 0.0, 5.0])
+    assert np.allclose(gotos[-1], state._path_terminal_goto)
+    assert controller.resets == 1
+    assert state._path_solve_t is None
+    assert state._path_failure_hold is None
+
+    state.p_d = np.array([32.0, 0.0, 5.0])
+    assert MissionManagerNode._follow_path(state)
+    assert np.allclose(gotos[-1], [40.0, 0.0, 5.0])
+    assert controller.resets == 1
+
+
+def test_moving_return_never_latches_a_static_terminal_goto(monkeypatch):
+    gotos = []
+    state = SimpleNamespace(
+        state='RETURN',
+        _return_staging=False,
+        p_d=np.array([15.0, 0.0, 5.0]),
+        v_d=np.array([6.0, 0.0, 0.0]),
+        _mission_arc_m=np.array([0.0, 20.0, 40.0]),
+        _mission_path=np.array([
+            [0.0, 0.0, 5.0], [20.0, 0.0, 5.0], [40.0, 0.0, 5.0]]),
+        _mission_progress_m=0.0,
+        _mission_lookahead=15.0,
+        _mission_cross_track=1.0,
+        mission_map_yaml=str(MAP),
+        _path_mpc=None,
+        _path_reference=None,
+        _path_terminal_goto=None,
+        _send_goto=lambda target: gotos.append(np.asarray(target).copy()),
+        get_logger=lambda: SimpleNamespace(warn=lambda *_args, **_kwargs: None),
+    )
+    monkeypatch.setattr(
+        mission_module, '_mission_planning_segment_is_free', lambda *_: True)
+
+    assert MissionManagerNode._follow_path(state)
+    assert state._path_terminal_goto is None
+    assert gotos and not np.allclose(gotos[-1], state._mission_path[-1])
+
+
 def test_return_tracks_the_bspline_with_relative_braking_when_available(
         monkeypatch):
     sent = []
@@ -2402,8 +4320,15 @@ def test_return_tracks_the_bspline_with_relative_braking_when_available(
             AssertionError('TrackingMPC unexpectedly fell back to Goto')),
         get_logger=lambda: SimpleNamespace(warn=lambda *_args, **_kwargs: None),
     )
+    planning_checks = []
     monkeypatch.setattr(
-        mission_module, '_mission_segment_is_free', lambda *_: True)
+        mission_module, '_mission_planning_segment_is_free',
+        lambda *_: planning_checks.append(True) or True)
+    monkeypatch.setattr(
+        mission_module, '_mission_segment_is_free',
+        lambda *_: (_ for _ in ()).throw(
+            AssertionError(
+                'TrackingMPC used hard instead of planning clearance')))
     original_reference = mission_module._path_reference_horizon
 
     def capture_reference(*args, **kwargs):
@@ -2419,8 +4344,449 @@ def test_return_tracks_the_bspline_with_relative_braking_when_available(
     assert np.isclose(reference_calls[0]['target_range_xy_m'], 8.0)
     assert np.isclose(reference_calls[0]['relative_brake_start_m'], 10.0)
     assert np.isclose(reference_calls[0]['target_relative_speed_m_s'], 0.3)
+    assert planning_checks
     assert sent[0][0][0] > 0.0
     assert np.all(np.isfinite(np.concatenate(sent[0])))
+
+
+def test_tracking_mpc_uses_continuous_hard_horizon_as_dynamic_reserve(
+        monkeypatch):
+    sent = []
+    modes = []
+    state = SimpleNamespace(
+        state='MISSION',
+        p_d=np.array([0.0, 0.0, 5.0]),
+        v_d=np.zeros(3),
+        _mission_arc_m=np.array([0.0, 5.0, 10.0]),
+        _mission_path=np.array([
+            [0.0, 0.0, 5.0], [5.0, 0.0, 5.0], [10.0, 0.0, 5.0]]),
+        _mission_progress_m=0.0,
+        _mission_lookahead=2.0,
+        _mission_cross_track=0.25,
+        mission_map_yaml=str(MAP),
+        _path_mpc=mission_module.TrackingMPC(
+            dt_s=0.1, horizon=10, v_max=5.0, a_max=3.0),
+        _path_reference=mission_module.HorizonReference(lead_s=0.1),
+        _path_solve_t=None,
+        mpc_dt=0.1,
+        _path_mpc_speed=3.0,
+        _path_mpc_a_max=3.0,
+        _now=lambda: 0.0,
+        _send=lambda pos, vel, acc: sent.append((pos, vel, acc)),
+        _send_goto=lambda *_: pytest.fail(
+            'hard-safe MPC recovery must not switch to Goto'),
+        get_logger=lambda: SimpleNamespace(warn=lambda *_args, **_kwargs: None),
+    )
+    monkeypatch.setattr(
+        mission_module, '_safe_spatial_path_target',
+        lambda *_args, **_kwargs: (0.0, np.array([2.0, 0.0, 5.0])))
+
+    def prediction(_map, _current, _positions, planning=False):
+        modes.append(planning)
+        return not planning
+
+    monkeypatch.setattr(mission_module, '_mpc_prediction_is_safe', prediction)
+    monkeypatch.setattr(
+        mission_module, '_mission_segment_is_free', lambda *_: True)
+    monkeypatch.setattr(
+        mission_module, '_mission_planning_segment_is_free',
+        lambda *_: pytest.fail('stream must switch to hard clearance'))
+
+    assert MissionManagerNode._follow_path(state)
+    assert modes == [True, False]
+    assert len(sent) == 1
+    assert np.all(np.isfinite(np.concatenate(sent[0])))
+
+
+def test_tracking_mpc_retries_once_with_a_lower_speed_reference(monkeypatch):
+    class SpeedLimitedRetryMpc:
+        N = 2
+        j_max = 2.0
+        v_max = 10.0
+
+        def __init__(self):
+            self.calls = 0
+
+        def solve(self, *_args, **_kwargs):
+            self.calls += 1
+            speed = 10.1 if self.calls == 1 else 8.0
+            return SimpleNamespace(
+                success=True,
+                predicted_pos=np.array([
+                    [1.0, 0.0, 5.0], [2.0, 0.0, 5.0]]),
+                predicted_vel=np.array([
+                    [speed, 0.0, 0.0], [speed, 0.0, 0.0]]),
+                predicted_acc=np.zeros((2, 3)))
+
+        def reset(self):
+            pass
+
+    references = []
+    sent = []
+    controller = SpeedLimitedRetryMpc()
+    state = SimpleNamespace(
+        state='MISSION',
+        p_d=np.array([0.0, 0.0, 5.0]),
+        v_d=np.zeros(3),
+        _mission_arc_m=np.array([0.0, 2.0]),
+        _mission_path=np.array([[0.0, 0.0, 5.0], [2.0, 0.0, 5.0]]),
+        _mission_progress_m=0.0,
+        _mission_lookahead=1.0,
+        _mission_cross_track=0.25,
+        mission_map_yaml=str(MAP),
+        _path_mpc=controller,
+        _path_reference=mission_module.HorizonReference(lead_s=0.1),
+        _path_solve_t=None,
+        mpc_dt=0.1,
+        _path_mpc_speed=8.5,
+        _path_mpc_a_max=2.0,
+        _now=lambda: 0.0,
+        _send=lambda pos, vel, acc: sent.append((pos, vel, acc)),
+        _send_goto=lambda *_: pytest.fail('safe retry switched to Goto'),
+        get_logger=lambda: SimpleNamespace(warn=lambda *_args, **_kwargs: None),
+    )
+    monkeypatch.setattr(
+        mission_module, '_safe_spatial_path_target',
+        lambda *_args, **_kwargs: (0.0, np.array([1.0, 0.0, 5.0])))
+    monkeypatch.setattr(
+        MissionManagerNode, '_tracking_path_reference',
+        lambda _self, *_args, speed_limit_m_s=None, **_kwargs: (
+            references.append(speed_limit_m_s)
+            or (np.zeros((2, 3)), np.zeros((2, 3)))))
+    monkeypatch.setattr(
+        mission_module, '_mpc_prediction_is_safe', lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        mission_module, '_mission_planning_segment_is_free', lambda *_: True)
+
+    assert MissionManagerNode._follow_path(state)
+    assert controller.calls == 2
+    assert references[0] is None
+    assert 0.5 <= references[1] < state._path_mpc_speed
+    assert len(sent) == 1
+
+
+def test_tracking_mpc_retries_slower_when_fast_horizon_cuts_an_obstacle(
+        monkeypatch):
+    class ClearanceRetryMpc:
+        N = 2
+        j_max = 2.0
+        v_max = 12.0
+
+        def __init__(self):
+            self.calls = 0
+
+        def solve(self, *_args, **_kwargs):
+            self.calls += 1
+            end_x = 3.0 if self.calls == 1 else 2.0
+            return SimpleNamespace(
+                success=True,
+                predicted_pos=np.array([
+                    [1.0, 0.0, 5.0], [end_x, 0.0, 5.0]]),
+                predicted_vel=np.array([
+                    [8.0, 0.0, 0.0], [8.0, 0.0, 0.0]]),
+                predicted_acc=np.zeros((2, 3)))
+
+        def reset(self):
+            pass
+
+    references = []
+    sent = []
+    controller = ClearanceRetryMpc()
+    state = SimpleNamespace(
+        state='MISSION',
+        p_d=np.array([0.0, 0.0, 5.0]),
+        v_d=np.zeros(3),
+        _mission_arc_m=np.array([0.0, 3.0]),
+        _mission_path=np.array([[0.0, 0.0, 5.0], [3.0, 0.0, 5.0]]),
+        _mission_progress_m=0.0,
+        _mission_lookahead=1.0,
+        _mission_cross_track=0.25,
+        mission_map_yaml=str(MAP),
+        _path_mpc=controller,
+        _path_reference=mission_module.HorizonReference(lead_s=0.1),
+        _path_solve_t=None,
+        mpc_dt=0.1,
+        _path_mpc_speed=12.0,
+        _path_mpc_a_max=2.0,
+        _now=lambda: 0.0,
+        _send=lambda pos, vel, acc: sent.append((pos, vel, acc)),
+        _send_goto=lambda *_: pytest.fail('safe retry switched to Goto'),
+        get_logger=lambda: SimpleNamespace(warn=lambda *_args, **_kwargs: None),
+    )
+    monkeypatch.setattr(
+        mission_module, '_safe_spatial_path_target',
+        lambda *_args, **_kwargs: (0.0, np.array([1.0, 0.0, 5.0])))
+    monkeypatch.setattr(
+        MissionManagerNode, '_tracking_path_reference',
+        lambda _self, *_args, speed_limit_m_s=None, **_kwargs: (
+            references.append(speed_limit_m_s)
+            or (np.zeros((2, 3)), np.zeros((2, 3)))))
+    monkeypatch.setattr(
+        mission_module, '_mpc_prediction_is_safe',
+        lambda _map, _current, predicted, **_kwargs:
+            float(np.asarray(predicted)[-1, 0]) <= 2.0)
+    monkeypatch.setattr(
+        mission_module, '_mission_planning_segment_is_free', lambda *_: True)
+
+    assert MissionManagerNode._follow_path(state)
+    assert controller.calls == 2
+    assert references == [None, pytest.approx(6.0)]
+    assert len(sent) == 1
+
+
+def test_shadow_tracking_mpc_retries_slower_before_rejecting_a_safe_swap(
+        monkeypatch):
+    calls = []
+
+    class ClearanceRetryMpc:
+        N = 2
+        j_max = 2.0
+        v_max = 12.0
+
+        def solve(self, *_args, **_kwargs):
+            calls.append(True)
+            end_x = 3.0 if len(calls) == 1 else 2.0
+            return SimpleNamespace(
+                success=True,
+                predicted_pos=np.array([
+                    [1.0, 0.0, 5.0], [end_x, 0.0, 5.0]]),
+                predicted_vel=np.array([
+                    [8.0, 0.0, 0.0], [8.0, 0.0, 0.0]]),
+                predicted_acc=np.zeros((2, 3)))
+
+    references = []
+    state = SimpleNamespace(
+        state='RETURN',
+        p_d=np.array([0.0, 0.0, 5.0]),
+        v_d=np.zeros(3),
+        _path_mpc=ClearanceRetryMpc(),
+        _path_reference=SimpleNamespace(lead=0.1),
+        _last_sent_acceleration=np.zeros(3),
+        mpc_dt=0.1,
+        _path_mpc_speed=12.0,
+        mission_map_yaml=str(MAP),
+        get_logger=lambda: SimpleNamespace(warn=lambda *_args, **_kwargs: None),
+    )
+    arc = np.array([0.0, 3.0])
+    path = np.array([[0.0, 0.0, 5.0], [3.0, 0.0, 5.0]])
+    monkeypatch.setattr(
+        MissionManagerNode, '_tracking_path_reference',
+        lambda _self, *_args, speed_limit_m_s=None, **_kwargs: (
+            references.append(speed_limit_m_s)
+            or (np.zeros((2, 3)), np.zeros((2, 3)))))
+    monkeypatch.setattr(
+        mission_module, '_mpc_prediction_is_safe',
+        lambda _map, _current, predicted, planning=False:
+            planning and float(np.asarray(predicted)[-1, 0]) <= 2.0)
+
+    prepared = MissionManagerNode._shadow_tracking_plan(
+        state, arc, path, 0.0)
+
+    assert prepared is not None
+    assert len(calls) == 2
+    assert references == [None, pytest.approx(6.0)]
+
+
+def test_clearance_rejection_streams_the_still_live_certified_pva(
+        monkeypatch):
+    class UnsafeMpc:
+        N = 4
+        j_max = 2.0
+        v_max = 12.0
+
+        def __init__(self):
+            self.calls = 0
+            self.reset_count = 0
+
+        def solve(self, *_args, **_kwargs):
+            self.calls += 1
+            return SimpleNamespace(
+                success=True,
+                predicted_pos=np.tile([20.0, 0.0, 5.0], (self.N, 1)),
+                predicted_vel=np.zeros((self.N, 3)),
+                predicted_acc=np.zeros((self.N, 3)))
+
+        def reset(self):
+            self.reset_count += 1
+
+    sent = []
+    now = [0.1]
+    controller = UnsafeMpc()
+    reference = mission_module.HorizonReference(lead_s=0.1)
+    prior_positions = np.array([
+        [0.1, 0.0, 5.0], [0.2, 0.0, 5.0],
+        [0.3, 0.0, 5.0], [0.4, 0.0, 5.0]])
+    reference.set_plan(
+        np.array([0.0, 0.0, 5.0]), np.zeros(3),
+        prior_positions, np.zeros((4, 3)), np.zeros((4, 3)), 0.1,
+        np.zeros(3), np.zeros(3), np.zeros(3))
+    state = SimpleNamespace(
+        state='RETURN',
+        p_d=np.array([0.0, 0.0, 5.0]),
+        v_d=np.zeros(3),
+        _mission_arc_m=np.array([0.0, 20.0]),
+        _mission_path=np.array([
+            [0.0, 0.0, 5.0], [20.0, 0.0, 5.0]]),
+        _mission_progress_m=0.0,
+        _mission_lookahead=2.0,
+        _mission_cross_track=0.25,
+        mission_map_yaml=str(MAP),
+        _path_mpc=controller,
+        _path_reference=reference,
+        _path_solve_t=0.0,
+        _path_failure_hold=None,
+        _last_sent_acceleration=np.zeros(3),
+        _last_sent_acceleration_t=0.0,
+        mpc_dt=0.1,
+        dt=0.02,
+        _path_mpc_speed=12.0,
+        _path_mpc_a_max=3.0,
+        _now=lambda: now[0],
+        _send=lambda pos, vel, acc: sent.append((pos, vel, acc)),
+        _send_goto=lambda *_: pytest.fail('live prior PVA switched to Goto'),
+        get_logger=lambda: SimpleNamespace(
+            warn=lambda *_args, **_kwargs: None),
+    )
+    monkeypatch.setattr(
+        mission_module, '_safe_spatial_path_target',
+        lambda *_args, **_kwargs: (0.0, np.array([2.0, 0.0, 5.0])))
+    monkeypatch.setattr(
+        MissionManagerNode, '_tracking_path_reference',
+        lambda *_args, **_kwargs: (
+            np.zeros((4, 3)), np.zeros((4, 3))))
+    monkeypatch.setattr(
+        mission_module, '_mpc_prediction_is_safe', lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(
+        mission_module, '_mission_planning_segment_is_free', lambda *_: True)
+
+    assert MissionManagerNode._follow_path(state)
+
+    assert controller.calls == 2
+    assert controller.reset_count == 0
+    assert reference.ready()
+    assert state._path_failure_hold is None
+    assert len(sent) == 1
+    assert np.all(np.isfinite(np.concatenate(sent[0])))
+
+    # A rejected replacement must not turn the 50 Hz stream into a 50 Hz
+    # double-solve loop; retry again only at the configured 10 Hz MPC cadence.
+    now[0] = 0.12
+    assert MissionManagerNode._follow_path(state)
+    assert controller.calls == 2
+    assert len(sent) == 2
+
+    now[0] = 0.2
+    assert MissionManagerNode._follow_path(state)
+    assert controller.calls == 4
+    assert len(sent) == 3
+
+
+def test_rejected_tracking_mpc_uses_the_planning_safe_path_carrot(
+        monkeypatch):
+    class RejectingMPC:
+        N = 2
+        j_max = 2.0
+
+        def __init__(self):
+            self.reset_count = 0
+
+        def solve(self, *_args, **_kwargs):
+            zeros = np.zeros((self.N, 3))
+            return SimpleNamespace(
+                success=False,
+                predicted_pos=zeros.copy(),
+                predicted_vel=zeros.copy(),
+                predicted_acc=zeros.copy())
+
+        def reset(self):
+            self.reset_count += 1
+
+    sent = []
+    gotos = []
+    position = np.array([1.0, 0.0, 5.0])
+    reference = mission_module.HorizonReference(lead_s=0.1)
+    zeros = np.zeros((2, 3))
+    reference.set_plan(
+        position, np.zeros(3), zeros, zeros, zeros, 0.1,
+        np.zeros(3), np.zeros(3), np.zeros(3))
+    mpc = RejectingMPC()
+    state = SimpleNamespace(
+        state='MISSION',
+        p_d=position.copy(),
+        v_d=np.zeros(3),
+        _mission_arc_m=np.array([0.0, 2.0, 4.0]),
+        _mission_path=np.array([
+            [0.0, 0.0, 5.0], [2.0, 0.0, 5.0], [4.0, 0.0, 5.0]]),
+        _mission_progress_m=0.0,
+        _mission_lookahead=2.0,
+        _mission_cross_track=0.25,
+        mission_map_yaml=str(MAP),
+        _path_mpc=mpc,
+        _path_reference=reference,
+        _path_solve_t=0.0,
+        _path_failure_hold=None,
+        mpc_dt=0.1,
+        _path_mpc_speed=3.0,
+        _path_mpc_a_max=3.0,
+        _path_speed_profile_a_max=3.0,
+        _now=lambda: 1.0,
+        _send=lambda *args: sent.append(args),
+        _send_goto=lambda target: gotos.append(np.asarray(target).copy()),
+        get_logger=lambda: SimpleNamespace(
+            warn=lambda *_args, **_kwargs: None),
+    )
+    monkeypatch.setattr(
+        mission_module, '_mission_planning_segment_is_free', lambda *_: True)
+
+    assert reference.ready()
+    assert MissionManagerNode._follow_path(state)
+
+    assert not reference.ready()
+    assert state._path_solve_t is None
+    assert mpc.reset_count == 1
+    assert sent == []
+    assert len(gotos) == 1
+    assert state._path_failure_hold is None
+
+
+def test_return_plan_failure_holds_the_first_position_across_ticks():
+    class PendingPlan:
+        @staticmethod
+        def done():
+            return False
+
+    gotos = []
+    first_position = np.array([1.0, 2.0, 5.0])
+    state = SimpleNamespace(
+        k=0,
+        state='RETURN_PLAN',
+        state_pub=SimpleNamespace(publish=lambda _: None),
+        _ocm=lambda: None,
+        _status=SimpleNamespace(
+            nav_state=VehicleStatus.NAVIGATION_STATE_OFFBOARD),
+        p_d=first_position.copy(),
+        cue=np.array([20.0, 0.0, 0.0]),
+        _cue_fresh=lambda: True,
+        _landing_mpc_entry_ready=lambda: False,
+        _mission_path=np.array([
+            [0.0, 0.0, 5.0], [10.0, 0.0, 5.0]]),
+        _plan_future=PendingPlan(),
+        _path_failure_hold=None,
+        _follow_path=lambda: False,
+        _send=lambda *_: (_ for _ in ()).throw(
+            AssertionError('RETURN_PLAN failure streamed stale PVA')),
+        _send_goto=lambda target: gotos.append(np.asarray(target).copy()),
+        _now=lambda: 0.0,
+    )
+
+    MissionManagerNode._tick(state)
+    state.p_d = np.array([4.0, 5.0, 4.5])
+    MissionManagerNode._tick(state)
+
+    assert len(gotos) == 2
+    assert np.allclose(gotos, [first_position, first_position])
+    assert np.allclose(state._path_failure_hold, first_position)
+    assert np.allclose(state._hold_pos, first_position)
 
 
 def test_spatial_carrot_is_continuous_at_cross_track_threshold():
@@ -2457,7 +4823,7 @@ def test_completed_rolling_path_splices_from_the_current_position():
     assert replacement is not None
     joined_arc, joined = replacement
     assert np.allclose(joined[0], current)
-    assert np.allclose(joined[1], [5.0, 0.0, 5.0])
+    assert np.allclose(joined[1], [10.0, 0.0, 5.0])
     assert np.allclose(joined[-1], path[-1])
     assert np.all(np.diff(joined_arc) > 0.0)
 
@@ -2472,8 +4838,14 @@ def test_completed_rolling_path_splices_from_the_current_position():
     # first lookahead window.
     _, late_joined = _splice_path_from_current(
         lambda *_: True, arc, path, np.array([8.0, 1.0, 5.0]), 2.0)
-    assert np.allclose(late_joined, [[8.0, 1.0, 5.0], [9.0, 0.0, 5.0],
+    assert np.allclose(late_joined, [[8.0, 1.0, 5.0],
                                     [10.0, 0.0, 5.0]])
+
+    # If the long chord is blocked, retain the old half-lookahead connector.
+    _, fallback = _splice_path_from_current(
+        lambda _start, target: target[0] <= 5.0,
+        arc, path, current, 6.0)
+    assert np.allclose(fallback[1], [5.0, 0.0, 5.0])
 
 
 def test_completed_rolling_path_rejects_an_unsafe_splice():
@@ -2486,7 +4858,7 @@ def test_completed_rolling_path_rejects_an_unsafe_splice():
         np.array([2.0, 1.0, 5.0]), 6.0) is None
 
 
-def test_blocked_spatial_carrot_replans_without_committing(monkeypatch):
+def test_blocked_current_position_aborts_without_impossible_replan(monkeypatch):
     sent_goto = []
     replans = []
     state = SimpleNamespace(
@@ -2512,7 +4884,12 @@ def test_blocked_spatial_carrot_replans_without_committing(monkeypatch):
         _start_global_plan=lambda goal, *, return_route: replans.append(
             (goal, return_route)),
     )
+    transitions = []
+    state._set_state = lambda new, why='': (
+        transitions.append((new, why)), setattr(state, 'state', new))
     state._follow_path = lambda: MissionManagerNode._follow_path(state)
+    monkeypatch.setattr(
+        mission_module, '_mission_planning_segment_is_free', lambda *_: False)
     monkeypatch.setattr(
         mission_module, '_mission_segment_is_free', lambda *_: False)
 
@@ -2520,7 +4897,144 @@ def test_blocked_spatial_carrot_replans_without_committing(monkeypatch):
 
     assert state._mission_progress_m == 0.0
     assert np.allclose(sent_goto[-1], state.p_d)
-    assert replans == [(None, False)]
+    assert replans == []
+    assert transitions[-1] == (
+        'ABORT', '(left hard clearance; hold)')
+
+
+def test_planning_reserve_loss_stops_then_retries_the_certified_path(
+        monkeypatch):
+    gotos = []
+    replans = []
+    follows = []
+    first_position = np.array([1.0, 0.0, 5.0])
+    state = SimpleNamespace(
+        k=0,
+        state='MISSION',
+        state_pub=SimpleNamespace(publish=lambda _: None),
+        _ocm=lambda: None,
+        _status=SimpleNamespace(
+            nav_state=VehicleStatus.NAVIGATION_STATE_OFFBOARD),
+        p_d=first_position.copy(),
+        v_d=np.array([1.0, 0.0, 0.0]),
+        _mission_arc_m=np.array([0.0, 2.0, 4.0]),
+        _mission_path=np.array([
+            [0.0, 0.0, 5.0], [2.0, 0.0, 5.0], [4.0, 0.0, 5.0]]),
+        _mission_progress_m=0.0,
+        mission_tolerance=0.7,
+        settle_v_tol=0.3,
+        takeoff_alt=5.0,
+        mission_map_yaml=str(MAP),
+        _path_failure_hold=None,
+        _send_goto=lambda target: gotos.append(np.asarray(target).copy()),
+        _start_global_plan=lambda *args, **kwargs: replans.append(
+            (args, kwargs)),
+    )
+
+    def follow():
+        follows.append(state.p_d.copy())
+        if len(follows) == 1:
+            state._path_failure_hold = state.p_d.copy()
+            return False
+        state._path_failure_hold = None
+        return True
+
+    state._follow_path = follow
+    monkeypatch.setattr(
+        mission_module, '_mission_segment_is_free', lambda *_: True)
+
+    MissionManagerNode._tick(state)
+    state.p_d = np.array([1.4, 0.0, 5.0])
+    MissionManagerNode._tick(state)
+    state.v_d[:] = 0.0
+    MissionManagerNode._tick(state)
+
+    assert len(follows) == 2
+    assert replans == []
+    assert state.state == 'MISSION'
+    assert len(gotos) == 3
+    assert np.allclose(gotos, [first_position] * 3)
+
+
+def test_planning_reserve_loss_rejoins_forward_hard_safe_path(monkeypatch):
+    sent_goto = []
+    state = SimpleNamespace(
+        p_d=np.array([1.0, 0.0, 5.0]),
+        v_d=np.zeros(3),
+        _mission_arc_m=np.array([0.0, 2.0, 4.0]),
+        _mission_path=np.array([
+            [0.0, 0.0, 5.0], [2.0, 0.0, 5.0], [4.0, 0.0, 5.0]]),
+        _mission_progress_m=0.0,
+        _mission_lookahead=2.0,
+        _mission_cross_track=0.25,
+        mission_map_yaml=str(MAP),
+        _path_mpc=None,
+        _path_reference=None,
+        _send_goto=lambda target: sent_goto.append(np.asarray(target).copy()),
+        get_logger=lambda: SimpleNamespace(warn=lambda *_args, **_kwargs: None),
+    )
+    monkeypatch.setattr(
+        mission_module, '_mission_planning_segment_is_free', lambda *_: False)
+    monkeypatch.setattr(
+        mission_module, '_mission_segment_is_free', lambda *_: True)
+
+    assert MissionManagerNode._follow_path(state)
+    assert np.allclose(sent_goto, [[2.0, 0.0, 5.0]])
+    assert state._mission_progress_m == 1.0
+
+
+def test_planning_reserve_recovery_uses_hard_mpc_pva_not_goto(monkeypatch):
+    sent = []
+    planning_checks = []
+    hard_checks = []
+    prediction_modes = []
+    state = SimpleNamespace(
+        state='MISSION',
+        p_d=np.array([1.0, 0.0, 5.0]),
+        v_d=np.zeros(3),
+        _mission_arc_m=np.array([0.0, 2.0, 4.0]),
+        _mission_path=np.array([
+            [0.0, 0.0, 5.0], [2.0, 0.0, 5.0], [4.0, 0.0, 5.0]]),
+        _mission_progress_m=0.0,
+        _mission_lookahead=2.0,
+        _mission_cross_track=0.25,
+        mission_map_yaml=str(MAP),
+        _path_mpc=mission_module.TrackingMPC(
+            dt_s=0.1, horizon=10, v_max=5.0, a_max=3.0),
+        _path_reference=mission_module.HorizonReference(lead_s=0.1),
+        _path_solve_t=None,
+        mpc_dt=0.1,
+        _path_mpc_speed=3.0,
+        _path_mpc_a_max=3.0,
+        _now=lambda: 0.0,
+        _send=lambda pos, vel, acc: sent.append((
+            np.asarray(pos).copy(), np.asarray(vel).copy(),
+            np.asarray(acc).copy())),
+        _send_goto=lambda *_: (_ for _ in ()).throw(
+            AssertionError('hard-safe TrackingMPC recovery used Goto')),
+        get_logger=lambda: SimpleNamespace(
+            warn=lambda *_args, **_kwargs: None),
+    )
+    monkeypatch.setattr(
+        mission_module, '_mission_planning_segment_is_free',
+        lambda *_: planning_checks.append(True) or False)
+    monkeypatch.setattr(
+        mission_module, '_mission_segment_is_free',
+        lambda *_: hard_checks.append(True) or True)
+    original_prediction_check = mission_module._mpc_prediction_is_safe
+
+    def capture_prediction_mode(*args, **kwargs):
+        prediction_modes.append(kwargs.get('planning', False))
+        return original_prediction_check(*args, **kwargs)
+
+    monkeypatch.setattr(
+        mission_module, '_mpc_prediction_is_safe', capture_prediction_mode)
+
+    assert MissionManagerNode._follow_path(state)
+    assert prediction_modes == [False]
+    assert planning_checks and hard_checks
+    assert len(sent) == 1
+    assert np.all(np.isfinite(np.concatenate(sent[0])))
 
 
 def test_spatial_carrot_shortens_to_the_farthest_safe_target(monkeypatch):
@@ -2553,7 +5067,7 @@ def test_spatial_carrot_shortens_to_the_farthest_safe_target(monkeypatch):
     )
     state._follow_path = lambda: MissionManagerNode._follow_path(state)
     monkeypatch.setattr(
-        mission_module, '_mission_segment_is_free',
+        mission_module, '_mission_planning_segment_is_free',
         lambda _map, _start, goal: float(goal[0]) <= 2.5)
 
     MissionManagerNode._tick(state)
@@ -2590,20 +5104,21 @@ def test_mission_manager_uses_separate_mpcs_but_never_forces_disarm():
     assert not hasattr(MissionManagerNode, '_touchdown_geometry')
 
 
-def test_geometry_goto_contains_position_without_speed_constraints():
+def test_geometry_goto_keeps_the_same_horizontal_speed_cap():
     published = []
     state = SimpleNamespace(
         get_clock=Clock,
         goto_pub=SimpleNamespace(publish=published.append),
+        _path_mpc_v_max=9.0,
     )
 
     MissionManagerNode._send_goto(state, np.array([1.0, 2.0, 5.0]))
 
     message = published[0]
     assert np.allclose(message.position, [2.0, 1.0, -5.0])
-    assert not message.flag_set_max_horizontal_speed
+    assert message.flag_set_max_horizontal_speed
     assert not message.flag_set_max_vertical_speed
-    assert np.isnan(message.max_horizontal_speed)
+    assert message.max_horizontal_speed == 9.0
     assert np.isnan(message.max_vertical_speed)
     assert np.allclose(state._last_sent_acceleration, 0.0)
 
@@ -2666,6 +5181,43 @@ def test_precland_only_publishes_target_and_observes_px4_landed_disarmed():
     state.armed = False
     MissionManagerNode._tick(state)
     assert state.state == 'DONE'
+
+
+def test_ground_contact_is_a_one_way_boundary_even_without_a_metric_snapshot():
+    published = []
+    forbidden = lambda *_: (_ for _ in ()).throw(
+        AssertionError('flight or reacquisition command issued after contact'))
+    state = SimpleNamespace(
+        k=0,
+        state='PRECLAND',
+        state_pub=SimpleNamespace(publish=lambda _: None),
+        p_d=np.zeros(3),
+        cue=None,
+        landed=False,
+        armed=True,
+        _touchdown_metric_recorded=False,
+        _touchdown_metric_candidate=None,
+        _ground_contact_seen=False,
+        _publish_landing_target=lambda: published.append(True) or False,
+        _recover_precland=forbidden,
+        _ocm=forbidden,
+        _send=forbidden,
+        _send_goto=forbidden,
+        _cmd=forbidden,
+    )
+
+    contact = VehicleLandDetected()
+    contact.ground_contact = True
+    MissionManagerNode._on_land(state, contact)
+    assert state._ground_contact_seen
+    assert state._touchdown_metric_candidate is None
+
+    contact.ground_contact = False
+    MissionManagerNode._on_land(state, contact)
+    assert state._ground_contact_seen
+    MissionManagerNode._tick(state)
+    assert published == [True]
+    assert state.state == 'PRECLAND'
 
 
 def test_experiment_metrics_use_first_confirmed_ground_contact_segment():
@@ -2731,6 +5283,16 @@ def test_experiment_metrics_use_first_confirmed_ground_contact_segment():
     assert state._mpc_solve_count == 2
     assert np.isclose(state._mpc_solve_total_s, 0.005)
     assert np.isclose(state._mpc_solve_max_s, 0.003)
+
+    logs = []
+    state.get_logger = lambda: SimpleNamespace(info=logs.append)
+    MissionManagerNode._log_experiment_metrics(state, final=False)
+    assert 'mpc_count=2' in logs[-1]
+    assert 'mpc_total_ms=5' in logs[-1]
+    assert not hasattr(state, '_experiment_metrics_logged')
+    MissionManagerNode._log_experiment_metrics(state)
+    MissionManagerNode._log_experiment_metrics(state)
+    assert len(logs) == 2
 
 
 def test_trailer_cue_publishes_each_gazebo_update_once():
