@@ -30,6 +30,29 @@ The fix for that pad is to stop straddling the threshold: EKF2_REQ_SACC is now
 1.0 m/s on the vehicle, and DEFAULT_SPEED_ACC_MAX below mirrors it. Both have to
 move together — see the comment on that constant.
 
+ONE FLAG, THREE CAUSES
+----------------------
+The reading above — const_pos_mode means GNSS is unfused — is only true of one
+of the three things PX4 raises that flag for. In v1.18
+(ekf_helper.cpp, get_ekf_soln_status):
+
+    const_pos_mode = fake_pos || valid_fake_pos || vehicle_at_rest
+
+`vehicle_at_rest` is the land detector's at_rest, fed in from control.cpp. It
+says the airframe is not moving. It says NOTHING about aiding — and a preflight
+runs, by definition, on an airframe that is not moving. Refusing on the raw flag
+therefore refuses every preflight on this firmware, which is what it did:
+
+    fix_type 4 (DGPS), 17 sats, vel_acc 0.48 m/s, h_acc 2.2 m
+    const_pos_mode        true      (vehicle_at_rest — parked on the pad)
+    velocity_horiz        true      \
+    pos_horiz_abs         true       > GNSS demonstrably being fused
+    pred_pos_horiz_abs    true      /
+
+So the flag is read together with the aiding flags rather than alone. A real
+fake_pos fallback drops velocity_horiz and pos_horiz_abs — that is the pad state
+at the top of this file, and it still blocks. A parked, fully aided EKF does not.
+
 So this module answers one question — can PX4 hold position right now? — from
 telemetry the node already receives, and answers it BEFORE the operator is
 asked to approve an arm that cannot succeed.
@@ -142,7 +165,13 @@ class EstimatorHealth:
     def blocking_reason(self, t: float) -> str | None:
         """Why the vehicle provably cannot hold position, or None."""
         if self.status_fresh(t):
-            if self.const_pos_mode:
+            # const_pos_mode ALONE IS NOT EVIDENCE. See ONE FLAG, THREE CAUSES
+            # above: on PX4 v1.18 it is also raised for a vehicle merely sitting
+            # still, so a preflight that refuses on it refuses every preflight.
+            # The aiding flags are what separate a real fake_pos fallback from a
+            # parked-but-perfectly-aided EKF, so they qualify it here.
+            if self.const_pos_mode and not (self.velocity_horiz
+                                            and self.pos_horiz_abs):
                 return ('EKF is in CONSTANT-POSITION mode — it is NOT fusing '
                         'GNSS, so the local position is dead reckoning and PX4 '
                         'will refuse OFFBOARD with "GPS speed accuracy". '

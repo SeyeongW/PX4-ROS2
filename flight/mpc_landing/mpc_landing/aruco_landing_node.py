@@ -630,7 +630,20 @@ class ArucoLandingNode(Node):
         p('route_state_timeout_s', 0.2)
         # Reject an unusable absolute fix without reinterpreting the geometric
         # vehicle clearance as a second localization or speed budget.
-        p('route_max_horizontal_accuracy_m', 0.4)
+        #
+        # 3.0 m, NOT the 0.4 m this started as. 0.4 assumed RTK fixed; the
+        # airframe flies DGPS and reports h_acc 2.2 m on a good pad with 17
+        # sats, so 0.4 refused every flight and a limit that always refuses
+        # teaches the operator to route around it. 3.0 clears the measured
+        # spread with margin and still catches a fix that has actually degraded.
+        #
+        # WHAT THIS COSTS: 3.0 m is LARGER than the 1.0 m vehicle_clearance_xy_m
+        # the planner keeps from the CJU barriers, so the route geometry no
+        # longer guarantees separation on its own — at this accuracy the
+        # obstacle margin is the operator watching, not the map. Fly it with
+        # visual separation, and put this back near the clearance if the
+        # airframe ever gets RTK.
+        p('route_max_horizontal_accuracy_m', 3.0)
         # Route anchoring uses one local-pose/global-fix pair. Refuse a pair
         # whose callback times are too far apart while the vehicle is moving.
         p('route_pose_fix_sync_s', 0.10)
@@ -1680,10 +1693,15 @@ class ArucoLandingNode(Node):
         now = self._now()
         if not self.ekf.status_fresh(now):
             return 'MAVROS estimator status is missing or stale'
-        if self.ekf.const_pos_mode:
-            return 'PX4 EKF is in constant-position mode'
         if not self.ekf.velocity_horiz or not self.ekf.pos_horiz_abs:
             return 'PX4 EKF has no absolute horizontal position aiding'
+        # Ordered AFTER the aiding flags on purpose: PX4 v1.18 raises
+        # const_pos_mode for a vehicle at rest as well as for a real fake_pos
+        # fallback (estimator.py), so on its own it would ground every preflight
+        # — a route check runs first while the vehicle is parked. Once the aiding
+        # flags are good the only remaining cause is a genuine fallback.
+        if self.ekf.const_pos_mode:
+            return 'PX4 EKF is in constant-position mode'
         if self.ekf.gps_glitch:
             return 'PX4 EKF reports a GPS glitch'
         if not self.ekf.gps_fresh(now):
