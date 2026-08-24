@@ -2,7 +2,18 @@
 # Watch the mission from the ground station: the virtual obstacle field, the
 # route it planned, and the track it actually flew.
 #
+#   jetson        # the shell that can see the aircraft (or `sitl`)
 #   ./run_viz
+#
+# THIS RUNS ON THE PC, NOT ON THE JETSON. The Jetson publishes; this subscribes.
+# Putting a 3D viewer on the flight computer would take cores from the detector,
+# which is the one process on that machine that cannot be late — and the whole
+# reason the DDS profile in config/jetson_dds_fastdds.sh exists is so the ground
+# station can watch without being on board.
+#
+# Nothing from this repo needs to be BUILT here: every topic it draws is a
+# standard message type, so the .rviz file next to this script is the only
+# repo file involved.
 #
 # Everything drawn here comes from the mission node's own /mission/* topics and
 # the TF chain landing_tf_node publishes, so this needs no simulator and no
@@ -19,9 +30,13 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG="$SCRIPT_DIR/rviz/cju_mission.rviz"
 
+# Deliberately NOT sourcing flight_env.sh as a fallback: that file is the
+# JETSON's environment (its workspace overlay and its discovery-server profile),
+# and quietly applying it here would be this script choosing a DDS mode two
+# paragraphs after promising not to.
 if ! command -v ros2 >/dev/null 2>&1; then
-  # shellcheck disable=SC1091
-  source "$SCRIPT_DIR/flight_env.sh"
+  echo "run_viz: no ros2 on PATH — source /opt/ros/humble/setup.bash first" >&2
+  exit 1
 fi
 if ! command -v rviz2 >/dev/null 2>&1; then
   echo "run_viz: rviz2 is not on PATH — sudo apt install ros-humble-rviz2" >&2
