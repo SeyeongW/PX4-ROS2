@@ -40,6 +40,10 @@ class RouteMapInfo:
     hardware_flight_approved: bool
     vehicle_clearance_m: float
     mission_goal_xy: tuple[float, float]
+    # True for an obstacle-free, drone-relative field map: the map origin is the
+    # vehicle's own local ENU origin (0, 0), so no WGS84 survey is needed and the
+    # hardware node anchors the map on the drone rather than on a fixed site.
+    drone_relative: bool = False
 
 
 @dataclass(frozen=True)
@@ -122,10 +126,19 @@ def route_map_info(map_yaml: str) -> RouteMapInfo:
     document = _document(str(map_yaml))
     site = document['site']
     mission = document['mission']
-    origin = _finite_vector('site.origin_wgs84', site['origin_wgs84'], 2)
-    if not (-90.0 <= origin[0] <= 90.0
-            and -180.0 <= origin[1] <= 180.0):
-        raise ValueError('site.origin_wgs84 is outside latitude/longitude bounds')
+    # A drone-relative map has no fixed WGS84 site: the map origin is wherever
+    # the vehicle launches, expressed as (0, 0) in its own local ENU frame. The
+    # origin_wgs84 field is then optional and, if absent, defaults to (0, 0) so
+    # that origin_lat/origin_lon stay finite for any caller that reads them.
+    drone_relative = site.get('drone_relative', False) is True
+    if drone_relative and 'origin_wgs84' not in site:
+        origin = np.zeros(2)
+    else:
+        origin = _finite_vector('site.origin_wgs84', site['origin_wgs84'], 2)
+        if not (-90.0 <= origin[0] <= 90.0
+                and -180.0 <= origin[1] <= 180.0):
+            raise ValueError(
+                'site.origin_wgs84 is outside latitude/longitude bounds')
     heading = float(site['heading_deg_enu'])
     rotation_for_heading(heading)
     goal = _finite_vector('mission.goal_m', mission['goal_m'], 2)
@@ -143,6 +156,7 @@ def route_map_info(map_yaml: str) -> RouteMapInfo:
             'mission.vehicle_clearance_xy_m',
             mission['vehicle_clearance_xy_m']),
         mission_goal_xy=(float(goal[0]), float(goal[1])),
+        drone_relative=drone_relative,
     )
 
 

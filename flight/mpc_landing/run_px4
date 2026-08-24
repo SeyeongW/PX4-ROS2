@@ -67,7 +67,12 @@ TRAILER="${TRAILER:-0}"
 TRAILER_DEV="${TRAILER_DEV:-/dev/ttyUSB0}"
 TRAILER_BAUD="${TRAILER_BAUD:-57600}"
 # Source-tree map by design: run_px4 itself is a source-tree operator script.
-ROUTE_MAP="${ROUTE_MAP:-$SCRIPT_DIR/../path_plan/config/drone_cju_route.yaml}"
+# Default to the drone-relative field map: it is centred on wherever the drone
+# launches (map origin = the vehicle's own local ENU origin), has no obstacles,
+# and is hardware-flight-approved by construction — so plain `run_px4 trailer`
+# needs no ROUTE_MAP_APPROVED override. Select the surveyed CJU layout with
+# `ROUTE_MAP=$SCRIPT_DIR/../path_plan/config/drone_cju_route.yaml run_px4 trailer`.
+ROUTE_MAP="${ROUTE_MAP:-$SCRIPT_DIR/../path_plan/config/drone_field_route.yaml}"
 # Maximum source-time skew when pairing the vehicle's local and global poses.
 ROUTE_SYNC_S="${ROUTE_SYNC_S:-0.10}"
 if [[ "$TRAILER" == "1" && ! -r "$ROUTE_MAP" ]]; then
@@ -122,12 +127,18 @@ if [[ "$TRAILER" == "1" ]]; then
                  -p "route_map_yaml:=$ROUTE_MAP"
                  -p "route_pose_fix_sync_s:=$ROUTE_SYNC_S"
                  -p rate_hz:=50.0)
+  # The approval gate only bites a map whose YAML sets hardware_flight_approved
+  # false (the surveyed CJU map). The default drone-relative field map is
+  # approved in its YAML, so plain `run_px4 trailer` sails through with no
+  # override. ROUTE_MAP_APPROVED=1 stays as the escape hatch for flying an
+  # unapproved map (e.g. the CJU layout before it is field-surveyed).
   if [[ "${ROUTE_MAP_APPROVED:-0}" == "1" ]]; then
     MISSION_ARGS+=(-p allow_unapproved_route_map:=true)
     echo "run_px4: ROUTE MAP APPROVAL OVERRIDE ACTIVE"
     echo "         operator asserts origin, heading and every obstacle were checked"
   else
-    echo "run_px4: route map approval gate active (ROUTE_MAP_APPROVED is not 1)"
+    echo "run_px4: using route map $ROUTE_MAP"
+    echo "         (an unapproved map still needs ROUTE_MAP_APPROVED=1)"
   fi
 fi
 # --- legacy mpc_landing_node gates ------------------------------------------

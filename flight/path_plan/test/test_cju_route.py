@@ -18,6 +18,8 @@ from path_plan.cju_route import (
 
 
 MAP = str(Path(__file__).parents[1] / 'config' / 'drone_cju_route.yaml')
+FIELD_MAP = str(
+    Path(__file__).parents[1] / 'config' / 'drone_field_route.yaml')
 
 
 def _fixture():
@@ -79,6 +81,35 @@ def test_real_map_route_is_exact_safe_and_preserves_endpoints():
     assert np.all(np.diff(plan.arc_m) > 0.0)
     assert all(segment_is_free(
         MAP, origin, a, b)
+               for a, b in zip(
+                   plan.path_local_xy[:-1], plan.path_local_xy[1:]))
+
+
+def test_drone_relative_field_map_is_approved_and_origin_free():
+    info = route_map_info(FIELD_MAP)
+    assert info.drone_relative
+    # Approved by construction, and the map origin is the vehicle's own local
+    # ENU origin, so origin_lat/origin_lon default to a finite (0, 0).
+    assert info.hardware_flight_approved
+    assert info.heading_deg_enu == pytest.approx(0.0)
+    assert info.origin_lat == pytest.approx(0.0)
+    assert info.origin_lon == pytest.approx(0.0)
+    assert info.mission_goal_xy == (50.0, 50.0)
+    assert not route_map_info(MAP).drone_relative
+
+
+def test_drone_relative_field_route_is_an_obstacle_free_straight_shot():
+    # Map origin (0, 0) is the launch point; heading 0 makes map == local ENU.
+    origin = np.zeros(2)
+    start = np.zeros(2)
+    goal = np.array([50.0, 50.0])
+    # No obstacles between launch and goal.
+    assert segment_is_free(FIELD_MAP, origin, start, goal)
+    plan = plan_route(FIELD_MAP, start, goal, origin)
+    assert np.allclose(plan.path_local_xy[0], start, atol=1.0e-6)
+    assert np.allclose(plan.path_local_xy[-1], goal, atol=1.0e-6)
+    assert np.all(np.diff(plan.arc_m) > 0.0)
+    assert all(segment_is_free(FIELD_MAP, origin, a, b)
                for a, b in zip(
                    plan.path_local_xy[:-1], plan.path_local_xy[1:]))
 
