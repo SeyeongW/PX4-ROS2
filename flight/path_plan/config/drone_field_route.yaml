@@ -1,35 +1,41 @@
-# Drone-relative, obstacle-free field map for `run_px4 trailer`.
+# Drone-relative OBSTACLE field for `run_px4 trailer`.
 #
-# Unlike drone_cju_route.yaml, this map is NOT pinned to a surveyed WGS84 site.
-# `drone_relative: true` tells the hardware node to place the map origin at the
-# vehicle's own local ENU origin (0, 0) — so wherever the drone launches, the
-# map is automatically centred on the drone. No GPS survey, no fixed lat/lon,
-# and no anchor drift from real GPS/pose jitter.
+# Purpose: a props-on demonstration of fast obstacle avoidance while tracking a
+# dynamic target (the trailer). The obstacles are virtual — they exist only in
+# this map and in RViz, not physically in the field — so a "collision" is
+# harmless and the hardware approval gate can stay off. But they are REAL to the
+# planner: A* -> SFC -> B-spline routes around them and the RViz markers show the
+# drone weaving through the field it is avoiding.
 #
-# There are no obstacles: the mission flies a straight A* -> B-spline route from
-# the launch point to the goal and then hunts the ArUco marker. This map is
-# approved for props-on use by construction — an empty, drone-centred field has
-# nothing to collide with (the barriers only ever existed in the CJU
-# simulation). Keep drone_cju_route.yaml for the surveyed CJU layout; select it
-# with `ROUTE_MAP=.../drone_cju_route.yaml run_px4 trailer`.
+# Unlike drone_cju_route.yaml this map is NOT pinned to a surveyed WGS84 site.
+# `drone_relative: true` places the map origin at the vehicle's own local ENU
+# origin (0, 0), so the whole obstacle field is auto-centred on wherever the
+# drone launches — no GPS survey, no fixed lat/lon, and no anchor drift from
+# real GPS/pose jitter. heading 0 aligns the map frame with the vehicle's local
+# ENU, so an obstacle at map (33, 10) sits 33 m east and 10 m north of launch.
+#
+# Launch is map (0, 0); the goal is (50, 50); the barriers lie between them, so
+# the straight line is blocked and the planner must swerve. Select the surveyed
+# CJU layout instead with
+# `ROUTE_MAP=.../drone_cju_route.yaml run_px4 trailer`.
 schema_version: 1
 
 site:
-  name: Drone-relative field (auto-centred on launch)
+  name: Drone-relative obstacle field (auto-centred on launch)
   coordinate_frame: field
-  # drone_relative maps carry no fixed WGS84 origin; the vehicle's launch point
-  # is the origin. heading 0 aligns the map frame with the vehicle's local ENU.
   drone_relative: true
   heading_deg_enu: 0.0
   horizontal_accuracy: drone_relative_local_enu
+  # Virtual obstacles: a simulated collision breaks nothing, so props-on is
+  # approved here even though the field is not a surveyed site.
   hardware_flight_approved: true
 
 terrain:
   coordinate_frame: field
-  # Centred between launch (0, 0) and goal (50, 50), large enough that both sit
-  # well inside the clearance-shrunk bounds.
+  # Centred between launch (0, 0) and goal (50, 50), large enough to hold both
+  # and every barrier well inside the clearance-shrunk bounds.
   center_m: [25, 25]
-  size_m: [200, 200]
+  size_m: [160, 160]
 
 mission:
   coordinate_frame: field
@@ -39,4 +45,31 @@ mission:
   vehicle_clearance_xy_m: 1.0
   bspline_control_spacing_m: 1.0
   bspline_sample_spacing_m: 0.1
-  obstacles: []
+  # The virtual barrier field to weave through, relative to the launch point.
+  # Same layout as the CJU simulation map, re-anchored on the drone.
+  obstacles:
+    - {name: barrier_1, center_m: [33, 10, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_2, center_m: [18, 39, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_3, center_m: [21, 25, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_4, center_m: [49, 41, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_5, center_m: [31, 36, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_6, center_m: [45, 12, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_7, center_m: [39, 21, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_8, center_m: [42, 51, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_9, center_m: [17, 18, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_10, center_m: [22, 33, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_11, center_m: [44, 33, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_12, center_m: [24, 14, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_13, center_m: [39, 0, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_14, center_m: [30, 23, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_15, center_m: [49, 4, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_16, center_m: [21, 3, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_17, center_m: [15, 34, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_18, center_m: [42, 41, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_19, center_m: [35, 49, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_20, center_m: [28, 46, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_21, center_m: [12, 48, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_22, center_m: [50, 23, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_23, center_m: [12, 8, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_24, center_m: [30, 1, 5], size_m: [0.45, 0.35, 10]}
+    - {name: barrier_25, center_m: [12, 25, 5], size_m: [0.45, 0.35, 10]}

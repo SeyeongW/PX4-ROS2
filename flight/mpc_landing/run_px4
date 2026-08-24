@@ -67,10 +67,12 @@ TRAILER="${TRAILER:-0}"
 TRAILER_DEV="${TRAILER_DEV:-/dev/ttyUSB0}"
 TRAILER_BAUD="${TRAILER_BAUD:-57600}"
 # Source-tree map by design: run_px4 itself is a source-tree operator script.
-# Default to the drone-relative field map: it is centred on wherever the drone
-# launches (map origin = the vehicle's own local ENU origin), has no obstacles,
-# and is hardware-flight-approved by construction — so plain `run_px4 trailer`
-# needs no ROUTE_MAP_APPROVED override. Select the surveyed CJU layout with
+# Default to the drone-relative obstacle field: it is centred on wherever the
+# drone launches (map origin = the vehicle's own local ENU origin) and carries a
+# virtual barrier field to weave through for the avoidance demo. The barriers
+# are virtual (a simulated collision breaks nothing), so it is hardware-flight-
+# approved by construction — plain `run_px4 trailer` needs no ROUTE_MAP_APPROVED
+# override. Select the surveyed CJU layout with
 # `ROUTE_MAP=$SCRIPT_DIR/../path_plan/config/drone_cju_route.yaml run_px4 trailer`.
 ROUTE_MAP="${ROUTE_MAP:-$SCRIPT_DIR/../path_plan/config/drone_field_route.yaml}"
 # Maximum source-time skew when pairing the vehicle's local and global poses.
