@@ -1283,6 +1283,29 @@ class ArucoLandingNode(Node):
     def _target_range(self) -> float:
         return self._range_to(self.target)
 
+    def _reached_last_trailer_coordinate(self) -> bool:
+        """True once the vehicle is over the LAST-known trailer coordinate.
+
+        Freshness-independent, unlike `_route_arrival_safe`: it is asked during a
+        coordinate dropout, when there is deliberately no fresh target. Planned
+        cruise still requires the last exact chord to be map-safe; a legacy
+        direct cruise has no map and checks range only.
+        """
+        if self.pose is None or self.target is None:
+            return False
+        if self._range_to(self.target[:2]) > self.cruise_arrive:
+            return False
+        if not self.planned_cruise:
+            return True
+        current = np.array([
+            self.pose.pose.position.x, self.pose.pose.position.y], float)
+        origin = (self._route_active[1] if self._route_active is not None
+                  else self._route_synchronized_site_origin())
+        if origin is None:
+            return False
+        return self._route_lib.segment_is_free(
+            self.route_map_yaml, origin, current, self.target[:2])
+
     def _on_ground(self) -> bool:
         """True once the vehicle has actually settled — never a geometric guess."""
         if self.state and not self.state.armed:
@@ -2823,7 +2846,7 @@ class ArucoLandingNode(Node):
         if not self._fresh_target():
             gone = (self._now() - self.target_t) if self.target is not None \
                 else elapsed
-            if gone > self.trailer_lost_search:
+            if gone > self.trailer_lost_search or self.target is None:
                 if self.planned_cruise:
                     self.get_logger().warn(
                         f'trailer target lost for {gone:.1f} s during planned '
@@ -2835,8 +2858,37 @@ class ArucoLandingNode(Node):
                         f'trailer target lost for {gone:.1f} s during cruise — '
                         f'searching for the marker from here')
                     self._to(Phase.SEARCH)
+                return
+            # Brief dropout: the radio paused but the last coordinate is still
+            # the best estimate of where the trailer is, so keep going to it
+            # rather than freezing. The route planned to it stays exact-safe —
+            # the follower needs no fresh target — so a planned cruise keeps
+            # tracking that route; a legacy cruise flies straight at the last
+            # point. Arrive there, then let SEARCH's camera take over.
+            if self._reached_last_trailer_coordinate():
+                self._hold()
+                self.get_logger().info(
+                    f'reached the last trailer coordinate during a {gone:.1f} s '
+                    'dropout — searching for the marker')
+                self._to(Phase.SEARCH)
+                return
+            vz = float(np.clip(self._takeoff_target() - self._alt(),
+                               -self.climb_speed, self.climb_speed))
+            if self.planned_cruise and self._route_active is not None:
+                commanded, _ = self._route_mpc_command()
+                if not commanded:
+                    self._hold(vz)
+            elif not self.planned_cruise:
+                self._fly_to(self.target, kp=self.cruise_kp,
+                             v_max=self.cruise_v_max, vz=vz)
             else:
-                self._hold()      # brief dropout: stop, wait for the coordinate
+                # Planned cruise with no active route yet: hold rather than fly
+                # a straight line the map never certified.
+                self._hold(vz)
+            self.get_logger().warn(
+                f'trailer coordinate paused {gone:.1f} s ago — continuing to its '
+                f'last position, {self._target_range():.1f} m to go',
+                throttle_duration_sec=3.0)
             return
 
         timeout = self.route_timeout if self.planned_cruise else self.cruise_timeout

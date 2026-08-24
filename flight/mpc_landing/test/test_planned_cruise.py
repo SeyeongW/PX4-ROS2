@@ -83,6 +83,11 @@ def _cruise_state(*, planned, fresh=True):
         _due=lambda *_args: False,
         _to=lambda phase: calls.append(('phase', phase)),
         get_logger=lambda: logger,
+        # A brief-dropout continuation needs the last route and a way to test
+        # arrival at the last coordinate; default to "have a route, not there
+        # yet" so the fresh-target tests above are unaffected.
+        _route_active=(object(), np.zeros(2), np.array([20.0, 0.0]), 1, 0.0),
+        _reached_last_trailer_coordinate=lambda: False,
     )
     return state, calls
 
@@ -107,6 +112,49 @@ def test_planned_cruise_does_not_search_from_an_uncertified_lost_position():
     ArucoLandingNode._cruise_to_trailer(state)
     assert ('phase', Phase.LAND) in calls
     assert ('phase', Phase.SEARCH) not in calls
+
+
+def test_brief_dropout_keeps_flying_the_route_to_the_last_coordinate():
+    # Coordinate paused 2 s ago (< trailer_lost_search): do NOT freeze or land,
+    # keep tracking the route planned to the last-known trailer position.
+    state, calls = _cruise_state(planned=True, fresh=False)
+    state._now = lambda: 2.0
+    ArucoLandingNode._cruise_to_trailer(state)
+    assert any(call[0] == 'tracking_mpc' for call in calls)
+    assert ('phase', Phase.LAND) not in calls
+    assert ('phase', Phase.SEARCH) not in calls
+
+
+def test_brief_dropout_searches_once_over_the_last_coordinate():
+    # Same dropout, but already over the last coordinate: hand to SEARCH so the
+    # camera can acquire, instead of holding on a stale coordinate forever.
+    state, calls = _cruise_state(planned=True, fresh=False)
+    state._now = lambda: 2.0
+    state._reached_last_trailer_coordinate = lambda: True
+    ArucoLandingNode._cruise_to_trailer(state)
+    assert ('phase', Phase.SEARCH) in calls
+    assert ('phase', Phase.LAND) not in calls
+
+
+def test_legacy_cruise_flies_straight_to_the_last_coordinate_on_dropout():
+    # A legacy direct cruise has no route to follow, so it flies straight at the
+    # last-known coordinate rather than stopping.
+    state, calls = _cruise_state(planned=False, fresh=False)
+    state._now = lambda: 2.0
+    ArucoLandingNode._cruise_to_trailer(state)
+    assert any(call[0] == 'fly' for call in calls)
+    assert ('phase', Phase.LAND) not in calls
+    assert ('phase', Phase.SEARCH) not in calls
+
+
+def test_dropout_with_no_prior_coordinate_lands_or_searches():
+    # Never had a coordinate to remember: fall back to the lost-target handling
+    # (LAND under a planned cruise) rather than continuing to nowhere.
+    state, calls = _cruise_state(planned=True, fresh=False)
+    state.target = None
+    state._now = lambda: 2.0
+    ArucoLandingNode._cruise_to_trailer(state)
+    assert ('phase', Phase.LAND) in calls
 
 
 def test_route_timeout_is_separate_from_the_proven_trailer_timeout():
