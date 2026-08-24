@@ -202,7 +202,6 @@ class MPCNode(Node):
     def _control_tick(self):
         if not self._have_state or self._traj_p is None or len(self._traj_p) < 2:
             return
-        t0 = time.perf_counter()
         ref_p, ref_v, tangent = self._reference_horizon()
         offset, scale = depth_avoidance_offset(
             self._depth, tangent, self.trigger_m, self.emergency_m, self.lateral_m)
@@ -226,7 +225,9 @@ class MPCNode(Node):
             g = float(np.linalg.norm(gap))
             state_v = (self._vel + gap * (self.cmd_lead_max / g)
                        if g > self.cmd_lead_max else self._cmd_v)
+            solve_started = time.perf_counter()
             result = self.tmpc.solve(self._pos, state_v, ref_p, ref_v)
+            solve_ms = (time.perf_counter() - solve_started) * 1e3
             v_target = np.clip(result.predicted_vel[0], -vmax, vmax)
             # Jerk-limit the command: bound how fast its slope (acceleration = pitch)
             # can change, so the velocity command is C1-smooth and the pitch doesn't
@@ -242,16 +243,19 @@ class MPCNode(Node):
             preview3d = result.predicted_pos
         elif self.controller == "pursuit":
             vx, vy, vz, yaw_rate, preview3d = self._holonomic_cmd(ref_p, scale)
+            solve_ms = None
         else:                                        # unicycle (mpc_ros)
+            solve_started = time.perf_counter()
             result = self.mpc.solve(self._pos, self._yaw, self._speed,
                                     self._pos[2], ref_p)
+            solve_ms = (time.perf_counter() - solve_started) * 1e3
             vx, vy, vz = map(float, result.velocity_world)
             yaw_rate = float(result.yaw_rate)
             preview3d = np.column_stack(
                 [result.predicted_xy,
                  np.full(len(result.predicted_xy), self._pos[2])])
-        solve_ms = (time.perf_counter() - t0) * 1e3
-        self.stats_pub.publish(Float32MultiArray(data=[float(solve_ms)]))
+        if solve_ms is not None:
+            self.stats_pub.publish(Float32MultiArray(data=[float(solve_ms)]))
 
         cmd = TwistStamped()
         cmd.header.frame_id = FRAME

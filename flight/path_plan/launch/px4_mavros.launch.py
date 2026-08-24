@@ -143,4 +143,14 @@ def generate_launch_description():
             name="flight_logger", output="screen",
             parameters=[{"map_yaml": map_yaml}],
         ),
+        Node(
+            package="path_plan", executable="experiment_logger",
+            name="experiment_logger", output="screen",
+            parameters=[{
+                "map_yaml": map_yaml,
+                "pose_source": "path_plan_odometry",
+                "pose_is_map_frame": True,
+                "state_topic": "/path_plan/flight_phase",
+            }],
+        ),
     ])

@@ -67,7 +67,7 @@ class AStarNode(Node):
         # Compute metrics for the flight report: [plan_time_s, expanded_nodes,
         # n_waypoints] published once per replan.
         self.stats_pub = self.create_publisher(
-            Float32MultiArray, "/path_plan/astar_stats", 10)
+            Float32MultiArray, "/path_plan/astar_stats", _LATCHED)
         self.create_subscription(PoseStamped, "~/goal", self._on_goal, 10)
         self.create_subscription(PoseStamped, "~/start", self._on_start, 10)
         # Coalesced replan: start and goal arrive as two separate messages (the

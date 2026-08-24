@@ -35,6 +35,7 @@ setup(
             "trailer_loop_driver = path_plan.trailer_loop_driver:main",
             "moving_land_node = path_plan.moving_land_node:main",
             "flight_logger = path_plan.flight_logger:main",
+            "experiment_logger = path_plan.experiment_logger:main",
             "building_markers = path_plan.building_markers:main",
         ],
     },

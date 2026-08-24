@@ -1,3 +1,4 @@
+import math
 from pathlib import Path
 
 import numpy as np
@@ -66,6 +67,13 @@ def test_real_map_route_is_exact_safe_and_preserves_endpoints():
     assert not segment_is_free(MAP, origin, start, goal)
 
     plan = plan_route(MAP, start, goal, origin)
+    assert math.isfinite(plan.astar_plan_time_s)
+    assert plan.astar_plan_time_s >= 0.0
+    assert math.isfinite(plan.sfc_generation_time_s)
+    assert plan.sfc_generation_time_s >= 0.0
+    assert plan.sfc_boxes_min.shape == plan.sfc_boxes_max.shape
+    assert plan.sfc_boxes_min.shape[1] == 3
+    assert len(plan.sfc_boxes_min) > 0
     assert np.allclose(plan.path_local_xy[0], start, atol=1.0e-6)
     assert np.allclose(plan.path_local_xy[-1], goal, atol=1.0e-6)
     assert np.all(np.diff(plan.arc_m) > 0.0)

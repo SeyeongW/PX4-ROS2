@@ -18,6 +18,7 @@ still hits an obstacle, refresh the offending control points' free boxes at the
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 
 import numpy as np
@@ -40,6 +41,8 @@ class OptimizeResult:
     solver_status: int = 0
     solver_message: str = ''
     solution_finite: bool = True
+    # Observation metadata only; this value never enters a cost or gate.
+    sfc_generation_time_s: float = 0.0
 
     @property
     def accepted(self) -> bool:
@@ -214,7 +217,9 @@ class BsplineOptimizer:
         q[-self.p:] = wp[-1]
 
         ref = self._resample(wp, n)                           # guide per ctrl pt
+        sfc_started = time.perf_counter()
         corridor = self.sfc.boxes_for_points(ref)             # free box per ctrl pt
+        sfc_generation_time_s = time.perf_counter() - sfc_started
 
         free_idx = np.arange(self.p, n - self.p)
         l_dist = self.l_dist0
@@ -227,7 +232,8 @@ class BsplineOptimizer:
         def output(spline, collision_free, free_fraction):
             return OptimizeResult(
                 spline, corridor, ref, iters, collision_free, free_fraction,
-                solver_success, solver_status, solver_message, solution_finite)
+                solver_success, solver_status, solver_message, solution_finite,
+                sfc_generation_time_s)
 
         for iters in range(1, self.max_rebound + 1):
             previous = q
@@ -253,7 +259,9 @@ class BsplineOptimizer:
             if collision_free:
                 return output(spline, True, frac)
             # rebound: refresh boxes for control points near collisions, raise λ2
+            sfc_started = time.perf_counter()
             self._refresh_boxes(corridor, q, ref)
+            sfc_generation_time_s += time.perf_counter() - sfc_started
             l_dist *= self.dist_growth
         spline = UniformBspline(q, ts)
         collision_free, frac = self._collision_status(

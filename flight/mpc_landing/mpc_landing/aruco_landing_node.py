@@ -155,6 +155,7 @@ import queue
 import signal
 import sys
 import threading
+import time
 from concurrent.futures import ProcessPoolExecutor
 from enum import Enum
 from pathlib import Path
@@ -169,7 +170,8 @@ from rclpy.qos import (DurabilityPolicy, HistoryPolicy, QoSProfile,
                        ReliabilityPolicy)
 from nav_msgs.msg import Path as PathMsg      # `Path` here is pathlib's
 from sensor_msgs.msg import BatteryState, NavSatFix, NavSatStatus
-from std_msgs.msg import Bool, ColorRGBA, Float32, String
+from std_msgs.msg import (Bool, ColorRGBA, Float32, Float32MultiArray,
+                          String)
 from visualization_msgs.msg import Marker, MarkerArray
 from std_srvs.srv import Trigger
 
@@ -186,6 +188,7 @@ from .estimator import DEFAULT_SPEED_ACC_MAX, EstimatorHealth
 # wrong in only one place.
 from .marker import (GimbalSweep, VelocityEstimate, enu_yaw_from_quaternion,
                      gimbal_aim_for, marker_enu_from_gimbal_camera)
+from path_plan.ros_msgs import corridor_to_msg
 
 
 def _planner_worker_init() -> None:
@@ -248,6 +251,17 @@ def _sensor_qos() -> QoSProfile:
     return QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT,
                       durability=DurabilityPolicy.VOLATILE,
                       history=HistoryPolicy.KEEP_LAST, depth=5)
+
+
+def _publish_observation(node, publisher_name: str, message) -> None:
+    """Publish telemetry without ever changing the flight-control result."""
+    publisher = getattr(node, publisher_name, None)
+    if publisher is None:
+        return
+    try:
+        publisher.publish(message)
+    except Exception:
+        pass
 
 
 class ArucoLandingNode(Node):
@@ -432,6 +446,22 @@ class ArucoLandingNode(Node):
         self._viz_flown: list[tuple[float, float, float]] = []
         self._viz_route_seq = None
         self._viz_origin = None
+        # Observation-only outputs shared with Gazebo's existing experiment
+        # topics. Nothing in the mission subscribes to these publishers.
+        self.marker_position_pub = self.create_publisher(
+            PointStamped, '/marker/position', 10)
+        self.marker_velocity_pub = self.create_publisher(
+            Vector3Stamped, '/marker/velocity', 10)
+        self.route_path_pub = self.create_publisher(
+            Float32MultiArray, '/path_plan/active_path_xy', latched)
+        self.astar_stats_pub = self.create_publisher(
+            Float32MultiArray, '/path_plan/astar_stats', latched)
+        self.mpc_stats_pub = self.create_publisher(
+            Float32MultiArray, '/path_plan/mpc_stats', 10)
+        self.sfc_corridor_pub = self.create_publisher(
+            Float32MultiArray, '/path_plan/sfc_corridor', latched)
+        self.sfc_stats_pub = self.create_publisher(
+            Float32MultiArray, '/path_plan/sfc_stats', latched)
 
         self.mode_cli = self.create_client(SetMode, '/mavros/set_mode')
         self.arm_cli = self.create_client(CommandBool, '/mavros/cmd/arming')
@@ -982,6 +1012,19 @@ class ArucoLandingNode(Node):
         self.marker = p
         self.marker_t = now
         self._marker_seq += 1
+        try:
+            stamp = self.get_clock().now().to_msg()
+            marker = PointStamped()
+            marker.header.stamp, marker.header.frame_id = stamp, self.map_frame
+            marker.point.x, marker.point.y, marker.point.z = map(float, p)
+            _publish_observation(self, 'marker_position_pub', marker)
+            velocity = Vector3Stamped()
+            velocity.header.stamp, velocity.header.frame_id = stamp, self.map_frame
+            velocity.vector.x, velocity.vector.y = map(float, self.marker_vel.v)
+            velocity.vector.z = 0.0
+            _publish_observation(self, 'marker_velocity_pub', velocity)
+        except Exception:
+            pass
 
     def _on_target(self, m: PointStamped):
         """The trailer, already in local ENU — trailer_target_node did the geodesy.
@@ -1962,6 +2005,7 @@ class ArucoLandingNode(Node):
         if self._plan_future is not None and self._plan_future.done():
             future = self._plan_future
             pending = self._route_pending
+            route_observation = None
             self._plan_future = None
             self._route_pending = None
             try:
@@ -2001,6 +2045,7 @@ class ArucoLandingNode(Node):
                 self._route_progress = 0.0
                 self._reset_path_mpc()
                 self._route_last_error = ''
+                route_observation = (planned, joined)
                 self.get_logger().info(
                     f'route #{seq} certified: {joined.arc_m[-1]:.1f} m, '
                     f'{len(joined.path_local_xy)} points, '
@@ -2010,6 +2055,36 @@ class ArucoLandingNode(Node):
                 self.get_logger().error(
                     f'route rejected — HOLDING, never flying straight: {exc}',
                     throttle_duration_sec=2.0)
+
+            # Keep all ROS-message construction outside route acceptance. A
+            # telemetry failure must never turn a certified route into HOLD.
+            if route_observation is not None:
+                planned, joined = route_observation
+                try:
+                    _publish_observation(
+                        self, 'route_path_pub', Float32MultiArray(data=(
+                            np.asarray(joined.path_local_xy, np.float32)
+                            .reshape(-1).tolist())))
+                    _publish_observation(
+                        self, 'astar_stats_pub', Float32MultiArray(data=[
+                            float(planned.astar_plan_time_s),
+                            float(planned.expanded_nodes),
+                            float(len(joined.path_local_xy)),
+                        ]))
+                    low = np.asarray(planned.sfc_boxes_min, float)
+                    high = np.asarray(planned.sfc_boxes_max, float)
+                    widths = np.min(high[:, :2] - low[:, :2], axis=1)
+                    _publish_observation(
+                        self, 'sfc_corridor_pub',
+                        corridor_to_msg(low, high))
+                    _publish_observation(
+                        self, 'sfc_stats_pub', Float32MultiArray(data=[
+                            float(1000.0 * planned.sfc_generation_time_s),
+                            float(np.min(widths)), float(np.mean(widths)),
+                            float(len(widths)),
+                        ]))
+                except Exception:
+                    pass
 
         if (self.phase not in allowed or self._plan_future is not None
                 or self._planner_pool is None):
@@ -2143,10 +2218,18 @@ class ArucoLandingNode(Node):
                 output_step = min(
                     int(self._path_reference.lead / self._path_mpc.dt),
                     self._path_mpc.N - 1)
+                solve_started = time.perf_counter()
                 result = self._path_mpc.solve(
                     position, velocity, reference_p, reference_v,
                     applied_acceleration=self._last_mpc_acceleration,
                     output_step=output_step)
+                solve_ms = (time.perf_counter() - solve_started) * 1.0e3
+                try:
+                    _publish_observation(
+                        self, 'mpc_stats_pub', Float32MultiArray(
+                            data=[float(solve_ms)]))
+                except Exception:
+                    pass
             except Exception as exc:
                 self._route_last_error = f'TrackingMPC solve failed: {exc}'
                 self._reset_path_mpc()

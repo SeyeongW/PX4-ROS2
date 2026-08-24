@@ -248,6 +248,54 @@ J = Σ w_cte cte² + w_epsi epsi² + w_v (v−v_ref)²
 QP `X=Φx₀+ΓU`, `J=½UᵀHU+fᵀU` s.t. `|a|≤a_max, |v|≤v_max` (SLSQP with a velocity
 `LinearConstraint`). Holonomic (no heading), kept for comparison.
 
+## Experiment CSV logger
+
+`experiment_logger` is a read-only logger shared by the real-aircraft/CJU
+mission and the MAVROS/PX4 Gazebo profiles. `run_px4 trailer` and
+`px4_mavros.launch.py` start it automatically; it can also be run directly:
+
+```bash
+ros2 run path_plan experiment_logger --ros-args \
+  -p map_yaml:=/path/to/map.yaml \
+  -p output_dir:=~/px4_experiment_logs
+```
+
+It writes `<UTC timestamp>_timeseries.csv` and the matching
+`<UTC timestamp>_summary.csv`. The final integrated node exposes observation
+data on the same contracts already used by Gazebo:
+
+| Metric | Source / definition |
+|---|---|
+| path length | `/mavros/local_position/pose`, 3-D armed-flight accumulation |
+| tracking mean/max/RMSE | active B-spline path (`/path_plan/active_path_xy`, `/path_plan/trajectory_path`, or `/path_plan/trajectory`) to vehicle XY |
+| minimum clearance | pose + map YAML; vehicle centre to raw obstacle surface |
+| A* time / replans | `/path_plan/astar_stats = [plan_s, expanded, points]`; accepted plans after each leg's initial plan |
+| MPC solve time | `/path_plan/mpc_stats = [solve_ms]` |
+| SFC generation / width / count | actual optimizer corridor on `/path_plan/sfc_stats = [generation_ms, min_horizontal_width_m, avg_horizontal_width_m, box_count]` and `/path_plan/sfc_corridor` |
+| SFC violations | number of continuous TrackingMPC excursions outside the active corridor's horizontal box union; the safe replan splice is ignored until the vehicle first enters the new corridor |
+| ArUco detection rate | accepted/processed `/perception/down/aruco_detected` samples during SEARCH/ACQUIRE/DESCEND |
+| relative XY | `/marker/position` minus vehicle position during marker tracking |
+| landing XY | last fresh normal P-control→LAND vision handover error |
+| touchdown relative speed | fresh vehicle velocity minus fresh `/marker/velocity` at the onboard contact/DONE signal; blank if either estimate is stale |
+
+The real camera loses the marker before physical contact. Consequently the last
+two hardware values are labelled onboard/vision proxies in the summary; they
+are not external ground-truth measurements. Set unavailable metrics to blank,
+not zero.
+
+SFC width is `min(x_span, y_span)` per optimizer box; Z is deliberately excluded
+because the CJU route uses a geometry-only altitude band. Summary generation
+time is the mean per published/committed plan, minimum width is the run-wide minimum,
+average width is box-count weighted, and corridor count is the total number of
+boxes generated across published/committed plans. Native `run_gimbal.sh` has no A*/SFC
+cruise stage, so those fields remain blank there; the MAVROS/PX4 Gazebo path
+profile records them.
+
+`sfc_violation_count` is corridor-adherence telemetry, not a collision count.
+The optimizer's corridor term is soft, so a valid collision-free B-spline can
+still leave the union of its control-point boxes and correctly produce a
+non-zero value; a degenerate fallback box can likewise make minimum width zero.
+
 ---
 
 ## Known limitations

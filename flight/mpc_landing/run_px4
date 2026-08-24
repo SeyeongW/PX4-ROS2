@@ -21,6 +21,8 @@
 #                                             yourself; do not start a second
 #   ROUTE_MAP_APPROVED=1 ./run_px4 trailer    explicit field-map approval;
 #                                             never set this for an unmeasured map
+#   EXPERIMENT_LOG_DIR=... ./run_px4 trailer  CSV output directory (default:
+#                                             ~/px4_experiment_logs)
 #   GNSS_CHECK=on ./run_px4 mpc               put the GNSS preflight gate back
 #   GATES=all ./run_px4 mpc                   approve takeoff and search too,
 #                                             not just the arm (mpc only)
@@ -170,7 +172,7 @@ cleanup() {
   fi
   for pat in mavros_node aruco_landing_node mpc_landing_node naive_flight_node \
              aruco_pose_node gst_camera_node siyi_gimbal_node landing_tf_node \
-             trailer_target_node ${RADIO_PAT}; do
+             trailer_target_node experiment_logger ${RADIO_PAT}; do
     pkill -TERM -f "$pat" 2>/dev/null || true
   done
   sleep 1
@@ -252,6 +254,25 @@ if [[ -n "$MISSION_LAUNCH" ]]; then
     >/tmp/run_px4_stack.log 2>&1 &
   PIDS+=($!)
   sleep "$SETTLE"   # let the stack advertise before the node's preflight looks
+fi
+
+# Observation only: failure or absence of the logger never gates flight.
+if [[ "$TRAILER" == "1" ]]; then
+  LOGGER_ARGS=(--ros-args -p "map_yaml:=$ROUTE_MAP"
+               -p "pose_fix_sync_tolerance_s:=$ROUTE_SYNC_S")
+  if [[ -n "${EXPERIMENT_LOG_DIR:-}" ]]; then
+    LOGGER_ARGS+=(-p "output_dir:=$EXPERIMENT_LOG_DIR")
+  fi
+  ros2 run path_plan experiment_logger "${LOGGER_ARGS[@]}" \
+    >/tmp/run_px4_experiment_logger.log 2>&1 &
+  LOGGER_PID=$!
+  PIDS+=("$LOGGER_PID")
+  sleep 0.2
+  if kill -0 "$LOGGER_PID" 2>/dev/null; then
+    echo "run_px4: experiment logger started (default CSV dir: ~/px4_experiment_logs)"
+  else
+    echo "run_px4: WARNING: experiment logger failed; see /tmp/run_px4_experiment_logger.log" >&2
+  fi
 fi
 
 echo

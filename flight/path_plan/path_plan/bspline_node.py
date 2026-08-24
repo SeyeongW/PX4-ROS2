@@ -23,7 +23,8 @@ from std_msgs.msg import ColorRGBA, Float32MultiArray
 from visualization_msgs.msg import Marker, MarkerArray
 
 from .bspline_optimizer import BsplineOptimizer
-from .ros_msgs import FRAME, path_to_positions, positions_to_path, trajectory_to_msg
+from .ros_msgs import (FRAME, corridor_to_msg, path_to_positions,
+                       positions_to_path, trajectory_to_msg)
 from .world_model import WorldModel
 
 _LATCHED = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
@@ -64,6 +65,10 @@ class BSplineNode(Node):
         self.traj_pub = self.create_publisher(Float32MultiArray, "~/trajectory", _LATCHED)
         self.path_pub = self.create_publisher(Path, "~/trajectory_path", _LATCHED)
         self.marker_pub = self.create_publisher(MarkerArray, "~/corridor_markers", _LATCHED)
+        self.sfc_pub = self.create_publisher(
+            Float32MultiArray, "/path_plan/sfc_corridor", _LATCHED)
+        self.sfc_stats_pub = self.create_publisher(
+            Float32MultiArray, "/path_plan/sfc_stats", _LATCHED)
         self.create_subscription(Path, "~/global_path", self._on_path, _LATCHED)
         self.get_logger().info("ego-planner B-spline optimizer ready")
 
@@ -78,6 +83,23 @@ class BSplineNode(Node):
         self.path_pub.publish(positions_to_path(pos, stamp))
         self.marker_pub.publish(self._to_markers(result.corridor.boxes_min,
                                                  result.corridor.boxes_max))
+        try:
+            widths = np.min(
+                result.corridor.boxes_max[:, :2]
+                - result.corridor.boxes_min[:, :2], axis=1)
+            self.sfc_pub.publish(corridor_to_msg(
+                result.corridor.boxes_min, result.corridor.boxes_max))
+            self.sfc_stats_pub.publish(Float32MultiArray(data=[
+                float(1000.0 * result.sfc_generation_time_s),
+                float(np.min(widths)), float(np.mean(widths)),
+                float(len(widths)),
+            ]))
+        except Exception as exc:
+            try:
+                self.get_logger().warn(
+                    f'SFC observation publish failed: {exc}')
+            except Exception:
+                pass
         self.get_logger().info(
             f"trajectory: {len(pos)} samples, T={result.spline.duration():.1f}s, "
             f"rebound={result.rebound_iters}, collision_free={result.collision_free}, "

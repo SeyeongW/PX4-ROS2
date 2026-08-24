@@ -69,12 +69,13 @@ def test_optimizer_preserves_and_rejects_bad_solver_result(
 
 
 def test_bspline_node_preserves_legacy_publish_contract(monkeypatch):
-    published, infos = [], []
+    published, observations, infos = [], [], []
     positions = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
     legacy_result = SimpleNamespace(
         accepted=False, solver_success=False, solver_status=2,
         solver_message='synthetic failure', solution_finite=True,
         collision_free=True, free_fraction=1.0, rebound_iters=1,
+        sfc_generation_time_s=0.002,
         corridor=SimpleNamespace(
             boxes_min=np.zeros((1, 3)), boxes_max=np.ones((1, 3))),
         spline=SimpleNamespace(
@@ -88,6 +89,8 @@ def test_bspline_node_preserves_legacy_publish_contract(monkeypatch):
         traj_pub=SimpleNamespace(publish=published.append),
         path_pub=SimpleNamespace(publish=published.append),
         marker_pub=SimpleNamespace(publish=published.append),
+        sfc_pub=SimpleNamespace(publish=observations.append),
+        sfc_stats_pub=SimpleNamespace(publish=observations.append),
         _to_markers=lambda _lo, _hi: 'markers',
         get_clock=lambda: SimpleNamespace(
             now=lambda: SimpleNamespace(to_msg=lambda: object())),
@@ -99,4 +102,6 @@ def test_bspline_node_preserves_legacy_publish_contract(monkeypatch):
     monkeypatch.setattr(node_module, 'positions_to_path', lambda *_args: 'path')
     BSplineNode._on_path(state, object())
     assert published == ['traj', 'path', 'markers']
+    assert len(observations) == 2
+    assert list(observations[1].data) == [2.0, 1.0, 1.0, 1.0]
     assert len(infos) == 1

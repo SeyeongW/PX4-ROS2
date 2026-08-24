@@ -39,8 +39,10 @@ cd flight/mpc_landing
 ```
 
 이 명령 하나가 MAVROS, 900 MHz trailer GPS, 카메라, ArUco 검출기, SIYI
-짐벌과 미션 노드를 시작합니다. PRECHECK 완료 후 같은 터미널에 아래 세 단어를
-순서대로 입력합니다.
+짐벌, 미션 노드와 read-only `experiment_logger`를 시작합니다. CSV는 기본
+`~/px4_experiment_logs`에 UTC timestamp 기반 timeseries 1개와 summary 1개로
+저장됩니다(`EXPERIMENT_LOG_DIR`로 변경). PRECHECK 완료 후 같은 터미널에 아래
+세 단어를 순서대로 입력합니다.
 
 ```
 PRECHECK ─TAKEOFF─► ARM/5 m 이륙 ─► READY

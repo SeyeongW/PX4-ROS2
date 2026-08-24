@@ -7,6 +7,8 @@
 #   ./gazebo/run_gimbal.sh              gimbal + perception, moving trailer
 #   ./gazebo/run_gimbal.sh mission      ...plus the full landing mission
 #   ./gazebo/run_gimbal.sh baseline     body-fixed camera instead, to compare
+#   EXPERIMENT_LOG_DIR=...              override CSV output directory
+#   PX4_MSGS_SETUP=...                  px4_msgs workspace local_setup.bash
 #
 # Ctrl-C stops everything it started.
 set -Eeuo pipefail
@@ -46,6 +48,7 @@ STACK_PATTERNS=(
   'gimbal_perception.launch'
   'landing_mpc/lib/landing_mpc/'
   'ros2 run landing_mpc'
+  'path_plan/lib/path_plan/experiment_logger'
 )
 _sweep() {
   local sig="$1"
@@ -105,8 +108,23 @@ echo " up."
 set +u
 # shellcheck disable=SC1090
 source "$ROS_SETUP"
+if ! python3 -c 'import px4_msgs' >/dev/null 2>&1; then
+  for px4_setup in "${PX4_MSGS_SETUP:-}" \
+                   "$HOME/px4_ros2_ws/install/local_setup.bash" \
+                   "$HOME/install/local_setup.bash"; do
+    if [[ -n "$px4_setup" && -r "$px4_setup" ]]; then
+      # shellcheck disable=SC1090
+      source "$px4_setup"
+      python3 -c 'import px4_msgs' >/dev/null 2>&1 && break
+    fi
+  done
+fi
 # shellcheck disable=SC1091
 source "$REPO_DIR/install/setup.bash"
+if ! python3 -c 'import px4_msgs' >/dev/null 2>&1; then
+  echo "ERROR: px4_msgs is unavailable; set PX4_MSGS_SETUP to its local_setup.bash." >&2
+  exit 1
+fi
 set -u
 
 if [[ "$GIMBAL" == "1" ]]; then
@@ -133,6 +151,23 @@ if [[ "$RUN_MISSION" == "1" ]]; then
     >/tmp/gimbal_cue.log 2>&1 &
   PIDS+=($!)
   sleep 2
+  LOGGER_ARGS=(--ros-args -p use_sim_time:=true
+               -p pose_source:=px4_local_position
+               -p state_topic:=/mission/state
+               -p aruco_detected_topic:=/aruco/detected
+               -p landing_handoff_max_xy_m:=0.6
+               -p "px4_local_position_topic:=${PX4_LOCAL_POSITION_TOPIC:-/fmu/out/vehicle_local_position_v1}")
+  if [[ -n "${EXPERIMENT_LOG_DIR:-}" ]]; then
+    LOGGER_ARGS+=(-p "output_dir:=$EXPERIMENT_LOG_DIR")
+  fi
+  ros2 run path_plan experiment_logger "${LOGGER_ARGS[@]}" \
+    >/tmp/gimbal_experiment_logger.log 2>&1 &
+  LOGGER_PID=$!
+  PIDS+=("$LOGGER_PID")
+  sleep 0.2
+  if ! kill -0 "$LOGGER_PID" 2>/dev/null; then
+    echo "WARNING: experiment logger failed; see /tmp/gimbal_experiment_logger.log" >&2
+  fi
   ros2 run landing_mpc mission_manager_node --ros-args -p use_sim_time:=true \
     "${VFOV_ARG[@]}" -p auto_start:=true >/tmp/gimbal_mission.log 2>&1 &
   PIDS+=($!)

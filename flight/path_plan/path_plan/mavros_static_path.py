@@ -52,7 +52,7 @@ from rclpy.qos import (QoSProfile, ReliabilityPolicy, DurabilityPolicy,
                        HistoryPolicy)
 from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
 from rcl_interfaces.srv import GetParameters, SetParameters
-from std_msgs.msg import Bool, Float32MultiArray
+from std_msgs.msg import Bool, Float32MultiArray, String
 from tf2_ros import TransformBroadcaster
 
 from .ros_msgs import FRAME, msg_to_trajectory
@@ -145,6 +145,8 @@ class MavrosStaticPathNode(Node):
                              history=HistoryPolicy.KEEP_LAST)
         self.land_enable_pub = self.create_publisher(
             Bool, "/pursuit/land_enable", latched)
+        self.phase_pub = self.create_publisher(
+            String, "/path_plan/flight_phase", latched)
         if self.pursuit_mode:
             self.land_enable_pub.publish(Bool(data=False))
             self.create_subscription(
@@ -235,6 +237,10 @@ class MavrosStaticPathNode(Node):
 
     # ------------------------------------------------------------- main loop
     def _tick(self):
+        try:
+            self.phase_pub.publish(String(data=self.phase))
+        except Exception:
+            pass
         # 1) Always stream a setpoint so PX4 keeps OFFBOARD alive.
         sp = TwistStamped()
         sp.header.stamp = self.get_clock().now().to_msg()

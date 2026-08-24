@@ -12,6 +12,7 @@ hardware mission node.
 from __future__ import annotations
 
 import math
+import time
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -48,6 +49,12 @@ class RoutePlan:
     arc_m: np.ndarray
     path_local_xy: np.ndarray
     expanded_nodes: int
+    # Observation metadata only; it never participates in route acceptance or
+    # control. NaN preserves callers that construct a spliced RoutePlan.
+    astar_plan_time_s: float = math.nan
+    sfc_generation_time_s: float = math.nan
+    sfc_boxes_min: np.ndarray | None = None
+    sfc_boxes_max: np.ndarray | None = None
 
 
 def _finite_vector(name: str, values, size: int) -> np.ndarray:
@@ -233,7 +240,9 @@ def plan_route(map_yaml: str, start_local_xy, goal_local_xy,
         heuristic_weight=1.0,
         exact_edges=True,
     )
+    astar_started = time.perf_counter()
     result = planner.plan(start, goal)
+    astar_plan_time_s = time.perf_counter() - astar_started
     if not result.success:
         raise RuntimeError(f'route A* failed: {result.message}')
 
@@ -316,7 +325,10 @@ def plan_route(map_yaml: str, start_local_xy, goal_local_xy,
             or not np.allclose(local_path[0], start_local, atol=1.0e-6)
             or not np.allclose(local_path[-1], goal_local, atol=1.0e-6)):
         raise RuntimeError('route spatial contract failed')
-    return RoutePlan(arc, local_path, int(result.expanded))
+    return RoutePlan(
+        arc, local_path, int(result.expanded), astar_plan_time_s,
+        optimized.sfc_generation_time_s,
+        optimized.corridor.boxes_min, optimized.corridor.boxes_max)
 
 
 def segment_is_free(map_yaml: str, site_origin_local_xy, start_local_xy,
