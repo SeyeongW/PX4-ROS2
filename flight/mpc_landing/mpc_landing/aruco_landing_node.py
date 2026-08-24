@@ -22,10 +22,9 @@ is already decided and there is nothing further for them to choose.  Pausing
 mid-mission does not add a decision; it adds an armed airframe with live props
 waiting for a keystroke, which is the state you least want to extend.
 
-`abort` still lands the vehicle from any phase, and every leg fails FORWARD: a
-route that cannot be planned or reached hands on to the trailer return, and a
-return that cannot be planned lands where it is.  No phase waits for a human to
-notice it is stuck.
+`abort` still lands the vehicle from any phase. A fixed-goal failure proceeds to
+the trailer return, but a return failure holds and retries: landing away from a
+confirmed ArUco target is not a valid completion of this mission.
 
 FIXED GOAL FIRST, THEN THE TRAILER
 ----------------------------------
@@ -2602,25 +2601,12 @@ class ArucoLandingNode(Node):
             commanded, _cross_track = self._route_mpc_command()
             if not commanded:
                 self._hold()
-            blockers = self._return_preflight()
-            if not blockers:
-                self.get_logger().info(
-                    'settled at the map goal — returning to the live trailer')
-                self._begin_return()
-                return
-            # The trailer link is the one input the return needs and it is not
-            # this node's to fix, so hold at the goal while it comes back — for
-            # exactly as long as a lost target is tolerated anywhere else in
-            # this mission, then land.
-            if self._now() - self._t_phase > self.trailer_lost_search:
-                self.get_logger().error(
-                    'no trailer return available at the map goal ('
-                    + '; '.join(blockers) + ') — landing here')
-                self._to(Phase.LAND)
-                return
-            self.get_logger().warn(
-                'at the map goal — waiting for the trailer: '
-                + '; '.join(blockers), throttle_duration_sec=3.0)
+            # Discard the fixed-leg anchor before validating the new leg. Its
+            # normal GNSS drift must not block a route that will get a fresh
+            # anchor of its own; RETURN_PLAN holds until those inputs are valid.
+            self.get_logger().info(
+                'settled at the map goal — planning return to the live trailer')
+            self._begin_return()
             return
 
         if self.phase is Phase.RETURN_PLAN:
@@ -2630,15 +2616,15 @@ class ArucoLandingNode(Node):
                 self._to(Phase.SEARCH)
             elif self._route_active is not None:
                 self._to(Phase.RETURN)
-            elif (not self._fresh_target()
-                  and self._now() - self._t_phase > self.trailer_lost_search):
+            elif not self._fresh_target():
                 self.get_logger().warn(
-                    'trailer target lost while planning return — landing here')
-                self._to(Phase.LAND)
+                    'trailer target unavailable while planning return — '
+                    'HOLDING until it recovers', throttle_duration_sec=3.0)
             elif self._now() - self._t_phase > self.route_timeout:
                 self.get_logger().error(
-                    'trailer return route planning timed out — landing here')
-                self._to(Phase.LAND)
+                    'trailer return route is still unavailable — HOLDING and '
+                    'retrying, not landing away from the trailer',
+                    throttle_duration_sec=5.0)
             return
 
         if self.phase is Phase.RETURN:
@@ -2698,12 +2684,19 @@ class ArucoLandingNode(Node):
                     f'h={self._alt() - (self._z_ground or 0.0):.1f} m — descending')
                 return
             if self._now() - self._t_phase > self.search_timeout:
-                self.get_logger().warn(
-                    f'no marker within {self.search_timeout:.0f} s at '
-                    f'h={self._alt() - (self._z_ground or 0.0):.1f} m — landing '
-                    f'here. A marker outside the camera footprint is the usual '
-                    f'cause; see search_alt_m')
-                self._to(Phase.LAND)
+                if self.planned_cruise:
+                    self.get_logger().warn(
+                        f'no marker within {self.search_timeout:.0f} s at '
+                        f'h={self._alt() - (self._z_ground or 0.0):.1f} m — '
+                        'continuing SEARCH, not landing without ArUco; ABORT '
+                        'remains available', throttle_duration_sec=5.0)
+                else:
+                    self.get_logger().warn(
+                        f'no marker within {self.search_timeout:.0f} s at '
+                        f'h={self._alt() - (self._z_ground or 0.0):.1f} m — '
+                        'landing here. A marker outside the camera footprint '
+                        'is the usual cause; see search_alt_m')
+                    self._to(Phase.LAND)
             return
 
         if self.phase is Phase.DESCEND:
@@ -2779,13 +2772,12 @@ class ArucoLandingNode(Node):
         the coordinate comes over a radio from a vehicle that is driving away:
 
             arrived         within `cruise_arrive_m` -> SEARCH, camera takes over
-            target lost     stop first, then SEARCH from wherever we got to: a
-                            stale coordinate is not worth chasing, and the marker
-                            may well already be in frame
+            target lost     planned mode stops and returns to RETURN_PLAN;
+                            legacy direct mode searches from the current point
             too far         a fix that jumps past the leash is a bad fix; stop
                             and say so, rather than fly at it
-            timeout         never arrived (headwind, a trailer driving faster
-                            than cruise speed) -> hand to the autopilot's LAND
+            timeout         planned mode stops and replans; legacy direct mode
+                            hands to the autopilot's LAND
 
         No marker logic here on purpose. Acquiring is SEARCH's job, and having
         one place decide it means the descent can never be started by a detection
@@ -2803,9 +2795,9 @@ class ArucoLandingNode(Node):
                 if self.planned_cruise:
                     self.get_logger().warn(
                         f'trailer target lost for {gone:.1f} s during planned '
-                        'cruise — handing to LAND, not descending at an '
-                        'uncertified route position')
-                    self._to(Phase.LAND)
+                        'cruise — HOLDING and returning to route planning')
+                    self._hold()
+                    self._begin_return()
                 else:
                     self.get_logger().warn(
                         f'trailer target lost for {gone:.1f} s during cruise — '
@@ -2817,10 +2809,17 @@ class ArucoLandingNode(Node):
 
         timeout = self.route_timeout if self.planned_cruise else self.cruise_timeout
         if elapsed > timeout:
-            self.get_logger().warn(
-                f'still {self._target_range():.1f} m from the trailer after '
-                f'{timeout:.0f} s — landing here')
-            self._to(Phase.LAND)
+            if self.planned_cruise:
+                self.get_logger().warn(
+                    f'still {self._target_range():.1f} m from the trailer after '
+                    f'{timeout:.0f} s — HOLDING and replanning, not landing here')
+                self._hold()
+                self._begin_return()
+            else:
+                self.get_logger().warn(
+                    f'still {self._target_range():.1f} m from the trailer after '
+                    f'{timeout:.0f} s — landing here')
+                self._to(Phase.LAND)
             return
 
         distance = self._target_range()
