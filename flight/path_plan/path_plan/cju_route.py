@@ -411,6 +411,47 @@ def clearance(map_yaml: str, site_origin_local_xy, local_xy) -> float:
         return 0.0
 
 
+def nearest_free_point(
+        map_yaml: str, site_origin_local_xy, local_xy, *,
+        max_radius_m: float = 5.0, ring_step_m: float = 0.25,
+        angular_samples: int = 24,
+) -> np.ndarray | None:
+    """The nearest collision-free local-ENU point to ``local_xy``, or None.
+
+    Returns ``local_xy`` unchanged when it is already free. Otherwise it searches
+    outward on rings and returns the closest free point — the point a moving
+    target that has wandered into a (virtual) keep-out can still be approached
+    to. None means no free point within ``max_radius_m``; the caller keeps its
+    own fallback (hold / reject) rather than inventing a goal.
+
+    Uses the same ``segment_is_free`` point test as the endpoint gate, so a goal
+    this returns is one ``plan_route`` and ``_route_endpoint_reason`` accept. All
+    failure modes collapse to None: a caller that cannot project safely must not
+    fly at an unprojected blocked point.
+    """
+    try:
+        origin = _finite_vector('site_origin_local_xy', site_origin_local_xy, 2)
+        point = _finite_vector('local_xy', local_xy, 2)
+    except (TypeError, ValueError):
+        return None
+    if segment_is_free(map_yaml, origin, point, point):
+        return point.copy()
+    if not (math.isfinite(max_radius_m) and max_radius_m > 0.0
+            and math.isfinite(ring_step_m) and ring_step_m > 0.0
+            and int(angular_samples) >= 4):
+        return None
+    radius = ring_step_m
+    while radius <= max_radius_m + 1.0e-9:
+        for k in range(int(angular_samples)):
+            angle = 2.0 * math.pi * k / int(angular_samples)
+            candidate = point + radius * np.array(
+                [math.cos(angle), math.sin(angle)])
+            if segment_is_free(map_yaml, origin, candidate, candidate):
+                return candidate
+        radius += ring_step_m
+    return None
+
+
 def _path_position(arc_m, path_xy, distance_m: float) -> np.ndarray:
     arc = np.asarray(arc_m, float)
     path = np.asarray(path_xy, float)

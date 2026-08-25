@@ -9,6 +9,7 @@ from path_plan.cju_route import (
     clearance,
     local_to_map,
     map_to_local,
+    nearest_free_point,
     plan_route,
     rotation_for_heading,
     route_map_info,
@@ -96,6 +97,35 @@ def test_drone_relative_field_map_is_approved_and_origin_free():
     assert info.origin_lon == pytest.approx(0.0)
     assert info.mission_goal_xy == (50.0, 50.0)
     assert not route_map_info(MAP).drone_relative
+
+
+def test_nearest_free_point_returns_a_free_point_unchanged():
+    origin = np.zeros(2)
+    free = np.array([50.0, 50.0])          # the goal is clear on the field map
+    assert segment_is_free(FIELD_MAP, origin, free, free)
+    result = nearest_free_point(FIELD_MAP, origin, free)
+    assert result is not None and np.allclose(result, free)
+
+
+def test_nearest_free_point_projects_a_blocked_target_out_of_a_keep_out():
+    origin = np.zeros(2)
+    # A barrier centre on the slalom field: inside its keep-out, so blocked.
+    blocked = np.array([9.90, 9.90])
+    assert not segment_is_free(FIELD_MAP, origin, blocked, blocked)
+    result = nearest_free_point(FIELD_MAP, origin, blocked)
+    assert result is not None
+    # The projection is free (a goal plan_route/endpoint checks would accept)...
+    assert segment_is_free(FIELD_MAP, origin, result, result)
+    # ...and close to the blocked target — a nearby approach, not a teleport.
+    assert float(np.linalg.norm(result - blocked)) <= 2.0
+
+
+def test_nearest_free_point_gives_up_rather_than_inventing_a_far_goal():
+    origin = np.zeros(2)
+    blocked = np.array([9.90, 9.90])
+    # With a tiny search radius nothing free is within reach: None, not a guess.
+    assert nearest_free_point(
+        FIELD_MAP, origin, blocked, max_radius_m=0.1) is None
 
 
 def test_drone_relative_field_route_weaves_through_the_virtual_barriers():

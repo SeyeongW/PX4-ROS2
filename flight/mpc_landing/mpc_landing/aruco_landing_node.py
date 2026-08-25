@@ -322,6 +322,9 @@ class ArucoLandingNode(Node):
         self._route_observed_origin = None
         self._route_observed_origin_t = float('nan')
         self._route_observed_origin_rx_t = 0.0
+        # Memo for the trailer goal's nearest-free-point projection.
+        self._trailer_goal_key = None
+        self._trailer_goal_value = None
         self._path_mpc = None
         self._path_reference = None
         self._path_solve_t = None
@@ -1293,10 +1296,13 @@ class ArucoLandingNode(Node):
         """
         if self.pose is None or self.target is None:
             return False
-        if self._range_to(self.target[:2]) > self.cruise_arrive:
-            return False
         if not self.planned_cruise:
-            return True
+            return self._range_to(self.target[:2]) <= self.cruise_arrive
+        # The goal we actually fly to is the trailer's nearest-free projection,
+        # not the raw coordinate it may have wandered into — arrive there.
+        goal = self._route_goal_local(trailer_goal=True)
+        if goal is None or self._range_to(goal) > self.cruise_arrive:
+            return False
         current = np.array([
             self.pose.pose.position.x, self.pose.pose.position.y], float)
         origin = (self._route_active[1] if self._route_active is not None
@@ -1304,7 +1310,7 @@ class ArucoLandingNode(Node):
         if origin is None:
             return False
         return self._route_lib.segment_is_free(
-            self.route_map_yaml, origin, current, self.target[:2])
+            self.route_map_yaml, origin, current, goal)
 
     def _on_ground(self) -> bool:
         """True once the vehicle has actually settled — never a geometric guess."""
@@ -1859,8 +1865,28 @@ class ArucoLandingNode(Node):
         use_trailer = (self._route_uses_trailer_goal()
                        if trailer_goal is None else bool(trailer_goal))
         if use_trailer:
-            return (None if self.target is None else
-                    np.asarray(self.target[:2], float).copy())
+            if self.target is None:
+                return None
+            target_xy = np.asarray(self.target[:2], float).copy()
+            if not self.planned_cruise:
+                return target_xy
+            origin = self._route_synchronized_site_origin()
+            if origin is None:
+                return target_xy
+            # A moving trailer can wander into a (virtual) obstacle keep-out;
+            # approach the nearest free point instead of rejecting an otherwise
+            # reachable target and landing short. Memoised on the (target,
+            # origin) pair — _route_goal_local is asked several times per tick
+            # and the ring search is not free. None (nothing free nearby) keeps
+            # the existing "goal unavailable" fallback rather than inventing one.
+            key = (round(float(target_xy[0]), 2), round(float(target_xy[1]), 2),
+                   round(float(origin[0]), 2), round(float(origin[1]), 2))
+            if self._trailer_goal_key != key:
+                self._trailer_goal_key = key
+                self._trailer_goal_value = self._route_lib.nearest_free_point(
+                    self.route_map_yaml, origin, target_xy)
+            return (None if self._trailer_goal_value is None
+                    else np.asarray(self._trailer_goal_value, float).copy())
         origin = self._route_synchronized_site_origin()
         if origin is None:
             return None
@@ -2908,7 +2934,12 @@ class ArucoLandingNode(Node):
             self._hold()
             return
 
-        if distance <= self.cruise_arrive and self._route_arrival_safe():
+        # Arrival is judged at the route goal, which for a trailer inside a
+        # virtual keep-out is the nearest free point we actually fly to — not
+        # the blocked coordinate the vehicle can never legally reach.
+        arrival_range = (self._route_goal_range(trailer_goal=True)
+                         if self.planned_cruise else distance)
+        if arrival_range <= self.cruise_arrive and self._route_arrival_safe():
             self._hold()
             self.get_logger().info(
                 f'over the trailer coordinate ({distance:.1f} m) — searching '

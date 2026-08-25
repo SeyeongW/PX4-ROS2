@@ -69,6 +69,7 @@ def _cruise_state(*, planned, fresh=True):
         cruise_max_dist=150.0,
         cruise_arrive=1.0,
         _target_range=lambda: 20.0,
+        _route_goal_range=lambda **_kwargs: 20.0,
         _route_arrival_safe=lambda: False,
         _route_carrot=lambda: (None, float('inf')),
         _route_mpc_command=route_mpc,
@@ -145,6 +146,50 @@ def test_legacy_cruise_flies_straight_to_the_last_coordinate_on_dropout():
     assert any(call[0] == 'fly' for call in calls)
     assert ('phase', Phase.LAND) not in calls
     assert ('phase', Phase.SEARCH) not in calls
+
+
+def _field_map():
+    from path_plan import cju_route
+    return str(Path(cju_route.__file__).parents[1] / 'config'
+               / 'drone_field_route.yaml'), cju_route
+
+
+def _trailer_goal_state(target):
+    _field, cju_route = _field_map()
+    return SimpleNamespace(
+        planned_cruise=True,
+        target=np.asarray(target, float),
+        _route_uses_trailer_goal=lambda: True,
+        _route_synchronized_site_origin=lambda: np.zeros(2),
+        _route_lib=cju_route,
+        route_map_yaml=_field,
+        _trailer_goal_key=None,
+        _trailer_goal_value=None,
+    )
+
+
+def test_clear_trailer_goal_is_used_unchanged():
+    field, cju_route = _field_map()
+    clear = np.array([50.0, 50.0, 0.0])       # the field goal is free
+    assert cju_route.segment_is_free(field, np.zeros(2), clear[:2], clear[:2])
+    goal = ArucoLandingNode._route_goal_local(
+        _trailer_goal_state(clear), trailer_goal=True)
+    assert goal is not None and np.allclose(goal, [50.0, 50.0])
+
+
+def test_trailer_goal_inside_a_virtual_keepout_is_projected_to_a_free_point():
+    field, cju_route = _field_map()
+    blocked = np.array([9.90, 9.90, 0.0])     # a barrier centre on the field
+    assert not cju_route.segment_is_free(
+        field, np.zeros(2), blocked[:2], blocked[:2])
+    goal = ArucoLandingNode._route_goal_local(
+        _trailer_goal_state(blocked), trailer_goal=True)
+    assert goal is not None
+    # The projected goal is one plan_route / the endpoint gate accept...
+    assert cju_route.segment_is_free(field, np.zeros(2), goal, goal)
+    # ...a nearby approach, not the blocked coordinate itself.
+    assert not np.allclose(goal, blocked[:2])
+    assert float(np.linalg.norm(goal - blocked[:2])) <= 2.0
 
 
 def test_dropout_with_no_prior_coordinate_lands_or_searches():
