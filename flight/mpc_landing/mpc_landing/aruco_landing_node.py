@@ -677,7 +677,7 @@ class ArucoLandingNode(Node):
         # obstacle margin is the operator watching, not the map. Fly it with
         # visual separation, and put this back near the clearance if the
         # airframe ever gets RTK.
-        p('route_max_horizontal_accuracy_m', 3.0)
+        p('route_max_horizontal_accuracy_m', 5.0)
         # Route anchoring uses one local-pose/global-fix pair. Refuse a pair
         # whose callback times are too far apart while the vehicle is moving.
         p('route_pose_fix_sync_s', 0.10)
