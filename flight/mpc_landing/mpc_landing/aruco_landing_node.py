@@ -2342,18 +2342,26 @@ class ArucoLandingNode(Node):
                 self._path_last_solve_t = now
                 return self._route_follow_failed(
                     f'TrackingMPC solve failed: {exc}', cross_track)
-            accepted = (
-                result.success
-                and np.all(np.isfinite(np.column_stack((
+            # Three separate causes, reported separately. Bundling them says
+            # only that the tracker refused, which does not distinguish a QP
+            # that never converged from a converged one aimed through a barrier
+            # — and those two want opposite fixes.
+            rejection = None
+            if not result.success:
+                rejection = 'TrackingMPC QP did not converge'
+            elif not np.all(np.isfinite(np.column_stack((
                     result.predicted_pos, result.predicted_vel,
-                    result.predicted_acc))))
-                and self._route_prediction_is_safe(result.predicted_pos))
-            if not accepted:
+                    result.predicted_acc)))):
+                rejection = 'TrackingMPC returned a non-finite horizon'
+            elif not self._route_prediction_is_safe(result.predicted_pos):
+                rejection = (
+                    'TrackingMPC horizon leaves the mapped clearance '
+                    f'(cross-track {cross_track:.2f} m to a carrot the '
+                    'vehicle cannot reach in a straight line)')
+            if rejection is not None:
                 self._reset_path_mpc()
                 self._path_last_solve_t = now
-                return self._route_follow_failed(
-                    'TrackingMPC rejected its solve or predicted horizon',
-                    cross_track)
+                return self._route_follow_failed(rejection, cross_track)
             zeros = np.zeros(3)
             self._path_reference.set_plan(
                 position, velocity,
