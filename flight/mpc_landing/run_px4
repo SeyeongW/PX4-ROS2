@@ -129,6 +129,20 @@ if [[ "$TRAILER" == "1" ]]; then
                  -p "route_map_yaml:=$ROUTE_MAP"
                  -p "route_pose_fix_sync_s:=$ROUTE_SYNC_S"
                  -p rate_hz:=50.0)
+  # Say plainly WHICH map is flying and whether it is approved. The map's own
+  # name and hardware_flight_approved flag are read straight from the YAML;
+  # the approval test mirrors the node's rule — only a literal `true` approves
+  # (a quoted "true" does not), so the log never disagrees with the gate.
+  ROUTE_MAP_NAME="$(sed -n 's/^[[:space:]]\{2\}name:[[:space:]]*//p' \
+    "$ROUTE_MAP" | head -n1)"
+  if grep -Eq '^[[:space:]]*hardware_flight_approved:[[:space:]]*true[[:space:]]*(#.*)?$' \
+      "$ROUTE_MAP"; then
+    MAP_APPROVED_IN_YAML=1
+  else
+    MAP_APPROVED_IN_YAML=0
+  fi
+  echo "run_px4: route map: ${ROUTE_MAP_NAME:-<unnamed>}"
+  echo "run_px4:   file: $ROUTE_MAP"
   # The approval gate only bites a map whose YAML sets hardware_flight_approved
   # false (the surveyed CJU map). The default drone-relative field map is
   # approved in its YAML, so plain `run_px4 trailer` sails through with no
@@ -136,11 +150,14 @@ if [[ "$TRAILER" == "1" ]]; then
   # unapproved map (e.g. the CJU layout before it is field-surveyed).
   if [[ "${ROUTE_MAP_APPROVED:-0}" == "1" ]]; then
     MISSION_ARGS+=(-p allow_unapproved_route_map:=true)
-    echo "run_px4: ROUTE MAP APPROVAL OVERRIDE ACTIVE"
-    echo "         operator asserts origin, heading and every obstacle were checked"
+    echo "run_px4:   approval: OVERRIDE ACTIVE (ROUTE_MAP_APPROVED=1) —" \
+         "operator asserts origin, heading and every obstacle were checked"
+  elif [[ "$MAP_APPROVED_IN_YAML" == "1" ]]; then
+    echo "run_px4:   approval: APPROVED in map (hardware_flight_approved: true)" \
+         "— props-on, no override needed"
   else
-    echo "run_px4: using route map $ROUTE_MAP"
-    echo "         (an unapproved map still needs ROUTE_MAP_APPROVED=1)"
+    echo "run_px4:   approval: NOT approved — set ROUTE_MAP_APPROVED=1 to fly it" \
+         "anyway, or set hardware_flight_approved: true in the map after survey"
   fi
 fi
 # --- legacy mpc_landing_node gates ------------------------------------------
