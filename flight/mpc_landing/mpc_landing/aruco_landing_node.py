@@ -315,6 +315,7 @@ class ArucoLandingNode(Node):
         self._route_request_seq = 0
         self._route_last_request_t = float('-inf')
         self._route_last_error = ''
+        self._route_follow_fail_t = None
         self._route_map_info = None
         self._route_map_identity = None
         self._route_lib = None
@@ -2045,6 +2046,7 @@ class ArucoLandingNode(Node):
         if self._plan_future is not None and self._plan_future.cancel():
             self._plan_future = None
         self._route_last_error = reason
+        self._route_follow_fail_t = None
         if had_route:
             self.get_logger().warn(
                 f'route invalidated — {reason}; HOLD until a new anchor is planned')
@@ -2056,6 +2058,7 @@ class ArucoLandingNode(Node):
         self._route_progress = 0.0
         self._route_last_request_t = float('-inf')
         self._route_last_error = ''
+        self._route_follow_fail_t = None
         self._reset_path_mpc()
         if self._plan_future is not None and self._plan_future.cancel():
             self._plan_future = None
@@ -2119,6 +2122,7 @@ class ArucoLandingNode(Node):
                 self._reset_path_mpc()
                 self._route_last_error = ''
                 route_observation = (planned, joined)
+                self._route_follow_fail_t = None
                 self.get_logger().info(
                     f'route #{seq} certified: {joined.arc_m[-1]:.1f} m, '
                     f'{len(joined.path_local_xy)} points, '
@@ -2170,7 +2174,13 @@ class ArucoLandingNode(Node):
         now = self._now()
         if now - self._route_last_request_t < self.route_replan_period:
             return
-        if self._route_active is not None:
+        # A live route whose goal has not moved is normally kept. The exception
+        # is a follower that has stopped producing commands: the vehicle is then
+        # off a path it can no longer legally rejoin, and holding on it until
+        # `route_timeout` is a deadlock, not a safety measure. Replanning from
+        # where the vehicle actually is stays exact-safe — A* starts at this
+        # position and the splice still has to certify the joining chord.
+        if self._route_active is not None and not self._route_follow_stuck():
             _plan, _origin, active_goal, _seq, _committed = self._route_active
             if float(np.linalg.norm(goal - active_goal)) < max(
                     0.5, self.route_cross_track):
@@ -2207,6 +2217,9 @@ class ArucoLandingNode(Node):
             self._route_last_error = f'route input rejected: {reason}'
             return None, float('inf')
         if self._route_active is None or self.pose is None:
+            self._route_last_error = (
+                'no certified route to follow yet' if self._route_active is None
+                else 'no local pose to follow the route with')
             return None, float('inf')
         plan, origin, _goal, _seq, _committed = self._route_active
         current = np.array([
@@ -2222,6 +2235,11 @@ class ArucoLandingNode(Node):
                 self._route_last_error, throttle_duration_sec=2.0)
             return None, float('inf')
         self._route_progress = progress
+        if target is None:
+            self._route_last_error = (
+                f'no collision-free chord from the vehicle to the route '
+                f'(cross-track {cross_track:.2f} m, lookahead '
+                f'{self.route_lookahead:.1f} m)')
         return target, cross_track
 
     def _route_prediction_is_safe(self, predicted_positions) -> bool:
@@ -2245,12 +2263,28 @@ class ArucoLandingNode(Node):
             self.route_map_yaml, origin, a, b)
             for a, b in zip(chain[:-1], chain[1:]))
 
+    def _route_follow_stuck(self) -> bool:
+        """True once the follower has commanded nothing for a whole period."""
+        return (self._route_follow_fail_t is not None
+                and self._now() - self._route_follow_fail_t
+                >= self.route_replan_period)
+
+    def _route_follow_failed(self, error: str,
+                             cross_track: float) -> tuple[bool, float]:
+        """Record why the follower commanded nothing, and since when."""
+        self._route_last_error = error
+        if self._route_follow_fail_t is None:
+            self._route_follow_fail_t = self._now()
+        return False, cross_track
+
     def _route_mpc_command(self) -> tuple[bool, float]:
         """Track the certified B-spline with Wang TrackingMPC over MAVROS."""
         carrot, cross_track = self._route_carrot()
         if (carrot is None or self.pose is None or self.velocity is None
                 or self._path_mpc is None or self._path_reference is None):
-            return False, cross_track
+            return self._route_follow_failed(
+                self._route_last_error or 'route follower has no live inputs',
+                cross_track)
         plan = self._route_active[0]
         position = np.array([
             self.pose.pose.position.x, self.pose.pose.position.y,
@@ -2304,10 +2338,10 @@ class ArucoLandingNode(Node):
                 except Exception:
                     pass
             except Exception as exc:
-                self._route_last_error = f'TrackingMPC solve failed: {exc}'
                 self._reset_path_mpc()
                 self._path_last_solve_t = now
-                return False, cross_track
+                return self._route_follow_failed(
+                    f'TrackingMPC solve failed: {exc}', cross_track)
             accepted = (
                 result.success
                 and np.all(np.isfinite(np.column_stack((
@@ -2315,11 +2349,11 @@ class ArucoLandingNode(Node):
                     result.predicted_acc))))
                 and self._route_prediction_is_safe(result.predicted_pos))
             if not accepted:
-                self._route_last_error = (
-                    'TrackingMPC rejected its solve or predicted horizon')
                 self._reset_path_mpc()
                 self._path_last_solve_t = now
-                return False, cross_track
+                return self._route_follow_failed(
+                    'TrackingMPC rejected its solve or predicted horizon',
+                    cross_track)
             zeros = np.zeros(3)
             self._path_reference.set_plan(
                 position, velocity,
@@ -2330,17 +2364,21 @@ class ArucoLandingNode(Node):
 
         if (not self._path_reference.ready()
                 or self._path_solve_t is None):
-            return False, cross_track
+            return self._route_follow_failed(
+                'TrackingMPC has no streamable reference yet', cross_track)
 
         pos, vel, acc = self._path_reference.sample(
             self._now() - self._path_solve_t)
         if not self._route_prediction_is_safe(np.asarray([pos])):
-            self._route_last_error = 'TrackingMPC streamed reference is unsafe'
             self._reset_path_mpc()
             self._path_last_solve_t = now
-            return False, cross_track
-        return (self._send_pva(
-            pos, vel, acc, self._path_mpc.j_max), cross_track)
+            return self._route_follow_failed(
+                'TrackingMPC streamed reference is unsafe', cross_track)
+        if not self._send_pva(pos, vel, acc, self._path_mpc.j_max):
+            return self._route_follow_failed(
+                'MAVROS setpoint stream rejected the reference', cross_track)
+        self._route_follow_fail_t = None
+        return True, cross_track
 
     def _route_arrival_safe(self, *, trailer_goal: bool | None = None) -> bool:
         """Require arrival at the selected goal and completion of its route."""
@@ -2835,7 +2873,7 @@ class ArucoLandingNode(Node):
             self._hold(vz)
             self.get_logger().error(
                 'no exact-safe TrackingMPC reference to the mission goal — '
-                'HOLDING, no straight-line fallback',
+                f'HOLDING, no straight-line fallback: {self._route_last_error}',
                 throttle_duration_sec=2.0)
         if self._due('mission_log', self.cruise_log_period):
             self.get_logger().info(
@@ -2959,7 +2997,8 @@ class ArucoLandingNode(Node):
                 self._hold(vz)
                 self.get_logger().error(
                     'no exact-safe TrackingMPC reference — HOLDING, no '
-                    'straight-line fallback', throttle_duration_sec=2.0)
+                    f'straight-line fallback: {self._route_last_error}',
+                    throttle_duration_sec=2.0)
         else:
             self._fly_to(
                 self.target, kp=self.cruise_kp, v_max=self.cruise_v_max,

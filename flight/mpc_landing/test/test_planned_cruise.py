@@ -73,6 +73,7 @@ def _cruise_state(*, planned, fresh=True):
         _route_arrival_safe=lambda: False,
         _route_carrot=lambda: (None, float('inf')),
         _route_mpc_command=route_mpc,
+        _route_last_error='no certified route to follow yet',
         _takeoff_target=lambda: 5.0,
         _alt=lambda: 5.0,
         climb_speed=0.7,
