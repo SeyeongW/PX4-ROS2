@@ -99,6 +99,28 @@ def test_drone_relative_field_map_is_approved_and_origin_free():
     assert not route_map_info(MAP).drone_relative
 
 
+def test_replanning_from_the_current_position_recovers_a_stuck_follower():
+    # A vehicle that has drifted far off its route with a barrier blocking the
+    # straight cut-back has no exact-safe carrot on the OLD route (the field
+    # HOLD). Replanning from where it actually is must give a route it can
+    # follow from there — the guarantee _route_follow_stuck's replan relies on.
+    origin = np.zeros(2)
+    old = plan_route(FIELD_MAP, np.zeros(2), np.array([50.0, 50.0]), origin)
+    drone = np.array([31.85, 13.49])                 # off-path, cut-back walled
+    _, stuck_target, _ = safe_route_target(
+        FIELD_MAP, origin, old.arc_m, old.path_local_xy, drone, 0.0, 6.0, 1.5)
+    assert stuck_target is None                      # HOLD on the old route
+
+    fresh = plan_route(FIELD_MAP, drone, np.array([50.0, 50.0]), origin)
+    _, target, cross = safe_route_target(
+        FIELD_MAP, origin, fresh.arc_m, fresh.path_local_xy, drone,
+        0.0, 6.0, 1.5)
+    assert target is not None                        # now followable
+    assert cross < 1.0e-6                             # route starts under it
+    assert all(segment_is_free(FIELD_MAP, origin, a, b)
+               for a, b in zip(fresh.path_local_xy[:-1], fresh.path_local_xy[1:]))
+
+
 def test_nearest_free_point_returns_a_free_point_unchanged():
     origin = np.zeros(2)
     free = np.array([50.0, 50.0])          # the goal is clear on the field map

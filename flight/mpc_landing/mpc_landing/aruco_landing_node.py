@@ -689,7 +689,14 @@ class ArucoLandingNode(Node):
         p('route_timeout_s', 300.0)
         p('route_replan_period_s', 2.0)
         p('route_lookahead_m', 6.0)
-        p('route_cross_track_m', 0.25)
+        # How far the vehicle may sit off the planned line before the pure-
+        # pursuit carrot stops looking ahead and only steers straight back.
+        # 0.25 m was simulation-tight: real GPS/pose jitter and wind cross it
+        # constantly, collapsing the lookahead — the vehicle crawls, and in an
+        # obstacle field it triggers repeated stuck-replans. This is a tracking
+        # tolerance, not a safety margin: the carrot is collision-checked
+        # regardless of this value.
+        p('route_cross_track_m', 1.5)
         # The checked-in map is an OSM/simulation snapshot. run_px4 exposes an
         # explicit override for props-off/SITL work; a props-on map should set
         # hardware_flight_approved in the YAML after field measurement.
@@ -2189,6 +2196,14 @@ class ArucoLandingNode(Node):
         start = np.array([
             self.pose.pose.position.x, self.pose.pose.position.y], float)
         origin = self._route_site_origin_local()
+        # The obstacles are virtual, so the real vehicle can sit inside a
+        # keep-out the map calls blocked; a stuck-replan from there would fail on
+        # a blocked start. Plan from the nearest free point so A* has a valid
+        # start; the splice still certifies the chord from the true position.
+        projected_start = self._route_lib.nearest_free_point(
+            self.route_map_yaml, origin, start)
+        if projected_start is not None:
+            start = np.asarray(projected_start, float)
         self._route_request_seq += 1
         seq = self._route_request_seq
         self._route_pending = (
