@@ -14,19 +14,21 @@
 # real GPS/pose jitter. heading 0 aligns the map frame with the vehicle's local
 # ENU, so an obstacle at map (33, 10) sits 33 m east and 10 m north of launch.
 #
-# LAYOUT — a slalom, tuned for easy verification.
-# Launch is map (0, 0); the goal is (50, 50). Four barrier WALLS cross the
-# launch->goal diagonal, each with a single opening ("gate") that alternates
-# left/right of the centreline. Going around a wall is longer than threading the
-# next gate, so the collision-free route the planner finds is a clear left-right
-# zig-zag (~3 side-changes, ~+-3.4 m of lateral swing) — obvious in RViz. The
-# walls are built from thin barriers spaced 2 m so their 1 m keep-outs merge into
-# a continuous wall the planner cannot slip through. Select the surveyed CJU
-# layout instead with `ROUTE_MAP=.../drone_cju_route.yaml run_px4 trailer`.
+# LAYOUT — sparse pillars, tuned to be FLYABLE, not just plannable.
+# Individual pillars (not walls) straddle the launch->goal diagonal, alternating
+# left/right, so the straight line is blocked and the planner weaves (~2.8 m of
+# lateral swing). They are deliberately sparse: A* stays ~4x faster than a dense
+# wall slalom (so replans come quickly), and there is always open space to
+# either side, so a vehicle that drifts off the line can re-route around a pillar
+# instead of being walled in. This matters on the real aircraft, where the
+# follower replans from the current position whenever it deviates or stalls; a
+# tight wall slalom starved that recovery and produced a mid-field HOLD.
+# Select the surveyed CJU layout instead with
+# `ROUTE_MAP=.../drone_cju_route.yaml run_px4 trailer`.
 schema_version: 1
 
 site:
-  name: Drone-relative slalom field (auto-centred on launch)
+  name: Drone-relative pillar field (auto-centred on launch)
   coordinate_frame: field
   drone_relative: true
   heading_deg_enu: 0.0
@@ -37,10 +39,10 @@ site:
 
 terrain:
   coordinate_frame: field
-  # Centred between launch (0, 0) and goal (50, 50), sized so the walls span most
-  # of the usable width — the drone must use the gates, not detour around.
+  # Centred between launch (0, 0) and goal (50, 50), roomy on both sides so the
+  # planner can always route around a pillar.
   center_m: [25, 25]
-  size_m: [75, 75]
+  size_m: [90, 90]
 
 mission:
   coordinate_frame: field
@@ -50,59 +52,13 @@ mission:
   vehicle_clearance_xy_m: 1.0
   bspline_control_spacing_m: 1.0
   bspline_sample_spacing_m: 0.1
-  # A four-gate slalom across the launch->goal diagonal. Each wall is a line of
-  # thin barriers perpendicular to the diagonal with one opening; the opening
-  # alternates side (left, right, left, right) so the route zig-zags.
+  # Seven pillars straddling the launch->goal diagonal, alternating side, so the
+  # route zig-zags around them without any of them fully blocking a lane.
   obstacles:
-    # gate 1: wall crossing the diagonal at ~14 m, opening on the left (map perp +6 m)
-    - {name: g1_-14, center_m: [19.80, 0.00, 5], size_m: [0.45, 0.35, 10]}
-    - {name: g1_-12, center_m: [18.38, 1.41, 5], size_m: [0.45, 0.35, 10]}
-    - {name: g1_-10, center_m: [16.97, 2.83, 5], size_m: [0.45, 0.35, 10]}
-    - {name: g1_-08, center_m: [15.56, 4.24, 5], size_m: [0.45, 0.35, 10]}
-    - {name: g1_-06, center_m: [14.14, 5.66, 5], size_m: [0.45, 0.35, 10]}
-    - {name: g1_-04, center_m: [12.73, 7.07, 5], size_m: [0.45, 0.35, 10]}
-    - {name: g1_-02, center_m: [11.31, 8.49, 5], size_m: [0.45, 0.35, 10]}
-    - {name: g1_+00, center_m: [9.90, 9.90, 5], size_m: [0.45, 0.35, 10]}
-    - {name: g1_+02, center_m: [8.49, 11.31, 5], size_m: [0.45, 0.35, 10]}
-    - {name: g1_+10, center_m: [2.83, 16.97, 5], size_m: [0.45, 0.35, 10]}
-    - {name: g1_+12, center_m: [1.41, 18.38, 5], size_m: [0.45, 0.35, 10]}
-    - {name: g1_+14, center_m: [0.00, 19.80, 5], size_m: [0.45, 0.35, 10]}
-    # gate 2: wall crossing the diagonal at ~28 m, opening on the right (map perp -6 m)
-    - {name: g2_-14, center_m: [29.70, 9.90, 5], size_m: [0.45, 0.35, 10]}
-    - {name: g2_-12, center_m: [28.28, 11.31, 5], size_m: [0.45, 0.35, 10]}
-    - {name: g2_-10, center_m: [26.87, 12.73, 5], size_m: [0.45, 0.35, 10]}
-    - {name: g2_-02, center_m: [21.21, 18.38, 5], size_m: [0.45, 0.35, 10]}
-    - {name: g2_+00, center_m: [19.80, 19.80, 5], size_m: [0.45, 0.35, 10]}
-    - {name: g2_+02, center_m: [18.38, 21.21, 5], size_m: [0.45, 0.35, 10]}
-    - {name: g2_+04, center_m: [16.97, 22.63, 5], size_m: [0.45, 0.35, 10]}
-    - {name: g2_+06, center_m: [15.56, 24.04, 5], size_m: [0.45, 0.35, 10]}
-    - {name: g2_+08, center_m: [14.14, 25.46, 5], size_m: [0.45, 0.35, 10]}
-    - {name: g2_+10, center_m: [12.73, 26.87, 5], size_m: [0.45, 0.35, 10]}
-    - {name: g2_+12, center_m: [11.31, 28.28, 5], size_m: [0.45, 0.35, 10]}
-    - {name: g2_+14, center_m: [9.90, 29.70, 5], size_m: [0.45, 0.35, 10]}
-    # gate 3: wall crossing the diagonal at ~42 m, opening on the left (map perp +6 m)
-    - {name: g3_-14, center_m: [39.60, 19.80, 5], size_m: [0.45, 0.35, 10]}
-    - {name: g3_-12, center_m: [38.18, 21.21, 5], size_m: [0.45, 0.35, 10]}
-    - {name: g3_-10, center_m: [36.77, 22.63, 5], size_m: [0.45, 0.35, 10]}
-    - {name: g3_-08, center_m: [35.36, 24.04, 5], size_m: [0.45, 0.35, 10]}
-    - {name: g3_-06, center_m: [33.94, 25.46, 5], size_m: [0.45, 0.35, 10]}
-    - {name: g3_-04, center_m: [32.53, 26.87, 5], size_m: [0.45, 0.35, 10]}
-    - {name: g3_-02, center_m: [31.11, 28.28, 5], size_m: [0.45, 0.35, 10]}
-    - {name: g3_+00, center_m: [29.70, 29.70, 5], size_m: [0.45, 0.35, 10]}
-    - {name: g3_+02, center_m: [28.28, 31.11, 5], size_m: [0.45, 0.35, 10]}
-    - {name: g3_+10, center_m: [22.63, 36.77, 5], size_m: [0.45, 0.35, 10]}
-    - {name: g3_+12, center_m: [21.21, 38.18, 5], size_m: [0.45, 0.35, 10]}
-    - {name: g3_+14, center_m: [19.80, 39.60, 5], size_m: [0.45, 0.35, 10]}
-    # gate 4: wall crossing the diagonal at ~56 m, opening on the right (map perp -6 m)
-    - {name: g4_-14, center_m: [49.50, 29.70, 5], size_m: [0.45, 0.35, 10]}
-    - {name: g4_-12, center_m: [48.08, 31.11, 5], size_m: [0.45, 0.35, 10]}
-    - {name: g4_-10, center_m: [46.67, 32.53, 5], size_m: [0.45, 0.35, 10]}
-    - {name: g4_-02, center_m: [41.01, 38.18, 5], size_m: [0.45, 0.35, 10]}
-    - {name: g4_+00, center_m: [39.60, 39.60, 5], size_m: [0.45, 0.35, 10]}
-    - {name: g4_+02, center_m: [38.18, 41.01, 5], size_m: [0.45, 0.35, 10]}
-    - {name: g4_+04, center_m: [36.77, 42.43, 5], size_m: [0.45, 0.35, 10]}
-    - {name: g4_+06, center_m: [35.36, 43.84, 5], size_m: [0.45, 0.35, 10]}
-    - {name: g4_+08, center_m: [33.94, 45.25, 5], size_m: [0.45, 0.35, 10]}
-    - {name: g4_+10, center_m: [32.53, 46.67, 5], size_m: [0.45, 0.35, 10]}
-    - {name: g4_+12, center_m: [31.11, 48.08, 5], size_m: [0.45, 0.35, 10]}
-    - {name: g4_+14, center_m: [29.70, 49.50, 5], size_m: [0.45, 0.35, 10]}
+    - {name: pillar_1, center_m: [5.66, 7.07, 5], size_m: [0.6, 0.6, 10]}
+    - {name: pillar_2, center_m: [11.31, 9.90, 5], size_m: [0.6, 0.6, 10]}
+    - {name: pillar_3, center_m: [14.14, 15.56, 5], size_m: [0.6, 0.6, 10]}
+    - {name: pillar_4, center_m: [19.80, 18.38, 5], size_m: [0.6, 0.6, 10]}
+    - {name: pillar_5, center_m: [22.63, 24.04, 5], size_m: [0.6, 0.6, 10]}
+    - {name: pillar_6, center_m: [28.28, 26.87, 5], size_m: [0.6, 0.6, 10]}
+    - {name: pillar_7, center_m: [31.11, 32.53, 5], size_m: [0.6, 0.6, 10]}

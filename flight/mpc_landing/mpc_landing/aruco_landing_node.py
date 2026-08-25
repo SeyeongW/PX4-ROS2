@@ -312,6 +312,10 @@ class ArucoLandingNode(Node):
         self._route_pending = None
         self._route_active = None
         self._route_progress = 0.0
+        # The follower's most recent cross-track deviation. A large excursion
+        # replans from the current position rather than fighting to rejoin the
+        # old line — the primary obstacle-field response.
+        self._route_last_cross_track = float('inf')
         self._route_request_seq = 0
         self._route_last_request_t = float('-inf')
         self._route_last_error = ''
@@ -688,6 +692,13 @@ class ArucoLandingNode(Node):
         p('route_anchor_timeout_s', 0.3)
         p('route_timeout_s', 300.0)
         p('route_replan_period_s', 2.0)
+        # Deviate off the planned line by more than this and replan from the
+        # current position at the next replan window — do not wait to be fully
+        # stuck. This is the proactive obstacle-field response: re-route from
+        # where the vehicle is instead of fighting back onto a line it has left.
+        # Keep it well above route_cross_track so ordinary tracking never trips
+        # it. Non-positive disables it (stuck-only replanning).
+        p('route_replan_cross_track_m', 3.0)
         p('route_lookahead_m', 6.0)
         # How far the vehicle may sit off the planned line before the pure-
         # pursuit carrot stops looking ahead and only steers straight back.
@@ -843,6 +854,8 @@ class ArucoLandingNode(Node):
             g('route_replan_period_s').value)
         self.route_lookahead = float(g('route_lookahead_m').value)
         self.route_cross_track = float(g('route_cross_track_m').value)
+        self.route_replan_cross_track = float(
+            g('route_replan_cross_track_m').value)
         self.allow_unapproved_route_map = bool(
             g('allow_unapproved_route_map').value)
         if self.planned_cruise and not self.cruise:
@@ -2187,7 +2200,16 @@ class ArucoLandingNode(Node):
         # `route_timeout` is a deadlock, not a safety measure. Replanning from
         # where the vehicle actually is stays exact-safe — A* starts at this
         # position and the splice still has to certify the joining chord.
-        if self._route_active is not None and not self._route_follow_stuck():
+        # Deviated = the vehicle has drifted off the line by more than the
+        # replan threshold. Then re-route from where it actually is instead of
+        # steering it back across an obstacle field to the old line — the
+        # proactive response, before it fully stalls.
+        deviated = (self.route_replan_cross_track > 0.0
+                    and math.isfinite(self._route_last_cross_track)
+                    and self._route_last_cross_track
+                    > self.route_replan_cross_track)
+        if (self._route_active is not None and not self._route_follow_stuck()
+                and not deviated):
             _plan, _origin, active_goal, _seq, _committed = self._route_active
             if float(np.linalg.norm(goal - active_goal)) < max(
                     0.5, self.route_cross_track):
@@ -2219,12 +2241,18 @@ class ArucoLandingNode(Node):
             self.get_logger().error(
                 self._route_last_error, throttle_duration_sec=2.0)
             return
+        trigger = ('stuck' if self._route_follow_stuck()
+                   else f'deviated {self._route_last_cross_track:.1f} m'
+                   if deviated else 'goal moved')
         self.get_logger().info(
-            f'route #{seq} planning: local ({start[0]:.1f},{start[1]:.1f}) '
-            f'-> ({goal[0]:.1f},{goal[1]:.1f})')
+            f'route #{seq} planning ({trigger}): local '
+            f'({start[0]:.1f},{start[1]:.1f}) -> ({goal[0]:.1f},{goal[1]:.1f})')
 
     def _route_carrot(self) -> tuple[np.ndarray | None, float]:
         """Current exact-safe local-ENU target and cross-track error."""
+        # Reset the recorded deviation; only a real follow attempt below sets a
+        # finite value, so a health/pose failure cannot look like a deviation.
+        self._route_last_cross_track = float('inf')
         # The route is already anchored: require live absolute-EKF health, but
         # do not demand a new pose/fix timestamp pair merely to follow it.
         reason = self._route_flight_health_reason()
@@ -2250,6 +2278,7 @@ class ArucoLandingNode(Node):
                 self._route_last_error, throttle_duration_sec=2.0)
             return None, float('inf')
         self._route_progress = progress
+        self._route_last_cross_track = cross_track
         if target is None:
             self._route_last_error = (
                 f'no collision-free chord from the vehicle to the route '
