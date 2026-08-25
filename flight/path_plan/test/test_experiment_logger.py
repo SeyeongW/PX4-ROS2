@@ -35,8 +35,15 @@ def test_metrics_and_two_csv_outputs(tmp_path):
     metrics.add_relative_xy(0.4)
     metrics.landing_xy_error_m = 0.1
     metrics.touchdown_relative_speed_m_s = 0.3
+    metrics.add_velocity([3.0, 4.0, 0.0])       # speed 5
+    metrics.add_velocity([0.0, 0.0, 6.0])       # speed 6 -> peak
+    metrics.add_acceleration([0.0, 0.0, 0.0])   # 0
+    metrics.add_acceleration([3.0, 4.0, 0.0])   # 5 -> peak; rms sqrt(12.5)
 
     summary = metrics.summary()
+    assert summary['max_speed_m_s'] == 6.0
+    assert summary['max_accel_m_s2'] == 5.0
+    assert math.isclose(summary['accel_rms_m_s2'], math.sqrt(12.5))
     assert summary['path_length_m'] == 17.0
     assert summary['tracking_error_mean_m'] == 1.5
     assert summary['tracking_error_max_m'] == 2.0
@@ -73,6 +80,20 @@ def test_metrics_and_two_csv_outputs(tmp_path):
     assert set(SUMMARY_METRICS).issubset(row)
     assert float(row['path_length_m']) == 17.0
     assert row['landing_xy_error_source'] == 'vision_handoff'
+
+
+def test_kinematics_are_blank_until_a_sample_and_ignore_non_finite():
+    metrics = ExperimentMetrics()
+    summary = metrics.summary()
+    assert summary['max_speed_m_s'] is None
+    assert summary['max_accel_m_s2'] is None
+    assert summary['accel_rms_m_s2'] is None
+    metrics.add_velocity([float('nan'), 0.0, 0.0])       # dropped
+    metrics.add_acceleration([1.0, 2.0])                 # wrong shape, dropped
+    assert metrics.summary()['max_speed_m_s'] is None
+    assert metrics.summary()['accel_rms_m_s2'] is None
+    metrics.add_velocity([1.0, 0.0, 0.0])
+    assert metrics.summary()['max_speed_m_s'] == 1.0
 
 
 def test_tracking_error_is_to_active_polyline_not_only_samples():
