@@ -99,17 +99,33 @@ def test_drone_relative_field_map_is_approved_and_origin_free():
     assert not route_map_info(MAP).drone_relative
 
 
+PILLAR_CENTRE = np.array([5.66, 7.07])   # pillar_1 on the field map (blocked)
+
+
+def _first_stuck_position(route, origin):
+    """A free vehicle position with no exact-safe carrot on `route`."""
+    rng = np.random.default_rng(1)
+    for _ in range(4000):
+        point = np.array([rng.uniform(0.0, 50.0), rng.uniform(0.0, 50.0)])
+        if not segment_is_free(FIELD_MAP, origin, point, point):
+            continue
+        _, target, _ = safe_route_target(
+            FIELD_MAP, origin, route.arc_m, route.path_local_xy, point,
+            0.0, 6.0, 1.5)
+        if target is None:
+            return point
+    return None
+
+
 def test_replanning_from_the_current_position_recovers_a_stuck_follower():
-    # A vehicle that has drifted far off its route with a barrier blocking the
+    # A vehicle that has drifted off its route with a pillar blocking the
     # straight cut-back has no exact-safe carrot on the OLD route (the field
     # HOLD). Replanning from where it actually is must give a route it can
     # follow from there — the guarantee _route_follow_stuck's replan relies on.
     origin = np.zeros(2)
     old = plan_route(FIELD_MAP, np.zeros(2), np.array([50.0, 50.0]), origin)
-    drone = np.array([31.85, 13.49])                 # off-path, cut-back walled
-    _, stuck_target, _ = safe_route_target(
-        FIELD_MAP, origin, old.arc_m, old.path_local_xy, drone, 0.0, 6.0, 1.5)
-    assert stuck_target is None                      # HOLD on the old route
+    drone = _first_stuck_position(old, origin)
+    assert drone is not None                          # the field can strand one
 
     fresh = plan_route(FIELD_MAP, drone, np.array([50.0, 50.0]), origin)
     _, target, cross = safe_route_target(
@@ -131,8 +147,8 @@ def test_nearest_free_point_returns_a_free_point_unchanged():
 
 def test_nearest_free_point_projects_a_blocked_target_out_of_a_keep_out():
     origin = np.zeros(2)
-    # A barrier centre on the slalom field: inside its keep-out, so blocked.
-    blocked = np.array([9.90, 9.90])
+    # A pillar centre on the field: inside its keep-out, so blocked.
+    blocked = PILLAR_CENTRE
     assert not segment_is_free(FIELD_MAP, origin, blocked, blocked)
     result = nearest_free_point(FIELD_MAP, origin, blocked)
     assert result is not None
@@ -144,10 +160,9 @@ def test_nearest_free_point_projects_a_blocked_target_out_of_a_keep_out():
 
 def test_nearest_free_point_gives_up_rather_than_inventing_a_far_goal():
     origin = np.zeros(2)
-    blocked = np.array([9.90, 9.90])
     # With a tiny search radius nothing free is within reach: None, not a guess.
     assert nearest_free_point(
-        FIELD_MAP, origin, blocked, max_radius_m=0.1) is None
+        FIELD_MAP, origin, PILLAR_CENTRE, max_radius_m=0.1) is None
 
 
 def test_drone_relative_field_route_weaves_through_the_virtual_barriers():

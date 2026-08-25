@@ -180,7 +180,7 @@ def test_clear_trailer_goal_is_used_unchanged():
 
 def test_trailer_goal_inside_a_virtual_keepout_is_projected_to_a_free_point():
     field, cju_route = _field_map()
-    blocked = np.array([9.90, 9.90, 0.0])     # a barrier centre on the field
+    blocked = np.array([5.66, 7.07, 0.0])     # a pillar centre on the field
     assert not cju_route.segment_is_free(
         field, np.zeros(2), blocked[:2], blocked[:2])
     goal = ArucoLandingNode._route_goal_local(
