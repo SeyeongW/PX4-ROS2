@@ -84,11 +84,16 @@ SUMMARY_METRICS = (
     'relative_xy_error_m',
     'landing_xy_error_m',
     'touchdown_relative_speed_m_s',
+    'max_speed_m_s',
+    'max_accel_m_s2',
+    'accel_rms_m_s2',
 )
 
 TIMESERIES_FIELDS = (
     'timestamp_utc', 'elapsed_s', 'event', 'phase',
     'x_m', 'y_m', 'z_m',
+    'vx_m_s', 'vy_m_s', 'vz_m_s', 'speed_m_s',
+    'ax_m_s2', 'ay_m_s2', 'az_m_s2', 'accel_mag_m_s2',
     'path_length_m', 'tracking_error_m', 'min_clearance_m',
     'astar_plan_time_ms', 'mpc_solve_time_ms',
     'sfc_generation_time_ms', 'sfc_min_width_m', 'sfc_avg_width_m',
@@ -175,6 +180,10 @@ class ExperimentMetrics:
     relative_xy_errors: list[float] = field(default_factory=list)
     landing_xy_error_m: float | None = None
     touchdown_relative_speed_m_s: float | None = None
+    max_speed_m_s: float | None = None
+    max_accel_m_s2: float | None = None
+    _accel_sq_sum: float = 0.0
+    _accel_count: int = 0
     _last_position: np.ndarray | None = None
 
     def start_at(self, position=None) -> None:
@@ -245,6 +254,31 @@ class ExperimentMetrics:
         if _finite(value) and float(value) >= 0.0:
             self.relative_xy_errors.append(float(value))
 
+    def add_velocity(self, velocity) -> None:
+        """Track the peak ground speed from a local-ENU velocity sample."""
+        vector = np.asarray(velocity, float)
+        if vector.shape != (3,) or not np.all(np.isfinite(vector)):
+            return
+        speed = float(np.linalg.norm(vector))
+        if self.max_speed_m_s is None or speed > self.max_speed_m_s:
+            self.max_speed_m_s = speed
+
+    def add_acceleration(self, acceleration) -> None:
+        """Track peak and RMS of the kinematic acceleration magnitude."""
+        vector = np.asarray(acceleration, float)
+        if vector.shape != (3,) or not np.all(np.isfinite(vector)):
+            return
+        magnitude = float(np.linalg.norm(vector))
+        if self.max_accel_m_s2 is None or magnitude > self.max_accel_m_s2:
+            self.max_accel_m_s2 = magnitude
+        self._accel_sq_sum += magnitude * magnitude
+        self._accel_count += 1
+
+    def accel_rms_m_s2(self) -> float | None:
+        if not self._accel_count:
+            return None
+        return float(math.sqrt(self._accel_sq_sum / self._accel_count))
+
     def detection_rate(self) -> float | None:
         if not self.aruco_total:
             return None
@@ -282,6 +316,9 @@ class ExperimentMetrics:
             'landing_xy_error_m': self.landing_xy_error_m,
             'touchdown_relative_speed_m_s':
                 self.touchdown_relative_speed_m_s,
+            'max_speed_m_s': self.max_speed_m_s,
+            'max_accel_m_s2': self.max_accel_m_s2,
+            'accel_rms_m_s2': self.accel_rms_m_s2(),
         }
 
 
@@ -487,6 +524,11 @@ class ExperimentLoggerNode(Node):
         self._position_t = float('nan')
         self._velocity = None
         self._velocity_t = float('-inf')
+        # Kinematic acceleration, finite-differenced from the velocity stream
+        # (gravity-free, matching the double-integrator MPC's accel input).
+        self._acceleration = None
+        self._prev_velocity = None
+        self._prev_velocity_t = float('-inf')
         self._active_path = None
         self._active_corridor_min = None
         self._active_corridor_max = None
@@ -666,23 +708,44 @@ class ExperimentLoggerNode(Node):
         self._handle_pose(
             np.array([p.x, p.y, p.z], float), _stamp_seconds(message))
 
+    def _ingest_velocity(self, velocity: np.ndarray) -> None:
+        """Store the velocity and finite-difference it into acceleration.
+
+        Acceleration is the velocity derivative — the kinematic accel the
+        double-integrator MPC treats as its control input, gravity-free — so a
+        plain difference over the sample interval is the right estimate. Absurd
+        gaps (a dropout, a first sample) are skipped rather than differentiated.
+        """
+        now = self._now()
+        if (self._prev_velocity is not None
+                and math.isfinite(self._prev_velocity_t)):
+            dt = now - self._prev_velocity_t
+            if 1.0e-3 <= dt <= 0.5:
+                self._acceleration = (velocity - self._prev_velocity) / dt
+                if self.recording:
+                    self.metrics.add_acceleration(self._acceleration)
+        if self.recording:
+            self.metrics.add_velocity(velocity)
+        self._velocity = velocity
+        self._velocity_t = now
+        self._prev_velocity = velocity.copy()
+        self._prev_velocity_t = now
+
     def _on_velocity(self, message: TwistStamped) -> None:
         v = message.twist.linear
-        self._velocity = np.array([v.x, v.y, v.z], float)
-        self._velocity_t = self._now()
+        self._ingest_velocity(np.array([v.x, v.y, v.z], float))
 
     def _on_odometry(self, message: Odometry) -> None:
         p = message.pose.pose.position
         v = message.twist.twist.linear
-        self._velocity = np.array([v.x, v.y, v.z], float)
-        self._velocity_t = self._now()
+        self._ingest_velocity(np.array([v.x, v.y, v.z], float))
         self._handle_pose(
             np.array([p.x, p.y, p.z], float), _stamp_seconds(message))
 
     def _on_px4_position(self, message) -> None:
         # PX4 NED -> ROS ENU, exactly as landing_mpc's mission manager.
-        self._velocity = np.array([message.vy, message.vx, -message.vz], float)
-        self._velocity_t = self._now()
+        self._ingest_velocity(
+            np.array([message.vy, message.vx, -message.vz], float))
         self._handle_pose(
             np.array([message.y, message.x, -message.z], float), self._now())
 
@@ -723,8 +786,21 @@ class ExperimentLoggerNode(Node):
                     if not inside and not self._sfc_outside:
                         self.metrics.add_sfc_violation()
                 self._sfc_outside = not inside
+        vel = self._velocity
+        acc = self._acceleration
+        kinematics = {}
+        if vel is not None and np.all(np.isfinite(vel)):
+            kinematics.update(
+                vx_m_s=float(vel[0]), vy_m_s=float(vel[1]),
+                vz_m_s=float(vel[2]), speed_m_s=float(np.linalg.norm(vel)))
+        if acc is not None and np.all(np.isfinite(acc)):
+            kinematics.update(
+                ax_m_s2=float(acc[0]), ay_m_s2=float(acc[1]),
+                az_m_s2=float(acc[2]),
+                accel_mag_m_s2=float(np.linalg.norm(acc)))
         self._write('pose', x_m=position[0], y_m=position[1], z_m=position[2],
-                    tracking_error_m=tracking, min_clearance_m=clearance)
+                    tracking_error_m=tracking, min_clearance_m=clearance,
+                    **kinematics)
 
     def _on_fix(self, message: NavSatFix) -> None:
         if message.status.status < NavSatStatus.STATUS_FIX:
