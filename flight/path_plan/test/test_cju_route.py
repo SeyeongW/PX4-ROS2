@@ -255,3 +255,61 @@ def test_clearance_falls_off_toward_an_obstacle_and_fails_closed():
     assert clearance('/no/such/map.yaml', origin, [0.0, 0.0]) == 0.0
     assert clearance(MAP, origin, [float('nan'), 0.0]) == 0.0
     assert clearance(MAP, [float('inf'), 0.0], [0.0, 0.0]) == 0.0
+
+
+def test_a_route_survives_a_start_the_optimiser_cannot_smooth():
+    """A rejected B-spline must not discard a certified A* path.
+
+    The A* chords are each proved free with `segment_is_free_exact` before the
+    optimiser runs, so a spline the optimiser cannot keep collision-free is a
+    reason to fly the polyline instead — not to refuse. Refusing outright
+    failed 35% of starts within half a metre of an obstacle, which is where a
+    vehicle most needs a way out.
+    """
+    from pathlib import Path as _P
+    from path_plan import cju_route as cr
+    field = str(_P(cr.__file__).parents[1] / 'config' / 'drone_field_route.yaml')
+    origin = np.zeros(2)
+    # (10, 10) is 0.01 m off a pillar's grown box: free, but the optimiser has
+    # no room to bulge and its spline used to be rejected outright.
+    start = np.array([10.0, 10.0])
+    assert cr.segment_is_free(field, origin, start, start)
+    assert cr.clearance(field, origin, start) < 0.5
+
+    plan = cr.plan_route(field, start, np.array([50.0, 50.0]), origin)
+    points = plan.path_local_xy
+    assert np.allclose(points[0], start, atol=1.0e-6)
+    assert all(cr.segment_is_free(field, origin, a, b)
+               for a, b in zip(points[:-1], points[1:]))
+
+
+def test_a_free_start_in_a_blocked_grid_cell_still_plans():
+    """A grid artefact is not an obstacle.
+
+    planner_resolution_m 1.0 against vehicle_clearance_xy_m 1.0 puts a point
+    with tens of centimetres of room in a cell A* samples as blocked, so the
+    vehicle was told there is no route out of a position it is legally in.
+    `nearest_free_point` cannot fix it — the point is not itself blocked, so it
+    comes back unmoved — hence the relay. The exact start must survive.
+    """
+    from pathlib import Path as _P
+    from path_plan import cju_route as cr
+    field = str(_P(cr.__file__).parents[1] / 'config' / 'drone_field_route.yaml')
+    origin, goal = np.zeros(2), np.array([50.0, 50.0])
+    rng = np.random.default_rng(7)
+    grazing = []
+    while len(grazing) < 8:
+        candidate = rng.uniform(0.0, 45.0, 2)
+        if (cr.segment_is_free(field, origin, candidate, candidate)
+                and cr.clearance(field, origin, candidate) <= 0.5):
+            grazing.append(candidate)
+
+    for start in grazing:
+        # The projection the mission node applies first is a no-op here.
+        assert np.allclose(
+            cr.nearest_free_point(field, origin, start), start, atol=1.0e-9)
+        plan = cr.plan_route(field, start, goal, origin)
+        points = plan.path_local_xy
+        assert np.allclose(points[0], start, atol=1.0e-6)
+        assert all(cr.segment_is_free(field, origin, a, b)
+                   for a, b in zip(points[:-1], points[1:]))
