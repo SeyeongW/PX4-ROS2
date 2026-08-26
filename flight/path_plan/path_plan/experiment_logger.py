@@ -73,6 +73,8 @@ SUMMARY_METRICS = (
     'tracking_error_rmse_m',
     'min_clearance_m',
     'astar_plan_time_ms',
+    'astar_expanded_nodes_mean',
+    'astar_expanded_nodes_max',
     'mpc_solve_time_ms',
     'sfc_generation_time_ms',
     'sfc_min_width_m',
@@ -95,7 +97,7 @@ TIMESERIES_FIELDS = (
     'vx_m_s', 'vy_m_s', 'vz_m_s', 'speed_m_s',
     'ax_m_s2', 'ay_m_s2', 'az_m_s2', 'accel_mag_m_s2',
     'path_length_m', 'tracking_error_m', 'min_clearance_m',
-    'astar_plan_time_ms', 'mpc_solve_time_ms',
+    'astar_plan_time_ms', 'astar_expanded_nodes', 'mpc_solve_time_ms',
     'sfc_generation_time_ms', 'sfc_min_width_m', 'sfc_avg_width_m',
     'sfc_corridor_count', 'sfc_violation_count', 'replan_count',
     'aruco_detected', 'aruco_detection_rate_pct',
@@ -166,6 +168,7 @@ class ExperimentMetrics:
     tracking_errors: list[float] = field(default_factory=list)
     clearances: list[float] = field(default_factory=list)
     astar_times_ms: list[float] = field(default_factory=list)
+    astar_expanded_nodes: list[float] = field(default_factory=list)
     mpc_times_ms: list[float] = field(default_factory=list)
     sfc_times_ms: list[float] = field(default_factory=list)
     sfc_min_widths_m: list[float] = field(default_factory=list)
@@ -210,10 +213,15 @@ class ExperimentMetrics:
         if _finite(value) and float(value) >= 0.0:
             self.clearances.append(float(value))
 
-    def add_astar(self, plan_time_ms, *, initial_for_leg: bool) -> None:
+    def add_astar(self, plan_time_ms, *, initial_for_leg: bool,
+                  expanded_nodes=None) -> None:
         if not _finite(plan_time_ms) or float(plan_time_ms) < 0.0:
             return
         self.astar_times_ms.append(float(plan_time_ms))
+        # A*'s search effort — the compute-load counterpart to the plan time,
+        # and the number that climbs on a denser obstacle map.
+        if _finite(expanded_nodes) and float(expanded_nodes) >= 0.0:
+            self.astar_expanded_nodes.append(float(expanded_nodes))
         self.successful_plans += 1
         if not initial_for_leg:
             self.replan_count += 1
@@ -298,6 +306,9 @@ class ExperimentMetrics:
             'min_clearance_m': (min(self.clearances)
                                 if self.clearances else None),
             'astar_plan_time_ms': _mean(self.astar_times_ms),
+            'astar_expanded_nodes_mean': _mean(self.astar_expanded_nodes),
+            'astar_expanded_nodes_max': (max(self.astar_expanded_nodes)
+                                         if self.astar_expanded_nodes else None),
             'mpc_solve_time_ms': _mean(self.mpc_times_ms),
             'sfc_generation_time_ms': _mean(self.sfc_times_ms),
             'sfc_min_width_m': (min(self.sfc_min_widths_m)
@@ -849,13 +860,17 @@ class ExperimentLoggerNode(Node):
         if not message.data:
             return
         plan_ms = 1000.0 * float(message.data[0])
+        # astar_stats payload is [plan_time_s, expanded_nodes, path_point_count].
+        expanded = (float(message.data[1]) if len(message.data) > 1 else None)
         if self._plan_leg is not None:
             initial = self._plans_in_leg == 0
             self._plans_in_leg += 1
         else:
             initial = self.metrics.successful_plans == 0
-        self.metrics.add_astar(plan_ms, initial_for_leg=initial)
-        self._write('astar', astar_plan_time_ms=plan_ms)
+        self.metrics.add_astar(
+            plan_ms, initial_for_leg=initial, expanded_nodes=expanded)
+        self._write('astar', astar_plan_time_ms=plan_ms,
+                    astar_expanded_nodes=expanded)
 
     def _on_mpc_stats(self, message: Float32MultiArray) -> None:
         if (not self.recording or not message.data

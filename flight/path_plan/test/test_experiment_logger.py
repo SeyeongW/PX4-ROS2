@@ -20,8 +20,8 @@ def test_metrics_and_two_csv_outputs(tmp_path):
     metrics.add_tracking_error(2.0)
     metrics.add_clearance(3.0)
     metrics.add_clearance(0.75)
-    metrics.add_astar(10.0, initial_for_leg=True)
-    metrics.add_astar(20.0, initial_for_leg=False)
+    metrics.add_astar(10.0, initial_for_leg=True, expanded_nodes=51)
+    metrics.add_astar(20.0, initial_for_leg=False, expanded_nodes=735)
     metrics.add_mpc(2.0)
     metrics.add_mpc(4.0)
     metrics.add_sfc(5.0, 2.0, 4.0, 3)
@@ -50,6 +50,8 @@ def test_metrics_and_two_csv_outputs(tmp_path):
     assert math.isclose(summary['tracking_error_rmse_m'], math.sqrt(2.5))
     assert summary['min_clearance_m'] == 0.75
     assert summary['astar_plan_time_ms'] == 15.0
+    assert summary['astar_expanded_nodes_mean'] == 393.0
+    assert summary['astar_expanded_nodes_max'] == 735.0
     assert summary['mpc_solve_time_ms'] == 3.0
     assert summary['sfc_generation_time_ms'] == 6.0
     assert summary['sfc_min_width_m'] == 1.0
