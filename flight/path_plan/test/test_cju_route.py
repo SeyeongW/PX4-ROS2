@@ -21,6 +21,8 @@ from path_plan.cju_route import (
 MAP = str(Path(__file__).parents[1] / 'config' / 'drone_cju_route.yaml')
 FIELD_MAP = str(
     Path(__file__).parents[1] / 'config' / 'drone_field_route.yaml')
+MAZE_MAP = str(
+    Path(__file__).parents[1] / 'config' / 'drone_maze_route.yaml')
 
 
 def _fixture():
@@ -115,6 +117,21 @@ def _first_stuck_position(route, origin):
         if target is None:
             return point
     return None
+
+
+def test_maze_map_is_drone_relative_and_routes_collision_free():
+    info = route_map_info(MAZE_MAP)
+    assert info.drone_relative and info.hardware_flight_approved
+    assert info.mission_goal_xy == (50.0, 50.0)
+    origin = np.zeros(2)
+    start, goal = np.zeros(2), np.array([50.0, 50.0])
+    # A dense maze: the straight line is blocked and the planner weaves through.
+    assert not segment_is_free(MAZE_MAP, origin, start, goal)
+    plan = plan_route(MAZE_MAP, start, goal, origin)
+    assert np.allclose(plan.path_local_xy[0], start, atol=1.0e-6)
+    assert np.allclose(plan.path_local_xy[-1], goal, atol=1.0e-6)
+    assert all(segment_is_free(MAZE_MAP, origin, a, b)
+               for a, b in zip(plan.path_local_xy[:-1], plan.path_local_xy[1:]))
 
 
 def test_replanning_from_the_current_position_recovers_a_stuck_follower():
