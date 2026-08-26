@@ -1479,6 +1479,22 @@ class ArucoLandingNode(Node):
     def _stamp(self):
         return self.get_clock().now().to_msg()
 
+    def _viz_origin_epsilon(self) -> float:
+        """Redraw tolerance: a fraction of the SMALLEST thing being drawn.
+
+        An anchor error the size of an obstacle makes the picture lie about
+        which side of it the route passed, so this is derived from the map
+        rather than fixed. Quarter of the narrowest box, capped so a map of
+        large buildings still redraws on a jitter a viewer would notice.
+        """
+        try:
+            boxes = self._route_lib.obstacle_boxes(self.route_map_yaml)
+            narrowest = min(min(float(size[0]), float(size[1]))
+                            for _name, _centre, size in boxes)
+        except (ValueError, TypeError, OSError):
+            return 0.25
+        return float(min(0.5, max(0.05, 0.25 * narrowest)))
+
     def _obstacle_markers(self, origin) -> MarkerArray:
         """The virtual field, twice: what is there and what is avoided.
 
@@ -1569,10 +1585,23 @@ class ArucoLandingNode(Node):
             return
         # Republish the field when the origin MOVES, not on a timer: the origin
         # is re-derived from the fix pair every tick, so it jitters by
-        # centimetres, and redrawing 50 markers for that is noise. A metre is a
-        # different anchor and a different picture.
-        if (self._viz_origin is None
-                or float(np.linalg.norm(origin - self._viz_origin)) > 1.0):
+        # centimetres, and redrawing 50 markers for that is noise.
+        #
+        # THE THRESHOLD MUST BE SMALLER THAN AN OBSTACLE. It was 1.0 m, which is
+        # wider than the 0.6 m pillars this map is made of, and the route is
+        # redrawn on every new seq while the field is not — so the route slid up
+        # to a metre against stale markers and a route legitimately clearing a
+        # pillar by its full `vehicle_clearance_xy_m` was DRAWN going straight
+        # through one. The flown route was never in question; the picture was.
+        # Scale to the field being drawn, and redraw whenever a new route is
+        # published so the two can never be anchored a replan apart.
+        redraw = (self._viz_origin is None
+                  or float(np.linalg.norm(origin - self._viz_origin))
+                  > self._viz_origin_epsilon())
+        if self._route_active is not None:
+            plan, _origin, _goal, seq, _committed = self._route_active
+            redraw = redraw or seq != self._viz_route_seq
+        if redraw:
             self._viz_origin = np.asarray(origin, float).copy()
             self.obstacle_pub.publish(self._obstacle_markers(origin))
         if self._route_active is not None:
@@ -2257,7 +2286,7 @@ class ArucoLandingNode(Node):
                     np.asarray(requested_goal, float).copy(),
                     int(seq), self._now())
                 self._route_progress = 0.0
-                self._reset_path_mpc()
+                self._resync_path_mpc()
                 self._route_last_error = ''
                 route_observation = (planned, joined)
                 self._route_follow_fail_t = None
@@ -3111,18 +3140,41 @@ class ArucoLandingNode(Node):
         if not self._fresh_target():
             gone = (self._now() - self.target_t) if self.target is not None \
                 else elapsed
-            if gone > self.trailer_lost_search or self.target is None:
-                if self.planned_cruise:
-                    self.get_logger().warn(
-                        f'trailer target lost for {gone:.1f} s during planned '
-                        'cruise — handing to LAND, not descending at an '
-                        'uncertified route position')
-                    self._to(Phase.LAND)
-                else:
-                    self.get_logger().warn(
-                        f'trailer target lost for {gone:.1f} s during cruise — '
-                        f'searching for the marker from here')
-                    self._to(Phase.SEARCH)
+            # NEVER HAD A COORDINATE: there is no landing point to fly to, so
+            # the old stop-where-you-are handling is still the only option.
+            if self.target is None:
+                self.get_logger().warn(
+                    'trailer coordinate never arrived during cruise — '
+                    + ('handing to LAND' if self.planned_cruise
+                       else 'searching for the marker from here'))
+                self._to(Phase.LAND if self.planned_cruise else Phase.SEARCH)
+                return
+            # A LOST RADIO IS NOT A LOST LANDING POINT. The last coordinate is
+            # still the best estimate of where the trailer is, and the route to
+            # it was certified against the map — so keep flying it at altitude
+            # and let SEARCH's camera take over on arrival, instead of landing
+            # in a field 30 m short. `trailer_lost_search` used to cap this at
+            # 10 s, which is not enough time to cross the leg: the vehicle lost
+            # the radio mid-cruise and put itself down wherever it happened to
+            # be. The leg's own `route_timeout` still bounds it.
+            if gone > self.trailer_lost_search and not self.planned_cruise:
+                self.get_logger().warn(
+                    f'trailer target lost for {gone:.1f} s during cruise — '
+                    f'searching for the marker from here')
+                self._to(Phase.SEARCH)
+                return
+            # Flying to the last coordinate is bounded by the leg, not by the
+            # radio. The timeout below this block is unreachable while the
+            # target is stale, so a dropout gets its own copy of it — without
+            # one, removing the `trailer_lost_search` cap would let a vehicle
+            # that can never arrive fly at a dead coordinate indefinitely.
+            if elapsed > (self.route_timeout if self.planned_cruise
+                          else self.cruise_timeout):
+                self.get_logger().warn(
+                    f'trailer coordinate gone {gone:.1f} s and still '
+                    f'{self._target_range():.1f} m short after '
+                    f'{elapsed:.0f} s — landing here')
+                self._to(Phase.LAND)
                 return
             # Brief dropout: the radio paused but the last coordinate is still
             # the best estimate of where the trailer is, so keep going to it

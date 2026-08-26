@@ -109,11 +109,52 @@ def test_legacy_trailer_cruise_still_flies_directly():
 
 
 def test_planned_cruise_does_not_search_from_an_uncertified_lost_position():
+    # Still no SEARCH from wherever the radio happened to die — but no LAND
+    # there either. The certified route to the last coordinate is flown to the
+    # end at altitude, and SEARCH starts on arrival (the test below).
     state, calls = _cruise_state(planned=True, fresh=False)
     state._now = lambda: 20.0
     ArucoLandingNode._cruise_to_trailer(state)
-    assert ('phase', Phase.LAND) in calls
     assert ('phase', Phase.SEARCH) not in calls
+    assert ('phase', Phase.LAND) not in calls
+    assert any(call[0] == 'tracking_mpc' for call in calls)
+
+
+def test_a_long_dropout_keeps_flying_to_the_landing_point_instead_of_landing():
+    """A lost radio is not a lost landing point.
+
+    `trailer_lost_search` (10 s) used to cap this: a vehicle that lost the
+    trailer mid-cruise put itself down wherever it had got to, which on a 30 m
+    leg is a field. The last coordinate is still the best estimate of the
+    trailer, and the route to it was already certified against the map, so it
+    is flown to the end at altitude. The leg's own `route_timeout` bounds it.
+    """
+    state, calls = _cruise_state(planned=True, fresh=False)
+    state._now = lambda: 120.0            # 12x trailer_lost_search
+    ArucoLandingNode._cruise_to_trailer(state)
+    assert ('phase', Phase.LAND) not in calls
+    assert any(call[0] == 'tracking_mpc' for call in calls)
+
+    # Arriving is what hands over to the camera, not the clock.
+    state, calls = _cruise_state(planned=True, fresh=False)
+    state._now = lambda: 120.0
+    state._reached_last_trailer_coordinate = lambda: True
+    ArucoLandingNode._cruise_to_trailer(state)
+    assert ('phase', Phase.SEARCH) in calls
+
+    # And the whole leg is still bounded: past route_timeout it lands.
+    state, calls = _cruise_state(planned=True, fresh=False)
+    state._now = lambda: 400.0            # route_timeout is 300 s
+    ArucoLandingNode._cruise_to_trailer(state)
+    assert ('phase', Phase.LAND) in calls
+
+
+def test_a_coordinate_that_never_arrived_still_lands_rather_than_guessing():
+    state, calls = _cruise_state(planned=True, fresh=False)
+    state.target = None
+    state._now = lambda: 120.0
+    ArucoLandingNode._cruise_to_trailer(state)
+    assert ('phase', Phase.LAND) in calls
 
 
 def test_brief_dropout_keeps_flying_the_route_to_the_last_coordinate():
@@ -1485,3 +1526,43 @@ def test_only_the_flown_part_of_the_horizon_is_certified():
     state.route_horizon_check_s = 2.0
     assert ArucoLandingNode._route_mpc_command(state)[0]
     assert len(checked[0]) == horizon_n
+
+
+def test_committing_a_route_keeps_the_tracker_accelerating():
+    """A replan must not tell the tracker the vehicle is coasting at zero.
+
+    Every accepted route used to call `_reset_path_mpc`, which zeroes
+    `_last_mpc_acceleration`. `_send_pva` jerk-slews from that value and the
+    MPC is handed it as `applied_acceleration`, so each commit forced both to
+    ramp up from a standstill again — a/j seconds of not accelerating after
+    every replan, which is a vehicle that keeps stopping on the way. The
+    spliced route starts at the vehicle's present position, so there is no
+    physical discontinuity to model.
+    """
+    moving = np.array([1.5, 0.5, 0.0])
+    state = SimpleNamespace(
+        _route_active=None,
+        _route_progress=1.0,
+        _last_mpc_acceleration=moving.copy(),
+        _last_mpc_acceleration_t=12.0,
+        _path_last_solve_t=12.0,
+        _path_solve_t=12.0,
+        _path_mpc=SimpleNamespace(reset=lambda: None),
+        _path_reference=SimpleNamespace(reset=lambda: None),
+    )
+    state._reset_mpc_output = lambda: ArucoLandingNode._reset_mpc_output(state)
+    ArucoLandingNode._resync_path_mpc(state)
+
+    # The next tick re-solves against the new arc...
+    assert state._path_last_solve_t is None
+    # ...but the vehicle is still flying, and the tracker still knows it.
+    assert np.allclose(state._last_mpc_acceleration, moving)
+    assert state._last_mpc_acceleration_t == 12.0
+    # The previous horizon keeps streaming until the new solve lands.
+    assert state._path_solve_t == 12.0
+
+    # A genuine discontinuity (invalidation, phase change) still cold-starts.
+    ArucoLandingNode._reset_path_mpc(state)
+    assert np.allclose(state._last_mpc_acceleration, np.zeros(3))
+    assert state._last_mpc_acceleration_t is None
+    assert state._path_solve_t is None
