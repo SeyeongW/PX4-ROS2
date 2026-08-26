@@ -40,13 +40,13 @@ import rclpy
 import yaml
 from geometry_msgs.msg import (PointStamped, PoseStamped, TwistStamped,
                                Vector3Stamped)
-from mavros_msgs.msg import ExtendedState, State
+from mavros_msgs.msg import ExtendedState, GPSRAW, State
 from nav_msgs.msg import Odometry, Path
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import (DurabilityPolicy, HistoryPolicy, QoSProfile,
                        ReliabilityPolicy)
-from sensor_msgs.msg import NavSatFix, NavSatStatus
+from sensor_msgs.msg import BatteryState, NavSatFix, NavSatStatus
 from std_msgs.msg import Bool, Float32MultiArray, String
 
 from trailer_link.geodesy import enu_offset
@@ -89,6 +89,10 @@ SUMMARY_METRICS = (
     'max_speed_m_s',
     'max_accel_m_s2',
     'accel_rms_m_s2',
+    'trailer_range_min_m',
+    'gps_satellites_min',
+    'gps_h_acc_max_m',
+    'battery_voltage_min_v',
 )
 
 TIMESERIES_FIELDS = (
@@ -103,6 +107,10 @@ TIMESERIES_FIELDS = (
     'aruco_detected', 'aruco_detection_rate_pct',
     'relative_xy_error_m', 'landing_xy_error_m',
     'touchdown_relative_speed_m_s',
+    # hardware-validation channels: the moving target, localisation quality,
+    # and battery, sampled onto every pose row.
+    'trailer_x_m', 'trailer_y_m', 'trailer_range_m',
+    'gps_satellites', 'gps_h_acc_m', 'battery_voltage_v',
 )
 
 
@@ -111,6 +119,45 @@ def _finite(value) -> bool:
         return math.isfinite(float(value))
     except (TypeError, ValueError):
         return False
+
+
+def _read_map_metadata(map_yaml: str) -> dict:
+    """Which map/goal/obstacle set a run flew, for the summary's reproducibility.
+
+    Best-effort and defensive: any missing field is simply omitted, and an
+    unreadable or non-route map (e.g. the Gazebo city map) yields at most the
+    file name rather than raising — the logger never fails a run over metadata.
+    """
+    out: dict = {}
+    if not map_yaml:
+        return out
+    try:
+        out['map_file'] = FsPath(map_yaml).name
+        document = yaml.safe_load(
+            FsPath(map_yaml).expanduser().read_text(encoding='utf-8'))
+        if not isinstance(document, dict):
+            return out
+        site = document.get('site') or {}
+        mission = document.get('mission') or {}
+        if isinstance(site, dict):
+            if 'name' in site:
+                out['map_name'] = str(site['name'])
+            if 'drone_relative' in site:
+                out['map_drone_relative'] = (site['drone_relative'] is True)
+        if isinstance(mission, dict):
+            goal = mission.get('goal_m')
+            if isinstance(goal, (list, tuple)) and len(goal) >= 2 \
+                    and _finite(goal[0]) and _finite(goal[1]):
+                out['goal_x_m'] = float(goal[0])
+                out['goal_y_m'] = float(goal[1])
+            if _finite(mission.get('cruise_altitude_m')):
+                out['cruise_altitude_m'] = float(mission['cruise_altitude_m'])
+            obstacles = mission.get('obstacles') or []
+            if isinstance(obstacles, (list, tuple)):
+                out['obstacle_count'] = int(len(obstacles))
+    except Exception:
+        pass
+    return out
 
 
 def _mean(values: list[float]) -> float | None:
@@ -185,6 +232,10 @@ class ExperimentMetrics:
     touchdown_relative_speed_m_s: float | None = None
     max_speed_m_s: float | None = None
     max_accel_m_s2: float | None = None
+    trailer_range_min_m: float | None = None
+    gps_satellites_min: float | None = None
+    gps_h_acc_max_m: float | None = None
+    battery_voltage_min_v: float | None = None
     _accel_sq_sum: float = 0.0
     _accel_count: int = 0
     _last_position: np.ndarray | None = None
@@ -287,6 +338,33 @@ class ExperimentMetrics:
             return None
         return float(math.sqrt(self._accel_sq_sum / self._accel_count))
 
+    def add_trailer_range(self, value) -> None:
+        """Closest the vehicle came to the moving trailer coordinate."""
+        if not _finite(value) or float(value) < 0.0:
+            return
+        if (self.trailer_range_min_m is None
+                or float(value) < self.trailer_range_min_m):
+            self.trailer_range_min_m = float(value)
+
+    def add_gps(self, satellites, h_acc_m) -> None:
+        """Worst-case localisation quality: fewest sats, largest H accuracy."""
+        if _finite(satellites) and float(satellites) >= 0.0:
+            sats = float(satellites)
+            if (self.gps_satellites_min is None
+                    or sats < self.gps_satellites_min):
+                self.gps_satellites_min = sats
+        if _finite(h_acc_m) and float(h_acc_m) >= 0.0:
+            acc = float(h_acc_m)
+            if (self.gps_h_acc_max_m is None or acc > self.gps_h_acc_max_m):
+                self.gps_h_acc_max_m = acc
+
+    def add_battery(self, voltage_v) -> None:
+        if not _finite(voltage_v):
+            return
+        if (self.battery_voltage_min_v is None
+                or float(voltage_v) < self.battery_voltage_min_v):
+            self.battery_voltage_min_v = float(voltage_v)
+
     def detection_rate(self) -> float | None:
         if not self.aruco_total:
             return None
@@ -330,6 +408,10 @@ class ExperimentMetrics:
             'max_speed_m_s': self.max_speed_m_s,
             'max_accel_m_s2': self.max_accel_m_s2,
             'accel_rms_m_s2': self.accel_rms_m_s2(),
+            'trailer_range_min_m': self.trailer_range_min_m,
+            'gps_satellites_min': self.gps_satellites_min,
+            'gps_h_acc_max_m': self.gps_h_acc_max_m,
+            'battery_voltage_min_v': self.battery_voltage_min_v,
         }
 
 
@@ -460,6 +542,8 @@ class CsvSink:
         self._stream.close()
         fields = (
             'run_id', 'started_at_utc', 'ended_at_utc', 'end_reason',
+            'map_file', 'map_name', 'map_drone_relative',
+            'goal_x_m', 'goal_y_m', 'cruise_altitude_m', 'obstacle_count',
             *SUMMARY_METRICS,
             'successful_plan_count', 'pose_sample_count',
             'tracking_sample_count', 'sfc_evaluation_count',
@@ -540,6 +624,11 @@ class ExperimentLoggerNode(Node):
         self._acceleration = None
         self._prev_velocity = None
         self._prev_velocity_t = float('-inf')
+        # Latest hardware-validation channels, sampled onto each pose row.
+        self._trailer_xy = None
+        self._gps_satellites = None
+        self._gps_h_acc_m = None
+        self._battery_voltage_v = None
         self._active_path = None
         self._active_corridor_min = None
         self._active_corridor_max = None
@@ -570,6 +659,8 @@ class ExperimentLoggerNode(Node):
             except Exception as exc:
                 self.get_logger().error(
                     f'clearance disabled; map could not be read: {exc}')
+        # Reproducibility metadata: which map/goal/obstacles this run flew.
+        self._map_metadata = _read_map_metadata(map_yaml)
 
         sensor = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -583,6 +674,14 @@ class ExperimentLoggerNode(Node):
                                  self._on_mavros_state, sensor)
         self.create_subscription(ExtendedState, '/mavros/extended_state',
                                  self._on_extended_state, sensor)
+        # Hardware-validation channels: the moving trailer target, GPS quality,
+        # and battery. Observation only, like every other subscription here.
+        self.create_subscription(PointStamped, '/trailer/target_local',
+                                 self._on_trailer_target, sensor)
+        self.create_subscription(GPSRAW, '/mavros/gpsstatus/gps1/raw',
+                                 self._on_gpsraw, sensor)
+        self.create_subscription(BatteryState, '/mavros/battery',
+                                 self._on_battery, sensor)
         self.create_subscription(String, self.state_topic,
                                  self._on_phase, 10)
         self.create_subscription(Bool, self.detected_topic,
@@ -809,9 +908,43 @@ class ExperimentLoggerNode(Node):
                 ax_m_s2=float(acc[0]), ay_m_s2=float(acc[1]),
                 az_m_s2=float(acc[2]),
                 accel_mag_m_s2=float(np.linalg.norm(acc)))
+        if self._trailer_xy is not None:
+            trailer_range = float(np.hypot(
+                self._trailer_xy[0] - position[0],
+                self._trailer_xy[1] - position[1]))
+            kinematics.update(
+                trailer_x_m=float(self._trailer_xy[0]),
+                trailer_y_m=float(self._trailer_xy[1]),
+                trailer_range_m=trailer_range)
+            # Closest approach is only meaningful while cruising to the trailer,
+            # not during takeoff/hover before there is a target to close on.
+            if self.phase in _TRACKING_PHASES:
+                self.metrics.add_trailer_range(trailer_range)
+        if self._gps_satellites is not None:
+            kinematics.update(gps_satellites=self._gps_satellites,
+                              gps_h_acc_m=self._gps_h_acc_m)
+        if self._battery_voltage_v is not None:
+            kinematics.update(battery_voltage_v=self._battery_voltage_v)
         self._write('pose', x_m=position[0], y_m=position[1], z_m=position[2],
                     tracking_error_m=tracking, min_clearance_m=clearance,
                     **kinematics)
+
+    def _on_trailer_target(self, message: PointStamped) -> None:
+        p = message.point
+        if _finite(p.x) and _finite(p.y):
+            self._trailer_xy = np.array([float(p.x), float(p.y)], float)
+
+    def _on_gpsraw(self, message: GPSRAW) -> None:
+        # GPSRAW carries H accuracy in mm and a visible-satellite count.
+        self._gps_satellites = float(message.satellites_visible)
+        self._gps_h_acc_m = float(message.h_acc) * 1.0e-3
+        if self.recording:
+            self.metrics.add_gps(self._gps_satellites, self._gps_h_acc_m)
+
+    def _on_battery(self, message: BatteryState) -> None:
+        self._battery_voltage_v = float(message.voltage)
+        if self.recording:
+            self.metrics.add_battery(self._battery_voltage_v)
 
     def _on_fix(self, message: NavSatFix) -> None:
         if message.status.status < NavSatStatus.STATUS_FIX:
@@ -983,6 +1116,7 @@ class ExperimentLoggerNode(Node):
             touchdown_relative_speed_m_s=(
                 self.metrics.touchdown_relative_speed_m_s))
         metadata = {
+            **self._map_metadata,
             'end_reason': reason,
             'successful_plan_count': self.metrics.successful_plans,
             'pose_sample_count': self.metrics.pose_samples,
