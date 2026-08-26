@@ -1,0 +1,65 @@
+# Drone-relative COMPLEX (maze) obstacle field — opt-in demo map.
+#
+# Same drone-relative contract as drone_field_route.yaml (origin at the vehicle's
+# own local ENU (0,0), heading 0, hardware_flight_approved, virtual obstacles),
+# but a denser 25-pillar maze for a more elaborate avoidance demonstration: the
+# planned route makes ~7 direction changes weaving through it. Individual pillars
+# (never walls), so there is always open space to re-route around one — the
+# vehicle's deviation/stuck replan can always recover.
+#
+# NOT the default: A* is slower on a field this dense (heavier replans on the
+# Jetson), so drone_field_route.yaml (7 pillars, fast) stays the default. Select
+# this one explicitly:
+#   ROUTE_MAP=$(dirname "$0")/drone_maze_route.yaml   # or the full path
+#   ROUTE_MAP=.../config/drone_maze_route.yaml ./run_px4 trailer
+schema_version: 1
+
+site:
+  name: Drone-relative pillar maze (auto-centred on launch)
+  coordinate_frame: field
+  drone_relative: true
+  heading_deg_enu: 0.0
+  horizontal_accuracy: drone_relative_local_enu
+  hardware_flight_approved: true
+
+terrain:
+  coordinate_frame: field
+  center_m: [25, 25]
+  size_m: [90, 90]
+
+mission:
+  coordinate_frame: field
+  goal_m: [50, 50]
+  cruise_altitude_m: 5.0
+  planner_resolution_m: 1.0
+  vehicle_clearance_xy_m: 1.0
+  bspline_control_spacing_m: 1.0
+  bspline_sample_spacing_m: 0.1
+  # A 25-pillar maze straddling the whole launch->goal corridor. The route weaves
+  # ~7 times through it; each pillar is isolated, so none blocks a lane outright.
+  obstacles:
+    - {name: pillar_1, center_m: [5.93, 6.68, 5], size_m: [0.6, 0.6, 10]}
+    - {name: pillar_2, center_m: [9.51, 16.41, 5], size_m: [0.6, 0.6, 10]}
+    - {name: pillar_3, center_m: [5.97, 23.67, 5], size_m: [0.6, 0.6, 10]}
+    - {name: pillar_4, center_m: [7.9, 30.3, 5], size_m: [0.6, 0.6, 10]}
+    - {name: pillar_5, center_m: [9.17, 38.07, 5], size_m: [0.6, 0.6, 10]}
+    - {name: pillar_6, center_m: [15.46, 8.08, 5], size_m: [0.6, 0.6, 10]}
+    - {name: pillar_7, center_m: [15.65, 16.43, 5], size_m: [0.6, 0.6, 10]}
+    - {name: pillar_8, center_m: [17.19, 26.28, 5], size_m: [0.6, 0.6, 10]}
+    - {name: pillar_9, center_m: [14.92, 32.74, 5], size_m: [0.6, 0.6, 10]}
+    - {name: pillar_10, center_m: [16.98, 38.96, 5], size_m: [0.6, 0.6, 10]}
+    - {name: pillar_11, center_m: [21.51, 10.37, 5], size_m: [0.6, 0.6, 10]}
+    - {name: pillar_12, center_m: [22.99, 15.07, 5], size_m: [0.6, 0.6, 10]}
+    - {name: pillar_13, center_m: [25.96, 24.43, 5], size_m: [0.6, 0.6, 10]}
+    - {name: pillar_14, center_m: [23.86, 33.37, 5], size_m: [0.6, 0.6, 10]}
+    - {name: pillar_15, center_m: [21.65, 41.03, 5], size_m: [0.6, 0.6, 10]}
+    - {name: pillar_16, center_m: [31.37, 5.95, 5], size_m: [0.6, 0.6, 10]}
+    - {name: pillar_17, center_m: [32.8, 18.16, 5], size_m: [0.6, 0.6, 10]}
+    - {name: pillar_18, center_m: [30.54, 24.65, 5], size_m: [0.6, 0.6, 10]}
+    - {name: pillar_19, center_m: [30.99, 33.21, 5], size_m: [0.6, 0.6, 10]}
+    - {name: pillar_20, center_m: [33.11, 38.59, 5], size_m: [0.6, 0.6, 10]}
+    - {name: pillar_21, center_m: [41.65, 8.79, 5], size_m: [0.6, 0.6, 10]}
+    - {name: pillar_22, center_m: [40.91, 17.6, 5], size_m: [0.6, 0.6, 10]}
+    - {name: pillar_23, center_m: [39.64, 25.29, 5], size_m: [0.6, 0.6, 10]}
+    - {name: pillar_24, center_m: [41.89, 30.01, 5], size_m: [0.6, 0.6, 10]}
+    - {name: pillar_25, center_m: [41.75, 39.47, 5], size_m: [0.6, 0.6, 10]}
