@@ -567,7 +567,7 @@ class ArucoLandingNode(Node):
         """THE one place any of these numbers may be set."""
         p = self.declare_parameter
         # --- mission geometry
-        p('takeoff_alt_m', 5.0)             # takeoff AND transit altitude
+        p('takeoff_alt_m', 10.0)             # takeoff AND transit altitude
         # SEARCH settles here instead, and the difference is not cosmetic. The
         # camera trades footprint against resolution, and BOTH ends bite:
         #
@@ -752,7 +752,7 @@ class ArucoLandingNode(Node):
         # obstacle margin is the operator watching, not the map. Fly it with
         # visual separation, and put this back near the clearance if the
         # airframe ever gets RTK.
-        p('route_max_horizontal_accuracy_m', 5.0)
+        p('route_max_horizontal_accuracy_m', 3.0)
         # Route anchoring uses one local-pose/global-fix pair. Refuse a pair
         # whose callback times are too far apart while the vehicle is moving.
         p('route_pose_fix_sync_s', 0.10)
@@ -1418,6 +1418,35 @@ class ArucoLandingNode(Node):
     def _reset_mpc_output(self) -> None:
         self._last_mpc_acceleration = np.zeros(3)
         self._last_mpc_acceleration_t = None
+
+    def _resync_path_mpc(self) -> None:
+        """Point the tracker at a newly committed route WITHOUT a cold start.
+
+        A COMMIT IS NOT A DISCONTINUITY. `splice_route_from_current` builds
+        every accepted route to begin at the vehicle's present position, and
+        the joining chord is certified before the route is committed — so the
+        vehicle is still moving exactly as it was a tick earlier, and every
+        piece of tracker continuity remains physically correct.
+
+        `_reset_path_mpc` was called here anyway, and it zeroes
+        `_last_mpc_acceleration`. That is the stutter: `_send_pva` jerk-slews
+        from the remembered acceleration, and the MPC is handed
+        `applied_acceleration` too, so a commit told both of them the vehicle
+        was coasting at zero. Both then had to ramp back up under the jerk
+        limit — a/j seconds of not accelerating after EVERY replan, which from
+        the outside is a vehicle that keeps stopping on the way.
+
+        It also explains why replanning faster makes it worse rather than
+        better: the stall is triggered BY the commit, so shortening
+        `route_replan_period_s` shortens the gap between stalls. At a period
+        near the jerk ramp the vehicle would never finish accelerating at all.
+
+        All this does is force a solve against the new arc on the next tick.
+        The previous horizon keeps streaming until that lands — it is world
+        frame, already certified, and re-checked against the new route's own
+        geometry every tick like any other streamed sample.
+        """
+        self._path_last_solve_t = None
 
     # ------------------------------------------------------- PX4 flight limits
     def _flight_limits_ready(self) -> bool:

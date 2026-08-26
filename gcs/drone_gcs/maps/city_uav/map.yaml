@@ -1,0 +1,79 @@
+schema_version: 1
+name: city_uav
+source_world_yaml: simulation/gazebo/maps/city_coordinates_uav.yaml
+bounds_enu_m:
+  x:
+  - -650.0
+  - 650.0
+  y:
+  - -650.0
+  - 650.0
+basemap:
+  file: basemap.png
+  size_px:
+  - 2048
+  - 2048
+px4_local_origin_enu_m:
+- 587.0
+- 580.0
+- 0.24
+cruise_band_m:
+- 20.0
+- 30.0
+overfly_allowed: false
+planner_model:
+  inflation_xy_m: 1.0
+  roof_clearance_m: 10.0
+layers:
+- basemap
+- occupancy
+- buildings
+- geofence
+- markers
+markers:
+- name: drone_spawn
+  label: 드론 스폰
+  enu_m:
+  - 587.0
+  - 580.0
+  color: '#4dabf7'
+- name: global_goal
+  label: 목표
+  enu_m:
+  - 200.0
+  - -128.0
+  color: '#f03e3e'
+- name: trailer_spawn
+  label: 트레일러 스폰
+  enu_m:
+  - -587.0
+  - -512.0
+  color: '#f59f00'
+- name: trailer_destination
+  label: 트레일러 목적지
+  enu_m:
+  - -128.0
+  - -128.0
+  color: '#ae3ec9'
+entities:
+- name: trailer
+  label: 트레일러
+  footprint_m:
+  - 5.0
+  - 5.0
+  color: '#f59f00'
+  trail: true
+  route_yaml: simulation/gazebo/maps/city_uav_trailer_loop.yaml
+spawn_enu_m:
+- 587.0
+- 580.0
+occupancy:
+  file: occupancy_z25.png
+  size_px:
+  - 1300
+  - 1300
+  cruise_z_m: 25.0
+default_goal_enu_m:
+- -587.0
+- -512.0
+- 25.0
