@@ -264,6 +264,38 @@ def _publish_observation(node, publisher_name: str, message) -> None:
         pass
 
 
+def _stream_stale_reason(what: str, value, sample_t: float, rx_t: float,
+                         now: float, timeout: float,
+                         sync_tolerance: float) -> str | None:
+    """Which staleness condition a MAVROS stream failed, and by how much.
+
+    Three different faults share one symptom. A receive gap is the link or this
+    node's own executor falling behind; a stamp age is the FCU falling behind;
+    a stamp in the FUTURE is the MAVROS<->PX4 time offset being re-estimated,
+    which has nothing to do with either. Tuning `route_state_timeout_s` against
+    the wrong one of those is guesswork, so the message carries the number that
+    decided it.
+
+    Module-level, not a method, because the route health checks are exercised
+    against a duck-typed namespace rather than a live node.
+    """
+    if value is None or not math.isfinite(sample_t):
+        return f'MAVROS local {what} is missing'
+    rx_gap = now - rx_t
+    if rx_gap > timeout:
+        return (f'MAVROS local {what} not received for {rx_gap:.3f} s '
+                f'(route_state_timeout_s {timeout:.2f})')
+    age = now - sample_t
+    if age > timeout:
+        return (f'MAVROS local {what} is stamped {age:.3f} s old '
+                f'(route_state_timeout_s {timeout:.2f})')
+    if age < -sync_tolerance:
+        return (f'MAVROS local {what} is stamped {-age:.3f} s in the FUTURE '
+                f'(route_pose_fix_sync_s {sync_tolerance:.2f}) — PX4/MAVROS '
+                f'time offset, not a dropout')
+    return None
+
+
 class ArucoLandingNode(Node):
     def __init__(self):
         super().__init__('aruco_landing_node')
@@ -309,6 +341,12 @@ class ArucoLandingNode(Node):
         # Future callback thread.
         self._planner_pool: ProcessPoolExecutor | None = None
         self._plan_future = None
+        # A job already RUNNING in the worker cannot be cancelled, so discarding
+        # its metadata is not enough to discard the job: the result still lands
+        # in `_route_update`. Mark it abandoned instead, and drop the result
+        # quietly there. Without this the pending/future mismatch surfaced as
+        # 'route result has no request metadata' — an ERROR for a routine event.
+        self._plan_abandoned = False
         self._route_pending = None
         self._route_active = None
         self._route_progress = 0.0
@@ -634,8 +672,31 @@ class ArucoLandingNode(Node):
         # How much of the flown track to keep. At 2 Hz this is ~8 minutes,
         # longer than the mission and short enough that RViz redraws it freely.
         p('viz_flown_max_points', 1000)
+        # How much of the MPC horizon must be collision-free to command it.
+        #
+        # WHY NOT ALL OF IT. The horizon is 20 steps of 0.1 s = 2.0 s, but
+        # `output_step` commits ONE step: 1.9 s of every solve is discarded and
+        # replaced 0.1 s later, never flown. Certifying the discarded tail
+        # rejects commands whose EXECUTED part is provably safe, and it does so
+        # hardest exactly where the map leaves no room to be wrong — on the
+        # slalom diagonal `clearance()` reads 0.0, so a few centimetres of
+        # prediction overshoot 1.5 s out threw away a perfectly good 0.1 s
+        # command. That is the loop that held route #17-#23 on the ground.
+        #
+        # WHAT STILL PROTECTS THE VEHICLE. The point actually streamed to PX4 is
+        # re-checked every tick against the same exact geometry ('TrackingMPC
+        # streamed reference is unsafe'), and clearance 0.0 is not the barrier:
+        # the map already grew every obstacle by `vehicle_clearance_xy_m`, so
+        # the certified surface sits a full metre off the physical structure.
+        # This window covers the commit step plus enough lead to stop inside it.
+        p('route_horizon_check_s', 0.5)
         p('obstacle_accel_scaling', True)
-        p('obstacle_accel_full_clearance_m', 5.0)
+        # 5.0 m floored the acceleration along the ENTIRE launch->goal diagonal
+        # of the default field map, where clearance is 0.0 by construction. The
+        # tracker was then asked to corner a slalom on a quarter of its
+        # acceleration, which is what produced the overshoot the horizon check
+        # then rejected. Scale over the range the map actually spans.
+        p('obstacle_accel_full_clearance_m', 2.0)
         p('obstacle_accel_min_fraction', 0.25)
         # Within this -> start searching. Tight on purpose: the search footprint
         # at `search_alt_m` is only ~1.5 m in its short axis with the current
@@ -665,7 +726,17 @@ class ArucoLandingNode(Node):
         p('route_gps_timeout_s', 3.0)
         # Local pose/velocity drive route health and MPC collision checks, so they
         # cannot inherit the much slower GPS freshness allowance.
-        p('route_state_timeout_s', 0.2)
+        #
+        # 0.2 s was too tight to fly: a single 200 ms hiccup on any of the three
+        # conditions in `_stream_stale_reason` threw away a certified route, and
+        # the replan/invalidate cycle that followed never converged (route #17
+        # through #23 in 23 s, all HOLD). 1.0 s still bounds the error that
+        # matters — at the cruise speed this flies, one second of unrefreshed
+        # pose is a few metres of uncertainty, against a route already certified
+        # with `vehicle_clearance_xy_m` of margin and flown under a GPS accuracy
+        # limit of the same order. Raise the rate of the MAVROS streams before
+        # lowering this again: the fix for a starved input is more input.
+        p('route_state_timeout_s', 1.0)
         # Reject an unusable absolute fix without reinterpreting the geometric
         # vehicle clearance as a second localization or speed budget.
         #
@@ -816,6 +887,10 @@ class ArucoLandingNode(Node):
         self.publish_viz = bool(g('publish_viz').value)
         self.viz_period = float(g('viz_period_s').value)
         self.viz_flown_max = int(g('viz_flown_max_points').value)
+        self.route_horizon_check_s = float(g('route_horizon_check_s').value)
+        if not (math.isfinite(self.route_horizon_check_s)
+                and self.route_horizon_check_s > 0.0):
+            raise ValueError('route_horizon_check_s must be positive')
         self.obstacle_accel_scaling = bool(g('obstacle_accel_scaling').value)
         self.obstacle_accel_full = float(
             g('obstacle_accel_full_clearance_m').value)
@@ -1820,18 +1895,16 @@ class ArucoLandingNode(Node):
                 or self.ekf.h_acc > self.route_max_hacc):
             return (f'GPS horizontal accuracy {self.ekf.h_acc:.2f} m exceeds '
                     f'route limit {self.route_max_hacc:.2f} m')
-        pose_age = now - self.pose_t
-        if (self.pose is None or not math.isfinite(self.pose_t)
-                or now - self.pose_rx_t > self.route_state_timeout
-                or pose_age > self.route_state_timeout
-                or pose_age < -self.route_sync_tolerance):
-            return 'MAVROS local pose is missing or stale'
-        velocity_age = now - self.velocity_t
-        if (self.velocity is None or not math.isfinite(self.velocity_t)
-                or now - self.velocity_rx_t > self.route_state_timeout
-                or velocity_age > self.route_state_timeout
-                or velocity_age < -self.route_sync_tolerance):
-            return 'MAVROS local velocity is missing or stale'
+        stale = _stream_stale_reason(
+            'pose', self.pose, self.pose_t, self.pose_rx_t, now,
+            self.route_state_timeout, self.route_sync_tolerance)
+        if stale is not None:
+            return stale
+        stale = _stream_stale_reason(
+            'velocity', self.velocity, self.velocity_t, self.velocity_rx_t, now,
+            self.route_state_timeout, self.route_sync_tolerance)
+        if stale is not None:
+            return stale
         measured_velocity = (
             self.velocity.twist.linear.x, self.velocity.twist.linear.y)
         if not all(math.isfinite(float(value)) for value in measured_velocity):
@@ -2063,8 +2136,11 @@ class ArucoLandingNode(Node):
         self._route_pending = None
         self._route_progress = 0.0
         self._reset_path_mpc()
-        if self._plan_future is not None and self._plan_future.cancel():
-            self._plan_future = None
+        if self._plan_future is not None:
+            if self._plan_future.cancel():
+                self._plan_future = None
+            else:
+                self._plan_abandoned = True
         self._route_last_error = reason
         self._route_follow_fail_t = None
         if had_route:
@@ -2080,8 +2156,11 @@ class ArucoLandingNode(Node):
         self._route_last_error = ''
         self._route_follow_fail_t = None
         self._reset_path_mpc()
-        if self._plan_future is not None and self._plan_future.cancel():
-            self._plan_future = None
+        if self._plan_future is not None:
+            if self._plan_future.cancel():
+                self._plan_future = None
+            else:
+                self._plan_abandoned = True
         self._to(phase)
 
     def _begin_return(self) -> None:
@@ -2101,9 +2180,19 @@ class ArucoLandingNode(Node):
         if self._plan_future is not None and self._plan_future.done():
             future = self._plan_future
             pending = self._route_pending
+            abandoned = self._plan_abandoned
             route_observation = None
             self._plan_future = None
+            self._plan_abandoned = False
             self._route_pending = None
+            if abandoned:
+                # Its inputs were already ruled unsafe when the route was
+                # invalidated; the worker simply finished afterwards. Not an
+                # error, and deliberately not a HOLD reason of its own.
+                self.get_logger().info(
+                    'discarded a route planned before the last invalidation',
+                    throttle_duration_sec=5.0)
+                return
             try:
                 planned = future.result()
                 if pending is None:
@@ -2286,6 +2375,23 @@ class ArucoLandingNode(Node):
                 f'{self.route_lookahead:.1f} m)')
         return target, cross_track
 
+    def _route_prediction_unsafe_reason(self, predicted_positions) -> str | None:
+        """Why a horizon may not be commanded, in the caller's own words.
+
+        TWO DIFFERENT FAULTS USED TO SHARE ONE MESSAGE. A stale pose and a
+        horizon aimed through a barrier both made this return False, and the
+        caller reported the geometric one — so a flight logged 'TrackingMPC
+        horizon leaves the mapped clearance' 0.75 s before 'MAVROS local pose
+        is missing or stale', which were the same fault described two ways.
+        They want opposite fixes, so they get separate sentences.
+        """
+        if self.pose is None:
+            return 'no local pose to check the horizon against'
+        health = self._route_flight_health_reason()
+        if health is not None:
+            return f'route input rejected: {health}'
+        return None
+
     def _route_prediction_is_safe(self, predicted_positions) -> bool:
         """Require every MPC horizon chord to retain the runtime clearance."""
         if (self.pose is None
@@ -2397,11 +2503,25 @@ class ArucoLandingNode(Node):
                     result.predicted_pos, result.predicted_vel,
                     result.predicted_acc)))):
                 rejection = 'TrackingMPC returned a non-finite horizon'
-            elif not self._route_prediction_is_safe(result.predicted_pos):
-                rejection = (
-                    'TrackingMPC horizon leaves the mapped clearance '
-                    f'(cross-track {cross_track:.2f} m to a carrot the '
-                    'vehicle cannot reach in a straight line)')
+            else:
+                # Only the part that will actually be flown. Everything past
+                # `route_horizon_check_s` is replaced by the next solve before
+                # the vehicle reaches it — see the parameter's note in
+                # `_declare` for why certifying it grounded the mission.
+                checked_steps = max(
+                    output_step + 1,
+                    int(math.ceil(self.route_horizon_check_s
+                                  / self._path_mpc.dt)))
+                committed = result.predicted_pos[:checked_steps]
+                input_reason = self._route_prediction_unsafe_reason(committed)
+                if input_reason is not None:
+                    rejection = f'TrackingMPC horizon not checkable: {input_reason}'
+                elif not self._route_prediction_is_safe(committed):
+                    rejection = (
+                        'TrackingMPC horizon leaves the mapped clearance within '
+                        f'{self.route_horizon_check_s:.1f} s '
+                        f'(cross-track {cross_track:.2f} m to a carrot the '
+                        'vehicle cannot reach in a straight line)')
             if rejection is not None:
                 self._reset_path_mpc()
                 self._path_last_solve_t = now

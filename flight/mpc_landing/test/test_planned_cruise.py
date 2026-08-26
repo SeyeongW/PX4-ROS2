@@ -356,8 +356,24 @@ def test_route_flight_health_rejects_inaccurate_absolute_gps():
     assert 'pose and velocity are not time-aligned' in (
         ArucoLandingNode._route_flight_health_reason(state) or '')
 
+    # The message names WHICH staleness condition fired and by how much, so a
+    # `route_state_timeout_s` change is tuned against evidence rather than a
+    # guess about whether the link, the FCU or the time offset was at fault.
     state.pose_t = state.velocity_t = 9.79
-    assert 'local pose is missing or stale' in (
+    assert 'local pose is stamped 0.210 s old' in (
+        ArucoLandingNode._route_flight_health_reason(state) or '')
+
+    # A receive gap is the link or this node's executor, not the FCU's clock.
+    state.pose_t = state.velocity_t = 10.0
+    state.pose_rx_t = 9.5
+    assert 'local pose not received for 0.500 s' in (
+        ArucoLandingNode._route_flight_health_reason(state) or '')
+    state.pose_rx_t = 10.0
+
+    # A future stamp is the PX4/MAVROS offset being re-estimated — a third
+    # cause that the single old message could not tell from the other two.
+    state.pose_t = state.velocity_t = 10.2
+    assert 'in the FUTURE' in (
         ArucoLandingNode._route_flight_health_reason(state) or '')
 
     state.pose_t = state.velocity_t = 10.0
@@ -438,7 +454,7 @@ def test_only_a_source_time_aligned_pose_fix_pair_updates_the_anchor():
         pose_t=1.05,
         vehicle_fix_t=1.0,
         route_sync_tolerance=0.1,
-        _route_map_info=SimpleNamespace(origin_lat=36.0, origin_lon=127.0),
+        _route_map_info=SimpleNamespace(origin_lat=36.0, origin_lon=127.0, drone_relative=False),
         _enu_offset=lambda *_args: (2.0, 3.0),
         _now=lambda: 1.06,
         _route_observed_origin=None,
@@ -486,10 +502,15 @@ def test_fixed_map_goal_is_converted_to_local_enu_not_used_as_local_xy():
     state = SimpleNamespace(
         phase=Phase.PRECHECK,
         target=np.array([999.0, 999.0, 0.0]),
+        planned_cruise=True,
+        _trailer_goal_key=None,
         _route_uses_trailer_goal=lambda: False,
         _route_synchronized_site_origin=lambda: origin,
-        _route_lib=SimpleNamespace(map_to_local=map_to_local),
-        _route_map_info=SimpleNamespace(mission_goal_xy=(50.0, 50.0)),
+        _route_lib=SimpleNamespace(
+            map_to_local=map_to_local,
+            nearest_free_point=lambda _map, _orig, target: target),
+        route_map_yaml='/map.yaml',
+        _route_map_info=SimpleNamespace(mission_goal_xy=(50.0, 50.0), drone_relative=False),
         _route_rotation=rotation,
     )
     goal = ArucoLandingNode._route_goal_local(state, trailer_goal=False)
@@ -503,6 +524,8 @@ def test_fixed_map_goal_is_converted_to_local_enu_not_used_as_local_xy():
 
 def test_fixed_mission_route_does_not_require_a_trailer_target_timestamp():
     state = SimpleNamespace(
+        planned_cruise=True,
+        _route_map_info=SimpleNamespace(drone_relative=False),
         _route_flight_health_reason=lambda: None,
         _now=lambda: 3.0,
         vehicle_fix=SimpleNamespace(
@@ -523,6 +546,8 @@ def test_fixed_mission_route_does_not_require_a_trailer_target_timestamp():
 
 def test_new_plan_requires_target_and_anchor_samples_to_be_synchronized():
     state = SimpleNamespace(
+        planned_cruise=True,
+        _route_map_info=SimpleNamespace(drone_relative=False),
         _route_flight_health_reason=lambda: None,
         _now=lambda: 3.0,
         vehicle_fix=SimpleNamespace(
@@ -1228,6 +1253,8 @@ def test_trailer_velocity_braking_is_used_only_on_the_return_leg():
         _target_velocity=SimpleNamespace(v=np.array([0.7, 0.0])),
         _last_mpc_acceleration=np.zeros(3),
         _route_prediction_is_safe=lambda _positions: True,
+        _route_prediction_unsafe_reason=lambda _positions: None,
+        route_horizon_check_s=0.5,
         _reset_path_mpc=lambda: None,
         _send_pva=lambda *_args: True,
     )
@@ -1335,3 +1362,126 @@ def test_armed_confirmation_takes_off_only_with_live_inputs():
     ArucoLandingNode._tick(state)
     assert preflight_calls == [{'allow_armed': True}]
     assert ('phase', Phase.TAKEOFF) in calls
+
+
+def test_a_running_plan_is_abandoned_not_reported_as_a_missing_request():
+    """Invalidating mid-plan must not surface as 'no request metadata'.
+
+    `_invalidate_route` clears `_route_pending` unconditionally but can only
+    drop `_plan_future` when `cancel()` succeeds — and a job the worker has
+    already started never cancels. The result then arrived with its metadata
+    gone and was logged as an ERROR ('route rejected — HOLDING, never flying
+    straight: route result has no request metadata'), which is what a props-on
+    flight actually saw twice, each ~2 s after a pose-staleness invalidation.
+    """
+    logged = []
+    running = SimpleNamespace(
+        cancel=lambda: False,             # already executing in the worker
+        done=lambda: True,
+        result=lambda: (_ for _ in ()).throw(
+            AssertionError('an abandoned result must never be unwrapped')),
+    )
+    state = SimpleNamespace(
+        planned_cruise=True,
+        phase=Phase.MISSION,
+        _plan_future=running,
+        _plan_abandoned=False,
+        _route_pending=(1, np.zeros(2), np.ones(2), np.zeros(2), 0.0),
+        _route_active=None,
+        _route_progress=0.0,
+        _route_last_error='',
+        _route_follow_fail_t=None,
+        _reset_path_mpc=lambda: None,
+        get_logger=lambda: SimpleNamespace(
+            info=lambda m, **k: logged.append(('info', m)),
+            warn=lambda m, **k: logged.append(('warn', m)),
+            error=lambda m, **k: logged.append(('error', m))),
+    )
+
+    ArucoLandingNode._invalidate_route(state, 'MAVROS local pose is missing')
+    # The job survives, because it cannot be stopped — but it is now marked.
+    assert state._plan_future is running
+    assert state._plan_abandoned is True
+    assert state._route_pending is None
+
+    state._route_flight_health_reason = lambda: None
+    ArucoLandingNode._route_update(state)
+
+    assert not [m for kind, m in logged if kind == 'error'], logged
+    assert state._plan_future is None
+    assert state._plan_abandoned is False
+
+
+def test_only_the_flown_part_of_the_horizon_is_certified():
+    """A barrier 1.5 s out must not veto the 0.1 s that gets commanded.
+
+    The horizon is 2.0 s but `output_step` commits one 0.1 s step, so the tail
+    is replaced by the next solve before the vehicle reaches it. Certifying the
+    tail is what deadlocked the field map: on its launch->goal diagonal
+    `clearance()` is 0.0 by construction, so centimetres of prediction
+    overshoot a second and a half ahead threw away a provably safe command,
+    reset the MPC, and the follow/replan cycle never converged.
+    """
+    checked = []
+    horizon_n = 20
+    predicted = np.zeros((horizon_n, 3))
+    predicted[:, 0] = np.arange(horizon_n, dtype=float)   # 1 m per step
+    result = SimpleNamespace(
+        success=True, predicted_pos=predicted,
+        predicted_vel=np.zeros((horizon_n, 3)),
+        predicted_acc=np.zeros((horizon_n, 3)))
+    path_reference = SimpleNamespace(
+        lead=0.1, reset=lambda: None, ready=lambda: True,
+        set_plan=lambda *_a, **_k: None,
+        sample=lambda _t: (np.zeros(3), np.zeros(3), np.zeros(3)))
+    state = SimpleNamespace(
+        _route_carrot=lambda: (np.ones(2), 0.05),
+        pose=SimpleNamespace(pose=SimpleNamespace(position=SimpleNamespace(
+            x=0.0, y=0.0, z=5.0))),
+        velocity=SimpleNamespace(twist=SimpleNamespace(
+            linear=SimpleNamespace(x=0.0, y=0.0, z=0.0))),
+        _path_mpc=SimpleNamespace(
+            dt=0.1, N=horizon_n, j_max=2.0, a_max=0.5,
+            solve=lambda *_a, **_k: result),
+        _path_reference=path_reference,
+        _route_active=(SimpleNamespace(
+            arc_m=np.array([0.0, 1.0]),
+            path_local_xy=np.array([[0.0, 0.0], [1.0, 0.0]])),),
+        _alt=lambda: 5.0,
+        _takeoff_target=lambda: 5.0,
+        _now=lambda: 1.0,
+        _path_last_solve_t=None,
+        _path_solve_t=None,
+        _path_reference_horizon=lambda *_a, **_k: (
+            np.zeros((horizon_n, 3)), np.zeros((horizon_n, 3))),
+        cruise_v_max=1.5,
+        cruise_accel=0.5,
+        _obstacle_accel_limit=lambda: 0.5,
+        _route_progress=0.0,
+        _route_uses_trailer_goal=lambda: False,
+        _route_goal_range=lambda: 20.0,
+        _target_velocity=SimpleNamespace(v=np.zeros(2)),
+        _last_mpc_acceleration=np.zeros(3),
+        route_horizon_check_s=0.5,
+        _route_prediction_unsafe_reason=lambda _p: None,
+        _route_prediction_is_safe=lambda positions: (
+            checked.append(np.asarray(positions)) or True),
+        _reset_path_mpc=lambda: None,
+        _send_pva=lambda *_a: True,
+        _route_follow_fail_t=None,
+    )
+
+    assert ArucoLandingNode._route_mpc_command(state)[0]
+    # 0.5 s / 0.1 s = 5 steps of the 20-step horizon, and never fewer than the
+    # step actually committed to PX4.
+    horizon_checked = checked[0]
+    assert len(horizon_checked) == 5, len(horizon_checked)
+    assert horizon_checked[-1][0] == 4.0
+
+    # The window is a parameter, so a flight that wants the old behaviour back
+    # asks for it rather than editing the follower.
+    checked.clear()
+    state._path_last_solve_t = None
+    state.route_horizon_check_s = 2.0
+    assert ArucoLandingNode._route_mpc_command(state)[0]
+    assert len(checked[0]) == horizon_n
