@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+# pull_flightlogs — flight data lands on this PC, as charts, by itself.
+#
+#   ./pull_flightlogs            pull anything new, chart anything uncharted
+#   ./pull_flightlogs --watch    keep doing that, every 30 s, until Ctrl-C
+#
+# --watch is the one to leave running during a flying session: land, and the
+# CSVs and their PNG are already here. Nothing to type between flights.
+#
+#   FLIGHT_HOST=...   ssh target           (default: the `jetson` alias)
+#   REMOTE_DIR=...    where run_px4 wrote  (default: ~/px4_experiment_logs)
+#   LOCAL_DIR=...     where to put them    (default: <repo>/flight_logs_analysis)
+#   INTERVAL=...      --watch poll seconds (default: 30)
+#
+# WHY rsync AND NOT scp. scp re-copies whole files and cannot resume; these run
+# to megabytes each and there are dozens. rsync moves only what changed and
+# leaves a partial transfer restartable, which is what the link over Tailscale
+# actually needs.
+set -uo pipefail
+
+HOST="${FLIGHT_HOST:-jetson}"
+REMOTE_DIR="${REMOTE_DIR:-px4_experiment_logs}"
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+TOOLS="$REPO/flight/path_plan/tools"
+LOCAL_DIR="${LOCAL_DIR:-$REPO/flight_logs_analysis}"
+INTERVAL="${INTERVAL:-30}"
+MAP="${ROUTE_MAP:-$REPO/flight/path_plan/config/drone_field_route.yaml}"
+
+mkdir -p "$LOCAL_DIR"
+
+sync_once() {
+  rsync -az --partial \
+        --include='*_summary.csv' --include='*_timeseries.csv' --exclude='*' \
+        -e 'ssh -o BatchMode=yes -o ConnectTimeout=8' \
+        "$HOST:$REMOTE_DIR/" "$LOCAL_DIR/" 2>/dev/null
+}
+
+# Chart only what has no chart yet, so a session that pulls sixteen runs does
+# not re-render fifteen of them every thirty seconds. The .skipped marker is
+# the same idea for a run that never armed: no track to draw is not an error,
+# and not a reason to retry it on every poll either.
+chart_new_guarded() {
+  local csv run
+  for csv in "$LOCAL_DIR"/*_timeseries.csv; do
+    [ -e "$csv" ] || continue
+    run="$(basename "$csv" _timeseries.csv)"
+    [ -f "$LOCAL_DIR/$run.png" ] && continue
+    [ -f "$LOCAL_DIR/$run.png.skipped" ] && continue
+    # THE SUMMARY IS THE "RUN FINISHED" FLAG. experiment_logger flushes the
+    # timeseries every second WHILE FLYING and writes the summary only in
+    # close(), so a timeseries on its own is very likely a flight still in the
+    # air. Charting that would draw half a flight and — because the PNG then
+    # exists — never redraw it once the aircraft actually landed.
+    [ -f "$LOCAL_DIR/${run}_summary.csv" ] || continue
+    chart_one "$run" "$csv"
+  done
+}
+
+chart_one() {
+  local run="$1" csv="$2"
+  if PYTHONPATH="$TOOLS" python3 - "$csv" "$LOCAL_DIR/$run.png" "$MAP" <<'PY' 2>/dev/null
+import sys
+from flightlog import FlightLog
+from flightplots import plot_run
+plot_run(FlightLog(sys.argv[1]), sys.argv[2], sys.argv[3])
+PY
+  then
+    echo "  charted $run.png"
+  else
+    touch "$LOCAL_DIR/$run.png.skipped"
+    echo "  skipped $run (never armed — no track to draw)"
+  fi
+}
+
+cycle() {
+  local before after
+  before=$(ls "$LOCAL_DIR"/*_timeseries.csv 2>/dev/null | wc -l)
+  if ! sync_once; then
+    echo "pull_flightlogs: cannot reach '$HOST' — retrying" >&2
+    return 1
+  fi
+  after=$(ls "$LOCAL_DIR"/*_timeseries.csv 2>/dev/null | wc -l)
+  [ "$after" -gt "$before" ] && echo "pull_flightlogs: $((after - before)) new run(s)"
+  chart_new_guarded
+  return 0
+}
+
+if [ "${1:-}" = --watch ]; then
+  echo "pull_flightlogs: watching $HOST:~/$REMOTE_DIR every ${INTERVAL}s"
+  echo "                 -> $LOCAL_DIR   (Ctrl-C to stop)"
+  while true; do
+    cycle || true
+    sleep "$INTERVAL"
+  done
+fi
+
+if ! ssh -n -o BatchMode=yes -o ConnectTimeout=8 "$HOST" true 2>/dev/null; then
+  echo "pull_flightlogs: cannot reach '$HOST' over ssh." >&2
+  echo "  ssh $HOST                     # check the alias in ~/.ssh/config" >&2
+  echo "  FLIGHT_HOST=user@address $0   # or name the machine directly" >&2
+  exit 1
+fi
+
+echo "pull_flightlogs: $HOST:~/$REMOTE_DIR/  ->  $LOCAL_DIR/"
+cycle
+runs=$(ls "$LOCAL_DIR"/*_timeseries.csv 2>/dev/null | wc -l)
+charts=$(ls "$LOCAL_DIR"/*.png 2>/dev/null | wc -l)
+echo
+echo "pull_flightlogs: $runs run(s), $charts chart(s) in $LOCAL_DIR"
+echo "  python3 $TOOLS/flightlog.py $LOCAL_DIR    # the newest run as text"
