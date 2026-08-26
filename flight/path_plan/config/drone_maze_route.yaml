@@ -24,8 +24,13 @@ site:
 
 terrain:
   coordinate_frame: field
-  center_m: [25, 25]
-  size_m: [90, 90]
+  # Same extent as drone_field_route.yaml, and for the same reason: the old
+  # [25,25]+-45 box left only 19 m behind launch once vehicle_clearance_xy_m
+  # was subtracted, and the return leg goes behind launch. A vehicle outside
+  # the box fails segment_is_free exactly like one inside a pillar, so no plan
+  # can be spliced from its true position. [15,15]+-51 gives [-35, 65].
+  center_m: [15, 15]
+  size_m: [102, 102]
 
 mission:
   coordinate_frame: field

@@ -39,10 +39,38 @@ site:
 
 terrain:
   coordinate_frame: field
-  # Centred between launch (0, 0) and goal (50, 50), roomy on both sides so the
-  # planner can always route around a pillar.
-  center_m: [25, 25]
-  size_m: [90, 90]
+  # Covers the whole MISSION, not just the launch->goal leg. The box is the
+  # planner's search extent and `_world` shrinks it by vehicle_clearance_xy_m,
+  # so [25,25]+-45 left a usable region of [-19, 69] — only 19 m behind launch.
+  # The return leg goes behind launch, to a trailer that parks where it likes,
+  # and a flight put the vehicle at y = -22.2: three metres outside.
+  #
+  # OUTSIDE THE BOX IS NOT NEAR AN OBSTACLE, BUT IT FAILS THE SAME CHECK. At
+  # that position `clearance()` read 33.9 m and `segment_is_free()` still said
+  # False, so `splice_route_from_current` could not certify a chord from the
+  # vehicle's true position and EVERY plan was rejected — 19 consecutive
+  # stuck-replans, all 'current position cannot safely join the completed
+  # route'. `nearest_free_point` rescued the A* start but not the splice.
+  # The same clamp silently shortens a return: a trailer past the edge is
+  # projected onto it, so the vehicle flies to the boundary, not to the
+  # trailer.
+  #
+  # [15,15]+-51 gives a usable [-35, 65]: 35 m behind launch for the return,
+  # 15 m past the goal, and the pillars are unmoved (they are absolute in this
+  # frame).
+  #
+  # WHY NOT ENORMOUS, SINCE IT IS FREE. It is free: the geometry is lazy, not a
+  # dense grid, and A* is goal-directed, so plan time, build time and memory
+  # measure flat from 102 m to 800 m a side (~355 ms, ~11 ms, ~130 KB at every
+  # size); an out-of-box goal is refused by a precheck before A* runs. The
+  # limit is honesty, not cost. Inside the box the map asserts where the
+  # obstacles are; outside it, it knows nothing. Widening the box does not
+  # survey anything — it just extends the claim "this is clear" over ground
+  # nobody checked, and the planner will route straight through whatever is
+  # actually there. The edge is where this map's knowledge ends, so it belongs
+  # where the mission ends. Grow it deliberately when the mission grows.
+  center_m: [15, 15]
+  size_m: [102, 102]
 
 mission:
   coordinate_frame: field
