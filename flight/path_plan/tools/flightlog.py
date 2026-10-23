@@ -5,6 +5,8 @@
     python3 flightlog.py 20260826T0717        that run (a run_id prefix is enough)
     python3 flightlog.py path/to/dir          newest run in that directory
     python3 flightlog.py <run> --plot out.png track, error and altitude
+    python3 flightlog.py <run> --error       the tracking error alone,
+                                             as <run>_error.png next to its CSV
 
 Import it to do your own work — the report below is only one view of it:
 
@@ -234,7 +236,8 @@ class FlightLog:
         t = pose['elapsed_s'].to_numpy(float)
         x = pose['x_m'].to_numpy(float)
         y = pose['y_m'].to_numpy(float)
-        z = pose['z_m'].to_numpy(float)
+        z_raw = pose['z_m'].to_numpy(float)
+        z = z_raw - z_raw[0] if len(z_raw) else z_raw
         error = (pose['tracking_error_m'].astype(float).to_numpy()
                  if 'tracking_error_m' in pose else np.full(len(t), np.nan))
         figure, axes = plt.subplots(1, 3, figsize=(16, 5))
@@ -249,7 +252,7 @@ class FlightLog:
         axes[1].set_xlabel('t [s]'); axes[1].set_ylabel('[m]')
         axes[1].grid(alpha=0.3)
         axes[2].plot(t, z, lw=1.0)
-        axes[2].set_title('altitude (z, ENU up)')
+        axes[2].set_title('altitude (above launch) [m]')
         axes[2].set_xlabel('t [s]'); axes[2].set_ylabel('[m]')
         axes[2].grid(alpha=0.3)
         figure.suptitle(self.run_id)
@@ -266,11 +269,19 @@ def main(argv: list[str]) -> int:
     # The map the mission flies by default, so the bounds check needs no flag.
     default_map = (Path(__file__).resolve().parents[1]
                    / 'config' / 'drone_field_route.yaml')
-    print(log.report(default_map if default_map.exists() else None))
+    default_map = default_map if default_map.exists() else None
+    print(log.report(default_map))
     if '--plot' in argv:
         index = argv.index('--plot')
         target = argv[index + 1] if index + 1 < len(argv) else 'flightlog.png'
         print(f'\nwrote {log.plot(target)}')
+    if '--error' in argv:
+        # No output path to type: the chart belongs beside the run it came
+        # from, under the run's own name, the way pull_flightlogs writes them.
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from flightplots import plot_tracking_error
+        target = log.path.with_name(f'{log.run_id}_error.png')
+        print(f'\nwrote {plot_tracking_error(log, target, default_map)}')
     return 0
 
 

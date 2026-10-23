@@ -69,6 +69,15 @@ def _map_geometry(map_yaml):
     return centre - half + clearance, centre + half - clearance, boxes, clearance
 
 
+def _outside(x, y, geometry):
+    """Samples beyond the terrain box, where no route can be spliced."""
+    if geometry is None:
+        return np.zeros(len(x), dtype=bool)
+    low, high, _boxes, _clearance = geometry
+    xy = np.column_stack((x, y))
+    return np.any((xy < low) | (xy > high), axis=1)
+
+
 def plot_run(log, out_png, map_yaml=None):
     """Six panels: where it flew, how well, how high, and what the solvers cost."""
     import matplotlib
@@ -82,16 +91,13 @@ def plot_run(log, out_png, map_yaml=None):
     t = pose['elapsed_s'].to_numpy(float)
     x = pose['x_m'].to_numpy(float)
     y = pose['y_m'].to_numpy(float)
-    z = pose['z_m'].to_numpy(float)
+    z_raw = pose['z_m'].to_numpy(float)
+    z = z_raw - z_raw[0] if len(z_raw) else z_raw
     error = (pose['tracking_error_m'].astype(float).to_numpy()
              if 'tracking_error_m' in pose else np.full(len(t), np.nan))
 
     geometry = _map_geometry(map_yaml)
-    outside = np.zeros(len(t), dtype=bool)
-    if geometry is not None:
-        low, high, _boxes, _clearance = geometry
-        xy = np.column_stack((x, y))
-        outside = np.any((xy < low) | (xy > high), axis=1)
+    outside = _outside(x, y, geometry)
 
     figure = plt.figure(figsize=(16, 9), facecolor=SURFACE)
     # The track gets its own tall column so `aspect('equal')` can hold without
@@ -170,7 +176,7 @@ def plot_run(log, out_png, map_yaml=None):
 
     # --- 2/3. how well it tracked, and how high ----------------------------
     for column, (values, label, unit) in enumerate((
-            (error, 'tracking error', 'm'), (z, 'altitude', 'm'))):
+            (error, 'tracking error', 'm'), (z, 'altitude (above launch)', 'm'))):
         axes = figure.add_subplot(grid[column, 1])
         axes.plot(t, values, color=SERIES, lw=2.0, solid_capstyle='round')
         if outside.any():
@@ -202,8 +208,15 @@ def plot_run(log, out_png, map_yaml=None):
         when = paired['elapsed_s'].to_numpy(float)
         values = paired[key].to_numpy(float)
         if len(values):
-            axes.vlines(when, 0.0, values, color=SERIES, lw=2.0)
-            axes.plot(when, values, 'o', ms=4, color=SERIES)
+            if key == 'mpc_solve_time_ms':
+                # Continuous solve time series: line + shaded fill area to avoid solid block
+                axes.plot(when, values, color=SERIES, lw=1.2, alpha=0.85, solid_capstyle='round')
+                axes.scatter(when, values, s=10, color=SERIES, alpha=0.5, zorder=3)
+                axes.fill_between(when, 0, values, color=SERIES, alpha=0.12)
+            else:
+                # Discrete replan events (A*): stem lines + distinct markers
+                axes.vlines(when, 0.0, values, color=SERIES, lw=1.5, alpha=0.7)
+                axes.plot(when, values, 'o', ms=5, color=SERIES, markeredgecolor=SURFACE, markeredgewidth=1.2)
             axes.annotate(
                 f'n {len(values)}   median {np.median(values):.0f} ms   '
                 f'max {values.max():.0f} ms',
@@ -217,7 +230,111 @@ def plot_run(log, out_png, map_yaml=None):
         axes.set_xlabel('t [s]'); axes.set_ylabel('[ms]')
         _style(axes)
 
+
     figure.savefig(out_png, dpi=110, facecolor=SURFACE,
                    bbox_inches='tight', pad_inches=0.35)
+    plt.close(figure)
+    return Path(out_png)
+
+
+def plot_tracking_error(log, out_png, map_yaml=None):
+    """The tracking error on its own, at a size a report page can use.
+
+    The six-panel chart answers "how did the run go"; this answers one
+    question, so it can afford what the panel could not: the phases named on
+    the time axis, and the mean drawn rather than only printed. The numbers
+    are the same numbers — this is the panel enlarged, not a second analysis.
+
+    ERROR IS ONLY LOGGED WHILE A PATH EXISTS TO TRACK. ARMING, TAKEOFF and
+    MISSION_PLAN leave the column blank, so the line legitimately starts part
+    way in; the chart says so rather than letting the gap read as lost data.
+    """
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    import pandas as pd
+
+    pose = log.pose
+    # TWO DIFFERENT NON-FLIGHTS, and saying which one saves re-opening the CSV:
+    # a run with no pose at all died before it ever published one, while a run
+    # holding sixty PRECHECK samples ran for two seconds and never armed. Both
+    # have nothing to chart; only the second looks like a flight from outside,
+    # because pull_flightlogs draws a track for any run with pose samples.
+    if pose.empty:
+        raise ValueError(f'{log.run_id} has no pose samples at all')
+    if 'tracking_error_m' not in pose:
+        reached = ', '.join(dict.fromkeys(pose['phase'].astype(str)))
+        raise ValueError(
+            f'{log.run_id} never tracked a path — {pose["elapsed_s"].iloc[-1]:.0f}s '
+            f'in {reached} and no further')
+    t = pose['elapsed_s'].to_numpy(float)
+    error = pd.to_numeric(pose['tracking_error_m'],
+                          errors='coerce').to_numpy(float)
+    finite = np.isfinite(error)
+    if not finite.any():
+        raise ValueError(f'{log.run_id} has a tracking error column but no '
+                         'finite sample in it')
+    values = error[finite]
+    mean = float(values.mean())
+    rmse = float(np.sqrt((values ** 2).mean()))
+
+    outside = _outside(pose['x_m'].to_numpy(float),
+                       pose['y_m'].to_numpy(float), _map_geometry(map_yaml))
+
+    figure, axes = plt.subplots(figsize=(11, 4.6), facecolor=SURFACE)
+
+    # Phase changes first, so the vehicle's line is never drawn under them.
+    phase = pose['phase'].to_numpy()
+    span = max(float(t[-1] - t[0]), 1.0)
+    labelled, row = -np.inf, 0
+    for index in np.flatnonzero(phase[1:] != phase[:-1]) + 1:
+        axes.axvline(t[index], color=GRID, lw=1.0, zorder=1)
+        # SELECTIVE LABELS, as on the track: MISSION, HOVER and RETURN_PLAN can
+        # land within a second of each other and stack into a smear. Neighbours
+        # that survive the filter are still long enough to run into each other
+        # written on one line, so consecutive labels alternate rows.
+        if t[index] - labelled < 0.06 * span:
+            continue
+        labelled, row = t[index], 1 - row
+        axes.annotate(f'{phase[index]}  {t[index]:.0f}s',
+                      (t[index], 1.0), xycoords=('data', 'axes fraction'),
+                      xytext=(4, -4 - 12 * row), textcoords='offset points',
+                      va='top', color=INK_SOFT, fontsize=8.5)
+
+    axes.axhline(mean, color=INK_MUTED, lw=1.1, ls=(0, (6, 4)), zorder=2)
+    axes.annotate(f'mean {mean:.2f} m', (0.995, mean),
+                  xycoords=('axes fraction', 'data'), xytext=(0, 4),
+                  textcoords='offset points', ha='right', va='bottom',
+                  color=INK_MUTED, fontsize=9)
+
+    axes.plot(t, error, color=SERIES, lw=2.0, solid_capstyle='round', zorder=3)
+    if (outside & finite).any():
+        axes.plot(t, np.where(outside, error, np.nan), color=CRITICAL,
+                  lw=2.4, solid_capstyle='round', zorder=4)
+        axes.annotate('outside the map extent', (t[outside & finite][0], 0.02),
+                      xycoords=('data', 'axes fraction'), xytext=(4, 0),
+                      textcoords='offset points', color=CRITICAL,
+                      fontsize=9, fontweight='bold')
+
+    start = float(t[finite][0])
+    if start - t[0] > 0.02 * span:
+        axes.annotate(f'no reference path before {start:.0f}s',
+                      (t[0], 0.02), xycoords=('data', 'axes fraction'),
+                      xytext=(4, 0), textcoords='offset points',
+                      color=INK_MUTED, fontsize=9)
+
+    axes.annotate(f'rmse {rmse:.2f} m     max {values.max():.2f} m     '
+                  f'n {len(values)}',
+                  (1.0, 1.02), xycoords='axes fraction', ha='right',
+                  color=INK_SOFT, fontsize=9)
+    axes.set_title(f'{log.run_id} — tracking error against the planned path',
+                   fontsize=13, fontweight='bold', loc='left', pad=26)
+    axes.set_xlabel('t [s]'); axes.set_ylabel('error [m]')
+    axes.set_xlim(t[0], t[-1])
+    axes.set_ylim(0.0, max(float(values.max()) * 1.28, 0.1))
+    _style(axes)
+
+    figure.savefig(out_png, dpi=160, facecolor=SURFACE,
+                   bbox_inches='tight', pad_inches=0.3)
     plt.close(figure)
     return Path(out_png)
