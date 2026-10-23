@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""온보드 풍선 추적기: 지상 웨이포인트 → 5m Lock → 비전 PN 추적 → 3m 통과 → RTL.
+"""온보드 풍선 추적기: 지상 웨이포인트 수신 → ARM/이륙 → 비전 PN 추적 → RTL.
 
 수신:
   COMMAND_INT (지상국 mavlink_bridge_node): 풍선 GPS 위치
   UDP 16B (onboard detector.py): [detected, dx_px, dy_px, radius_px]
 동작:
-  1) 지상 웨이포인트로 접근 (position setpoint)
+  0) 지상 대기: 첫 유효 웨이포인트 수신 시 ARM → TAKEOFF
+  1) 이륙고도 도달 후 OFFBOARD 진입, 웨이포인트로 접근 (position setpoint)
   2) 5m 이내 진입 시 웨이포인트 고정 (lock)
   3) 카메라에 풍선 보이면 PN 가이던스 (acceleration setpoint)
   4) 비전 끊겨도 coast_timeout 동안 마지막 방향 유지
   5) 최소거리에서 3m 이상 멀어지면 통과 판정 → RTL
 안전:
-  - 이 스크립트는 arm/이륙하지 않음
   - OFFBOARD 해제 시 다시 뺏지 않고 종료
 """
 import argparse
@@ -55,6 +55,8 @@ def main():
     ap.add_argument('--pn-forward-acc', type=float, default=5.0)
     ap.add_argument('--fx', type=float, default=400.0)
     ap.add_argument('--fy', type=float, default=400.0)
+    ap.add_argument('--takeoff-alt', type=float, default=15.0,
+                    help='이륙 고도 [m]. 이 고도 도달 후 OFFBOARD 진입')
     ap.add_argument('--log', default='', help='비행 로그 파일 경로 (비어있으면 stdout만)')
     a = ap.parse_args()
 
@@ -91,6 +93,7 @@ def main():
     pos = home = landed = None
     vel_ned = np.zeros(3)
     R_bn = np.eye(3)
+    armed = False
     was_offboard = False
 
     detected = 0.0
@@ -151,6 +154,7 @@ def main():
                 landed = msg.landed_state
 
             elif from_fcu and typ == 'HEARTBEAT':
+                armed = bool(msg.base_mode & M.MAV_MODE_FLAG_SAFETY_ARMED)
                 in_offboard = (msg.custom_mode >> 16) & 0xFF == PX4_OFFBOARD
                 if was_offboard and not in_offboard:
                     log('OFFBOARD 해제됨, 종료')
@@ -224,12 +228,27 @@ def main():
 
         if now - t_cmd < 1.0:
             continue
+
         if was_offboard and age > a.lost:
             command(mav, M.MAV_CMD_DO_SET_MODE, M.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
                     PX4_AUTO, PX4_AUTO_LOITER)
             t_cmd = now
             log(f'표적 {age:.1f}s 끊김, Hold 요청')
-        elif fresh and not was_offboard and landed == M.MAV_LANDED_STATE_IN_AIR:
+        elif fresh and not armed and landed == M.MAV_LANDED_STATE_ON_GROUND:
+            # 첫 유효 웨이포인트 수신 + 지상 → ARM
+            command(mav, M.MAV_CMD_COMPONENT_ARM_DISARM, 1)
+            t_cmd = now
+            log('ARM 요청')
+        elif fresh and armed and landed == M.MAV_LANDED_STATE_ON_GROUND:
+            # ARM 완료, 아직 지상 → TAKEOFF
+            command(mav, M.MAV_CMD_NAV_TAKEOFF,
+                    0, 0, 0, float('nan'), float('nan'), float('nan'), a.takeoff_alt)
+            t_cmd = now
+            log(f'TAKEOFF 요청 → {a.takeoff_alt:.0f}m')
+        elif (fresh and not was_offboard
+              and landed == M.MAV_LANDED_STATE_IN_AIR
+              and pos[2] >= a.takeoff_alt - 1.0):
+            # 이륙고도 도달 → OFFBOARD
             command(mav, M.MAV_CMD_DO_SET_MODE, M.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED, PX4_OFFBOARD)
             t_cmd = now
             log(f'OFFBOARD 요청, 표적 {sp}')
