@@ -17,106 +17,56 @@ import time
 
 from pymavlink import mavutil
 
-M = mavutil.mavlink
-POS_ONLY = (M.POSITION_TARGET_TYPEMASK_VX_IGNORE | M.POSITION_TARGET_TYPEMASK_VY_IGNORE |
-            M.POSITION_TARGET_TYPEMASK_VZ_IGNORE | M.POSITION_TARGET_TYPEMASK_AX_IGNORE |
-            M.POSITION_TARGET_TYPEMASK_AY_IGNORE | M.POSITION_TARGET_TYPEMASK_AZ_IGNORE |
-            M.POSITION_TARGET_TYPEMASK_YAW_IGNORE | M.POSITION_TARGET_TYPEMASK_YAW_RATE_IGNORE)
-PX4_AUTO, PX4_OFFBOARD = 4, 6                          # PX4 custom main mode
-PX4_AUTO_LOITER = 3                                    # PX4 AUTO sub mode
-EARTH_R = 6378137.0
-
-
-def horiz_dist_m(lat1, lon1, lat2, lon2):
-    dn = math.radians(lat2 - lat1) * EARTH_R
-    de = math.radians(lon2 - lon1) * EARTH_R * math.cos(math.radians(lat1))
-    return math.hypot(dn, de)
-
-
-def dist3_m(a, b):
-    """(lat, lon, alt) 두 점 사이 거리 [m]."""
-    return math.hypot(horiz_dist_m(a[0], a[1], b[0], b[1]), b[2] - a[2])
-
-
-def target_ok(t, home, max_dist, min_alt, max_alt):
-    """유한값, 홈 기준 고도 범위, 홈 기준 수평거리 확인. home = (lat, lon)."""
-    if not all(math.isfinite(v) for v in t):
-        return False
-    return min_alt <= t[2] <= max_alt and horiz_dist_m(home[0], home[1], t[0], t[1]) <= max_dist
-
-
-class JumpFilter:
-    """마지막 채택값에서 max_jump [m] 이상 튄 표적은 tol 이내 같은 자리로 confirm회 연속일 때만 채택."""
-
-    def __init__(self, max_jump, confirm, tol=2.0):
-        self.max_jump, self.confirm, self.tol = max_jump, confirm, tol
-        self.accepted, self.cand, self.count = None, None, 0
-
-    def __call__(self, t) -> bool:
-        if self.accepted is None or dist3_m(self.accepted, t) <= self.max_jump:
-            self.accepted, self.cand, self.count = t, None, 0
-            return True
-        if self.cand is not None and dist3_m(self.cand, t) <= self.tol:
-            self.count += 1
-        else:
-            self.cand, self.count = t, 1
-        if self.count >= self.confirm:
-            self.accepted, self.cand, self.count = t, None, 0
-            return True
-        return False
-
-
-def send_setpoint(mav, lat, lon, alt):
-    mav.mav.set_position_target_global_int_send(
-        0, mav.target_system, mav.target_component, M.MAV_FRAME_GLOBAL_RELATIVE_ALT_INT,
-        POS_ONLY, int(round(lat * 1e7)), int(round(lon * 1e7)), alt, 0, 0, 0, 0, 0, 0, 0, 0)
-
-
-def command(mav, cmd, *params):
-    p = list(params) + [0] * (7 - len(params))
-    mav.mav.command_long_send(mav.target_system, mav.target_component, cmd, 0, *p)
+from common import (
+    JumpFilter, command, request_streams, send_setpoint, target_ok, wait_fcu,
+    M, PX4_AUTO, PX4_AUTO_LOITER, PX4_OFFBOARD,
+)
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--url', default='udpin:0.0.0.0:14601')    # mavlink-router endpoint
-    ap.add_argument('--baud', type=int, default=921600)        # serial url에서만 사용
-    ap.add_argument('--ground-sys', type=int, default=250)     # mavlink_bridge_node source_system
-    ap.add_argument('--rate', type=float, default=20.0)        # setpoint 주기 [Hz]
-    ap.add_argument('--timeout', type=float, default=1.0)      # 표적 끊김 -> 정지 [s]
-    ap.add_argument('--lost', type=float, default=5.0)         # 표적 끊김 -> Hold 전환 [s]
-    ap.add_argument('--max-dist', type=float, default=150.0)   # 홈 기준 수평거리 한계 [m]
-    ap.add_argument('--min-alt', type=float, default=5.0)      # 홈 기준 고도 하한 [m]
-    ap.add_argument('--max-alt', type=float, default=60.0)     # 홈 기준 고도 상한 [m]
-    ap.add_argument('--max-jump', type=float, default=10.0)    # 표적 점프 한계 [m]
-    ap.add_argument('--confirm', type=int, default=10)         # 점프 표적 채택에 필요한 연속 횟수
-    ap.add_argument('--alt-offset', type=float, default=0.0)   # 표적 고도에 더함 [m] (+ 위, 풍선과 거리 두기)
+    ap.add_argument('--url', default='udpin:0.0.0.0:14601')
+    ap.add_argument('--baud', type=int, default=921600)
+    ap.add_argument('--ground-sys', type=int, default=250)
+    ap.add_argument('--rate', type=float, default=20.0)
+    ap.add_argument('--timeout', type=float, default=1.0)
+    ap.add_argument('--lost', type=float, default=5.0)
+    ap.add_argument('--max-dist', type=float, default=150.0)
+    ap.add_argument('--min-alt', type=float, default=5.0)
+    ap.add_argument('--max-alt', type=float, default=60.0)
+    ap.add_argument('--max-jump', type=float, default=10.0)
+    ap.add_argument('--confirm', type=int, default=10)
+    ap.add_argument('--alt-offset', type=float, default=0.0)
     a = ap.parse_args()
 
     mav = mavutil.mavlink_connection(a.url, baud=a.baud, source_system=1, source_component=191)
-    while True:                                        # 포워딩된 GCS heartbeat는 건너뜀
-        hb = mav.recv_match(type='HEARTBEAT', blocking=True)
-        if hb.autopilot == M.MAV_AUTOPILOT_PX4:
-            mav.target_system, mav.target_component = hb.get_srcSystem(), hb.get_srcComponent()
-            break
+    wait_fcu(mav)
     print(f'FCU sys {mav.target_system} comp {mav.target_component}')
-    for msg_id, hz in ((M.MAVLINK_MSG_ID_GLOBAL_POSITION_INT, 20), (M.MAVLINK_MSG_ID_EXTENDED_SYS_STATE, 2)):
-        command(mav, M.MAV_CMD_SET_MESSAGE_INTERVAL, msg_id, 1e6 / hz)
+
+    request_streams(mav, [
+        (M.MAVLINK_MSG_ID_GLOBAL_POSITION_INT, 20),
+        (M.MAVLINK_MSG_ID_EXTENDED_SYS_STATE, 2),
+    ])
 
     jump = JumpFilter(a.max_jump, a.confirm)
     target, t_rx, hold = None, None, None
-    pos = home = landed = None                         # pos = (lat, lon, 홈 기준 고도)
+    pos = home = landed = None
     was_offboard = False
     t_start = time.monotonic()
     t_next = t_cmd = t_hb = t_log = 0.0
+
     while True:
         msg = mav.recv_match(blocking=True, timeout=0.01)
         now = time.monotonic()
         if msg is not None:
             typ = msg.get_type()
-            from_fcu = msg.get_srcSystem() == mav.target_system and msg.get_srcComponent() == mav.target_component
-            if (typ == 'COMMAND_INT' and msg.command == M.MAV_CMD_USER_1 and msg.get_srcSystem() == a.ground_sys
-                    and msg.target_component == 191 and msg.frame == M.MAV_FRAME_GLOBAL_RELATIVE_ALT_INT):
+            from_fcu = (msg.get_srcSystem() == mav.target_system
+                        and msg.get_srcComponent() == mav.target_component)
+
+            if (typ == 'COMMAND_INT' and msg.command == M.MAV_CMD_USER_1
+                    and msg.get_srcSystem() == a.ground_sys
+                    and msg.target_component == 191
+                    and msg.frame == M.MAV_FRAME_GLOBAL_RELATIVE_ALT_INT):
                 t = (msg.x * 1e-7, msg.y * 1e-7, msg.z + a.alt_offset)
                 if home is None:
                     pass
@@ -142,7 +92,7 @@ def main():
                     return
                 if in_offboard and not was_offboard:
                     print('OFFBOARD 진입')
-                was_offboard |= in_offboard
+                was_offboard = was_offboard or in_offboard
 
         if now - t_hb > 1.0:
             t_hb = now
@@ -162,16 +112,17 @@ def main():
         if fresh:
             sp, hold = target, None
         elif target is None:
-            sp = pos                                   # 표적 없음: 현재 위치를 따라감
+            sp = pos
         else:
-            hold = hold or pos                         # 끊긴 자리에서 정지
+            hold = hold or pos
             sp = hold
-        send_setpoint(mav, *sp)                        # OFFBOARD 전후 계속 스트리밍
+        send_setpoint(mav, *sp)
 
         if now - t_cmd < 1.0:
             continue
         if was_offboard and age > a.lost:
-            command(mav, M.MAV_CMD_DO_SET_MODE, M.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED, PX4_AUTO, PX4_AUTO_LOITER)
+            command(mav, M.MAV_CMD_DO_SET_MODE, M.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
+                    PX4_AUTO, PX4_AUTO_LOITER)
             t_cmd = now
             print(f'표적 {age:.1f}s 끊김, Hold 요청')
         elif fresh and not was_offboard and landed == M.MAV_LANDED_STATE_IN_AIR:
