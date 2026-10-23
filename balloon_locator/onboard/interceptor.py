@@ -55,8 +55,8 @@ def main():
     ap.add_argument('--pn-forward-acc', type=float, default=5.0)
     ap.add_argument('--fx', type=float, default=400.0)
     ap.add_argument('--fy', type=float, default=400.0)
-    ap.add_argument('--takeoff-alt', type=float, default=15.0,
-                    help='이륙 고도 [m]. 이 고도 도달 후 OFFBOARD 진입')
+    ap.add_argument('--takeoff-alt', type=float, default=5.0,
+                    help='최소 이륙 고도 [m]. 이 고도 도달 후 OFFBOARD 진입, 표적 고도는 비행 중 상승')
     ap.add_argument('--log', default='', help='비행 로그 파일 경로 (비어있으면 stdout만)')
     a = ap.parse_args()
 
