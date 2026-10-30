@@ -5,7 +5,7 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 revision=d6f12ad1c4f70ad3230afd7d86e971421e02fef4
 classic_revision=6697ab169ceab512dc706acea63df4c882662c60
-checkout="${1:-$PWD/external/PX4-Autopilot}"
+checkout="$(realpath -m -- "${1:-$PWD/external/PX4-Autopilot}")"
 jobs="${BALLOON_BUILD_JOBS:-2}"
 [[ "$jobs" =~ ^[1-9][0-9]*$ ]] || { echo 'BALLOON_BUILD_JOBS must be a positive integer' >&2; exit 2; }
 if [[ ! -e "$checkout" ]]; then
