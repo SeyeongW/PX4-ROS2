@@ -12,6 +12,26 @@ from launch import LaunchContext
 LAUNCH = Path(__file__).parents[1] / 'launch/gazebo.launch.py'
 
 
+def test_onboard_mount_tf_uses_model_pose_and_ekf_body_frame():
+    from launch.utilities import perform_substitutions
+    from scipy.spatial.transform import Rotation
+    context=LaunchContext()
+    report={'onboard_camera':{'optical_position_body_m':[0.,0.,.1997],
+                              'frame_name':'jol/onboard_camera_optical'}}
+    node=run_path(str(LAUNCH))['onboard_camera_transform'](report)
+    command=[]
+    for arg in node.cmd[1:]:
+        item=perform_substitutions(context,arg)
+        if item=='--ros-args':break
+        command.append(item)
+    def value(flag):return command[command.index(flag)+1]
+    assert value('--frame-id')=='jol/observer_body'
+    assert value('--child-frame-id')=='jol/onboard_camera_optical'
+    assert float(value('--z'))==pytest.approx(.1997)
+    rotation=Rotation.from_euler('xyz',[float(value('--roll')),float(value('--pitch')),float(value('--yaw'))])
+    np.testing.assert_allclose(rotation.as_matrix(),np.eye(3),atol=1e-12)
+
+
 @pytest.mark.parametrize('key,value', [
     ('scenario', 'multi'), ('flight_backend', 'native'), ('aircraft_type', 'iris_proxy'),
 ])

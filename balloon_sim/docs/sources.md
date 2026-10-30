@@ -25,3 +25,9 @@
 - [T-MOTOR PACER P2207 V3](https://www.tmotorhobby.com/goods-1181-T-MOTORHOBBY%2BP2207%2BV3.html), [공식 치수/질량표](https://www.tmotorhobby.com/images/20220411/1649663656669244.jpg), [공식 추력표](https://www.tmotorhobby.com/images/20220411/1649663656357709.jpg) — 1950 KV, 6S, P49436-3 조건. 추력 자료의 적합값과 가정 토크/시간상수를 구분한다.
 
 외부 문서 조회는 Context7과 공식 소스 확인을 함께 사용했다. Context7 결과의 `main` 문서를 특정 버전의 실행 증거로 취급하지 않고, 설치된 소스와 고정 revision을 대조했다.
+
+## 노즈 카메라·내부 배치 추가의 근거
+
+- [Camera Module 3 표준형 공식 기구 도면](https://datasheets.raspberrypi.com/camera/camera-module-3-standard-mechanical-drawing.pdf): PCB·렌즈·커넥터 치수와 수평 66° 표기를 참고했다. [공식 제품 페이지](https://www.raspberrypi.com/products/camera-module-3/)의 대각 화각 75°와 수평 화각을 구별한다.
+- 내부 전장품의 순서·위치는 사용자 제공 단면도를 참고했다. 어댑터 레일·배선·광학 중심·부품 상세 치수는 시뮬레이션 배치 가정이다. 원본 STL 10개는 변경하지 않았으며 공식 PDF·추가 이미지·렌더링 결과를 저장소에 복제하지 않았다.
+- 640×360·15 Hz는 이 시뮬레이션 설정이며 제품 최대 성능을 뜻하지 않는다. 자동초점·왜곡·노출·롤링셔터와 기구 공차는 재현/검증하지 않았다.

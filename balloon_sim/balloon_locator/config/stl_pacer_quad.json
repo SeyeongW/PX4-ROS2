@@ -218,7 +218,201 @@
     "No measured CG/inertia, motor reaction torque, battery sag/endurance, rotor inflow or body aerodynamic model.",
     "Official 28.1mm motor diameter exceeds STL pod 27mm inner diameter. Physical fit is NOT verified.",
     "No fixed-wing conversion: wings/fins have no measured polar for the new load.",
-    "Simulation only: no hardware launch, no ground-truth target control, no pose teleporting."
+    "Simulation only: no hardware launch, no ground-truth target control, no pose teleporting.",
+    "Camera and avionics are visual-only partitions within the existing assumed 2kg total; no measured component mass or updated inertia is claimed.",
+    "Camera Module 3 bracket adapter and cable route are concept visuals; narrow nominal clearances are not a manufacturing fit verification.",
+    "Camera drawing total 11.3mm and interpreted sub-dimensions 2.75+1.12+6.98=10.85mm differ by 0.45mm; the optical origin is a simulation assumption pending mechanical datum and entrance-pupil measurement."
   ],
-  "mass_specification": "User confirmed 2kg TOTAL including airframe and battery; component mass split not measured."
+  "mass_specification": "User confirmed 2kg TOTAL including airframe and battery; component mass split not measured.",
+  "onboard_camera": {
+    "model": "Raspberry Pi Camera Module 3 standard (concept mounting)",
+    "source_url": "https://datasheets.raspberrypi.com/camera/camera-module-3-standard-mechanical-drawing.pdf",
+    "placement_source": "User assembly section; official PCB/lens dimensions; adapter, optical center and component mounting are simulation assumptions, NOT manufacturing approval.",
+    "pcb_center_source_mm": [
+      0,
+      1205.56,
+      -2.469
+    ],
+    "pcb_size_mm": [
+      25,
+      1.12,
+      23.862
+    ],
+    "optical_center_source_mm": [
+      0,
+      1213.2,
+      0
+    ],
+    "horizontal_fov_deg": 66,
+    "width": 640,
+    "height": 360,
+    "update_rate_hz": 15,
+    "near_clip_m": 0.001,
+    "far_clip_m": 100,
+    "namespace": "/jol",
+    "camera_name": "onboard_camera",
+    "frame_name": "jol/onboard_camera_optical",
+    "mount_status": "Concept adapter: old holes x=+/-10.5,z=-5 only; rails y1202..1203,z-13.9..1.6; new posts z=-12.4,+.1 y1203..1205. Original 1.8mm holes are not verified M2 clearance.",
+    "clearance_status": "Ideal mesh envelope only: PCB-to-shell approx0.333mm, rear connector-to-bracket0.25mm. Tolerances, wiring, cooling and mechanical strength unverified.",
+    "optics_status": "Ideal fixed-focus pinhole, 66deg nominal horizontal FOV, 640x360 downsampled simulation. No measured calibration, autofocus, distortion, exposure or rolling shutter."
+  },
+  "internal_visuals": {
+    "status": "VISUAL ONLY: approximate placement read from user section; no component mass/inertia addition, actual dimensions and mounting must be measured.",
+    "boxes_source_mm": [
+      {
+        "name": "battery_pack",
+        "center": [
+          0,
+          934,
+          0
+        ],
+        "size": [
+          36,
+          120,
+          34
+        ],
+        "color": ".16 .18 .21 1"
+      },
+      {
+        "name": "battery_label",
+        "center": [
+          0,
+          934,
+          17.1
+        ],
+        "size": [
+          26,
+          58,
+          0.2
+        ],
+        "color": ".65 .24 .12 1"
+      },
+      {
+        "name": "esc_board",
+        "center": [
+          0,
+          1010,
+          0
+        ],
+        "size": [
+          40,
+          2,
+          40
+        ],
+        "color": ".13 .18 .22 1"
+      },
+      {
+        "name": "flight_controller_board",
+        "center": [
+          0,
+          1023,
+          0
+        ],
+        "size": [
+          40,
+          2,
+          40
+        ],
+        "color": ".10 .40 .28 1"
+      },
+      {
+        "name": "flight_controller_chip",
+        "center": [
+          0,
+          1025,
+          0
+        ],
+        "size": [
+          12,
+          2,
+          12
+        ],
+        "color": ".08 .09 .10 1"
+      },
+      {
+        "name": "raspberry_pi5_board",
+        "center": [
+          2,
+          1081,
+          0
+        ],
+        "size": [
+          1.6,
+          86,
+          56
+        ],
+        "color": ".12 .43 .25 1"
+      },
+      {
+        "name": "raspberry_pi5_heatsink",
+        "center": [
+          8,
+          1080,
+          0
+        ],
+        "size": [
+          10,
+          48,
+          25
+        ],
+        "color": ".53 .56 .59 1"
+      },
+      {
+        "name": "radio_module",
+        "center": [
+          -14,
+          1074,
+          0
+        ],
+        "size": [
+          10,
+          44,
+          24
+        ],
+        "color": ".15 .19 .23 1"
+      },
+      {
+        "name": "bec_module",
+        "center": [
+          -15,
+          1042,
+          0
+        ],
+        "size": [
+          12,
+          12,
+          16
+        ],
+        "color": ".21 .25 .29 1"
+      },
+      {
+        "name": "gps_board",
+        "center": [
+          8,
+          1168,
+          0
+        ],
+        "size": [
+          24,
+          1.6,
+          24
+        ],
+        "color": ".12 .42 .23 1"
+      },
+      {
+        "name": "gps_patch",
+        "center": [
+          8,
+          1172,
+          0
+        ],
+        "size": [
+          20,
+          6,
+          20
+        ],
+        "color": ".84 .79 .63 1"
+      }
+    ]
+  }
 }

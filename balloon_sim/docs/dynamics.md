@@ -493,3 +493,18 @@ $$
 를 모두 만족해야 성공이다. 위치 구간 길이가 2 m를 넘는 점프, 역방향 이동, 단지 목표에 가까운 표본은 성공으로 처리하지 않는다. 호출부는 측정 시각의 신선도를 추가 검사한다. 기본 STL point 임무가 이 판정이나 실패 복귀를 수행한다고 설명해서는 안 된다.
 
 출처: [static_flight_core.py](../support/jol_perception/jol_perception/static_flight_core.py)의 `build_static_plan`, `_split_cubic`, `_moving_segment`, `checkpoint_crossing`; [stl_mission.py](../balloon_locator/balloon_locator/stl_mission.py)의 `check_gate`, `begin_landing`.
+
+## 노즈 카메라 추가와 동역학 적용 범위
+
+추가된 Camera Module 3 및 내부 전장품은 기존 총질량 2 kg에 포함된 **시각적 배치**다. 각 부품 질량을 새로 더하거나 CG·관성·모터·비행 제어 수식을 변경하지 않았다. `airframe_transparency`도 원본 외피의 표시만 바꾸며 충돌 형상과 힘 계산에 영향을 주지 않는다.
+
+기체 B에서 노즈 광학 프레임 C의 위치·자세는 현재 설정에서 다음과 같다.
+
+$$
+\mathbf t_{BC}=(0,0,0.1997)^T\;\mathrm m,\qquad R_{BC}=I_3,\qquad
+\mathbf p_W=\mathbf p_{WB}+R_{WB}(\mathbf t_{BC}+R_{BC}\mathbf p_C).
+$$
+
+따라서 광학 +X/+Y/+Z는 각각 기체 +X/+Y/+Z와 일치한다. 직립 상태의 기수 카메라는 위를 본다. `jol/observer_body`의 위치·자세는 기존 EKF 변환을 사용하고 새 노드는 고정 장착 TF만 제공한다. 광학 중심 0.1997 m는 모델 배치 가정이며 실측 보정값이 아니다. 노즈 영상은 독립 토픽으로 제공하고 기존 짐벌 기반 좌표 추정·락을 대체하지 않는다.
+
+장착 레일·PCB·렌즈·커넥터와 전장품 형상은 배치 검토용이다. 브래킷 직접 체결의 렌즈 중심 7.4 mm 불일치, 공칭 PCB 반경 여유 약 0.333 mm와 후면 커넥터 여유 0.25 mm, 도면 두께 기준점 해석 차이 0.45 mm가 남아 있다. 공차·배선·강도·입사동공 위치를 확인하기 전에는 제작 적합성이나 카메라 장착 후 실물 관성으로 해석하지 않는다.

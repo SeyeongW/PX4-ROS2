@@ -123,3 +123,15 @@ bash -n tools/run_gazebo.sh tools/build_workspace.sh tools/build_px4.sh
 - MAVROS GeographicLib 오류: 위 데이터 설치 스크립트 확인.
 - 준비/락 이후 발사 불가: UI 사유, 좌표 freshness, FCU ready, landed/arming 상태 확인.
 - offscreen UI: `QT_QPA_PLATFORM=offscreen`은 자동 점검용이며 화면을 띄우지 않는다.
+
+## 6. 노즈 카메라·내부 배치 확인
+
+기본 실행에 기체 카메라가 포함된다. 내부 배치를 볼 때만 외피 투명도를 지정한다. 허용 범위는 0~1이며 위치·질량·관성·충돌 형상을 바꾸는 인자가 아니다.
+
+```bash
+./tools/run_gazebo.sh airframe_transparency:=0.84
+```
+
+독립 영상 토픽은 `/jol/onboard_camera/image_raw`, 보정 토픽은 `/jol/onboard_camera/camera_info`다. RViz의 Image 디스플레이에 해당 영상 토픽을 추가할 수 있다. 설정은 640×360·15 Hz·수평 66°이며 고정초점 이상적 핀홀 모델이다. 실제 모듈의 자동초점·왜곡·노출·롤링셔터는 재현하지 않는다.
+
+카메라 광학 프레임 `jol/onboard_camera_optical`은 기존 EKF 프레임 `jol/observer_body`에 고정 장착된다. 기수가 body +Z이므로 지상 직립 상태에서 하늘을 보는 것이 설정된 방향이다. 기존 UI 디자인·짐벌 영상·풍선 좌표 락 입력은 유지되며, 새 영상이 자동으로 제어 입력을 대체하지 않는다.

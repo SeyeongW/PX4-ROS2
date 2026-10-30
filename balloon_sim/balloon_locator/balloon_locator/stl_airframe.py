@@ -82,6 +82,23 @@ def load_profile(path):
     for key in ('continuous_takeoff', 'target_is_virtual_waypoint', 'target_is_pass_through_gate'):
         if key in flight and type(flight[key]) is not bool:
             raise ValueError('boolean_flight_option_required: '+key)
+    camera = config.get('onboard_camera')
+    if camera is not None:
+        for key in ('pcb_center_source_mm', 'pcb_size_mm', 'optical_center_source_mm'):
+            _array(camera[key], (3,), 'onboard_camera.'+key)
+        if min(camera['pcb_size_mm']) <= 0:
+            raise ValueError('positive_camera_PCB_dimensions_required')
+        for key in ('horizontal_fov_deg', 'update_rate_hz', 'near_clip_m', 'far_clip_m'):
+            _positive(camera[key], 'onboard_camera.'+key)
+        if camera['horizontal_fov_deg'] >= 180 or camera['near_clip_m'] >= camera['far_clip_m']:
+            raise ValueError('valid_camera_FOV_and_clipping_required')
+        for key in ('width', 'height'):
+            if type(camera[key]) is not int or not 1 <= camera[key] <= 4096:
+                raise ValueError('valid_camera_image_dimensions_required')
+    for component in config.get('internal_visuals', {}).get('boxes_source_mm', []):
+        _array(component['center'], (3,), 'internal_visual.center')
+        if (_array(component['size'], (3,), 'internal_visual.size') <= 0).any():
+            raise ValueError('positive_internal_visual_dimensions_required')
     return config
 
 
@@ -117,9 +134,85 @@ def _material(visual, color):
         ET.SubElement(material, key).text = color
 
 
-def build_model(sim_share, px4_root, plugins, aero_plugins, profile_path, assets_dir):
+def _onboard_visuals(body, config):
+    """Diagram-derived visual details; all masses remain in the existing 2 kg model."""
+    scale = config['geometry']['stl_scale_m']
+    origin = np.asarray(config['geometry']['stl_origin_source'])
+
+    def position(raw):
+        delta = (np.asarray(raw)-origin)*scale
+        return delta[[0, 2, 1]]*[1, -1, 1]
+
+    def box(name, center, size, color):
+        # Source +Y is the nose direction; body +Z points toward the nose.
+        dimensions = np.asarray(size)[[0, 2, 1]]*scale
+        visual = _shape(body, 'visual', name, 'box',
+                        dict(size=' '.join(map(str, dimensions))), (*position(center), 0, 0, 0))
+        _material(visual, color)
+
+    def cylinder(name, center, radius, length, color):
+        visual = _shape(body, 'visual', name, 'cylinder',
+                        dict(radius=radius*scale, length=length*scale), (*position(center), 0, 0, 0))
+        _material(visual, color)
+
+    for component in config.get('internal_visuals', {}).get('boxes_source_mm', []):
+        box(component['name'], component['center'], component['size'], component['color'])
+    camera = config.get('onboard_camera')
+    if camera is None:
+        return None
+    box('onboard_camera_pcb', camera['pcb_center_source_mm'], camera['pcb_size_mm'], '.10 .40 .24 1')
+    # Mechanical layout follows the official standard module drawing. The two
+    # rails adapt the old bracket hole pattern, avoiding its rear connector.
+    box('onboard_camera_lens_housing', [0, 1208.0575, 0], [10.8, 3.875, 10.8], '.08 .09 .10 1')
+    cylinder('onboard_camera_lens_barrel', [0, 1211.5075, 0], 2.875, 3.025, '.055 .065 .075 1')
+    cylinder('onboard_camera_lens_glass', [0, 1213.06, 0], 2.375, .08, '.05 .19 .28 1')
+    box('onboard_camera_rear_connector', [0, 1203.625, 6.607], [19.61, 2.75, 5.71], '.76 .73 .63 1')
+    # Short cable tail only; the complete cable route through the old bracket
+    # and avionics needs a mechanical redesign, not a guessed solid intersection.
+    box('onboard_camera_ribbon_tail', [0, 1203.5, 10.5], [12, .2, 2.1], '.72 .43 .16 1')
+    for side, x in enumerate((-10.5, 10.5)):
+        box(f'onboard_camera_adapter_rail_{side}', [x, 1202.5, -6.15], [3, 1, 15.5], '.58 .61 .64 1')
+        cylinder(f'onboard_camera_adapter_anchor_{side}', [x, 1202.5, -5], .8, 1, '.24 .26 .28 1')
+        for index, z in enumerate((-12.4, .1)):
+            cylinder(f'onboard_camera_standoff_{side}_{index}', [x, 1204, z], 1.5, 2, '.64 .55 .32 1')
+            cylinder(f'onboard_camera_screw_{side}_{index}', [x, 1206.45, z], 1.5, .66, '.28 .30 .32 1')
+    optical_position = position(camera['optical_center_source_mm']).tolist()
+    sensor = ET.SubElement(body, 'sensor', name='onboard_camera_rgb', type='camera')
+    # Gazebo +X looks out of the nose; image right/down follow body +X/+Y,
+    # matching the physical PCB's 25 mm horizontal edge and the optical TF.
+    sensor_rpy = [math.pi/2, -math.pi/2, 0]
+    ET.SubElement(sensor, 'pose').text = ' '.join(map(str, [*optical_position, *sensor_rpy]))
+    for key, value in (('always_on', 'true'), ('update_rate', camera['update_rate_hz']), ('visualize', 'false')):
+        ET.SubElement(sensor, key).text = str(value)
+    optics = ET.SubElement(sensor, 'camera')
+    ET.SubElement(optics, 'horizontal_fov').text = str(math.radians(camera['horizontal_fov_deg']))
+    image = ET.SubElement(optics, 'image')
+    for key, value in (('width', camera['width']), ('height', camera['height']), ('format', 'R8G8B8')):
+        ET.SubElement(image, key).text = str(value)
+    clip = ET.SubElement(optics, 'clip')
+    for key in ('near', 'far'):
+        ET.SubElement(clip, key).text = str(camera[key+'_clip_m'])
+    plugin = ET.SubElement(sensor, 'plugin', name='jol_onboard_camera', filename='libgazebo_ros_camera.so')
+    ros = ET.SubElement(plugin, 'ros')
+    ET.SubElement(ros, 'namespace').text = camera['namespace']
+    topic_root = camera['namespace'].rstrip('/')+'/'+camera['camera_name']
+    for topic in ('image_raw', 'camera_info'):
+        ET.SubElement(ros, 'remapping').text = f'{topic}:={topic_root}/{topic}'
+    for key in ('camera_name', 'frame_name'):
+        ET.SubElement(plugin, key).text = camera[key]
+    for key, dimension in (('cx', 'width'), ('cy', 'height')):
+        ET.SubElement(plugin, key).text = str((camera[dimension]-1)/2)
+    return dict(optical_position_body_m=optical_position, sensor_rpy_rad=sensor_rpy,
+                frame_name=camera['frame_name'], image_topic=topic_root+'/image_raw',
+                camera_info_topic=topic_root+'/camera_info', data_status='ideal_pinhole_concept_mount',
+                added_mass_kg=0., total_mass_policy='Included in existing assumed 2kg, not a measured component partition')
+
+
+def build_model(sim_share, px4_root, plugins, aero_plugins, profile_path, assets_dir, *, shell_transparency=0.0):
     """Return an SDF model and explicit provenance report; build does not prove flight."""
     config = load_profile(profile_path)
+    if type(shell_transparency) not in (int, float) or not math.isfinite(shell_transparency) or not 0 <= shell_transparency <= 1:
+        raise ValueError('shell_transparency_between_zero_and_one_required')
     helpers = run_path(str(Path(sim_share)/'launch/tailsitter_model.py'))
     physics = run_path(str(Path(sim_share)/'launch/tailsitter_physics.py'))
     put = helpers['set_value']
@@ -170,6 +263,9 @@ def build_model(sim_share, px4_root, plugins, aero_plugins, profile_path, assets
                         dict(uri=path.as_uri(), scale=f'{scale} {scale} {scale}'),
                         (*translation, math.pi/2, 0, 0))
         _material(visual, '.23 .28 .34 1' if name.startswith(('A_', 'B_', 'H_')) else '.75 .78 .80 1')
+        if name.startswith(('A_', 'B_', 'C_', 'H_', 'I_')):
+            ET.SubElement(visual, 'transparency').text = str(shell_transparency)
+    onboard_camera = _onboard_visuals(body, config)
     low = np.min([b[0] for b in bounds], axis=0)
     high = np.max([b[1] for b in bounds], axis=0)
     # Conservative cylinder contains every supplied shell, including tail fins.
@@ -275,12 +371,14 @@ def build_model(sim_share, px4_root, plugins, aero_plugins, profile_path, assets
                   physics_profile_path=str(Path(profile_path).resolve()),
                   rotor_joint_state_topic='/jol/sim_observer/rotor_joints',
                   vehicle_rotation_actuation='PX4 differential rotor forces and reaction torques',
+                  onboard_camera=onboard_camera, shell_transparency=shell_transparency,
                   limitations=[
                       'STL unit is assumed millimetres; all original source vertices are preserved.',
                       'Mass/CG/inertia and motor reaction torque are assumptions, not identified hardware.',
                       'P2207 V3 diameter 28.1 mm exceeds the approximately 27 mm pod bore; physical mounting is unresolved.',
                       'Conservative cylinder contact envelope; rotor collisions are not modeled.',
                       'Three primitive blades represent each propeller, not a manufacturer blade mesh.',
+                      'Camera/avionics primitives are visual-only within the assumed total mass; mounting and cable route are unverified.',
                       'No calibrated body drag, wing lift, propwash or fixed-wing transition model.',
                       'Static thrust fit and official Iris GPS/IMU noise do not certify real flight.'])
     return model, report

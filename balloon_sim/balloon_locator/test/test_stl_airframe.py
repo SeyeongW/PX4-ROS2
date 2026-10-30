@@ -35,7 +35,8 @@ def test_supplied_parts_share_assembly_and_expected_scale(assembled):
     assert report['geometry_triangle_count'] == 85258
     np.testing.assert_allclose(report['geometry_bounds_body_m'][0], [-.136, -.1359973907470703, -.2045], atol=1e-6)
     np.testing.assert_allclose(report['geometry_bounds_body_m'][1], [.136, .1359973907470703, .2045], atol=1e-6)
-    visuals = model.findall("link[@name='base_link']/visual")
+    visuals = [visual for visual in model.findall("link[@name='base_link']/visual")
+               if visual.find('geometry/mesh') is not None]
     assert len(visuals) == 10
     for visual in visuals:
         pose = np.fromstring(visual.findtext('pose'), sep=' ')
@@ -46,6 +47,81 @@ def test_supplied_parts_share_assembly_and_expected_scale(assembled):
     assert model.find('include') is None
     assert 'model://iris' not in ET.tostring(model, encoding='unicode')
     np.testing.assert_array_equal(np.fromstring(model.find("link[@name='base_link']").findtext('pose'), sep=' '), np.zeros(6))
+
+
+def test_nose_camera_has_independent_rgb_stream_and_matches_optical_frame(assembled):
+    from scipy.spatial.transform import Rotation
+    model, report = assembled
+    sensor = model.find("link[@name='base_link']/sensor[@name='onboard_camera_rgb']")
+    pose = np.fromstring(sensor.findtext('pose'), sep=' ')
+    np.testing.assert_allclose(pose, [0, 0, .1997, np.pi/2, -np.pi/2, 0], atol=1e-12)
+    np.testing.assert_allclose(report['onboard_camera']['optical_position_body_m'], pose[:3])
+    # Gazebo forward/left/up -> optical forward/right/down. Image horizontal
+    # must match the PCB's 25 mm body-X edge, not its shorter body-Y edge.
+    optical_axes_in_sensor = np.array([[0., 0., 1.], [-1., 0., 0.], [0., -1., 0.]])
+    np.testing.assert_allclose(Rotation.from_euler('xyz', pose[3:]).as_matrix()
+                               @ optical_axes_in_sensor, np.eye(3), atol=1e-12)
+    np.testing.assert_allclose(report['onboard_camera']['sensor_rpy_rad'], pose[3:])
+    assert sensor.findtext('update_rate') == '15'
+    assert float(sensor.findtext('camera/horizontal_fov')) == pytest.approx(np.deg2rad(66))
+    assert sensor.findtext('camera/image/width') == '640'
+    assert sensor.findtext('camera/image/height') == '360'
+    assert float(sensor.findtext('camera/clip/near')) == .001
+    plugin = sensor.find('plugin')
+    assert plugin.get('filename') == 'libgazebo_ros_camera.so'
+    assert plugin.findtext('camera_name') == 'onboard_camera'
+    assert plugin.findtext('frame_name') == report['onboard_camera']['frame_name'] == 'jol/onboard_camera_optical'
+    assert plugin.findtext('cx') == '319.5' and plugin.findtext('cy') == '179.5'
+    assert {r.text for r in plugin.findall('ros/remapping')} == {
+        'image_raw:=/jol/onboard_camera/image_raw', 'camera_info:=/jol/onboard_camera/camera_info'}
+    assert len(model.findall("link[@name='base_link']/collision")) == 1
+    assert len(model.findall('link')) == 6  # No invisible payload mass/link added.
+
+
+def test_camera_adapter_avoids_rear_connector_and_keeps_official_pcb_size(assembled):
+    model, report = assembled
+    body = model.find("link[@name='base_link']")
+    pcb = body.find("visual[@name='onboard_camera_pcb']")
+    np.testing.assert_allclose(np.fromstring(pcb.findtext('geometry/box/size'), sep=' '), [.025, .023862, .00112])
+    np.testing.assert_allclose(np.fromstring(pcb.findtext('pose'), sep=' ')[:3], [0, .002469, .19206])
+    for visual in body.findall('visual'):
+        if visual.get('name').startswith('onboard_camera_adapter_anchor'):
+            assert np.fromstring(visual.findtext('pose'), sep=' ')[1] == pytest.approx(.005)
+    assert report['onboard_camera']['added_mass_kg'] == 0
+    assert body.find("visual[@name='battery_pack']") is not None
+    assert body.find("visual[@name='gps_patch']") is not None
+
+
+def test_cutaway_changes_only_original_outer_shell_visibility(assembled):
+    model, _ = stl_airframe.build_model(SIM, PX4, PLUGINS, PLUGINS, PROFILE, ASSETS, shell_transparency=.8)
+    for visual in model.findall("link[@name='base_link']/visual"):
+        name = visual.get('name')
+        if name in stl_airframe.ASSET_NAMES and name.startswith(('A_', 'B_', 'C_', 'H_', 'I_')):
+            assert float(visual.findtext('transparency')) == .8
+        else:
+            assert visual.find('transparency') is None
+    before = assembled[0]
+    for old, new in zip(before.findall('link'), model.findall('link')):
+        assert ET.tostring(old.find('inertial')) == ET.tostring(new.find('inertial'))
+    assert ET.tostring(before.find("link[@name='base_link']/sensor")) == ET.tostring(model.find("link[@name='base_link']/sensor"))
+
+
+@pytest.mark.parametrize('value', [-.1, 1.1, float('nan'), '0.5', True])
+def test_invalid_cutaway_transparency_rejected(value):
+    with pytest.raises(ValueError, match='shell_transparency'):
+        stl_airframe.build_model(SIM, PX4, PLUGINS, PLUGINS, PROFILE, ASSETS, shell_transparency=value)
+
+
+@pytest.mark.parametrize('key,value', [
+    ('width', 0), ('height', 360.5), ('horizontal_fov_deg', 180),
+    ('near_clip_m', 101), ('update_rate_hz', float('inf')),
+    ('pcb_size_mm', [25, -1, 23]), ('optical_center_source_mm', [0, float('nan'), 0]),
+])
+def test_invalid_camera_profile_rejected(tmp_path, key, value):
+    c = json.loads(PROFILE.read_text()); c['onboard_camera'][key] = value
+    path = tmp_path/'invalid.json'; path.write_text(json.dumps(c))
+    with pytest.raises(ValueError):
+        stl_airframe.load_profile(path)
 
 
 def test_total_mass_center_and_tensor_include_rotors_and_gps(assembled):

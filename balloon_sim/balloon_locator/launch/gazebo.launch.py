@@ -15,6 +15,17 @@ from balloon_locator.stl_airframe import build_model,load_profile
 from balloon_locator.runtime_paths import runtime_paths
 
 
+def onboard_camera_transform(report):
+    """Mount calibration only; the existing MAVROS adapter supplies the EKF body TF."""
+    camera=report['onboard_camera']
+    xyz=camera['optical_position_body_m']
+    return Node(package='tf2_ros',executable='static_transform_publisher',
+        name='onboard_camera_mount',output='screen',parameters=[{'use_sim_time':True}],
+        arguments=['--x',str(xyz[0]),'--y',str(xyz[1]),'--z',str(xyz[2]),
+                   '--roll','0','--pitch','0','--yaw','0',
+                   '--frame-id','jol/observer_body','--child-frame-id',camera['frame_name']])
+
+
 def start_stl_mavros(context,report,perception,existing,watch):
     """One model report supplies both Gazebo physics and the MC rotor allocation."""
     value=lambda key:LaunchConfiguration(key).perform(context)
@@ -49,7 +60,8 @@ def setup(context):
     if aircraft=='stl_pacer_quad':
         local=Path(get_package_share_directory('balloon_locator'))
         model,report=build_model(sim,value('px4_root'),value('px4_plugin_dir'),value('px4_aero_plugin_dir'),
-            value('physics_profile_path'),local/'meshes/stl_airframe')
+            value('physics_profile_path'),local/'meshes/stl_airframe',
+            shell_transparency=float(value('airframe_transparency')))
     world=make_world(sim,value('px4_root'),value('px4_plugin_dir'),value('px4_aero_plugin_dir'),value('physics_profile_path'),
         range_m=float(value('target_range')),height_m=float(value('target_height')),azimuth_deg=float(value('target_azimuth')),
         aircraft_model=model)
@@ -86,13 +98,14 @@ def setup(context):
         *(start_stl_mavros(context,report,perception,existing,watch) if report else existing['start_mavros'](context)),
         *[watch(node) for node in (server,detector,locator,tracker,bridge,mission)],
         server,detector,locator,tracker,bridge,mission,ui,rviz,
+        *([onboard_camera_transform(report)] if report and report.get('onboard_camera') else []),
         ExecuteProcess(cmd=['gzclient'],output='screen',condition=IfCondition(LaunchConfiguration('gui')))]
 
 
 def generate_launch_description():
     paths=runtime_paths()
     defaults=dict(gui='true',ui='true',rviz='true',target_range='40.0',target_height='10.0',target_azimuth='-90.0',
-        vertical_handle='4.0',scenario='static_flight',flight_backend='mavros',aircraft_type='stl_pacer_quad',
+        vertical_handle='4.0',airframe_transparency='0.0',scenario='static_flight',flight_backend='mavros',aircraft_type='stl_pacer_quad',
         static_output=os.environ.get('BALLOON_RUNTIME_DIR',''),px4_root=str(paths['px4_root']),
         px4_binary=str(paths['px4_binary']),
         physics_profile_path=str(Path(get_package_share_directory('balloon_locator'))/'config/stl_pacer_quad.json'),
