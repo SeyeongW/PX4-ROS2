@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>jol_sim</name><version>0.1.0</version>
+  <description>Independent Gazebo Classic MID360 and D435 monitoring scene.</description>
+  <maintainer email="xogus@example.com">xogus</maintainer>
+  <license>Apache-2.0</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>gazebo_ros</depend><depend>rclcpp</depend><depend>std_msgs</depend>
+  <depend>sensor_msgs</depend><depend>tf2_ros</depend><exec_depend>tf2_msgs</exec_depend>
+  <depend>nav_msgs</depend><depend>trajectory_msgs</depend>
+  <build_depend>gazebo_dev</build_depend>
+  <exec_depend>gazebo_plugins</exec_depend><exec_depend>launch_ros</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>rclpy</exec_depend><exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-jinja2</exec_depend><exec_depend>python3-scipy</exec_depend>
+  <export><build_type>ament_cmake</build_type><gazebo_ros plugin_path="lib"/></export>
+</package>

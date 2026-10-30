@@ -1,0 +1,224 @@
+{
+  "schema_version": 1,
+  "aircraft": "stl_pacer_quad",
+  "data_status": "manufacturer_static_thrust_plus_unmeasured_airframe_assumptions",
+  "sources": {
+    "mass": "User confirmed total mass 2kg including airframe and battery. Component masses and inertia unmeasured.",
+    "inertia": "Unmeasured central equivalent uniform cylinder r=.10m h=.30m, total2kg. Conservative engineering assumption, not inferred from shell volume or weighing.",
+    "rotor": "Assumed .004kg per propeller, uniform three-blade disc inertia. Motor bell inertia omitted.",
+    "motor": "T-MOTOR official P2207 V3 1950KV / 6S / P49436-3 thrust-RPM table. Reaction torque = thrust * .01m is an UNMEASURED assumption; response time constants also assumed.",
+    "aerodynamics": "No identified airframe lift/drag. Rotor-supported low-speed MC only; no fixed-wing transition or aerodynamic similarity claim.",
+    "geometry": "User ten STL parts share assembly coordinates; units assumed millimeters. Rx(+90deg), centered at raw [0,1013.5,0]. Rotor plane rawY998.5mm is assumed, not mounting confirmation."
+  },
+  "mass_kg": 2.0,
+  "center_of_mass_body_m": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "inertia_body_kg_m2": [
+    [
+      0.02,
+      0.0,
+      0.0
+    ],
+    [
+      0.0,
+      0.02,
+      0.0
+    ],
+    [
+      0.0,
+      0.0,
+      0.010000000000000002
+    ]
+  ],
+  "rotor_mass_kg": 0.004,
+  "rotor_inertia_kg_m2": [
+    [
+      3.8725729e-06,
+      0.0,
+      0.0
+    ],
+    [
+      0.0,
+      3.8725729e-06,
+      0.0
+    ],
+    [
+      0.0,
+      0.0,
+      7.7451458e-06
+    ]
+  ],
+  "rotor_positions_body_m": [
+    [
+      0.0,
+      -0.12,
+      -0.015
+    ],
+    [
+      0.0,
+      0.12,
+      -0.015
+    ],
+    [
+      0.12,
+      0.0,
+      -0.015
+    ],
+    [
+      -0.12,
+      0.0,
+      -0.015
+    ]
+  ],
+  "rotor_axes_body": [
+    [
+      0.0,
+      0.0,
+      1.0
+    ],
+    [
+      0.0,
+      0.0,
+      1.0
+    ],
+    [
+      0.0,
+      0.0,
+      1.0
+    ],
+    [
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "rotor_spin_directions": [
+    "ccw",
+    "ccw",
+    "cw",
+    "cw"
+  ],
+  "motor": {
+    "model": "T-MOTOR PACER P2207 V3",
+    "kv_rpm_per_volt": 1950,
+    "battery_cells": 6,
+    "propeller": "T-MOTOR P49436-3",
+    "test_voltage_V": [
+      25.2,
+      25.2,
+      25.1,
+      24.9,
+      24.8
+    ],
+    "test_current_A": [
+      2.6,
+      9.2,
+      16.9,
+      28.1,
+      43.8
+    ],
+    "test_thrust_gf": [
+      259.3,
+      634.4,
+      928.1,
+      1378.8,
+      1760.1
+    ],
+    "motor_mass_kg": 0.0343,
+    "outer_diameter_m": 0.0281,
+    "max_rpm": 33011,
+    "time_constant_up_s": 0.025,
+    "time_constant_down_s": 0.05,
+    "reaction_torque_model": "assumed_Q_over_T_0.01m_NOT_measured",
+    "rpm_thrust_torque_samples": [
+      [
+        13110,
+        2.542864345,
+        0.02542864345
+      ],
+      [
+        19960,
+        6.22133876,
+        0.0622133876
+      ],
+      [
+        24042,
+        9.101551865000001,
+        0.09101551865000002
+      ],
+      [
+        28976,
+        13.52140902,
+        0.1352140902
+      ],
+      [
+        33011,
+        17.260684665,
+        0.17260684665
+      ]
+    ],
+    "source_url": "https://www.tmotorhobby.com/goods-1181-T-MOTORHOBBY%2BP2207%2BV3.html",
+    "specification_image_url": "https://www.tmotorhobby.com/images/20220411/1649663656669244.jpg",
+    "thrust_table_image_url": "https://www.tmotorhobby.com/images/20220411/1649663656357709.jpg"
+  },
+  "geometry": {
+    "stl_scale_m": 0.001,
+    "stl_origin_source": [
+      0.0,
+      1013.5,
+      0.0
+    ],
+    "propeller_diameter_m": 0.12446,
+    "pod_inner_diameter_m": 0.027,
+    "body_height_m": 0.409
+  },
+  "home_world": [
+    -2.0,
+    0.0,
+    0.2045
+  ],
+  "home_yaw_world": 0.0,
+  "flight_parameters": {
+    "max_speed": 1.5,
+    "max_acceleration": 0.6,
+    "max_jerk": 1.2,
+    "takeoff_height": 3.0,
+    "takeoff_min_duration": 6.0,
+    "continuous_takeoff": true,
+    "takeoff_join_speed": 0.35,
+    "target_is_virtual_waypoint": true,
+    "standoff": 0.0,
+    "target_is_pass_through_gate": false,
+    "body_radius": 0.3
+  },
+  "px4_parameters": {
+    "COM_RC_IN_MODE": 4,
+    "COM_RCL_EXCEPT": 4,
+    "THR_MDL_FAC": 1.0,
+    "MPC_THR_HOVER": 0.2834135861012246,
+    "MPC_THR_MIN": 0.05,
+    "MPC_LAND_SPEED": 0.3,
+    "COM_SPOOLUP_TIME": 0.5,
+    "MPC_TKO_RAMP_T": 1.0,
+    "MPC_ACC_HOR": 0.6,
+    "MPC_ACC_HOR_MAX": 0.7,
+    "MPC_JERK_MAX": 1.4,
+    "MPC_JERK_AUTO": 1.2,
+    "MPC_XY_VEL_MAX": 3.0
+  },
+  "physics_numerics": {
+    "contact_stiffness_N_m": 100000.0,
+    "contact_damping_N_s_m": 1000.0
+  },
+  "limitations": [
+    "User confirms total2kg including battery/airframe, not 2kg additional payload.",
+    "No measured CG/inertia, motor reaction torque, battery sag/endurance, rotor inflow or body aerodynamic model.",
+    "Official 28.1mm motor diameter exceeds STL pod 27mm inner diameter. Physical fit is NOT verified.",
+    "No fixed-wing conversion: wings/fins have no measured polar for the new load.",
+    "Simulation only: no hardware launch, no ground-truth target control, no pose teleporting."
+  ],
+  "mass_specification": "User confirmed 2kg TOTAL including airframe and battery; component mass split not measured."
+}

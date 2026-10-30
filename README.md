@@ -1,224 +1,137 @@
-# PX4-ROS2 — 실기체 trailer 통합 임무
+# 카메라 풍선 위치 추정 · STL 드론 비행 시뮬레이션
 
-무빙 트레일러까지 **TrackingMPC 경로 추종 후 ArUco P 정밀착륙**하는 스택.
-저장소는 단 하나의 기준으로 나뉩니다:
+짐벌 카메라로 **정지한 지름 30 cm 풍선의 좌표를 추정**하고, 사용자 STL 10개를 조립한 **총중량 2 kg 기체**가 **3 m 수직 이륙 → 3차 Bézier 곡선 → 목표 좌표 도달·대기**를 수행하는 ROS 2 Humble / Gazebo Classic / PX4 SITL / MAVROS 실험입니다. **LiDAR는 사용하지 않습니다.**
 
-> **이 코드가 진짜 기체에서 도는가?**
+현재 작업은 [`balloon_sim/`](balloon_sim)에 모았습니다. 월드·짐벌·Qt UI·RViz 설정·기체 STL·경로/비행 코드가 포함됩니다. 기존 `flight/`, `camera/`, `simulation/`은 별도 착륙 프로젝트이며 이 실행에 사용하지 않습니다.
 
-```
-flight/       비행 임무·제어 (실기체)
-camera/       카메라·짐벌·인식 전부
-simulation/   시뮬레이터 전용
-```
+- [동역학·좌표변환·경로 수식 상세](balloon_sim/docs/dynamics.md)
+- [설치·빌드·실행 명령](balloon_sim/docs/run.md)
+- [검증 결과와 미검증 항목](balloon_sim/docs/validation.md)
+- [구성 요소와 출처](balloon_sim/docs/sources.md)
 
-경계에 걸치는 패키지는 두지 않습니다. 갈라지면 쪼갭니다.
+## 실행 명령
 
----
-
-## flight/ — 실기체
-
-| 패키지 | 역할 |
-|---|---|
-| **`mpc_landing`** | **최종 실기체 미션.** 고정 CJU 목표 → trailer GPS 복귀 → ArUco P 착륙. 두 장거리 구간은 A*/SFC/B-spline + TrackingMPC이고 PX4 I/O는 MAVROS 단일 노드가 담당 |
-| `path_plan` | A*/SFC/B-spline 전역 + MPC 지역 경로 |
-| `offboard` | C++ MAVROS offboard 제어 모음 |
-
-## camera/ — 카메라·짐벌·인식
-
-| 패키지 | 역할 |
-|---|---|
-| **`siyi_gimbal`** | SIYI A8 mini 제어 — 시동 걸리면 직하방 조준, 유지. **시리얼/UDP 양쪽 지원**(기본 `/dev/ttyTHS1`). 프로토콜 표는 `siyi_commands.py` |
-| **`aruco_landing`** | 실기체 ArUco 인식 (보정 solvePnP, 품질 게이트) |
-| `gimbal_camera` | 짐벌 카메라 시뮬 모델 — gz-sim + Gazebo Classic 양쪽 |
-
-### 실비행 실행
+Ubuntu 22.04, ROS 2 Humble, Gazebo Classic 11 기준입니다. 최초 의존성 설치는 [실행 문서](balloon_sim/docs/run.md)를 확인하세요. **이 명령은 시뮬레이션만 실행합니다.**
 
 ```bash
-cd flight/mpc_landing
-./run_px4 trailer
+git clone --branch cho --single-branch https://github.com/SeyeongW/PX4-ROS2.git
+cd PX4-ROS2/balloon_sim
+./tools/build_px4.sh
+./tools/build_workspace.sh
+./tools/run_gazebo.sh
 ```
 
-이 명령 하나가 MAVROS, 900 MHz trailer GPS, 카메라, ArUco 검출기, SIYI
-짐벌, 미션 노드와 read-only `experiment_logger`를 시작합니다. CSV는 기본
-`~/px4_experiment_logs`에 UTC timestamp 기반 timeseries 1개와 summary 1개로
-저장됩니다(`EXPERIMENT_LOG_DIR`로 변경). PRECHECK 완료 후 같은 터미널에 아래
-세 단어를 순서대로 입력합니다.
-
-```
-PRECHECK ─TAKEOFF─► ARM/5 m 이륙 ─► READY
-                                      │ MISSION
-                                      ▼
-              MISSION_PLAN → A*/SFC/B-spline + TrackingMPC
-                                      └────────► CJU (50,50) HOVER
-                                                        │ LAND
-                                                        ▼
-              RETURN_PLAN → 최신 trailer GPS 반복 재계획/복귀
-                                      └────────► ArUco 획득
-                                                        ▼
-                                                기존 P 제어 착륙/DONE
-```
-
-`TAKEOFF`, `MISSION`, `LAND`가 아닌 입력과 순서가 맞지 않는 입력은 거부됩니다.
-`ABORT`는 어느 단계에서든 현재 위치 착륙을 요청합니다. 다른 터미널에서는 현재
-대기 중인 명령을 `approve`로 실행하거나 명령 토픽에 정확한 단어를 보낼 수 있습니다.
+GUI가 필요 없는 점검:
 
 ```bash
-ros2 topic echo /aruco_landing_node/state
-ros2 run mpc_landing approve aruco_landing_node
-ros2 topic pub --once /aruco_landing_node/command std_msgs/msg/String \
-  "{data: MISSION}"
-ros2 run mpc_landing abort aruco_landing_node
+./tools/run_gazebo.sh gui:=false ui:=false rviz:=false
 ```
 
-기본 장치가 다를 때만 환경변수로 바꿉니다.
+UI 순서: **탐지 시작 → 유효 좌표 확인 → 락 → 자동 경로 미리보기 → 발사 → 수직 이륙 → 곡선 추종 → 도달·대기**. 발사에는 좌표·경로·FCU 준비가 모두 필요합니다. 중단은 현재 위치에서 착륙하며 자동 귀환을 뜻하지 않습니다. 종료는 실행 터미널에서 `Ctrl+C`입니다. 실행 로그·데이터는 기본적으로 임시 폴더에 생성되고 종료 후 삭제됩니다.
 
-```bash
-FCU_URL=/dev/ttyACM0:57600 TRAILER_DEV=/dev/ttyUSB1 ./run_px4 trailer
+## 시스템 구성
+
+```mermaid
+flowchart LR
+    C[짐벌 영상 + CameraInfo + 촬영 시각 TF] --> D[풍선 검출 / 픽셀 중심·크기]
+    D --> E[알려진 지름으로 거리·3D 좌표 추정]
+    E --> L[좌표 품질 확인 / 사용자 락]
+    L --> P[3m 수직 이륙 + Bézier / 시간 매개화]
+    P --> M[MAVROS 위치·속도·가속도 목표]
+    M --> F[PX4 위치·자세·각속도 제어]
+    F --> G[Gazebo 모터 추력·토크 / 강체 운동]
+    G --> O[IMU·GPS / PX4 EKF 자기 위치]
+    O --> F
+    U[Qt UI / RViz 3D 경로] --- L
+    U --- P
+    G -. 오차 평가만 .-> V[Gazebo 정답 위치]
 ```
 
-청주대 지도는 현장 측량 전까지 `hardware_flight_approved: false`이므로 ARM 승인이
-차단됩니다. `ROUTE_MAP_APPROVED=1`은 측량을 대신하지 않으며 실제 비행에서 임의로
-사용하면 안 됩니다.
+기본 표적은 시스템 오른쪽 **수평 40 m, 높이 10 m**, 월드 좌표 `(0, -40, 10)`입니다. 기체 모델 기준점 초기 위치는 `(-2, 0, 0.2045)` m입니다. 실제 계획 시작점은 준비된 FCU 자기 위치에서 정합니다. 카메라는 미검출 시 yaw 탐색을 하고 검출 후 화면 중심에 정렬합니다.
 
-### CJU `(50,50)`을 실제 운동장에 맞추는 방법
+## 적용된 동역학 수식
 
-`(50,50)`은 WGS84 위경도가 아니라 `stadium_endpoint` 현장 좌표계의 미터 단위
-XY입니다. 노드는 동기화된 드론 WGS84/Local pose로 현장 원점을 MAVROS Local ENU에
-놓고, 지도 heading을 적용해 `(50,50)`을 Local ENU로 변환합니다. Local ENU에
-`(50,50)`을 그대로 넣지 않습니다.
+### 1. 강체 운동과 모터
 
-현재 OSM 정합값으로 계산한 예상점은 약
-`36.654458, 127.495961`이지만 유효 정밀도가 없는 참고값이므로 비행 목표로 확정하면
-안 됩니다. 실제 적용 전에는 다음 네 가지를 RTK Fixed 또는 측량급 장비로 확인합니다.
+월드 W는 ENU, 기체 B는 FLU, R은 기체→월드 회전입니다. Ω는 기체 각속도, ωᵢ는 모터 각속도입니다.
 
-1. 다시 찾을 수 있는 현장 `(0,0)` 기준점을 설치하고 WGS84를 반복 측정해
-   `origin_wgs84`와 `horizontal_accuracy`를 갱신합니다.
-2. 기준점과 +x 방향의 50~100 m 장기선 두 점으로
-   `heading_deg_enu = degrees(atan2(North, East))`를 계산합니다. 이는 +East에서
-   반시계 방향으로 잰 각도입니다.
-3. 보정된 좌표로 `(50,50)`을 stake-out한 뒤 독립 검측점으로 정·역변환 오차를
-   확인합니다. 현재 지도 중심 후보 `(44,46)`과 `(50,50)`은 약 7.21 m 떨어진
-   서로 다른 점이므로 원하는 임무 지점도 이때 확정해야 합니다.
-4. 지형/비행구역, 이륙점·목표·전체 경로, 실제 장애물 외곽과 5 m 고도의
-   전선·조명탑 등을 측정합니다. `terrain.center_m/size_m`를 실제 허용 구역으로
-   갱신하고, 각 장애물 외곽을 `site_xy = ENU(origin→point) @ R`로 변환한 뒤
-   회전 물체·전선까지 감싸는 현장 좌표계 축정렬 AABB의 `center_m/size_m`로
-   barrier를 교체해야 합니다. planner는 모든 barrier를 전고도 비행금지
-   기둥으로 취급합니다. 이 검증 후에만 `hardware_flight_approved: true`로
-   바꿉니다.
+$$
+\dot{\mathbf p}_W=\mathbf v_W,\qquad
+m\dot{\mathbf v}_W=m\mathbf g_W+R_{WB}\sum_{i=1}^{4}T_i\mathbf a_i+\mathbf F_{contact}
+$$
 
-목표가 원점에서 약 70.7 m 떨어져 있어 heading 오차 1°는 목표를 약 1.23 m 옮깁니다.
-따라서 휴대전화 GPS나 한 번의 일반 GNSS 측정만으로는 이 지도를 승인할 수 없습니다.
+$$
+J\dot{\boldsymbol\Omega}+\boldsymbol\Omega\times(J\boldsymbol\Omega)
+=\sum_{i=1}^{4}\left[(\mathbf r_i-\mathbf c)\times T_i\mathbf a_i+s_iQ_i\mathbf a_i\right]+\boldsymbol\tau_{contact},
+\qquad \dot R_{WB}=R_{WB}[\boldsymbol\Omega]_\times
+$$
 
----
+$$
+T_i=k_T\omega_i^2,\qquad Q_i=k_Q\omega_i^2,\qquad
+\dot\omega_i=\frac{\omega_{cmd,i}-\omega_i}{\tau_{up/down}}
+$$
 
-## simulation/ — 시뮬레이터 전용
+로터 축은 기체 +Z이며 rᵢ는 모터 위치, c는 CG입니다. 반작용 토크 부호 sᵢ는 CCW에서 −1, CW에서 +1입니다. 실제 시간 적분과 접촉은 Gazebo가 처리합니다. 기체 위치를 강제로 바꾸는 방식으로 비행하지 않습니다. 현재 동체 양력·항력 모델은 적용하지 않습니다.
 
-| 패키지 | 역할 |
-|---|---|
-| **`landing_mpc`** | **MPC 착륙 스택 본체.** 인식 체인 + 짐벌 조준 + 미션 상태기계 → [`docs/ROLES.md`](simulation/landing_mpc/docs/ROLES.md) |
-| `gazebo` | 월드·모델·실행 스크립트 → [`MAPS.md`](simulation/gazebo/MAPS.md) |
-| `px4_models` | PX4 SITL 기체 (`link_px4_model.sh`가 PX4 트리에 심링크) |
-| `gz_bridge` | gz-transport → ROS 2 센서/clock 브리지 |
+| 항목 | 현재 값 | 근거 |
+|---|---:|---|
+| 총질량 | 2 kg, 기체·배터리 포함 | 사용자 지정 |
+| CG | 기체 중심 | 사용자 가정 |
+| 관성 J | diag(0.02, 0.02, 0.01) kg·m² | 실측 전 가정 |
+| 모터/시험 조건 | PACER P2207 V3, 1950 KV, 6S, P49436-3 | 제조사 정적 시험표 |
+| kT | 약 1.447756 × 10⁻⁶ N/(rad/s)² | 원점 통과 최소제곱 적합 |
+| kQ | 0.01 kT | 반작용 토크 가정, 실측 아님 |
+| 상승/하강 응답시간 | 0.025 s / 0.05 s | 가정 |
+| 모터 최대 회전수 | 33,011 RPM | 시험표 상한 |
 
-```bash
-./simulation/gazebo/run_gimbal.sh mission     # 전체 미션
-./simulation/gazebo/run_gimbal.sh gimbal      # 짐벌 + 인식만
-./simulation/gazebo/run_gimbal.sh baseline    # 고정 카메라 (비교군)
-HEADLESS=1 ./simulation/gazebo/run_gimbal.sh mission
-```
+[물리 설정 JSON](balloon_sim/balloon_locator/config/stl_pacer_quad.json), [모델 생성 코드](balloon_sim/balloon_locator/balloon_locator/stl_airframe.py), [T-MOTOR 공식 시험표](https://www.tmotorhobby.com/images/20220411/1649663656357709.jpg).
 
----
+### 2. 카메라 좌표와 NED 변환
 
-## 최종 실기체 제어 계약
+알려진 풍선 지름 D, 검출 지름 dpx, 초점거리 fx, fy로 **작은 시야각 근사 거리**를 구합니다. 크기 미상의 물체 절대 거리를 단안 영상만으로 알아내는 방법은 아닙니다.
 
-- 경로 생성: A* → SFC → B-spline
-- 경로 추종: Wang과 같은 모델·비용함수의 `TrackingMPC`
-- 고정 목표 도착: 1 m 안에서 실측 속도 0.2 m/s 이하일 때만 HOVER로 전환하고,
-  HOVER 중에도 TrackingMPC 종단 참조로 `(50,50)` 유지. 경로 중 속도 감속 계층 아님
-- 착륙: 기존 실기체 검증 ArUco P 제어. 현재 속도 추정은 위치 차분 저역통과이며
-  시뮬레이션의 KF는 실기체 검증 경로에 임의 이식하지 않음
-- 장애물 팽창: `vehicle_clearance_xy_m: 1.0`만 적용
-- PX4 명령: `/mavros/setpoint_raw/local` 단일 authority
-- 상태 흐름: PRECHECK → TAKEOFF/READY → MISSION_PLAN/MISSION/HOVER →
-  RETURN_PLAN/RETURN → ArUco P → DONE
-- 운영 진입점: `./run_px4 trailer` 하나
+$$
+\rho\approx\frac{D(f_x+f_y)}{2d_{px}},\qquad
+\hat{\mathbf r}_C=\frac{K^{-1}(u,v,1)^T}{\|K^{-1}(u,v,1)^T\|},\qquad
+\mathbf p_{N,station}=\mathbf t_{NC}+\rho R_{NC}\hat{\mathbf r}_C
+$$
 
----
+K는 보정 행렬이고 카메라 변환에는 촬영 시각의 짐벌 자세·장착 변환이 포함됩니다. 지상국 NED와 FCU NED는 원점이 다르므로 월드 좌표를 거쳐 정합합니다. 세계좌표에서의 북방향을 ψN, FCU 원점을 oW라 하면:
 
-## 빌드 · 테스트
+$$
+R_{NW}=\begin{bmatrix}\cos\psi_N&\sin\psi_N&0\\\sin\psi_N&-\cos\psi_N&0\\0&0&-1\end{bmatrix},\qquad
+\mathbf p_{N,FCU}=R_{NW}(\mathbf p_W-\mathbf o_W)
+$$
 
-```bash
-colcon build && source install/setup.bash
+현재 북방향은 ψN = π/2입니다. 정지 EKF 위치와 선언된 시뮬레이션 spawn을 이용해 원점을 정합합니다. **MAVROS의 ROS 입력은 ENU**이므로 어댑터가 NED→ENU로 변환하고, MAVROS가 MAVLink NED로 변환합니다. 자세한 기준은 [수식 문서](balloon_sim/docs/dynamics.md)를 따릅니다. Gazebo 정답 표적 좌표는 오차 평가에만 사용합니다.
 
-PYTHONPATH="$PWD/camera/siyi_gimbal:$PWD/flight/mpc_landing:$PYTHONPATH" \
-  PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
-  python3 -m pytest flight/*/test camera/*/test simulation/*/test -q
-```
+### 3. 3 m 수직 이륙과 3차 Bézier 경로
 
-`flight_logs/`는 ArduPilot dataflash `.BIN`입니다. colcon이 만드는 `log/`와는
-다른 것이라 이름을 분리해 두었습니다.
+초기 위치 H, 곡선 시작점 P₀ = H + 3ez, 목표 P₃ = G로 둡니다. 현재 수직 핸들은 h = min(4, (Gz−P₀z)/2)이며 P₁ = P₀ + h ez, P₂ = P₀ + 2h ez입니다. 목표 높이 등 유효성 조건은 코드에서 검사합니다.
 
----
+$$
+B(u)=(1-u)^3P_0+3(1-u)^2uP_1+3(1-u)u^2P_2+u^3P_3,\qquad 0\le u\le1
+$$
 
-## 환경 구축 (최초 1회)
+$$
+\mathbf v=B'(u)\dot u,\qquad
+\mathbf a=B''(u)\dot u^2+B'(u)\ddot u
+$$
 
-<details>
-<summary>ROS 2 Humble + MAVROS</summary>
+$$
+\mathbf j=B'''(u)\dot u^3+3B''(u)\dot u\ddot u+B'(u)\dddot u
+$$
 
-```bash
-sudo apt-get install -y ros-humble-desktop python3-colcon-common-extensions python3-rosdep
-sudo apt-get install -y ros-humble-mavros ros-humble-mavros-msgs ros-humble-mavros-extras
-sudo /opt/ros/humble/lib/mavros/install_geographiclib_datasets.sh
-echo "source /opt/ros/humble/setup.bash" >> ~/.bashrc
-```
-</details>
+3차는 **공간 곡선의 차수**이고 시간 함수 u(t)는 별도의 **5차 다항식**입니다. 수직 구간과 곡선 구간을 계획상 위치·속도·가속도 연속으로 연결하며, 연결 상승 속도는 0.35 m/s입니다. 최대 속도 1.5 m/s, 가속도 0.6 m/s², jerk 1.2 m/s³를 계획 기준으로 사용합니다. 실제 높이 도달 여부에 따른 미션 시각 제한과 기체 응답까지 완벽한 연속성을 보장하는 것은 아닙니다.
 
-<details>
-<summary>PX4 SITL + Gazebo Harmonic (시뮬레이션용)</summary>
+### 4. 경로를 추종하는 제어 구조
 
-```bash
-sudo bash simulation/gazebo/install_apt_deps.sh   # sudo 필요
-./simulation/gazebo/setup_px4_sitl.sh             # PX4 트리 준비
-./simulation/gazebo/link_px4_model.sh             # px4_models를 PX4에 심링크
-python3 simulation/gazebo/gen_aruco_model.py      # 마커 텍스처 생성
-```
+Python 미션은 위치·속도·가속도 목표를 MAVROS로 전달합니다. PX4가 EKF 자기 위치를 이용해 **위치 P → 속도 PID → 추력 방향·자세 목표 → 자세 P → 각속도 PID → 모터 배분**을 수행합니다. 이는 제어 구조 요약이며 제한·보상·적분 항은 PX4 구현을 따릅니다.
 
-`px4_models/`를 옮기거나 저장소를 다른 경로로 옮기면 `link_px4_model.sh`를
-다시 실행해야 합니다 — PX4 트리의 심링크가 절대경로입니다.
-</details>
+**현재 STL 멀티콥터 분기는 yaw 목표를 명시하지 않습니다.** 기체가 기울어져 전진하는 물리 운동과, 기수가 항상 경로 접선 방향으로 향하는 제어는 구분해야 합니다. 고정익 전환·수평 기수 비행은 현재 기본 모델에 구현되지 않았습니다.
 
-<details>
-<summary>Gazebo Classic (짐벌 카메라 Classic 버전용)</summary>
+## 확인된 결과와 남은 제한
 
-```bash
-sudo apt install gazebo11 ros-humble-gazebo-ros-pkgs
-cmake -S camera/gimbal_camera/plugins -B camera/gimbal_camera/plugins/build
-cmake --build camera/gimbal_camera/plugins/build
-```
-</details>
+이전 로컬 전체 실행 `20261030_stl_pacer_05`에서 수직 상승 **3.009 m**, 최대 EKF 경로 오차 **0.288 m**, 도달 대기 후 실제 Gazebo 위치→락 목표 오차 **0.291 m**를 확인했습니다. 실제 최대 가속도 **0.809 m/s²**는 기준 0.6 m/s²를 초과했습니다. 실기체 성능이나 모든 운동 제한을 검증한 결과가 아닙니다.
 
-<details>
-<summary>PC ↔ Jetson 네트워크 (CycloneDDS + Tailscale)</summary>
-
-현재는 `rmw_fastrtps_cpp`를 씁니다. Cyclone 설정은 `config/`에 남아 있습니다.
-
-```bash
-curl -fsSL https://tailscale.com/install.sh | sh && sudo tailscale up
-export CYCLONEDDS_URI=$PWD/config/cyclonedds_pc.xml     # 필요할 때만
-```
-</details>
-
----
-
-## 트러블슈팅
-
-| 증상 | 원인 / 해결 |
-|---|---|
-| `mpc_landing`가 시동을 거부 | 프리체크 로그를 보세요. 어떤 항목이 왜 FAIL인지 한 줄씩 찍습니다 |
-| `approve` 호출이 거부됨 | 게이트가 아닌 단계입니다. 조기 승인은 삼키지 않고 거부합니다 |
-| 짐벌이 안 움직임 | `/siyi_gimbal_node/status`의 `bad_rx`와 자세 피드백 확인. IP·기체 네트워크 |
-| MAVROS 연결 실패 | `fcu_url` 확인, 시리얼 권한 `sudo usermod -aG dialout $USER` |
-| SITL에서 월드를 못 찾음 | 저장소를 옮겼다면 `link_px4_model.sh` 재실행 |
-| Gazebo에 모델이 안 뜸 | `run_gimbal.sh` / `run_px4_map.sh`를 쓰세요 (경로를 직접 설정합니다) |
-| 토픽이 안 보임 (두 머신) | `tailscale status`, RMW 구현 일치 확인 |
+기본 실험은 **목표 좌표 도달 후 정지·대기**입니다. 사각 게이트 통과 판정 코드는 남아 있지만 기본 비활성입니다. 2 kg 조건의 모터 장착 간섭, CG·관성 실측, 배터리 전압 강하, 실물 카메라 40 m 정확도는 미검증입니다. 공개 패키지의 새 빌드/실행 확인과 이전 비행 결과는 [검증 문서](balloon_sim/docs/validation.md)에서 구분합니다.

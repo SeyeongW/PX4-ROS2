@@ -1,0 +1,79 @@
+# 실물 센서 지상국 설정. Gazebo launch는 이 파일을 사용하지 않는다.
+# TODO는 실측값이 아니다. hardware_check로 장비 연결 없이 먼저 검사한다.
+siyi_camera_node:
+  ros__parameters:
+    rtsp_url: rtsp://192.168.144.25:8554/main.264
+    image_topic: /camera/image_raw   # 보정 파일 설정 시 왜곡보정한 영상이 이 토픽으로 나온다.
+    camera_info_topic: /camera/camera_info
+    frame_id: camera
+    calibration_file: ''           # TODO 실측 ROS 보정 YAML; ground_station launch는 상대경로를 이 파일 기준으로 해석
+    calibration_zoom: 1.0          # TODO 해당 보정 촬영 시 고정한 줌
+    zoom_max_age_sec: 2.0
+    latency_sec: 0.0               # TODO 실제 RTSP read 완료→노출 시각 지연 실측
+    open_timeout_sec: 3.0
+    read_timeout_sec: 1.0
+    reconnect_interval_sec: 1.0
+
+siyi_gimbal_node:
+  ros__parameters:
+    ip: 192.168.144.25
+    port: 37260
+    poll_hz: 20.0
+    cmd_timeout_sec: 0.3
+    attitude_latency_sec: 0.0       # TODO 실제 자세 보고 지연 실측
+
+balloon_locator_node:
+  ros__parameters:
+    calibration_valid: false      # 실측/보정 완료 후에만 true. Gazebo launch는 별도 설정.
+    require_camera_info: true
+    camera_info_topic: /camera/camera_info
+    pose_source: gimbal
+    frame_id: local_ned
+    image_width: 1920.0
+    image_height: 1080.0
+    hfov_deg_at_1x: 80.0          # TODO 데이터시트/캘리브레이션
+    balloon_diameter_m: 0.30      # TODO 실제 풍선 지름
+    base_heading_deg: 0.0         # TODO 짐벌 yaw=0의 방위각(북 기준 시계방향)
+    yaw_sign: 1.0                 # TODO 실기 확인
+    pitch_sign: 1.0               # TODO 실기 확인
+    roll_sign: 1.0                # TODO 실기 축·영점 교정
+    roll_zero_deg: 0.0
+    yaw_zero_deg: 0.0
+    pitch_zero_deg: 0.0
+    gimbal_rotation_order: zxy    # SIYI 312: yaw → roll → pitch
+    offset_ned: [0.0, 0.0, 0.0]   # 카메라 회전중심의 NED 위치 (원점이 카메라면 0)
+    position_topic: /balloon/position_ned   # 보정·표본수·오차·신선도 통과한 좌표만 발행
+    min_samples: 3
+    max_sigma_m: 0.5
+    max_measurement_age_sec: 0.8
+    diameter_rel_sigma: 0.05       # TODO 실물 크기 오차; 공통 오차는 평균으로 줄지 않음
+    focal_rel_sigma: 0.01          # TODO 줌별 초점거리 보정 오차
+    diameter_bias_sigma_px: 0.25   # TODO 작은 표적 픽셀 편향
+
+balloon_detector_node:
+  ros__parameters:
+    image_topic: /camera/image_raw
+    detections_topic: /balloon/detections
+    process_scale: 0.5
+    hsv_ranges: [0, 120, 70, 10, 255, 255, 170, 120, 70, 180, 255, 255]   # 빨강 (TODO 풍선 색에 맞게)
+
+gimbal_tracker_node:
+  ros__parameters:
+    image_width: 1920.0
+    image_height: 1080.0
+    yaw_sign: 1.0                 # TODO 실기 확인
+    pitch_sign: -1.0              # TODO 실기 확인
+
+# 드론 연동 (ground_station.launch.py에 포함하지 않음. ros2 run ... --ros-args --params-file 로 별도 실행)
+# 전제: balloon_locator_node의 offset_ned = [0,0,0]
+mavlink_bridge_node:
+  ros__parameters:
+    topic: /balloon/position_ned
+    min_samples: 30               # 이 이상 샘플이 쌓이고
+    max_sigma_m: 2.0              # 불확실도가 이하일 때만 송신
+    cam_lat_deg: .nan             # TODO 카메라 회전중심 GPS 실측 (미설정이면 노드가 시작하지 않음)
+    cam_lon_deg: .nan             # TODO
+    cam_height_above_home_m: .nan # TODO 카메라 회전중심 높이 - 드론 이륙지점 지면 높이
+    declination_deg: 0.0          # TODO base_heading_deg를 컴퍼스(자북)로 쟀으면 편각 (한국 약 -8.5)
+    device: /dev/ttyUSB0
+    baud: 57600

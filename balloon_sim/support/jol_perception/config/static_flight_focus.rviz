@@ -1,0 +1,131 @@
+Panels:
+- Class: rviz_common/Displays
+  Name: Displays
+- Class: rviz_common/Views
+  Name: Views
+Visualization Manager:
+  Class: ''
+  Global Options:
+    Fixed Frame: world
+    Background Color: 20; 25; 35
+    Frame Rate: 30
+  Displays:
+  - Class: rviz_default_plugins/Grid
+    Name: Grid
+    Enabled: true
+    Cell Size: 5
+    Plane Cell Count: 30
+  - Class: rviz_default_plugins/MarkerArray
+    Name: IDs boxes trails surface distance
+    Enabled: false
+    Topic:
+      Value: /jol/markers
+      Depth: 5
+      Reliability Policy: Reliable
+      Durability Policy: Volatile
+    Namespaces: {}
+  - Class: rviz_default_plugins/MarkerArray
+    Name: Camera LiDAR classification
+    Enabled: false
+    Topic:
+      Value: /jol/fusion_markers
+      Depth: 5
+      Reliability Policy: Reliable
+      Durability Policy: Volatile
+    Namespaces: {}
+  - Class: rviz_default_plugins/TF
+    Name: TF
+    Enabled: false
+    Show Arrows: true
+    Show Axes: true
+    Show Names: true
+    Marker Scale: 2
+  - Class: rviz_default_plugins/MarkerArray
+    Name: Predicted target and manipulator pointer
+    Enabled: false
+    Topic:
+      Value: /jol/pointing/markers
+      Depth: 5
+      Reliability Policy: Reliable
+      Durability Policy: Volatile
+    Namespaces: {}
+  - Class: rviz_default_plugins/Image
+    Name: D435 RGB and fused identification
+    Enabled: true
+    Topic:
+      Value: /jol/camera/annotated
+      Reliability Policy: Best Effort
+      Durability Policy: Volatile
+      Depth: 1
+    Normalize Range: true
+    Min Value: 0
+    Max Value: 1
+    Transport Hint: raw
+  - Class: rviz_default_plugins/Path
+    Name: Observer snapshot preview (not flight command)
+    Enabled: false
+    Topic:
+      Value: /jol/observer/path
+      Reliability Policy: Reliable
+      Durability Policy: Volatile
+      History Policy: Keep Last
+      Depth: 1
+    Buffer Length: 1
+    Line Style: Lines
+    Line Width: 0.04
+    Color: 230; 170; 55
+    Alpha: 0.9
+  - Class: rviz_default_plugins/Path
+    Name: Simulated observer flight plan
+    Enabled: true
+    Topic:
+      Value: /jol/observer/flight_path
+      Reliability Policy: Reliable
+      Durability Policy: Volatile
+      History Policy: Keep Last
+      Depth: 1
+    Buffer Length: 1
+    Line Style: Lines
+    Line Width: 0.06
+    Color: 255; 170; 40
+    Alpha: 1
+  - Class: rviz_default_plugins/Path
+    Name: Simulated observer actual flight
+    Enabled: true
+    Topic:
+      Value: /jol/observer/flown_path
+      Reliability Policy: Reliable
+      Durability Policy: Volatile
+      History Policy: Keep Last
+      Depth: 1
+    Buffer Length: 1
+    Line Style: Lines
+    Line Width: 0.06
+    Color: 30; 210; 170
+    Alpha: 1
+  - Class: rviz_default_plugins/MarkerArray
+    Name: Static camera LiDAR surface estimate
+    Enabled: true
+    Topic:
+      Value: /jol/static_target/markers
+      Depth: 5
+      Reliability Policy: Reliable
+      Durability Policy: Volatile
+    Namespaces: {}
+  Tools:
+  - Class: rviz_default_plugins/Interact
+  - Class: rviz_default_plugins/MoveCamera
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 80
+      Focal Point:
+        X: 15
+        Y: -3
+        Z: 4
+      Pitch: 0.6
+      Yaw: 0.8
+      Target Frame: world
+Window Geometry:
+  Width: 1500
+  Height: 950
