@@ -103,11 +103,12 @@ def aircraft_dashboard(base):
 
 def main_ui(args=None):
     from jol_perception import experiment_ui
+    from .camera_display import camera_dashboard, camera_node
 
     original = experiment_ui.Dashboard
     original_node = experiment_ui.ExperimentNode
-    experiment_ui.Dashboard = aircraft_dashboard(original)
-    experiment_ui.ExperimentNode = aircraft_experiment_node(original_node)
+    experiment_ui.Dashboard = camera_dashboard(aircraft_dashboard(original))
+    experiment_ui.ExperimentNode = camera_node(aircraft_experiment_node(original_node))
     try:
         # Reuse Qt construction, ROS shutdown and signal handling unchanged.
         return experiment_ui.main(args=args)

@@ -1,6 +1,7 @@
 """Launch/model consistency and the actual 40m/10m planner contract."""
 import inspect
 import json
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from runpy import run_path
 
@@ -10,6 +11,24 @@ from launch import LaunchContext
 
 
 LAUNCH = Path(__file__).parents[1] / 'launch/gazebo.launch.py'
+
+
+@pytest.mark.parametrize('transparency', ['0.0', '0.84'])
+def test_exterior_view_ignores_old_cutaway_launch_override(tmp_path, monkeypatch, transparency):
+    launch = run_path(str(LAUNCH))
+    context = LaunchContext()
+    for entity in launch['generate_launch_description']().entities:
+        if hasattr(entity, 'default_value'):
+            context.launch_configurations[entity.name] = ''.join(s.perform(context) for s in entity.default_value)
+    context.launch_configurations.update(static_output=str(tmp_path), airframe_transparency=transparency)
+    # Generate the real world without preparing or starting a flight controller.
+    monkeypatch.setitem(launch['setup'].__globals__, 'start_stl_mavros', lambda *args: [])
+    launch['setup'](context)
+    model = ET.parse(tmp_path / 'balloon.world').getroot().find("world/model[@name='stl_pacer_quad']")
+    assert model is not None
+    shells = [v for v in model.iter('visual') if v.find('transparency') is not None]
+    assert len(shells) == 8
+    assert all(float(v.findtext('transparency')) == 0.0 for v in shells)
 
 
 def test_onboard_mount_tf_uses_model_pose_and_ekf_body_frame():

@@ -59,9 +59,10 @@ def setup(context):
     model=report=None
     if aircraft=='stl_pacer_quad':
         local=Path(get_package_share_directory('balloon_locator'))
+        # Old cutaway command lines must not expose the interior in experiment view.
         model,report=build_model(sim,value('px4_root'),value('px4_plugin_dir'),value('px4_aero_plugin_dir'),
             value('physics_profile_path'),local/'meshes/stl_airframe',
-            shell_transparency=float(value('airframe_transparency')))
+            shell_transparency=0.0)
     world=make_world(sim,value('px4_root'),value('px4_plugin_dir'),value('px4_aero_plugin_dir'),value('physics_profile_path'),
         range_m=float(value('target_range')),height_m=float(value('target_height')),azimuth_deg=float(value('target_azimuth')),
         aircraft_model=model)
@@ -94,6 +95,8 @@ def setup(context):
     rviz=Node(package='rviz2',executable='rviz2',output='screen',condition=IfCondition(LaunchConfiguration('rviz')),
         arguments=['-d',str(perception/'config/static_flight.rviz')],parameters=[{'use_sim_time':True}])
     return [LogInfo(msg='Balloon locator: 30cm, horizontal40m/altitude10m defaults; exact simulated optics/size, NOT measured hardware.'),
+        *([LogInfo(msg='Exterior view: ignoring legacy airframe_transparency; the black shell hides internal parts.')]
+          if report and float(value('airframe_transparency'))!=0.0 else []),
         SetEnvironmentVariable('GAZEBO_PLUGIN_PATH',str(Path(get_package_prefix('jol_sim'))/'lib')+os.pathsep+os.environ.get('GAZEBO_PLUGIN_PATH','/opt/ros/humble/lib')),
         *(start_stl_mavros(context,report,perception,existing,watch) if report else existing['start_mavros'](context)),
         *[watch(node) for node in (server,detector,locator,tracker,bridge,mission)],

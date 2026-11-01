@@ -1,5 +1,6 @@
 """Force-model assembly contracts; these checks are not flight validation."""
 import json
+from copy import deepcopy
 from pathlib import Path
 import xml.etree.ElementTree as ET
 
@@ -100,10 +101,13 @@ def test_cutaway_changes_only_original_outer_shell_visibility(assembled):
             assert float(visual.findtext('transparency')) == .8
         else:
             assert visual.find('transparency') is None
-    before = assembled[0]
-    for old, new in zip(before.findall('link'), model.findall('link')):
-        assert ET.tostring(old.find('inertial')) == ET.tostring(new.find('inertial'))
-    assert ET.tostring(before.find("link[@name='base_link']/sensor")) == ET.tostring(model.find("link[@name='base_link']/sensor"))
+    def without_visuals(model):
+        model = deepcopy(model)
+        for parent in model.iter():
+            for visual in parent.findall('visual'):
+                parent.remove(visual)
+        return ET.tostring(model)
+    assert without_visuals(assembled[0]) == without_visuals(model)
 
 
 @pytest.mark.parametrize('value', [-.1, 1.1, float('nan'), '0.5', True])
@@ -152,7 +156,16 @@ def test_force_motors_and_sensor_plugins_drive_model(assembled):
         assert float(motor.findtext('motorConstant')) > 0
         assert float(motor.findtext('momentConstant')) > 0
         rotor = model.find(f"link[@name='rotor_{i}']")
-        assert len(rotor.findall('visual')) == 3
+        assert len(rotor.findall('visual')) == 5
+        assert rotor.find("visual[@name='propeller_hub']") is not None
+        for blade in range(3):
+            visual = rotor.find(f"visual[@name='blade_{blade}']")
+            outline = visual.find('geometry/polyline')
+            points = np.array([np.fromstring(p.text, sep=' ') for p in outline.findall('point')])
+            np.testing.assert_array_equal(points[0], points[-1])
+            assert np.linalg.norm(points, axis=1).max() <= .12446/2
+            assert float(outline.findtext('height')) == .0015
+            assert float(visual.findtext('pose').split()[-1]) == pytest.approx(blade*2*np.pi/3)
         assert rotor.find('collision') is None
     plugins = [p.get('filename') for p in model.iter('plugin')]
     assert any(p.endswith('libgazebo_imu_plugin.so') for p in plugins)

@@ -19,6 +19,8 @@ ASSET_NAMES = (
     'H_pod_cap_1', 'H_pod_cap_2', 'H_pod_cap_3', 'H_pod_cap_4',
     'I_battery_hatch_x1',
 )
+# Slight reflectance keeps black surfaces legible in the existing Gazebo lighting.
+EXTERIOR_BLACK = '.16 .16 .16 1'
 
 
 def _array(value, shape, name):
@@ -128,10 +130,34 @@ def _shape(parent, tag, name, shape, values, pose=(0, 0, 0, 0, 0, 0)):
     return element
 
 
-def _material(visual, color):
+def _material(visual, color, specular='.12 .12 .12 1'):
     material = ET.SubElement(visual, 'material')
     for key in ('ambient', 'diffuse'):
         ET.SubElement(material, key).text = color
+    ET.SubElement(material, 'specular').text = specular
+
+
+def _propeller_visuals(rotor, radius, spin):
+    """Illustrative blade silhouettes only; no aero, mass or contact changes."""
+    # Native SDF polylines avoid another mesh asset. These rounded, swept outlines
+    # are cosmetic, not a manufacturer propeller section or identified airfoil.
+    outline = ((.06, -.05), (.26, -.09), (.52, -.10), (.76, -.08),
+               (.93, -.04), (.985, -.005), (.98, .035), (.91, .065),
+               (.73, .095), (.49, .10), (.26, .07), (.06, .045))
+    handedness = -1 if spin == 'cw' else 1
+    for blade in range(3):
+        visual = _shape(rotor, 'visual', f'blade_{blade}', 'polyline',
+                        dict(height=.0015), (0, 0, -.00075, 0, 0, blade*2*math.pi/3))
+        polyline = visual.find('geometry/polyline')
+        for x, y in (*outline, outline[0]):
+            ET.SubElement(polyline, 'point').text = f'{x*radius} {handedness*y*radius}'
+        _material(visual, EXTERIOR_BLACK, '.22 .22 .22 1')
+    for name, r, length, z in (
+            ('propeller_hub', .006, .004, 0.),
+            ('propeller_fastener', .0025, .0015, -.00275)):
+        visual = _shape(rotor, 'visual', name, 'cylinder',
+                        dict(radius=r, length=length), (0, 0, z, 0, 0, 0))
+        _material(visual, EXTERIOR_BLACK, '.22 .22 .22 1')
 
 
 def _onboard_visuals(body, config):
@@ -160,22 +186,22 @@ def _onboard_visuals(body, config):
     camera = config.get('onboard_camera')
     if camera is None:
         return None
-    box('onboard_camera_pcb', camera['pcb_center_source_mm'], camera['pcb_size_mm'], '.10 .40 .24 1')
+    box('onboard_camera_pcb', camera['pcb_center_source_mm'], camera['pcb_size_mm'], EXTERIOR_BLACK)
     # Mechanical layout follows the official standard module drawing. The two
     # rails adapt the old bracket hole pattern, avoiding its rear connector.
-    box('onboard_camera_lens_housing', [0, 1208.0575, 0], [10.8, 3.875, 10.8], '.08 .09 .10 1')
-    cylinder('onboard_camera_lens_barrel', [0, 1211.5075, 0], 2.875, 3.025, '.055 .065 .075 1')
-    cylinder('onboard_camera_lens_glass', [0, 1213.06, 0], 2.375, .08, '.05 .19 .28 1')
+    box('onboard_camera_lens_housing', [0, 1208.0575, 0], [10.8, 3.875, 10.8], EXTERIOR_BLACK)
+    cylinder('onboard_camera_lens_barrel', [0, 1211.5075, 0], 2.875, 3.025, EXTERIOR_BLACK)
+    cylinder('onboard_camera_lens_glass', [0, 1213.06, 0], 2.375, .08, EXTERIOR_BLACK)
     box('onboard_camera_rear_connector', [0, 1203.625, 6.607], [19.61, 2.75, 5.71], '.76 .73 .63 1')
     # Short cable tail only; the complete cable route through the old bracket
     # and avionics needs a mechanical redesign, not a guessed solid intersection.
     box('onboard_camera_ribbon_tail', [0, 1203.5, 10.5], [12, .2, 2.1], '.72 .43 .16 1')
     for side, x in enumerate((-10.5, 10.5)):
-        box(f'onboard_camera_adapter_rail_{side}', [x, 1202.5, -6.15], [3, 1, 15.5], '.58 .61 .64 1')
-        cylinder(f'onboard_camera_adapter_anchor_{side}', [x, 1202.5, -5], .8, 1, '.24 .26 .28 1')
+        box(f'onboard_camera_adapter_rail_{side}', [x, 1202.5, -6.15], [3, 1, 15.5], EXTERIOR_BLACK)
+        cylinder(f'onboard_camera_adapter_anchor_{side}', [x, 1202.5, -5], .8, 1, EXTERIOR_BLACK)
         for index, z in enumerate((-12.4, .1)):
-            cylinder(f'onboard_camera_standoff_{side}_{index}', [x, 1204, z], 1.5, 2, '.64 .55 .32 1')
-            cylinder(f'onboard_camera_screw_{side}_{index}', [x, 1206.45, z], 1.5, .66, '.28 .30 .32 1')
+            cylinder(f'onboard_camera_standoff_{side}_{index}', [x, 1204, z], 1.5, 2, EXTERIOR_BLACK)
+            cylinder(f'onboard_camera_screw_{side}_{index}', [x, 1206.45, z], 1.5, .66, EXTERIOR_BLACK)
     optical_position = position(camera['optical_center_source_mm']).tolist()
     sensor = ET.SubElement(body, 'sensor', name='onboard_camera_rgb', type='camera')
     # Gazebo +X looks out of the nose; image right/down follow body +X/+Y,
@@ -262,7 +288,8 @@ def build_model(sim_share, px4_root, plugins, aero_plugins, profile_path, assets
         visual = _shape(body, 'visual', name, 'mesh',
                         dict(uri=path.as_uri(), scale=f'{scale} {scale} {scale}'),
                         (*translation, math.pi/2, 0, 0))
-        _material(visual, '.23 .28 .34 1' if name.startswith(('A_', 'B_', 'H_')) else '.75 .78 .80 1')
+        # Keep the black finish; shell transparency controls the interior view.
+        _material(visual, EXTERIOR_BLACK, '.22 .22 .22 1')
         if name.startswith(('A_', 'B_', 'C_', 'H_', 'I_')):
             ET.SubElement(visual, 'transparency').text = str(shell_transparency)
     onboard_camera = _onboard_visuals(body, config)
@@ -292,12 +319,7 @@ def build_model(sim_share, px4_root, plugins, aero_plugins, profile_path, assets
         put(joint, 'pose', '0 0 0 0 0 0')
         put(joint.find('axis'), 'xyz', '0 0 1')
         put(joint.find('axis'), 'use_parent_model_frame', 0)
-        for blade in range(3):
-            angle = blade*2*math.pi/3
-            visual = _shape(rotor, 'visual', f'blade_{blade}', 'box',
-                            dict(size=f'{prop_radius} {prop_radius*.14} .0015'),
-                            (prop_radius/2*math.cos(angle), prop_radius/2*math.sin(angle), 0, 0, 0, angle))
-            _material(visual, '.1 .12 .14 1' if spins[index] == 'cw' else '.8 .32 .08 1')
+        _propeller_visuals(rotor, prop_radius, spins[index])
         parts.append((rotor_mass, position, rotor_inertia))
     # Preserve the official noisy GPS sensor while accounting for every gram.
     partition = .001
@@ -377,7 +399,7 @@ def build_model(sim_share, px4_root, plugins, aero_plugins, profile_path, assets
                       'Mass/CG/inertia and motor reaction torque are assumptions, not identified hardware.',
                       'P2207 V3 diameter 28.1 mm exceeds the approximately 27 mm pod bore; physical mounting is unresolved.',
                       'Conservative cylinder contact envelope; rotor collisions are not modeled.',
-                      'Three primitive blades represent each propeller, not a manufacturer blade mesh.',
+                      'Rounded blade silhouettes and hubs are visual-only, not manufacturer geometry or calibrated airfoils.',
                       'Camera/avionics primitives are visual-only within the assumed total mass; mounting and cable route are unverified.',
                       'No calibrated body drag, wing lift, propwash or fixed-wing transition model.',
                       'Static thrust fit and official Iris GPS/IMU noise do not certify real flight.'])

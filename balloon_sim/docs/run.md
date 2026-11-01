@@ -124,13 +124,11 @@ bash -n tools/run_gazebo.sh tools/build_workspace.sh tools/build_px4.sh
 - 준비/락 이후 발사 불가: UI 사유, 좌표 freshness, FCU ready, landed/arming 상태 확인.
 - offscreen UI: `QT_QPA_PLATFORM=offscreen`은 자동 점검용이며 화면을 띄우지 않는다.
 
-## 6. 노즈 카메라·내부 배치 확인
+## 6. 노즈 카메라와 외장 표시
 
-기본 실행에 기체 카메라가 포함된다. 내부 배치를 볼 때만 외피 투명도를 지정한다. 허용 범위는 0~1이며 위치·질량·관성·충돌 형상을 바꾸는 인자가 아니다.
+기본 실행에 기체 카메라가 포함된다. 외장은 내부가 비치지 않는 검정색이다. 이전 `airframe_transparency:=0.84` 인자는 호환성을 위해 수용하지만 실험 실행에서는 무시한다. 위치·질량·관성·충돌 형상은 그대로다.
 
-```bash
-./tools/run_gazebo.sh airframe_transparency:=0.84
-```
+UI는 짐벌 영상, 기체 영상, 3D 경로를 동시에 보여 준다. 짐벌의 기존 검출 박스는 그대로 표시한다. 기체 영상은 `/jol/onboard_camera/annotated`가 최신이면 이를 표시하고, 없거나 원본보다 250ms 이상 늦으면 `/jol/onboard_camera/image_raw`로 전환한다. 주석과 진단 상태가 같은 노출 시각일 때만 검출 상태를 표시하며, 오래된 영상은 숨긴다. 공개본에는 기체 주석 발행기가 없으므로 기본은 원본 영상과 검출 상태 미확인이다. 기수 고정 카메라가 하늘을 볼 때 표적 박스를 만들어 넣지 않는다. 이 UI는 영상 구독만 하며 새 비행/유도 연결은 없다.
 
 독립 영상 토픽은 `/jol/onboard_camera/image_raw`, 보정 토픽은 `/jol/onboard_camera/camera_info`다. RViz의 Image 디스플레이에 해당 영상 토픽을 추가할 수 있다. 설정은 640×360·15 Hz·수평 66°이며 고정초점 이상적 핀홀 모델이다. 실제 모듈의 자동초점·왜곡·노출·롤링셔터는 재현하지 않는다.
 
