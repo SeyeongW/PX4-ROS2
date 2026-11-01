@@ -1,0 +1,21 @@
+trial,metric,value,unit,definition
+20261030_terminal04,target_estimate_error,0.11444442616297956,m,locked camera estimate vs marker truth
+20261030_terminal04,ascent_ekf,3.008270263671875,m,EKF height change at segment handoff
+20261030_terminal04,ascent_truth,3.053182588505879,m,Gazebo height change at segment handoff
+20261030_terminal04,tracking_rmse_ekf,0.13258488102894309,m,time-matched EKF vs reference
+20261030_terminal04,tracking_max_ekf,0.28277082458197467,m,time-matched EKF vs reference
+20261030_terminal04,tracking_rmse_truth,0.2334294699676866,m,time-aligned Gazebo truth vs reference
+20261030_terminal04,tracking_max_truth,0.5740487744471116,m,time-aligned Gazebo truth vs reference
+20261030_terminal04,checkpoint_radial_error_ekf,0.08012030535355223,m,EKF vs locked point plane crossing
+20261030_terminal04,checkpoint_radial_error_truth,0.13542175939562856,m,Gazebo vs marker plane crossing
+20261030_terminal04,closest_distance_truth,0.1353720075379332,m,piecewise-linear Gazebo trajectory to marker center
+20261030_terminal04,hover_distance_behind,2.903357985445951,m,Gazebo mean hover position projected along approach direction from the locked sensor target (not marker truth)
+20261030_terminal04,hover_goal_error_truth,0.2740040268157643,m,mean Gazebo hover position vs planned hover point
+20261030_terminal04,flight_time_to_arrived,74.05000000000001,s,simulation time; takeoff phase to arrived
+20261030_terminal04,max_body_tilt_ekf,1.3810821881434985,deg,"EKF quaternion sample maximum, NOT PX4 limit"
+20261030_terminal04,max_body_tilt_truth,0.9186651710535109,deg,"Gazebo quaternion sample maximum over feedback interval, NOT PX4 limit"
+20261030_terminal04,camera_min_axis_angle,75.95535343836386,deg,projected target angle in recorded onboard status
+20261030_terminal04,camera_confirmation_count,0,count,onboard recorded confirmations
+20261030_terminal04,telemetry_rows,1584,rows,"correlated samples from one flight, not independent trials"
+20261030_terminal04,camera_status_rows,945,rows,"status messages, not raw image count"
+20261030_terminal04,camera_unique_exposure_stamps,809,count,"unique exposures in status, not total received images"
