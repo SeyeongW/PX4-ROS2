@@ -242,7 +242,7 @@ def test_unsafe_profile_overrides_rejected(tmp_path, change):
     elif change == 'small_planning_radius':
         c['flight_parameters']['body_radius'] = .1
     elif change == 'unsafe_envelope':
-        c['flight_parameters']['max_acceleration'] = 10
+        c['flight_parameters']['max_acceleration'] = 30
     else:
         c['flight_parameters']['continuous_takeoff'] = 'true'
     path = tmp_path/'invalid.json'; path.write_text(json.dumps(c))
