@@ -285,12 +285,14 @@ def build_static_plan(home, target, *, path_kind='spline', takeoff_height=3., st
     if target_is_virtual_waypoint:standoff=0.
     speed = _positive(max_speed,'max speed'); accel = _positive(max_acceleration,'max acceleration')
     jerk = _positive(max_jerk,'max jerk'); period = _positive(sample_period,'sample period')
-    if controller_profile not in ('legacy', 'tailsitter20cm_reference'):
+    if controller_profile not in ('legacy', 'tailsitter20cm_reference', 'aggressive_multicopter'):
         raise ValueError('unknown_static_controller_profile')
     if controller_profile == 'legacy' and (speed>1.8 or accel>.7 or jerk>1.4):
         raise ValueError('limits_exceed_validated_Gazebo_controller_range_1.8mps_0.7mps2_1.4mps3')
     if controller_profile == 'tailsitter20cm_reference' and (speed>12 or accel>6 or jerk>20):
         raise ValueError('limits_exceed_tailsitter_research_envelope_12mps_6mps2_20mps3')
+    if controller_profile == 'aggressive_multicopter' and (speed>25 or accel>25 or jerk>50):
+        raise ValueError('limits_exceed_aggressive_multicopter_envelope_25mps_25mps2_50mps3')
     clearance = _positive(clearance,'clearance',allow_zero=True)
     minimum = _positive(min_duration,'minimum duration',allow_zero=True)
     if not isinstance(continuous_takeoff,bool):raise ValueError('continuous_takeoff_must_be_boolean')
@@ -428,7 +430,9 @@ def build_static_plan(home, target, *, path_kind='spline', takeoff_height=3., st
     plan.update(path_kind=path_kind, valid=True, target_world=target.tolist(), standoff_m=standoff,
                 controller_profile=controller_profile,
                 controller_limit_scope=('Research hypotheses; actual VTOL motion must be recorded and evaluated.'
-                    if controller_profile == 'tailsitter20cm_reference' else 'Legacy controller experiment limits'),
+                    if controller_profile == 'tailsitter20cm_reference'
+                    else 'Aggressive multicopter envelope (TWR>3.5)' if controller_profile == 'aggressive_multicopter'
+                    else 'Legacy controller experiment limits'),
                 arrival_policy=('pass_through_sensor_gate_then_hold_behind' if gate else
                                 'virtual_sensor_waypoint' if target_is_virtual_waypoint
                                 else 'noncontact_hold_before_observed_target_surface'),
