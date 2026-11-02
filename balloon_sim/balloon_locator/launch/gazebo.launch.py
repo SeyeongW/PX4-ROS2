@@ -38,9 +38,13 @@ def start_stl_mavros(context,report,perception,existing,watch):
         additional_env={'PX4_SIM_MODEL':'gazebo-classic_iris','PX4_SYS_AUTOSTART':'10015'})
     mavros=Node(package='mavros',executable='mavros_node',namespace='mavros',output='screen',
         parameters=[str(perception/'config/mavros_sitl.yaml')])
+    flight=load_profile(value('physics_profile_path')).get('flight_parameters',{})
     adapter=Node(package='balloon_locator',executable='stl_mavros_adapter',output='screen',parameters=[{
         'use_sim_time':True,'home_world':report['home_world'],'home_yaw_world':report['home_yaw_world'],
-        'aircraft_type':'stl_pacer_quad','physics_profile_path':value('physics_profile_path')}])
+        'aircraft_type':'stl_pacer_quad','physics_profile_path':value('physics_profile_path'),
+        # Same 1.5x acceptance margin as the VTOL branch; never below the legacy 3 m/s, 3 m/s^2.
+        'command_max_speed':max(3.,1.5*float(flight.get('max_speed',0.))),
+        'command_max_acceleration':max(3.,1.5*float(flight.get('max_acceleration',0.)))}])
     return [*[watch(p) for p in (px4,mavros,adapter)],px4,mavros,adapter]
 
 

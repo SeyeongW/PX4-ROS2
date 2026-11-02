@@ -248,3 +248,45 @@ def test_unsafe_profile_overrides_rejected(tmp_path, change):
     path = tmp_path/'invalid.json'; path.write_text(json.dumps(c))
     with pytest.raises(ValueError):
         stl_airframe.build_model(SIM, PX4, PLUGINS, PLUGINS, path, ASSETS)
+
+
+FAST_PROFILE = ROOT/'config/stl_pacer_quad_fast.json'
+
+
+def test_fast_research_profile_is_opt_in_and_bounded(tmp_path):
+    fast = stl_airframe.load_profile(FAST_PROFILE)
+    assert fast['flight_parameters']['controller_profile'] == 'stl_fast_research'
+    assert fast['px4_parameters']['MPC_TILTMAX_AIR'] == 80.0
+    # The legacy profile keeps the validated envelope; only an explicit opt-in raises it.
+    legacy = json.loads(PROFILE.read_text())
+    legacy['flight_parameters']['max_speed'] = 20.
+    path = tmp_path/'legacy_fast.json'; path.write_text(json.dumps(legacy))
+    with pytest.raises(ValueError, match='unvalidated_multicopter_envelope'):
+        stl_airframe.load_profile(path)
+
+
+@pytest.mark.parametrize('change', ['too_fast', 'unknown_controller', 'negative_drag', 'bad_density'])
+def test_invalid_fast_research_profiles_rejected(tmp_path, change):
+    c = json.loads(FAST_PROFILE.read_text())
+    if change == 'too_fast':
+        c['flight_parameters']['max_speed'] = 30.
+    elif change == 'unknown_controller':
+        c['flight_parameters']['controller_profile'] = 'racing'
+    elif change == 'negative_drag':
+        c['body_drag']['cda_body_m2'] = [.06, -.01, .008]
+    else:
+        c['body_drag']['air_density_kg_m3'] = 0
+    path = tmp_path/'invalid.json'; path.write_text(json.dumps(c))
+    with pytest.raises(ValueError):
+        stl_airframe.load_profile(path)
+
+
+def test_fast_profile_model_adds_body_drag_plugin(assembled):
+    model, report = assembled
+    assert model.find("plugin[@name='jol_body_drag']") is None and report['body_drag'] is None
+    fast_model, fast_report = stl_airframe.build_model(SIM, PX4, PLUGINS, PLUGINS, FAST_PROFILE, ASSETS)
+    plugin = fast_model.find("plugin[@name='jol_body_drag']")
+    assert plugin.get('filename') == 'libjol_body_drag.so'
+    assert plugin.findtext('link_name') == 'base_link'
+    np.testing.assert_allclose(np.fromstring(plugin.findtext('cda_body_m2'), sep=' '), [.06, .06, .008])
+    assert fast_report['px4_parameters']['MPC_XY_VEL_MAX'] == 22.0

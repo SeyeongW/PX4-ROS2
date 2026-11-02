@@ -122,7 +122,8 @@ def main(args=None):
                 min_duration=0.,max_speed=1.5,max_acceleration=.6,max_jerk=1.2,
                 body_radius=.39 if self.backend=='mavros' else .36,takeoff_min_duration=0.,
                 continuous_takeoff=False,takeoff_join_speed=.8,target_is_virtual_waypoint=False,
-                target_is_pass_through_gate=False,gate_width=1.2,gate_height=1.2,gate_exit_distance=20.).items()}
+                target_is_pass_through_gate=False,gate_width=1.2,gate_height=1.2,gate_exit_distance=20.,
+                controller_profile='legacy').items()}
             if self.backend=='mavros' and self.options['takeoff_min_duration']==0.:
                 self.options['takeoff_min_duration']=12.
             if self.reference_flight:
