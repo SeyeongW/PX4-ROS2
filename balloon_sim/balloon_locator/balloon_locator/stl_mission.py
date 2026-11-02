@@ -122,7 +122,8 @@ def main(args=None):
                 min_duration=0.,max_speed=1.5,max_acceleration=.6,max_jerk=1.2,
                 body_radius=.39 if self.backend=='mavros' else .36,takeoff_min_duration=0.,
                 continuous_takeoff=False,takeoff_join_speed=.8,target_is_virtual_waypoint=False,
-                target_is_pass_through_gate=False,gate_width=1.2,gate_height=1.2,gate_exit_distance=20.).items()}
+                target_is_pass_through_gate=False,gate_width=1.2,gate_height=1.2,gate_exit_distance=20.,
+                controller_profile='legacy').items()}
             if self.backend=='mavros' and self.options['takeoff_min_duration']==0.:
                 self.options['takeoff_min_duration']=12.
             if self.reference_flight:
@@ -131,7 +132,7 @@ def main(args=None):
                             'target_is_pass_through_gate','gate_width','gate_height','gate_exit_distance',
                             'gate_crossing_speed','gate_crossing_tangential_acceleration'):
                     if key in self.reference_flight:self.options[key]=self.reference_flight[key]
-                self.options['controller_profile']='tailsitter20cm_reference'
+                self.options['controller_profile']=self.reference_flight.get('controller_profile','tailsitter20cm_reference')
             self.scene=json.loads(Path(self.declare_parameter('scene_file','').value).read_text())
             self.estimates=deque(maxlen=30);self.own_history=deque(maxlen=50);self.controller_history=deque(maxlen=50)
             self.controller=None;self.own=None;self.locked=None;self.plan=None;self.landing=None
@@ -319,7 +320,7 @@ def main(args=None):
                 self.invalidate_plan();self.transition('locked','preview_failed: '+str(error))
         def begin_preview(self,now):
             client=getattr(self,'reference_client',None)
-            if self.backend!='mavros' or client is None:
+            if self.backend!='mavros' or client is None or self.options.get('continuous_takeoff'):
                 self.prepare_plan(now);return
             if getattr(self,'reference_future',None) is not None:return
             self.invalidate_plan();self.transition('locked','ground_reference_preparation_pending')
@@ -753,6 +754,31 @@ def main(args=None):
             if self.phase in ('detecting','coordinate_ready'):
                 self.phase='coordinate_ready' if self.estimate(now) else 'detecting'
                 self.reason='' if self.phase=='coordinate_ready' else 'waiting_for_sensor_coordinate'
+            if self.options.get('continuous_takeoff') and self.phase=='coordinate_ready' and not self.lock_block_reason(now):
+                try:
+                    estimate=self.lock_estimate(now)
+                    self.begin_new_recording()
+                    self.locked=json.loads(json.dumps(estimate));self.plan=None
+                    self.lock_revision_changed=False;self.sensor_unavailable_since=None
+                    self.transition('locked')
+                    try:self.begin_preview(now)
+                    except (ValueError,KeyError,TypeError) as error:
+                        self.invalidate_plan();self.transition('locked','preview_failed: '+str(error))
+                except (ValueError,KeyError,TypeError):pass
+            if self.options.get('continuous_takeoff') and self.phase=='preview_ready' and self.can_launch(now):
+                self.flight_launched=True;self.samples=[];self.flown=[];self.saved_samples=0
+                self.record_plan=self.plan
+                self.transfer_start=None;self.takeoff_settle_dwell=None
+                self.progress_time=0.;self.reference_history=deque(maxlen=4000)
+                self.vtol_stage='multicopter';self.vtol_future=None;self.vtol_stage_start=None;self.fw_observed=False
+                self.checkpoint=dict(outcome='pending');self.gate_feedback=None;self.return_future=None
+                self.sensor_unavailable_since=None;self.emergency_local_landing=False
+                (self.output/'telemetry.jsonl').write_text('')
+                if self.backend=='mavros':
+                    self.arm_retry_count=0;self.arm_retry_at=None
+                    self.arm_future=self.start_client.call_async(Trigger.Request());self.arm_requested=now
+                    self.transition('arming','auto_launch_continuous_takeoff')
+                else:self.start=now;self.transition('takeoff')
             if self.active():
                 if not self.ready(now):
                     self.begin_emergency_landing('own_or_controller_lost_watchdog_descent')
@@ -868,7 +894,7 @@ def main(args=None):
                             else:self.dwell=None
                             if elapsed>self.plan['duration_s']+15 or now-self.start>self.plan['duration_s']+60:
                                 self.begin_landing('arrival_timeout')
-                        if self.phase in ('takeoff','spline_tracking') and np.linalg.norm(p-sample['position'])>2.:self.begin_landing('tracking_error_exceeded')
+                        if self.phase in ('takeoff','spline_tracking') and np.linalg.norm(p-sample['position'])>(5. if self.options.get('max_speed',1.5)>5. else 2.):self.begin_landing('tracking_error_exceeded')
                         if self.plan.get('continuous_takeoff') and self.phase in ('takeoff','spline_tracking') and now-self.start>self.plan['duration_s']+60:
                             self.begin_landing('continuous_path_progress_timeout')
                         if self.phase in ('abort_braking','abort_landing'):sample=sample_braking_landing(self.landing,0.)

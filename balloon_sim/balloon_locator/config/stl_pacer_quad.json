@@ -192,7 +192,8 @@
     "target_is_virtual_waypoint": true,
     "standoff": 0.0,
     "target_is_pass_through_gate": false,
-    "body_radius": 0.3
+    "body_radius": 0.3,
+    "controller_profile": "aggressive_multicopter"
   },
   "px4_parameters": {
     "COM_RC_IN_MODE": 4,
@@ -202,13 +203,22 @@
     "MPC_THR_MIN": 0.05,
     "MPC_LAND_SPEED": 0.3,
     "COM_SPOOLUP_TIME": 0.5,
-    "MPC_TKO_RAMP_T": 1.0,
-    "MPC_ACC_HOR": 10.0,
+    "MPC_TKO_RAMP_T": 0.5,
+    "MPC_ACC_HOR": 15.0,
     "MPC_ACC_HOR_MAX": 23.0,
+    "MPC_ACC_DOWN_MAX": 5.0,
+    "MPC_ACC_UP_MAX": 10.0,
     "MPC_JERK_MAX": 46.0,
     "MPC_JERK_AUTO": 46.0,
     "MPC_TILTMAX_AIR": 89,
-    "MPC_XY_VEL_MAX": 20.0
+    "MPC_XY_VEL_MAX": 20.0,
+    "MPC_XY_P": 1.5,
+    "MPC_XY_VEL_P_ACC": 3.6,
+    "MPC_XY_VEL_I_ACC": 0.4,
+    "MPC_XY_VEL_D_ACC": 0.2,
+    "MPC_Z_P": 1.5,
+    "MPC_Z_VEL_P_ACC": 8.0,
+    "MPC_Z_VEL_I_ACC": 2.0
   },
   "physics_numerics": {
     "contact_stiffness_N_m": 100000.0,
