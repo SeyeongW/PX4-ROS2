@@ -77,6 +77,15 @@ PX4 개발 도구가 이미 준비되어 있으면 `mkdir`·수동 clone·`ubunt
 
 락·발사 조건이 안 맞으면 UI 이유를 확인한다. 준비 검사를 우회하거나 Gazebo 정답 좌표를 대신 주입하지 않는다. 기본은 가상 목표점 도달이며 게이트 통과/이륙점 귀환 임무가 아니다.
 
+### 고속 연구 프로필 (20 m/s, 최대 기울기 80°)
+
+```bash
+./tools/build_workspace.sh   # jol_sim의 libjol_body_drag.so 포함 재빌드
+./tools/run_gazebo.sh physics_profile_path:="$PWD/install/balloon_locator/share/balloon_locator/config/stl_pacer_quad_fast.json"
+```
+
+`stl_pacer_quad_fast.json`은 기본 프로필을 그대로 두고 따로 고른다. 계획기 명령 속도 약 20 m/s(`max_speed` 22.2의 0.9배), 가속도·저크 상한 27 m/s²·81 m/s³, 표적 통과 후 20 m 뒤 대기, PX4 `MPC_XY_VEL_MAX`=22·`MPC_TILTMAX_AIR`=80을 쓴다. 동체에 가정 이차 항력(`CdA_body`=[0.06, 0.06, 0.008] m²)을 Gazebo 플러그인으로 적용한다. 항력 계수와 이 속도·기울기는 검증된 값이 아니며, 로터 유입·전진 시 추력 감소는 모델링하지 않아 결과가 낙관적이다.
+
 ### 기존 외부 빌드 재사용
 
 소스 위치와 바이너리의 버전·수정 내역을 알고 있을 때만 명시한다. 개인 경로는 기본값에 내장하지 않았다.

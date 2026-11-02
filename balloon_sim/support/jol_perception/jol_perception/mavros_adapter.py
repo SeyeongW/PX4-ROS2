@@ -134,6 +134,11 @@ def main(args=None):
             self.home_yaw = float(self.declare_parameter('home_yaw_world', 0.).value)
             self.horizontal = float(self.declare_parameter('horizontal_limit_m', 65.).value)
             self.height = float(self.declare_parameter('height_limit_m', 20.).value)
+            # MC command acceptance limits when no VTOL flight profile supplies them.
+            self.command_max_speed = float(self.declare_parameter('command_max_speed', 3.).value)
+            self.command_max_acceleration = float(self.declare_parameter('command_max_acceleration', 3.).value)
+            if not (0 < self.command_max_speed <= 40 and 0 < self.command_max_acceleration <= 60):
+                raise ValueError('invalid_command_acceptance_limits')
             if not math.isfinite(self.home_yaw) or min(self.horizontal, self.height) <= 0:
                 raise ValueError('invalid_flight_reference_or_envelope')
             self.pose = self.velocity = self.fcu = self.extended = self.reference = None
@@ -219,8 +224,8 @@ def main(args=None):
         def receive_command(self, msg):
             if not self.reference:return
             try:self.command = read_command(msg, self.now(), self.reference['origin_world'], self.horizontal, self.height,
-                self.flight['max_speed']*1.5 if self.flight else 3.,
-                self.flight['max_acceleration']*1.5 if self.flight else 3.)
+                self.flight['max_speed']*1.5 if self.flight else self.command_max_speed,
+                self.flight['max_acceleration']*1.5 if self.flight else self.command_max_acceleration)
             except (ValueError, AttributeError, TypeError) as error:self.reason = str(error)
         def landed(self, now):
             return bool(self.extended and self.extended['landed'] and 0 <= now-self.extended['received'] <= 2.)

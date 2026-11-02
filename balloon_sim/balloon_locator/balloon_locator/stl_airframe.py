@@ -75,9 +75,18 @@ def load_profile(path):
     _positive(geometry['propeller_diameter_m'], 'propeller_diameter_m')
     _array(geometry['stl_origin_source'], (3,), 'stl_origin_source')
     flight = config.get('flight_parameters', {})
-    for key, maximum in (('max_speed', 1.8), ('max_acceleration', .7), ('max_jerk', 1.4)):
+    controller = flight.get('controller_profile', 'legacy')
+    envelopes = {'legacy': (1.8, .7, 1.4), 'stl_fast_research': (25., 30., 100.)}
+    if controller not in envelopes:
+        raise ValueError('unknown_stl_controller_profile: '+str(controller))
+    for key, maximum in zip(('max_speed', 'max_acceleration', 'max_jerk'), envelopes[controller]):
         if key in flight and _positive(flight[key], key) > maximum:
             raise ValueError('unvalidated_multicopter_envelope: '+key)
+    drag = config.get('body_drag')
+    if drag is not None:
+        if (_array(drag['cda_body_m2'], (3,), 'body_drag.cda_body_m2') < 0).any():
+            raise ValueError('nonnegative_body_drag_area_required')
+        _positive(drag['air_density_kg_m3'], 'body_drag.air_density_kg_m3')
     for key in ('body_radius', 'takeoff_height', 'takeoff_min_duration', 'takeoff_join_speed'):
         if key in flight:
             _positive(flight[key], key)
@@ -359,6 +368,13 @@ def build_model(sim_share, px4_root, plugins, aero_plugins, profile_path, assets
     helpers['add_rotor_joint_observer'](model)
     helpers['body_observer'](model, 'stl_quad_truth')
     helpers['plugin_paths'](model, plugins, aero_plugins)
+    drag = config.get('body_drag')
+    if drag is not None:
+        # Quadratic body drag F_B = -0.5*rho*|v_B|*(CdA_B ⊙ v_B) at the base link (jol_sim plugin).
+        plugin = ET.SubElement(model, 'plugin', name='jol_body_drag', filename='libjol_body_drag.so')
+        ET.SubElement(plugin, 'link_name').text = 'base_link'
+        ET.SubElement(plugin, 'air_density').text = str(float(drag['air_density_kg_m3']))
+        ET.SubElement(plugin, 'cda_body_m2').text = ' '.join(str(float(v)) for v in drag['cda_body_m2'])
     parameters = dict(SYS_AUTOSTART=10015, CA_AIRFRAME=0, CA_ROTOR_COUNT=4, CA_SV_CS_COUNT=0)
     flu_to_frd = np.array([1., -1., -1.])
     for index in range(4):
@@ -393,7 +409,7 @@ def build_model(sim_share, px4_root, plugins, aero_plugins, profile_path, assets
                   physics_profile_path=str(Path(profile_path).resolve()),
                   rotor_joint_state_topic='/jol/sim_observer/rotor_joints',
                   vehicle_rotation_actuation='PX4 differential rotor forces and reaction torques',
-                  onboard_camera=onboard_camera, shell_transparency=shell_transparency,
+                  onboard_camera=onboard_camera, shell_transparency=shell_transparency, body_drag=drag,
                   limitations=[
                       'STL unit is assumed millimetres; all original source vertices are preserved.',
                       'Mass/CG/inertia and motor reaction torque are assumptions, not identified hardware.',
@@ -401,6 +417,7 @@ def build_model(sim_share, px4_root, plugins, aero_plugins, profile_path, assets
                       'Conservative cylinder contact envelope; rotor collisions are not modeled.',
                       'Rounded blade silhouettes and hubs are visual-only, not manufacturer geometry or calibrated airfoils.',
                       'Camera/avionics primitives are visual-only within the assumed total mass; mounting and cable route are unverified.',
-                      'No calibrated body drag, wing lift, propwash or fixed-wing transition model.',
+                      ('Uncalibrated assumed quadratic body drag only; no wing lift, propwash or fixed-wing transition model.'
+                       if drag is not None else 'No calibrated body drag, wing lift, propwash or fixed-wing transition model.'),
                       'Static thrust fit and official Iris GPS/IMU noise do not certify real flight.'])
     return model, report
