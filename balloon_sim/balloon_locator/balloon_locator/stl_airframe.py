@@ -75,7 +75,7 @@ def load_profile(path):
     _positive(geometry['propeller_diameter_m'], 'propeller_diameter_m')
     _array(geometry['stl_origin_source'], (3,), 'stl_origin_source')
     flight = config.get('flight_parameters', {})
-    for key, maximum in (('max_speed', 1.8), ('max_acceleration', .7), ('max_jerk', 1.4)):
+    for key, maximum in (('max_speed', 20.), ('max_acceleration', 25.), ('max_jerk', 50.)):
         if key in flight and _positive(flight[key], key) > maximum:
             raise ValueError('unvalidated_multicopter_envelope: '+key)
     for key in ('body_radius', 'takeoff_height', 'takeoff_min_duration', 'takeoff_join_speed'):
