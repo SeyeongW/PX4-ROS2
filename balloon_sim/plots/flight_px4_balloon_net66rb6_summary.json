@@ -1,0 +1,30 @@
+{
+  "mission": "/tmp/px4_balloon_net66rb6/mission",
+  "path_kind": "spline",
+  "duration_s": 14.148334681656248,
+  "sampled_length_m": 14.454615249968914,
+  "motion_validation": {
+    "passed": true,
+    "method": "composed_degree15_bernstein_derivative_hull_six_subdivisions",
+    "continuous_upper_bounds": {
+      "speed_m_s": 2.8831369730002665,
+      "acceleration_m_s2": 1.2798844051106137,
+      "jerk_m_s3": 1.5084122229818118
+    },
+    "sampled_peaks": {
+      "speed_m_s": 2.882841790590981,
+      "acceleration_m_s2": 1.2794681079448187,
+      "jerk_m_s3": 1.4669298903211445
+    }
+  },
+  "tracking_error_max_m": 11.775112301067276,
+  "tracking_error_mean_m": 1.0799197157302451,
+  "max_speed_actual_m_s": 4.83588928080047,
+  "phases": [
+    "takeoff",
+    "vision_tracking",
+    "arrived"
+  ],
+  "report_outcome": null,
+  "report_reason": "sensor_coordinate_unavailable"
+}

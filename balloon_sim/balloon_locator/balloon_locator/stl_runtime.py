@@ -12,30 +12,34 @@ AIRCRAFT_TYPE = 'stl_pacer_quad'
 AIRCRAFT_LABEL = 'PX4 · MAVROS · STL/PACER · 총 2kg(가정)'
 
 
-def multicopter_profile(path):
+def multicopter_profile(path, *, keep_flight_parameters=False):
     """Validate the actual model profile, retaining provenance but no FW policy.
 
     NUB uses a nonempty ``flight_parameters`` mapping to activate its VTOL/FW
     mission. MC trajectory limits are supplied separately as ROS parameters by
     our launch file, within NUB's existing general-MC envelope.
+
+    The MAVROS adapter needs ``flight_parameters`` for its setpoint envelope
+    validation, so ``keep_flight_parameters=True`` preserves them.
     """
     from .stl_airframe import load_profile
 
     profile = deepcopy(load_profile(path))
     if profile.get('aircraft') != AIRCRAFT_TYPE:
         raise ValueError('STL_runtime_requires_matching_aircraft_profile')
-    profile.pop('flight_parameters', None)
+    if not keep_flight_parameters:
+        profile.pop('flight_parameters', None)
     return profile
 
 
 @contextmanager
-def register_multicopter_profile(module):
+def register_multicopter_profile(module, *, keep_flight_parameters=False):
     """Register one simulation model for the duration of a reused entrypoint."""
     original = module.aircraft_profile
 
     def aircraft_profile(aircraft_type, path=''):
         if aircraft_type == AIRCRAFT_TYPE:
-            return multicopter_profile(path)
+            return multicopter_profile(path, keep_flight_parameters=keep_flight_parameters)
         return original(aircraft_type, path)
 
     module.aircraft_profile = aircraft_profile
@@ -55,7 +59,7 @@ def main_mission(args=None):
 def main_adapter(args=None):
     from jol_perception import mavros_adapter
 
-    with register_multicopter_profile(mavros_adapter):
+    with register_multicopter_profile(mavros_adapter, keep_flight_parameters=True):
         return mavros_adapter.main(args=args)
 
 

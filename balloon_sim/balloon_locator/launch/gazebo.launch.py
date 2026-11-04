@@ -1,5 +1,6 @@
 """Self-contained camera-only STL/PX4 simulation; no SIYI hardware IO."""
 import json
+import math
 import os
 import tempfile
 from pathlib import Path
@@ -26,7 +27,7 @@ def onboard_camera_transform(report):
                    '--frame-id','jol/observer_body','--child-frame-id',camera['frame_name']])
 
 
-def start_stl_mavros(context,report,perception,existing,watch):
+def start_stl_mavros(context,report,perception,existing,watch,mavros_enabled=True):
     """One model report supplies both Gazebo physics and the MC rotor allocation."""
     value=lambda key:LaunchConfiguration(key).perform(context)
     root=Path(value('px4_root')).resolve();binary=Path(value('px4_binary')).resolve()
@@ -36,6 +37,8 @@ def start_stl_mavros(context,report,perception,existing,watch):
     etc=existing['prepare_px4_parameter_overrides'](etc,rootfs,'10015_gazebo-classic_iris',report['px4_parameters'])
     px4=ExecuteProcess(cmd=[str(binary),'-d',str(etc)],cwd=str(rootfs),output='screen',
         additional_env={'PX4_SIM_MODEL':'gazebo-classic_iris','PX4_SYS_AUTOSTART':'10015'})
+    if not mavros_enabled:
+        return [watch(px4),px4]
     mavros=Node(package='mavros',executable='mavros_node',namespace='mavros',output='screen',
         parameters=[str(perception/'config/mavros_sitl.yaml')])
     adapter=Node(package='balloon_locator',executable='stl_mavros_adapter',output='screen',parameters=[{
@@ -75,39 +78,82 @@ def setup(context):
     detector=Node(package='balloon_locator',executable='balloon_detector_node',output='screen',parameters=[{
         'use_sim_time':True,'process_scale':1.0,'hsv_ranges':[3,100,70,28,255,255]}],
         remappings=[('/camera/image_raw','/jol/camera/image_raw')])
+    cam=report.get('onboard_camera',{}) if report else {}
+    cam_xyz=cam.get('optical_position_body_m',[0.,0.,0.])
     locator=Node(package='balloon_locator',executable='balloon_locator_node',output='screen',parameters=[{
         'use_sim_time':True,'pose_source':'tf','fixed_frame':'world','camera_info_topic':'/jol/camera/camera_info',
-        'calibration_valid':True,'balloon_diameter_m':.3,'diameter_rel_sigma':0.0,
-        'pixel_sigma_px':.5,'focal_rel_sigma':0.0,'angle_sigma_deg':.1,'min_samples':3,'max_sigma_m':.5}])
+        'calibration_valid':True,'balloon_diameter_m':0.3,'diameter_rel_sigma':0.0,
+        'pixel_sigma_px':.5,'focal_rel_sigma':0.0,'angle_sigma_deg':.1,'min_samples':3,'max_sigma_m':.5,
+        'max_measurement_age_sec':2.0,'center_tolerance_deg':30.,'forget':0.8,'min_gate_samples':30,
+        'camera_mount_parent':'jol/ground_gimbal',
+        'camera_mount_child':'jol/camera_optical',
+        'camera_mount_xyz':[0.084,0.,0.],
+        'camera_mount_rpy':[-math.pi/2,0.,-math.pi/2]}])
     tracker=Node(package='balloon_locator',executable='gimbal_tracker_node',output='screen',parameters=[{
-        'use_sim_time':True,'image_width':1280.,'image_height':960.,'deadband':.003,
+        'use_sim_time':True,'image_width':640.,'image_height':360.,'deadband':.003,
         'yaw_sign':1.,'pitch_sign':-1.}])
-    bridge=Node(package='balloon_locator',executable='gazebo_bridge',output='screen',parameters=[{'use_sim_time':True}])
+    mode=value('mode')
+    auto_start=value('ui').lower() not in ('true','1','yes')
+    bridge=Node(package='balloon_locator',executable='gazebo_bridge',output='screen',parameters=[{'use_sim_time':True,'auto_start':auto_start}])
     flight=load_profile(value('physics_profile_path'))['flight_parameters'] if report else {}
     mission=Node(package='balloon_locator' if report else 'jol_perception',
         executable='stl_static_flight' if report else 'static_flight',output='screen',parameters=[{
         'use_sim_time':True,'output_dir':str(output/'mission'),'scene_file':str(perception/'config/static_flight_scene.json'),
         'flight_backend':'mavros','aircraft_type':aircraft,'physics_profile_path':value('physics_profile_path'),
         'target_source':'camera_monocular_size','takeoff_height':3.,'vertical_handle':float(value('vertical_handle')),**flight}])
+    onboard_detector=Node(package='balloon_locator',executable='balloon_detector_node',
+        name='onboard_detector_node',output='screen',parameters=[{
+        'use_sim_time':True,'process_scale':1.0,
+        'hsv_ranges':[3,100,70,28,255,255],
+        'min_diameter_px':3.0}],
+        remappings=[('/camera/image_raw','/jol/onboard_camera/image_raw'),
+                    ('/balloon/detections','/balloon/onboard/detections')])
+    tgt_range=float(value('target_range'));tgt_az=math.radians(float(value('target_azimuth')));tgt_h=float(value('target_height'))
+    target_world=[tgt_range*math.cos(tgt_az),tgt_range*math.sin(tgt_az),tgt_h]
+    hover_alt=min(tgt_h-2.0,5.0) if tgt_h>4.0 else tgt_h*0.5
+    vision_center=Node(package='balloon_locator',executable='vision_center_node',output='screen',parameters=[{
+        'use_sim_time':True,'auto_start':auto_start,'image_width':640,'image_height':360,'hfov_deg':82.9,
+        'target_world':target_world,'hover_altitude_m':hover_alt,
+        'kp':0.8,'max_center_speed':1.0,'center_range_m':15.0,'lost_timeout_sec':2.0}])
     ui=Node(package='balloon_locator',executable='stl_experiment_ui',output='screen',condition=IfCondition(LaunchConfiguration('ui')),
         parameters=[{'use_sim_time':True,'static_flight_mode':True,'auto_record':False,
                      'record_dir':str(output/'ui')}])
     rviz=Node(package='rviz2',executable='rviz2',output='screen',condition=IfCondition(LaunchConfiguration('rviz')),
         arguments=['-d',str(perception/'config/static_flight.rviz')],parameters=[{'use_sim_time':True}])
-    return [LogInfo(msg='Balloon locator: 30cm, horizontal40m/altitude10m defaults; exact simulated optics/size, NOT measured hardware.'),
+    workspace_root=os.environ.get('BALLOON_WORKSPACE_ROOT','')
+    fly_script=Path(workspace_root)/'tools/fly_to_target.py' if workspace_root else None
+    fly_to_target=ExecuteProcess(
+        cmd=['python3',str(fly_script)],output='screen',
+        additional_env={
+            'FLY_TARGET_X':str(target_world[0]),'FLY_TARGET_Y':str(target_world[1]),
+            'FLY_TARGET_Z':str(target_world[2]),'FLY_HOVER_ALT':str(hover_alt),
+            'FLY_STARTUP_DELAY':'15','PYTHONUNBUFFERED':'1',
+        }) if fly_script and fly_script.is_file() else None
+    detection_viewer=Node(package='balloon_locator',executable='detection_viewer_node',output='screen',parameters=[{
+        'use_sim_time':True}])
+    use_mavros = mode not in ('pymav',)
+    if mode=='pymav':
+        ground_nodes=[server,onboard_detector,detection_viewer]+([fly_to_target] if fly_to_target else [])
+        watched=[server,onboard_detector]
+    elif mode=='vision_center':
+        ground_nodes=[server,onboard_detector,vision_center]
+        watched=[server,onboard_detector,vision_center]
+    else:
+        ground_nodes=[server,detector,locator,tracker,bridge,mission,onboard_detector]
+        watched=[server,detector,locator,tracker,bridge,mission,onboard_detector]
+    return [LogInfo(msg=f'Balloon locator mode={mode}: 30cm balloon, upward onboard camera, exact simulated optics.'),
         *([LogInfo(msg='Exterior view: ignoring legacy airframe_transparency; the black shell hides internal parts.')]
           if report and float(value('airframe_transparency'))!=0.0 else []),
         SetEnvironmentVariable('GAZEBO_PLUGIN_PATH',str(Path(get_package_prefix('jol_sim'))/'lib')+os.pathsep+os.environ.get('GAZEBO_PLUGIN_PATH','/opt/ros/humble/lib')),
-        *(start_stl_mavros(context,report,perception,existing,watch) if report else existing['start_mavros'](context)),
-        *[watch(node) for node in (server,detector,locator,tracker,bridge,mission)],
-        server,detector,locator,tracker,bridge,mission,ui,rviz,
-        *([onboard_camera_transform(report)] if report and report.get('onboard_camera') else []),
+        *(start_stl_mavros(context,report,perception,existing,watch,mavros_enabled=use_mavros) if report else existing['start_mavros'](context)),
+        *[watch(node) for node in watched],
+        *ground_nodes,ui,rviz,
         ExecuteProcess(cmd=['gzclient'],output='screen',condition=IfCondition(LaunchConfiguration('gui')))]
 
 
 def generate_launch_description():
     paths=runtime_paths()
-    defaults=dict(gui='true',ui='true',rviz='true',target_range='40.0',target_height='10.0',target_azimuth='-90.0',
+    defaults=dict(gui='true',ui='true',rviz='true',mode='mission',target_range='50.0',target_height='4.0',target_azimuth='0.0',
         vertical_handle='4.0',airframe_transparency='0.0',scenario='static_flight',flight_backend='mavros',aircraft_type='stl_pacer_quad',
         static_output=os.environ.get('BALLOON_RUNTIME_DIR',''),px4_root=str(paths['px4_root']),
         px4_binary=str(paths['px4_binary']),

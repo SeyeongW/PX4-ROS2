@@ -34,6 +34,8 @@ setup(
             'balloon_detector_node = balloon_locator.balloon_detector_node:main',
             'gimbal_tracker_node = balloon_locator.gimbal_tracker_node:main',
             'balloon_locator_node = balloon_locator.balloon_locator_node:main',
+            'vision_center_node = balloon_locator.vision_center_node:main',
+            'detection_viewer_node = balloon_locator.detection_viewer_node:main',
             'mavlink_bridge_node = balloon_locator.mavlink_bridge_node:main',
         ],
     },

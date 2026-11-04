@@ -204,7 +204,7 @@ def _onboard_visuals(body, config):
             cylinder(f'onboard_camera_screw_{side}_{index}', [x, 1206.45, z], 1.5, .66, EXTERIOR_BLACK)
     optical_position = position(camera['optical_center_source_mm']).tolist()
     sensor = ET.SubElement(body, 'sensor', name='onboard_camera_rgb', type='camera')
-    # Gazebo +X looks out of the nose; image right/down follow body +X/+Y,
+    # Gazebo +X looks out of the nose (+Z body); image right/down follow body +X/+Y,
     # matching the physical PCB's 25 mm horizontal edge and the optical TF.
     sensor_rpy = [math.pi/2, -math.pi/2, 0]
     ET.SubElement(sensor, 'pose').text = ' '.join(map(str, [*optical_position, *sensor_rpy]))

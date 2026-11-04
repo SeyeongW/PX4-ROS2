@@ -7,14 +7,17 @@ from string import Template
 import xml.etree.ElementTree as ET
 
 
-def make_world(share,px4_root,plugins,aero_plugins,profile,*,range_m=40.,height_m=10.,azimuth_deg=-90.,aircraft_model=None):
-    if not (math.isfinite(range_m) and 2<range_m<=100 and math.isfinite(height_m) and 3<height_m<=18
+def make_world(share,px4_root,plugins,aero_plugins,profile,*,range_m=10.,height_m=4.,azimuth_deg=0.,aircraft_model=None):
+    if not (math.isfinite(range_m) and 2<range_m<=500 and math.isfinite(height_m) and 3<height_m<=200
             and math.isfinite(azimuth_deg) and -180<=azimuth_deg<=180):
         raise ValueError('invalid_balloon_experiment_geometry')
     share=Path(share);helpers=run_path(str(share/'launch/sim.launch.py'))
     target=ET.fromstring(helpers['static_target_model'](azimuth_deg,balloon=True))
     angle=math.radians(azimuth_deg)
     target.find('pose').text=f'{range_m*math.cos(angle)} {range_m*math.sin(angle)} {height_m} 0 0 0'
+    for sphere in target.iter('sphere'):
+        r=sphere.find('radius')
+        if r is not None:r.text='0.15'
     parameters=dict(CAMERA='',CAMERA_MOUNT='gimbal',LIDAR='',LIDAR_MOUNT_MODE='payload',ARM='',
         TURRET_MOTION='false',TURRET_SURVEY='false',TURRET_YAW_AMPLITUDE=0,TURRET_PITCH_AMPLITUDE=0,
         TURRET_PERIOD=8,TURRET_SURVEY_ELEVATION=0,OCCLUDER='',DRONES=ET.tostring(target,encoding='unicode'),
@@ -35,6 +38,17 @@ def make_world(share,px4_root,plugins,aero_plugins,profile,*,range_m=40.,height_
     else:
         model=aircraft_model
     world.append(model)
+    turret=world.find("model[@name='fixed_turret']")
+    if turret is not None:
+        for limit in turret.iter('limit'):
+            lo=limit.find('lower');hi=limit.find('upper')
+            if lo is not None and hi is not None:
+                try:
+                    if abs(float(lo.text))<2.:lo.text=str(-math.pi/2);hi.text=str(math.pi/2)
+                except ValueError:pass
+        for clip in turret.iter('clip'):
+            far_el=clip.find('far')
+            if far_el is not None:far_el.text='500'
     collision=world.find("model[@name='static_target']/link/collision")
     ET.SubElement(ET.SubElement(ET.SubElement(collision,'surface'),'contact'),'collide_without_contact').text='true'
     return ET.tostring(tree,encoding='unicode')

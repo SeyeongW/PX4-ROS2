@@ -121,9 +121,11 @@ def main(args=None):
                 path_kind='spline',takeoff_height=3.,standoff=1.,vertical_handle=2.,approach_handle=8.,
                 min_duration=0.,max_speed=1.5,max_acceleration=.6,max_jerk=1.2,
                 body_radius=.39 if self.backend=='mavros' else .36,takeoff_min_duration=0.,
-                continuous_takeoff=False,takeoff_join_speed=.8,target_is_virtual_waypoint=False,
+                continuous_takeoff=False,takeoff_join_speed=.8,overrun_distance=0.,
+                target_is_virtual_waypoint=False,
                 target_is_pass_through_gate=False,gate_width=1.2,gate_height=1.2,gate_exit_distance=20.,
                 controller_profile='legacy').items()}
+            self.declare_parameter('heading_offset_rad',0.)
             if self.backend=='mavros' and self.options['takeoff_min_duration']==0.:
                 self.options['takeoff_min_duration']=12.
             if self.reference_flight:
@@ -149,6 +151,7 @@ def main(args=None):
             self.lock_revision_changed=False;self.sensor_unavailable_since=None
             self.terminal_loss_position=None;self.terminal_loss_eligible=None;self.coordinate_mode='unavailable'
             self.emergency_local_landing=False
+            self.vision_loss_since=None;self.vision_last_target=None
             self.reference_future=None;self.reference_requested=None;self.reference_requested_revision=None;self.reference_retry_at=None
             self.start_client=self.create_client(Trigger,'/jol/mavros/start') if self.backend=='mavros' else None
             self.reference_client=self.create_client(Trigger,'/jol/mavros/prepare_reference') if self.backend=='mavros' else None
@@ -156,6 +159,7 @@ def main(args=None):
             self.return_client=self.create_client(Trigger,'/jol/mavros/return_home') if self.backend=='mavros' else None
             self.fw_client=self.create_client(Trigger,'/jol/mavros/transition_fw') if self.reference_flight else None
             self.mc_client=self.create_client(Trigger,'/jol/mavros/transition_mc') if self.reference_flight else None
+            self.balloon_reset_client=self.create_client(Trigger,'/balloon/reset')
             self.command_pub=self.create_publisher(MultiDOFJointTrajectory,'/jol/sim_observer/setpoint',1)
             self.status_pub=self.create_publisher(String,'/jol/static_flight/status',10)
             self.plan_pub=self.create_publisher(String,'/jol/static_flight/plan',10)
@@ -194,14 +198,14 @@ def main(args=None):
             self.own_history.append(dict(stamp=msg.header.stamp.sec+msg.header.stamp.nanosec*1e-9,
                 position=values[:3].tolist(),velocity=velocity.tolist()))
         def estimate(self,now):
-            latest=next((p for p in reversed(self.estimates) if 0<=now-p.get('stamp',-1)<=.8),{})
+            latest=next((p for p in reversed(self.estimates) if 0<=now-p.get('stamp',-1)<=2.0),{})
             return latest if valid_estimate(latest,now) and latest.get('source')==self.target_source else None
         def ready(self,now):
             self.controller=next((p for p in reversed(self.controller_history) if 0<=now-p['stamp']<=.3),None)
             return bool(self.controller and 0<=now-self.controller['stamp']<=.3
                         and self.controller.get('controller_ready') is True
                         and causal_odometry(self.own_history,now) is not None)
-        def active(self):return self.phase in ('arming','takeoff','spline_tracking','arrived','abort_braking','abort_landing','autopilot_landing')
+        def active(self):return self.phase in ('arming','takeoff','spline_tracking','vision_tracking','arrived','abort_braking','abort_landing','autopilot_landing')
         def grounded(self,now):
             own=causal_odometry(self.own_history,now)
             return bool(own and own['position'][2]<=.25 and np.linalg.norm(own['velocity'])<=.15)
@@ -278,6 +282,7 @@ def main(args=None):
             self.events.append(dict(stamp=self.now(),phase=phase,reason=reason))
             self.get_logger().info('Static flight '+phase+': '+reason)
             self.save()
+            if phase=='aborted' and self.samples:self.auto_plot()
         def prepare_plan(self,now):
             if getattr(self,'lock_revision_changed',False) or self.calibration_changed(now):
                 raise ValueError('calibration_changed_unlock_and_relock_required')
@@ -697,10 +702,15 @@ def main(args=None):
                     own_stamp=self.own['stamp'],odometry_age_s=now-self.own['stamp'],
                     takeoff_height_m=float(p[2]-self.plan['home'][2]) if self.plan else None)
                 if sample and self.phase not in ('arming','autopilot_landing'):
-                    reference=(sample_plan(self.plan,self.plan_time(self.own['stamp']))
-                               if self.phase in ('takeoff','spline_tracking','arrived') else
-                               sample_braking_landing(self.landing,max(0.,self.own['stamp']-self.landing_start)))
-                    packet['tracking_error_m']=float(np.linalg.norm(p-reference['position']))
+                    if self.phase=='vision_tracking':
+                        vt=getattr(self,'vision_last_target',None)
+                        packet['tracking_error_m']=float(np.linalg.norm(p-vt)) if vt is not None else None
+                    elif self.phase in ('takeoff','spline_tracking','arrived'):
+                        reference=sample_plan(self.plan,self.plan_time(self.own['stamp']))
+                        packet['tracking_error_m']=float(np.linalg.norm(p-reference['position']))
+                    else:
+                        reference=sample_braking_landing(self.landing,max(0.,self.own['stamp']-self.landing_start))
+                        packet['tracking_error_m']=float(np.linalg.norm(p-reference['position']))
                 if self.plan:packet['arrival_error_m']=float(np.linalg.norm(p-self.plan['goal']))
                 if target:packet['target_surface_distance_m']=float(np.linalg.norm(p-target['position']))
             self.status_pub.publish(String(data=json.dumps(packet)))
@@ -716,6 +726,16 @@ def main(args=None):
                 failure_behavior='return_to_takeoff_then_land' if record_plan and record_plan.get('gate') else 'land',
                 simulation_only=True,target_source=self.target_source,**self.backend_metadata(),**self.aircraft_metadata(),
                 native_setpoint_frame='jol/flight_ned',samples=len(self.samples)),indent=2))
+        def auto_plot(self):
+            import subprocess as _sp,sys as _sys
+            script=Path(__file__).resolve().parents[2]/'tools'/'plot_flight_data.py'
+            if not script.exists():return
+            try:
+                _sp.Popen([_sys.executable,str(script),'--mission',str(self.output)],
+                    stdout=_sp.DEVNULL,stderr=_sp.DEVNULL)
+                self.get_logger().info('Auto-plot started → balloon_sim/plots/')
+            except Exception as exc:
+                self.get_logger().warning('Auto-plot failed: '+str(exc))
         def tick(self):
             now=self.now()
             if now<=0:return
@@ -746,11 +766,17 @@ def main(args=None):
                         plan=self.plan,own=self.own,loss_since=self.sensor_unavailable_since,
                         loss_position=self.terminal_loss_position,
                         latest_estimate=self.estimates[-1] if self.estimates else None)
-                    # A fresh conflict or early loss permanently disqualifies
-                    # this outage. It cannot become "occlusion" by aging away.
                     self.terminal_loss_eligible=terminal and self.terminal_loss_eligible is not False
                     if self.terminal_loss_eligible:self.coordinate_mode='locked_static_terminal'
                     elif now-self.sensor_unavailable_since>=1.:self.begin_landing('sensor_coordinate_unavailable')
+            if self.phase=='vision_tracking':
+                estimate=self.estimate(now)
+                if estimate:
+                    self.vision_loss_since=None;self.coordinate_mode='live'
+                else:
+                    self.coordinate_mode='unavailable'
+                    if self.vision_loss_since is None:self.vision_loss_since=now
+                    elif now-self.vision_loss_since>=10.:self.begin_landing('vision_lost_during_tracking')
             if self.phase in ('detecting','coordinate_ready'):
                 self.phase='coordinate_ready' if self.estimate(now) else 'detecting'
                 self.reason='' if self.phase=='coordinate_ready' else 'waiting_for_sensor_coordinate'
@@ -787,7 +813,7 @@ def main(args=None):
                         elif now-self.autopilot_land_start>90.:self.transition('aborted','PX4_landing_timeout_unverified')
                 elif self.phase!='autopilot_landing' and (self.controller['origin_world']!=self.lock_frame['origin_world'] or abs(self.controller['north_yaw_world_rad']-self.lock_frame['north_yaw_world_rad'])>1e-6):
                     self.begin_emergency_landing('NED_reference_changed_watchdog_descent')
-                elif (self.backend=='mavros' and self.phase in ('takeoff','spline_tracking','arrived')
+                elif (self.backend=='mavros' and self.phase in ('takeoff','spline_tracking','vision_tracking','arrived')
                       and not (self.controller.get('armed') is True and self.controller.get('mode')=='OFFBOARD')):
                     self.begin_landing('PX4_armed_or_OFFBOARD_lost')
                 else:
@@ -894,12 +920,47 @@ def main(args=None):
                             else:self.dwell=None
                             if elapsed>self.plan['duration_s']+15 or now-self.start>self.plan['duration_s']+60:
                                 self.begin_landing('arrival_timeout')
+                        if self.phase=='spline_tracking' and self.estimate(now):
+                            self.vision_loss_since=None;self.vision_last_target=np.array(self.estimate(now)['position'])
+                            if self.balloon_reset_client.service_is_ready():
+                                self.balloon_reset_client.call_async(Trigger.Request())
+                            self.transition('vision_tracking','camera_detection_acquired')
                         if self.phase in ('takeoff','spline_tracking') and np.linalg.norm(p-sample['position'])>(5. if self.options.get('max_speed',1.5)>5. else 2.):self.begin_landing('tracking_error_exceeded')
                         if self.plan.get('continuous_takeoff') and self.phase in ('takeoff','spline_tracking') and now-self.start>self.plan['duration_s']+60:
                             self.begin_landing('continuous_path_progress_timeout')
                         if self.phase in ('abort_braking','abort_landing'):sample=sample_braking_landing(self.landing,0.)
                         if self.phase=='autopilot_landing':sample=None
-                    elif self.phase=='arrived':sample=stationary_sample(self.plan['goal'])
+                    elif self.phase=='vision_tracking':
+                        estimate=self.estimate(now)
+                        if estimate:
+                            target=np.array(estimate['position'])
+                            self.vision_last_target=target
+                        else:
+                            target=self.vision_last_target
+                        error=target-p;distance=np.linalg.norm(error)
+                        max_speed=self.reference_flight.get('vision_max_speed',min(self.options.get('max_speed',4.),3.))
+                        vel_gain=self.reference_flight.get('vision_vel_gain',0.4)
+                        desired_vel=vel_gain*error
+                        speed=np.linalg.norm(desired_vel)
+                        if speed>max_speed:desired_vel=desired_vel*max_speed/speed
+                        sample=dict(position=target.tolist(),velocity=desired_vel.tolist(),acceleration=[0.,0.,0.])
+                        if distance<.5 and np.linalg.norm(v)<.3:
+                            if self.dwell is None:self.dwell=now
+                            if now-self.dwell>1.:self.transition('arrived')
+                        else:self.dwell=None
+                        if now-self.start>self.plan['duration_s']+90.:self.begin_landing('vision_tracking_timeout')
+                    elif self.phase=='arrived':
+                        hold=self.vision_last_target if self.vision_last_target is not None else self.plan['goal']
+                        hold=hold.tolist() if hasattr(hold,'tolist') else list(hold)
+                        sample=stationary_sample(hold)
+                        if self.backend=='mavros':
+                            if self.dwell is None:self.dwell=now
+                            if now-self.dwell>2. and self.return_client and self.return_client.service_is_ready():
+                                self.return_future=self.return_client.call_async(Trigger.Request())
+                                self.autopilot_land_start=now
+                                self.events.append(dict(stamp=now,action='return_to_launch_after_arrival',
+                                    requested_home_world=self.plan['home']))
+                                self.transition('autopilot_landing','return_to_launch_after_arrival')
                     elif self.phase in ('abort_braking','abort_landing'):
                         elapsed=now-self.landing_start;sample=sample_braking_landing(self.landing,elapsed)
                         if sample['phase']=='abort_landing' and self.phase=='abort_braking':
@@ -908,19 +969,26 @@ def main(args=None):
                             if self.dwell is None:self.dwell=now
                             if now-self.dwell>=1:self.transition('aborted',self.reason)
                         elif elapsed>self.landing['duration_s']+15:self.transition('aborted','landing_timeout')
-                    if not self.active():sample=None
+                    if not self.active() or self.phase=='autopilot_landing':sample=None
                     if sample:
                         self.command(sample)
-                        reference=(sample_plan(self.plan,self.plan_time(self.own['stamp']))
-                                   if self.phase in ('takeoff','spline_tracking','arrived') else
-                                   sample_braking_landing(self.landing,max(0.,self.own['stamp']-self.landing_start)))
+                        if self.phase=='vision_tracking':
+                            vt=getattr(self,'vision_last_target',p)
+                            ref_pos=vt.tolist() if hasattr(vt,'tolist') else list(vt)
+                            trk_err=float(np.linalg.norm(p-vt))
+                        elif self.phase in ('takeoff','spline_tracking','arrived'):
+                            reference=sample_plan(self.plan,self.plan_time(self.own['stamp']))
+                            ref_pos=reference['position'];trk_err=float(np.linalg.norm(p-reference['position']))
+                        else:
+                            reference=sample_braking_landing(self.landing,max(0.,self.own['stamp']-self.landing_start))
+                            ref_pos=reference['position'];trk_err=float(np.linalg.norm(p-reference['position']))
                         row=dict(stamp=now,own_stamp=self.own['stamp'],phase=self.phase,position=p.tolist(),velocity=v.tolist(),
                             trajectory_time_s=self.plan_time(now) if self.phase in ('takeoff','spline_tracking','arrived') else None,
                             reference_time_s=self.plan_time(now) if self.phase in ('takeoff','spline_tracking','arrived') else None,
                             desired_position=sample['position'],desired_velocity=sample['velocity'],desired_acceleration=sample['acceleration'],
-                            desired_position_at_feedback_stamp=reference['position'],
+                            desired_position_at_feedback_stamp=ref_pos,
                             command_ned=to_ned(sample['position'],self.controller).tolist(),
-                            tracking_error_m=float(np.linalg.norm(p-reference['position'])),
+                            tracking_error_m=trk_err,
                             coordinate_fresh=bool(self.estimate(now)),takeoff_height_m=float(p[2]-self.plan['home'][2]),
                             coordinate_mode=self.coordinate_mode,
                             **self.aircraft_metadata())

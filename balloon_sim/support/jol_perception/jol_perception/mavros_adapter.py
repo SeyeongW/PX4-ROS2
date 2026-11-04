@@ -399,7 +399,7 @@ def main(args=None):
             # Despite this MAVLink frame label, the MAVROS ROS API accepts ENU P/V/A.
             msg.coordinate_frame = PositionTarget.FRAME_LOCAL_NED
             msg.type_mask = PositionTarget.IGNORE_YAW | PositionTarget.IGNORE_YAW_RATE
-            if self.aircraft_type=='tailsitter20cm_reference':
+            if self.aircraft_type in ('tailsitter20cm_reference', 'stl_pacer_quad'):
                 if self.phase in ('standby','landing'):
                     self.route_yaw=float(self.pose['rotation'].as_euler('xyz')[2])
                 elif (self.phase in ('tracking','returning') and self.fresh(now) and self.fcu['armed']
@@ -411,7 +411,7 @@ def main(args=None):
                         self.route_goal-(np.asarray(self.reference['origin_world'])+self.pose['position'])
                         if self.route_goal is not None else np.zeros(3))
                     if np.linalg.norm(direction[:2])>.2:
-                        desired=math.atan2(direction[1],direction[0])
+                        desired=math.atan2(direction[1],direction[0])+self.flight.get('heading_offset_rad',0.)
                         error=math.atan2(math.sin(desired-self.route_yaw),math.cos(desired-self.route_yaw))
                         dt=0. if self.last_setpoint_sent is None else min(.1,max(0.,now-self.last_setpoint_sent))
                         limit=math.radians(self.flight.get('heading_max_rate_deg_s',45.))*dt

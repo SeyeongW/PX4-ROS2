@@ -20,6 +20,8 @@ from std_srvs.srv import Trigger
 from vision_msgs.msg import Detection2DArray
 from visualization_msgs.msg import Marker,MarkerArray
 from rclpy.duration import Duration
+from tf2_ros import TransformBroadcaster
+from geometry_msgs.msg import TransformStamped
 
 NED_TO_WORLD=np.array([[0.,1.,0.],[1.,0.,0.],[0.,0.,-1.]])
 
@@ -28,9 +30,9 @@ def mission_estimate(status,now,started_at,status_age=0.):
     """Reject stale/unready coordinates before adapting the documented station basis."""
     if status.get('valid') is not True:raise ValueError(status.get('reason','balloon_coordinate_invalid'))
     stamp=float(status['measurement_stamp'])
-    if not started_at<=stamp<=now or now-stamp>.8:raise ValueError('balloon_measurement_stale')
+    if not started_at<=stamp<=now or now-stamp>2.0:raise ValueError('balloon_measurement_stale')
     wall_age=float(status['measurement_wall_age'])
-    if not 0<=status_age<=.8 or not 0<=wall_age+status_age<=.8:
+    if not 0<=status_age<=2.0 or not 0<=wall_age+status_age<=2.0:
         raise ValueError('balloon_measurement_wall_stale')
     if (status.get('calibration_valid') is not True or not isinstance(status.get('calibration_revision'),str)
             or not status['calibration_revision']):raise ValueError('balloon_calibration_unconfirmed')
@@ -72,11 +74,15 @@ class GazeboBridge(Node):
     def __init__(self):
         super().__init__('balloon_gazebo_bridge')
         if not self.get_parameter('use_sim_time').value:raise ValueError('gazebo_bridge_requires_simulation_time')
+        self.declare_parameter('auto_start',False)
+        self.auto_start=self.get_parameter('auto_start').value
         self.started=False;self.start_stamp=None;self.restoring=False;self.initial=None
         self.joints=None;self.joint_stamp=None;self.status={};self.status_wall=0.
         self.last_visual=None;self.rate=None;self.rate_wall=0.;self.last_tick=None
         self.reset_generation=0;self.pending_reset=None;self.last_clock=None;self.stage='waiting_start';self.reason='waiting_for_acquisition_start'
         self.images=deque(maxlen=12);self.last_detection_stamp=None
+        self.search_yaw=0.;self.search_pitch=-0.8;self.search_yaw_speed=0.3
+        self.gimbal_tf_br=TransformBroadcaster(self)
         self.estimate_pub=self.create_publisher(String,'/jol/static_target/estimate',10)
         self.status_pub=self.create_publisher(String,'/jol/static_target/status',10)
         self.marker_pub=self.create_publisher(MarkerArray,'/jol/static_target/markers',10)
@@ -115,7 +121,7 @@ class GazeboBridge(Node):
     def receive_detection(self,msg):
         stamp=msg.header.stamp.sec+msg.header.stamp.nanosec*1e-9
         now=self.now()
-        if (not 0<stamp<=now+.1 or now-stamp>.8
+        if (not 0<stamp<=now+.1 or now-stamp>2.0
                 or self.last_detection_stamp is not None and stamp<=self.last_detection_stamp):return
         self.last_detection_stamp=stamp
         rows=[]
@@ -165,26 +171,45 @@ class GazeboBridge(Node):
             self.reset_generation+=1;self.pending_reset=None;self.started=False;self.stage='waiting_start';self.status={}
             self.last_detection_stamp=self.last_visual=self.start_stamp=self.rate=None;self.images.clear()
         self.last_clock=now
+        if (self.auto_start and not self.started and not self.restoring
+                and self.pending_reset is None and self.stage=='waiting_start'
+                and now>2. and self.reset_client.service_is_ready()):
+            self.reset_generation+=1;generation=self.reset_generation
+            self.status={};self.stage='starting';self.pending_reset=self.reset_client.call_async(Trigger.Request())
+            self.pending_reset.add_done_callback(lambda future:self.started_after_reset(future,generation))
+            self.get_logger().info('auto_start: acquisition triggered')
         joint_fresh=bool(self.joints is not None and self.joint_stamp is not None and 0<=now-self.joint_stamp<=.3)
         if self.restoring and joint_fresh:
             if max(abs(math.remainder(self.initial[0]-self.joints[0],2*math.pi)),abs(self.initial[1]-self.joints[1]))<math.radians(1):
                 self.restoring=False;self.stage='waiting_start'
             else:self.command(self.initial)
         if self.started and joint_fresh:
-            if self.last_visual is None or now-self.last_visual>.5:
-                self.command([self.joints[0]-dt,-math.radians(13.)]);self.stage='camera_search'
-            elif self.rate is not None and wall-self.rate_wall<=.3:
-                # SIYI positive yaw/right and pitch/up are opposite NUB joint signs.
-                self.command([self.joints[0]-np.clip(self.rate[0]*.008,-1.2,1.2)*dt,
-                              self.joints[1]-np.clip(self.rate[1]*.008,-.8,.8)*dt])
+            self.command([0.,0.])
+        if joint_fresh and self.joints is not None:
+            yaw,pitch=self.joints
+            t=TransformStamped()
+            t.header.stamp=self.get_clock().now().to_msg()
+            t.header.frame_id='world';t.child_frame_id='jol/ground_gimbal'
+            hy,hp=yaw/2,pitch/2
+            chy,shy=math.cos(hy),math.sin(hy)
+            chp,shp=math.cos(hp),math.sin(hp)
+            t.transform.rotation.w=chy*chp;t.transform.rotation.x=-shy*shp
+            t.transform.rotation.y=chy*shp;t.transform.rotation.z=shy*chp
+            self.gimbal_tf_br.sendTransform(t)
         try:
             if not self.started:raise ValueError('waiting_for_acquisition_start')
-            if wall-self.status_wall>.8:raise ValueError('balloon_status_wall_stale')
+            if wall-self.status_wall>2.0:raise ValueError('balloon_status_wall_stale')
             if not joint_fresh:raise ValueError('gimbal_feedback_stale')
             packet=mission_estimate(self.status,now,self.start_stamp,wall-self.status_wall)
             self.reason='ready';self.stage='ready' if packet['evidence']['gimbal_centered'] else 'visual_centering'
         except(ValueError,KeyError,TypeError)as error:
-            self.reason=str(error);packet=dict(valid=False,reason=self.reason,stamp=now,publication_stamp=now,frame_id='world',
+            prev=self.reason;self.reason=str(error)
+            if prev=='ready':
+                loc_reason=self.status.get('reason','?');loc_skip=self.status.get('skipped',{})
+                m_stamp=self.status.get('measurement_stamp')
+                m_age=f'{now-m_stamp:.2f}' if m_stamp else '?'
+                self.get_logger().warn(f'BRIDGE_REJECT: {self.reason} (sim_t={now:.2f} meas_age={m_age} loc_reason={loc_reason} skipped={loc_skip})')
+            packet=dict(valid=False,reason=self.reason,stamp=now,publication_stamp=now,frame_id='world',
                 target_id=1,source='camera_monocular_size',position=None,covariance=None)
         if packet['valid']:
             marker=Marker();marker.header.frame_id='world';marker.header.stamp=self.get_clock().now().to_msg()

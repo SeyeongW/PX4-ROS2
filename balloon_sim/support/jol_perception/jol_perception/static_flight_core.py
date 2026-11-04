@@ -260,6 +260,7 @@ def build_static_plan(home, target, *, path_kind='spline', takeoff_height=3., st
                       obstacles=(), clearance=.75, sample_period=.05, target_covariance=None, body_radius=.36,
                       takeoff_min_duration=0., controller_profile='legacy',
                       continuous_takeoff=False, takeoff_join_speed=.8,
+                      overrun_distance=0.,
                       target_is_virtual_waypoint=False, target_is_pass_through_gate=False,
                       gate_width=1.2, gate_height=1.2, gate_exit_distance=20.,
                       gate_crossing_speed=None, gate_crossing_tangential_acceleration=-.5):
@@ -296,7 +297,7 @@ def build_static_plan(home, target, *, path_kind='spline', takeoff_height=3., st
     clearance = _positive(clearance,'clearance',allow_zero=True)
     minimum = _positive(min_duration,'minimum duration',allow_zero=True)
     if not isinstance(continuous_takeoff,bool):raise ValueError('continuous_takeoff_must_be_boolean')
-    continuous = continuous_takeoff and path_kind == 'spline'
+    continuous = continuous_takeoff and path_kind in ('spline', 'diagonal')
     join_speed = _positive(takeoff_join_speed,'takeoff join speed') if continuous else 0.
     if join_speed > speed*.9:raise ValueError('takeoff_join_speed_exceeds_command_limit')
     # Bound the selected physics body, including the PX4 proxy rotors. Stay on
@@ -393,6 +394,38 @@ def build_static_plan(home, target, *, path_kind='spline', takeoff_height=3., st
                 points = [lift,lift+np.array([0.,0.,h]),goal-a*direction,goal]
             segments.append(_segment(points,start,'spline_tracking',command_speed,command_accel,jerk,
                                      composed_bounds=True))
+    elif path_kind == 'diagonal':
+        overrun = max(0.,float(overrun_distance))
+        if overrun > 0:
+            flight_dir = goal-home; flight_dir = flight_dir/np.linalg.norm(flight_dir)
+            goal = goal+overrun*flight_dir
+        # Full diagonal from home to goal; split at takeoff altitude so the
+        # climb is part of the line, not a separate vertical segment.
+        dz = goal[2]-home[2]
+        t_split = min(height/dz,.95) if dz>height else .95
+        split = home+t_split*(goal-home)
+        d1 = split-home
+        segments = [(_moving_segment([home,home+d1/3,home+2*d1/3,split],0.,'takeoff',
+                        command_speed,command_accel,jerk,exit_speed=join_speed,
+                        minimum_duration=takeoff_minimum)
+                     if continuous else
+                     _segment([home,home+d1/3,home+2*d1/3,split],0.,'takeoff',
+                        command_speed,command_accel,jerk,composed_bounds=True))]
+        if not continuous and takeoff_minimum>segments[0]['duration_s']:
+            factor=takeoff_minimum/segments[0]['duration_s']
+            segments[0]['duration_s']=takeoff_minimum
+            for key,power in [('speed_m_s',1),('acceleration_m_s2',2),('jerk_m_s3',3)]:
+                segments[0]['continuous_bounds'][key]/=factor**power
+        start = segments[0]['duration_s']
+        d2 = goal-split
+        if continuous:
+            segments.append(_moving_segment([split,split+d2/3,split+2*d2/3,goal],
+                            start,'spline_tracking',command_speed,command_accel,jerk,
+                            entry_speed=join_speed))
+        else:
+            segments.append(_segment([split,split+d2/3,split+2*d2/3,goal],
+                            start,'spline_tracking',command_speed,command_accel,jerk,
+                            composed_bounds=True))
     elif path_kind == 'right_angle':
         corner = np.array([home[0],home[1],goal[2]])
         for endpoint in (corner,goal):

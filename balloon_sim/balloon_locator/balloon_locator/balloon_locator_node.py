@@ -22,7 +22,7 @@ from rclpy.time import Time
 from sensor_msgs.msg import CameraInfo
 from std_msgs.msg import Float32, String
 from std_srvs.srv import Trigger
-from tf2_ros import Buffer, TransformException, TransformListener
+from tf2_ros import Buffer, TransformException, TransformListener, StaticTransformBroadcaster
 from vision_msgs.msg import Detection2DArray
 
 from .geometry import (calibrated_intrinsics, focal_px, gimbal_to_azel,
@@ -41,7 +41,7 @@ class BalloonLocatorNode(Node):
             diameter_rel_sigma=.05,focal_rel_sigma=.01,diameter_bias_sigma_px=.25,
             angle_sigma_deg=.2,extrinsic_translation_std_m=.02,
             camera_time_std_s=.001,max_range_m=300.0,min_diameter_px=8.0,
-            max_attitude_gap_sec=.3,forget=1.0,position_topic='/balloon/position_ned',
+            max_attitude_gap_sec=.3,forget=1.0,min_gate_samples=5,position_topic='/balloon/position_ned',
             frame_id='local_ned',pose_source='gimbal',fixed_frame='world',
             camera_info_topic='/camera/camera_info',max_measurement_age_sec=.8,
             min_samples=3,max_sigma_m=.5,center_tolerance_deg=1.0,calibration_valid=False,
@@ -59,7 +59,7 @@ class BalloonLocatorNode(Node):
                 or self.value('gimbal_rotation_order') not in ('zxy','zyx')
                 or self.value('roll_sign') not in (-1.,1.)
                 or not math.isfinite(self.value('roll_zero_deg'))):raise ValueError('invalid_locator_configuration')
-        self.est=StaticTargetEstimator(forget=self.value('forget'))
+        self.est=StaticTargetEstimator(forget=self.value('forget'),min_gate_samples=int(self.value('min_gate_samples')))
         self.att=deque(maxlen=200);self.zoom=1.;self.info=None
         self.pending=None;self.measurement=None;self.last_seen_stamp=None;self.last_clock=None
         self.last_published_stamp=None;self.revision=None;self.reason='waiting_for_detection'
@@ -74,8 +74,39 @@ class BalloonLocatorNode(Node):
         self.create_service(Trigger,'/balloon/reset',self._on_reset)
         self.tf=Buffer(cache_time=Duration(seconds=10.)) if self.pose_source=='tf' else None
         self.listener=TransformListener(self.tf,self) if self.tf else None
+        self._inject_camera_mount_tf()
         self.create_timer(.02,self._process_pending)
         self.create_timer(.1,self._publish)
+
+    def _inject_camera_mount_tf(self):
+        if not self.tf:return
+        self.declare_parameter('camera_mount_parent','')
+        self.declare_parameter('camera_mount_child','')
+        self.declare_parameter('camera_mount_xyz',[0.,0.,0.])
+        self.declare_parameter('camera_mount_rpy',[0.,0.,0.])
+        parent=self.get_parameter('camera_mount_parent').value
+        child=self.get_parameter('camera_mount_child').value
+        if not parent or not child:return
+        xyz=self.get_parameter('camera_mount_xyz').value
+        rpy=self.get_parameter('camera_mount_rpy').value
+        from geometry_msgs.msg import TransformStamped
+        import math as _m
+        cr,sr=_m.cos(rpy[0]/2),_m.sin(rpy[0]/2)
+        cp,sp=_m.cos(rpy[1]/2),_m.sin(rpy[1]/2)
+        cy,sy=_m.cos(rpy[2]/2),_m.sin(rpy[2]/2)
+        qw=cr*cp*cy+sr*sp*sy;qx=sr*cp*cy-cr*sp*sy
+        qy=cr*sp*cy+sr*cp*sy;qz=cr*cp*sy-sr*sp*cy
+        t=TransformStamped()
+        t.header.frame_id=parent;t.child_frame_id=child
+        t.transform.translation.x=float(xyz[0])
+        t.transform.translation.y=float(xyz[1])
+        t.transform.translation.z=float(xyz[2])
+        t.transform.rotation.x=qx;t.transform.rotation.y=qy
+        t.transform.rotation.z=qz;t.transform.rotation.w=qw
+        self.tf.set_transform_static(t,'balloon_locator_mount')
+        self._static_br=StaticTransformBroadcaster(self)
+        self._static_br.sendTransform(t)
+        self.get_logger().info(f'Injected camera mount TF: {parent} -> {child}')
 
     def value(self,name):return self.get_parameter(name).value
 
@@ -142,8 +173,12 @@ class BalloonLocatorNode(Node):
 
     def _tf_pose(self,frame,stamp):
         if not frame or frame==self.value('fixed_frame'):raise ValueError('optical_frame_required')
-        return self._matrix(self.tf.lookup_transform(self.value('fixed_frame'),frame,
-            Time(nanoseconds=round(stamp*1e9))))
+        try:
+            return self._matrix(self.tf.lookup_transform(self.value('fixed_frame'),frame,
+                Time(nanoseconds=round(stamp*1e9))))
+        except TransformException:
+            return self._matrix(self.tf.lookup_transform(self.value('fixed_frame'),frame,
+                Time()))
 
     def _calibration_ready(self):
         if self.value('calibration_valid'):return True
@@ -236,10 +271,14 @@ class BalloonLocatorNode(Node):
                     alignment_error_deg=alignment,camera_origin_world=origin_world.tolist() if origin_world is not None else None,
                     observed_diameter_px=diameter,range_m=rng)
                 self.reason='ready'
-            else:self.reason='measurement_rejected'
+            else:
+                self.reason='measurement_rejected'
+                self.get_logger().warn(f'LOC_REJECT: measurement_rejected pos={pos.tolist()} sigma={self.est.sigma:.3f} n={self.est.n} (sim_t={current:.2f})')
             self.pending=None
-        except TransformException:
+        except TransformException as te:
             self.reason='waiting_for_exposure_tf';self.skipped['tf']+=1
+            if self.skipped['tf']<=3 or self.skipped['tf']%200==0:
+                self.get_logger().warn(f'LOC_TF_FAIL: {te} (sim_t={current:.2f} tf_skips={self.skipped["tf"]})')
         except (ValueError,TypeError,KeyError,np.linalg.LinAlgError) as error:
             self.reason=str(error);self.pending=None;self.skipped['invalid']+=1
 
