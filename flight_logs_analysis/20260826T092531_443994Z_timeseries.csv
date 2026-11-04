@@ -1,0 +1,2 @@
+timestamp_utc,elapsed_s,event,phase,x_m,y_m,z_m,path_length_m,tracking_error_m,min_clearance_m,astar_plan_time_ms,mpc_solve_time_ms,sfc_generation_time_ms,sfc_min_width_m,sfc_avg_width_m,sfc_corridor_count,sfc_violation_count,replan_count,aruco_detected,aruco_detection_rate_pct,relative_xy_error_m,landing_xy_error_m,touchdown_relative_speed_m_s
+2026-08-26T09:27:02.161+00:00,0.0,end,PRECHECK,,,,,,,,,,,,,,,,,,,

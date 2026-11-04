@@ -1,0 +1,11 @@
+{
+  "frame_id": "world",
+  "scope": "Conservative known JOL simulation geometry only; no live obstacle map or world-to-flight calibration",
+  "bounds": {"min": [-70, -70, 0], "max": [70, 70, 25]},
+  "obstacles": [
+    {"name": "turret_arm_swept_envelope", "min": [-3, -3, 0], "max": [3, 3, 4]},
+    {"name": "rotated_background_crate", "min": [16.29, -12.35, 0], "max": [19.71, -9.65, 3]},
+    {"name": "background_column", "min": [-18.2, 17.8, 0], "max": [-15.8, 20.2, 5]},
+    {"name": "optional_occlusion_wall", "min": [24.5, -2, 0], "max": [25.5, 2, 18]}
+  ]
+}

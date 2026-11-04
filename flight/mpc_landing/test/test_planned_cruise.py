@@ -82,6 +82,7 @@ def _cruise_state(*, planned, fresh=True):
         cruise_log_period=3.0,
         _hold=lambda *args: calls.append(('hold', args)),
         _fly_to=lambda *args, **kwargs: calls.append(('fly', args, kwargs)),
+        _begin_return=lambda: calls.append(('return_plan',)),
         _due=lambda *_args: False,
         _to=lambda phase: calls.append(('phase', phase)),
         get_logger=lambda: logger,
@@ -108,146 +109,21 @@ def test_legacy_trailer_cruise_still_flies_directly():
     assert any(call[0] == 'fly' for call in calls)
 
 
-def test_planned_cruise_does_not_search_from_an_uncertified_lost_position():
-    # Still no SEARCH from wherever the radio happened to die — but no LAND
-    # there either. The certified route to the last coordinate is flown to the
-    # end at altitude, and SEARCH starts on arrival (the test below).
+def test_planned_cruise_replans_instead_of_landing_on_target_loss():
     state, calls = _cruise_state(planned=True, fresh=False)
     state._now = lambda: 20.0
     ArucoLandingNode._cruise_to_trailer(state)
-    assert ('phase', Phase.SEARCH) not in calls
-    assert ('phase', Phase.LAND) not in calls
-    assert any(call[0] == 'tracking_mpc' for call in calls)
-
-
-def test_a_long_dropout_keeps_flying_to_the_landing_point_instead_of_landing():
-    """A lost radio is not a lost landing point.
-
-    `trailer_lost_search` (10 s) used to cap this: a vehicle that lost the
-    trailer mid-cruise put itself down wherever it had got to, which on a 30 m
-    leg is a field. The last coordinate is still the best estimate of the
-    trailer, and the route to it was already certified against the map, so it
-    is flown to the end at altitude. The leg's own `route_timeout` bounds it.
-    """
-    state, calls = _cruise_state(planned=True, fresh=False)
-    state._now = lambda: 120.0            # 12x trailer_lost_search
-    ArucoLandingNode._cruise_to_trailer(state)
-    assert ('phase', Phase.LAND) not in calls
-    assert any(call[0] == 'tracking_mpc' for call in calls)
-
-    # Arriving is what hands over to the camera, not the clock.
-    state, calls = _cruise_state(planned=True, fresh=False)
-    state._now = lambda: 120.0
-    state._reached_last_trailer_coordinate = lambda: True
-    ArucoLandingNode._cruise_to_trailer(state)
-    assert ('phase', Phase.SEARCH) in calls
-
-    # And the whole leg is still bounded: past route_timeout it lands.
-    state, calls = _cruise_state(planned=True, fresh=False)
-    state._now = lambda: 400.0            # route_timeout is 300 s
-    ArucoLandingNode._cruise_to_trailer(state)
-    assert ('phase', Phase.LAND) in calls
-
-
-def test_a_coordinate_that_never_arrived_still_lands_rather_than_guessing():
-    state, calls = _cruise_state(planned=True, fresh=False)
-    state.target = None
-    state._now = lambda: 120.0
-    ArucoLandingNode._cruise_to_trailer(state)
-    assert ('phase', Phase.LAND) in calls
-
-
-def test_brief_dropout_keeps_flying_the_route_to_the_last_coordinate():
-    # Coordinate paused 2 s ago (< trailer_lost_search): do NOT freeze or land,
-    # keep tracking the route planned to the last-known trailer position.
-    state, calls = _cruise_state(planned=True, fresh=False)
-    state._now = lambda: 2.0
-    ArucoLandingNode._cruise_to_trailer(state)
-    assert any(call[0] == 'tracking_mpc' for call in calls)
+    assert any(call[0] == 'hold' for call in calls)
+    assert ('return_plan',) in calls
     assert ('phase', Phase.LAND) not in calls
     assert ('phase', Phase.SEARCH) not in calls
 
 
-def test_brief_dropout_searches_once_over_the_last_coordinate():
-    # Same dropout, but already over the last coordinate: hand to SEARCH so the
-    # camera can acquire, instead of holding on a stale coordinate forever.
-    state, calls = _cruise_state(planned=True, fresh=False)
-    state._now = lambda: 2.0
-    state._reached_last_trailer_coordinate = lambda: True
-    ArucoLandingNode._cruise_to_trailer(state)
-    assert ('phase', Phase.SEARCH) in calls
-    assert ('phase', Phase.LAND) not in calls
-
-
-def test_legacy_cruise_flies_straight_to_the_last_coordinate_on_dropout():
-    # A legacy direct cruise has no route to follow, so it flies straight at the
-    # last-known coordinate rather than stopping.
-    state, calls = _cruise_state(planned=False, fresh=False)
-    state._now = lambda: 2.0
-    ArucoLandingNode._cruise_to_trailer(state)
-    assert any(call[0] == 'fly' for call in calls)
-    assert ('phase', Phase.LAND) not in calls
-    assert ('phase', Phase.SEARCH) not in calls
-
-
-def _field_map():
-    from path_plan import cju_route
-    return str(Path(cju_route.__file__).parents[1] / 'config'
-               / 'drone_field_route.yaml'), cju_route
-
-
-def _trailer_goal_state(target):
-    _field, cju_route = _field_map()
-    return SimpleNamespace(
-        planned_cruise=True,
-        target=np.asarray(target, float),
-        _route_uses_trailer_goal=lambda: True,
-        _route_synchronized_site_origin=lambda: np.zeros(2),
-        _route_lib=cju_route,
-        route_map_yaml=_field,
-        _trailer_goal_key=None,
-        _trailer_goal_value=None,
-    )
-
-
-def test_clear_trailer_goal_is_used_unchanged():
-    field, cju_route = _field_map()
-    clear = np.array([50.0, 50.0, 0.0])       # the field goal is free
-    assert cju_route.segment_is_free(field, np.zeros(2), clear[:2], clear[:2])
-    goal = ArucoLandingNode._route_goal_local(
-        _trailer_goal_state(clear), trailer_goal=True)
-    assert goal is not None and np.allclose(goal, [50.0, 50.0])
-
-
-def test_trailer_goal_inside_a_virtual_keepout_is_projected_to_a_free_point():
-    field, cju_route = _field_map()
-    blocked = np.array([5.66, 7.07, 0.0])     # a pillar centre on the field
-    assert not cju_route.segment_is_free(
-        field, np.zeros(2), blocked[:2], blocked[:2])
-    goal = ArucoLandingNode._route_goal_local(
-        _trailer_goal_state(blocked), trailer_goal=True)
-    assert goal is not None
-    # The projected goal is one plan_route / the endpoint gate accept...
-    assert cju_route.segment_is_free(field, np.zeros(2), goal, goal)
-    # ...a nearby approach, not the blocked coordinate itself.
-    assert not np.allclose(goal, blocked[:2])
-    assert float(np.linalg.norm(goal - blocked[:2])) <= 2.0
-
-
-def test_dropout_with_no_prior_coordinate_lands_or_searches():
-    # Never had a coordinate to remember: fall back to the lost-target handling
-    # (LAND under a planned cruise) rather than continuing to nowhere.
-    state, calls = _cruise_state(planned=True, fresh=False)
-    state.target = None
-    state._now = lambda: 2.0
-    ArucoLandingNode._cruise_to_trailer(state)
-    assert ('phase', Phase.LAND) in calls
-
-
-def test_route_timeout_is_separate_from_the_proven_trailer_timeout():
+def test_planned_cruise_timeout_replans_while_legacy_cruise_lands():
     route, route_calls = _cruise_state(planned=True)
-    route._now = lambda: 200.0
+    route._now = lambda: 301.0
     ArucoLandingNode._cruise_to_trailer(route)
+    assert ('return_plan',) in route_calls
     assert ('phase', Phase.LAND) not in route_calls
 
     trailer, trailer_calls = _cruise_state(planned=False)
@@ -1028,7 +904,6 @@ def test_hover_keeps_the_tracking_mpc_reference_and_returns_by_itself():
         _publish_state=lambda: None,
         _route_mpc_command=lambda: calls.append('tracking_mpc') or (True, 0.0),
         _hold=lambda: calls.append('hold'),
-        _return_preflight=lambda: [],
         _now=lambda: 1.0,
         _t_phase=0.0,
         trailer_lost_search=10.0,
@@ -1038,14 +913,6 @@ def test_hover_keeps_the_tracking_mpc_reference_and_returns_by_itself():
     )
     ArucoLandingNode._tick(state)
     assert calls == ['tracking_mpc', 'return']
-
-    # The trailer link is the one thing it waits on, and only for as long as a
-    # lost target is tolerated anywhere else — then it lands where it is.
-    calls.clear()
-    state._return_preflight = lambda: ['no trailer fix']
-    state._now = lambda: 100.0
-    ArucoLandingNode._tick(state)
-    assert Phase.LAND in calls
 
 
 def test_route_settle_uses_full_measured_velocity():
@@ -1083,7 +950,7 @@ def test_mpc_setpoint_precedes_completed_route_commit_work():
     assert calls == ['setpoint', 'route_update']
 
 
-def test_return_planning_timeout_lands_instead_of_hovering_forever():
+def test_return_planning_timeout_holds_instead_of_landing_away_from_trailer():
     calls = []
     state = SimpleNamespace(
         phase=Phase.RETURN_PLAN,
@@ -1108,7 +975,58 @@ def test_return_planning_timeout_lands_instead_of_hovering_forever():
         _to=lambda phase: calls.append(phase),
     )
     ArucoLandingNode._tick(state)
-    assert Phase.LAND in calls
+    assert 'hold' in calls
+    assert Phase.LAND not in calls
+
+    calls.clear()
+    state._fresh_target = lambda: True
+    state._route_active = object()
+    ArucoLandingNode._tick(state)
+    assert Phase.RETURN in calls
+
+    calls.clear()
+    state._route_active = None
+    state._fresh_target = lambda: False
+    state._now = lambda: 20.0
+    ArucoLandingNode._tick(state)
+    assert 'hold' in calls
+    assert Phase.LAND not in calls
+
+
+def test_planned_search_timeout_does_not_land_without_aruco():
+    calls = []
+    sweep = SimpleNamespace(
+        scanning=True, plan=[object()], duration_s=lambda: 1.0,
+        look=lambda _now: (0.0, -90.0))
+    state = SimpleNamespace(
+        phase=Phase.SEARCH,
+        planned_cruise=True,
+        cruise=True,
+        _drain_stdin_commands=lambda: None,
+        _sync_limits_from_fcu=lambda: None,
+        _publish_viz=lambda: None,
+        _publish_state=lambda: None,
+        _send=lambda *_args: calls.append('heartbeat'),
+        _route_update=lambda: None,
+        sweep=sweep,
+        _now=lambda: 100.0,
+        _t_phase=0.0,
+        _publish_aim=lambda *_args: None,
+        _search_target=lambda: 3.0,
+        _alt=lambda: 3.0,
+        _z_ground=0.0,
+        search_descend=0.5,
+        _fresh_target=lambda: False,
+        _hold=lambda *_args: calls.append('hold'),
+        _fly_to=lambda *_args, **_kwargs: calls.append('fly'),
+        _marker_acquired=lambda: False,
+        search_timeout=90.0,
+        get_logger=lambda: _Logger(),
+        _to=lambda phase: calls.append(phase),
+    )
+    ArucoLandingNode._tick(state)
+    assert 'hold' in calls
+    assert Phase.LAND not in calls
 
 
 def test_phase_reentry_restores_the_operator_prompt():

@@ -1,0 +1,29 @@
+{
+  "mission": "/tmp/px4_balloon_hezz3vae/mission",
+  "path_kind": "spline",
+  "duration_s": 14.117590583685963,
+  "sampled_length_m": 14.410715249571016,
+  "motion_validation": {
+    "passed": true,
+    "method": "composed_degree15_bernstein_derivative_hull_six_subdivisions",
+    "continuous_upper_bounds": {
+      "speed_m_s": 2.8799356270078666,
+      "acceleration_m_s2": 1.280400324622555,
+      "jerk_m_s3": 1.5102455169300812
+    },
+    "sampled_peaks": {
+      "speed_m_s": 2.879533301875521,
+      "acceleration_m_s2": 1.2800619996632892,
+      "jerk_m_s3": 1.4688591022978557
+    }
+  },
+  "tracking_error_max_m": 11.651257353376232,
+  "tracking_error_mean_m": 1.775925467633157,
+  "max_speed_actual_m_s": 5.184772001666476,
+  "phases": [
+    "takeoff",
+    "vision_tracking"
+  ],
+  "report_outcome": null,
+  "report_reason": "vision_lost_during_tracking"
+}
