@@ -27,3 +27,7 @@ dumpstack.sh_*.out
 
 # --- 기타 ---
 .DS_Store
+
+# 비행 로그 분석 작업 공간: pull_flightlogs 가 여기로 CSV 를 내려받는다.
+# 실행 산출물이지 소스가 아니고, 실행 한 번에 메가바이트 단위로 늘어난다.
+flight_logs_analysis/

@@ -5,10 +5,14 @@
 # approval, because arming is a human decision.
 #
 #   ./run_px4                 ArUco precision landing  (aruco_landing.launch.py)
-#   ./run_px4 trailer         the final real-aircraft mission, on ONE approval:
-#                             arm -> planned route to the fixed CJU (50,50)
-#                             goal -> return to the trailer radioed over
-#                             900 MHz -> proven ArUco P descent.
+#   ./run_px4 trailer [MAP]   the final real-aircraft mission, on ONE approval:
+#                             arm -> planned route to the (50,50) goal -> return
+#                             to the trailer radioed over 900 MHz -> ArUco P
+#                             descent. MAP picks the route map by a short name and
+#                             auto-approves it (default: field):
+#                               field  fast 7-pillar drone-relative field
+#                               maze   complex 25-pillar drone-relative maze
+#                               cju    surveyed Cheongju site (real coordinates)
 #   ./run_px4 mpc             MPC precision landing     (fixed_marker_landing)
 #   ./run_px4 naive           just MAVROS + the naive takeoff/land (no camera)
 #   ./run_px4 bench           GROUND REHEARSAL of the MPC mission's SEARCH:
@@ -67,7 +71,32 @@ TRAILER="${TRAILER:-0}"
 TRAILER_DEV="${TRAILER_DEV:-/dev/ttyUSB0}"
 TRAILER_BAUD="${TRAILER_BAUD:-57600}"
 # Source-tree map by design: run_px4 itself is a source-tree operator script.
-ROUTE_MAP="${ROUTE_MAP:-$SCRIPT_DIR/../path_plan/config/drone_cju_route.yaml}"
+# Default to the drone-relative obstacle field: it is centred on wherever the
+# drone launches (map origin = the vehicle's own local ENU origin) and carries a
+# virtual barrier field to weave through for the avoidance demo. The barriers
+# are virtual (a simulated collision breaks nothing), so it is hardware-flight-
+# approved by construction — plain `run_px4 trailer` needs no ROUTE_MAP_APPROVED
+# override. Select the surveyed CJU layout with
+# `ROUTE_MAP=$SCRIPT_DIR/../path_plan/config/drone_cju_route.yaml run_px4 trailer`.
+ROUTE_MAP="${ROUTE_MAP:-$SCRIPT_DIR/../path_plan/config/drone_field_route.yaml}"
+# Short map selector: `run_px4 trailer <name>` picks a route map by a one-word
+# name and auto-approves it (no ROUTE_MAP_APPROVED needed). An explicit name
+# beats the ROUTE_MAP env var.
+#   field  fast 7-pillar drone-relative field (the default)
+#   maze   complex 25-pillar drone-relative maze
+#   cju    surveyed Cheongju site (fixed real coordinates — see the warning)
+MAP_DIR="$SCRIPT_DIR/../path_plan/config"
+MAP_NAMED=0
+if [[ "$TRAILER" == "1" && -n "${2:-}" ]]; then
+  case "$2" in
+    field) ROUTE_MAP="$MAP_DIR/drone_field_route.yaml" ;;
+    maze)  ROUTE_MAP="$MAP_DIR/drone_maze_route.yaml" ;;
+    cju)   ROUTE_MAP="$MAP_DIR/drone_cju_route.yaml" ;;
+    *) echo "run_px4: unknown map '$2' (choose: field | maze | cju)" >&2
+       exit 2 ;;
+  esac
+  MAP_NAMED=1
+fi
 # Maximum source-time skew when pairing the vehicle's local and global poses.
 ROUTE_SYNC_S="${ROUTE_SYNC_S:-0.10}"
 if [[ "$TRAILER" == "1" && ! -r "$ROUTE_MAP" ]]; then
@@ -122,12 +151,37 @@ if [[ "$TRAILER" == "1" ]]; then
                  -p "route_map_yaml:=$ROUTE_MAP"
                  -p "route_pose_fix_sync_s:=$ROUTE_SYNC_S"
                  -p rate_hz:=50.0)
-  if [[ "${ROUTE_MAP_APPROVED:-0}" == "1" ]]; then
-    MISSION_ARGS+=(-p allow_unapproved_route_map:=true)
-    echo "run_px4: ROUTE MAP APPROVAL OVERRIDE ACTIVE"
-    echo "         operator asserts origin, heading and every obstacle were checked"
+  # Say plainly WHICH map is flying and whether it is approved. The map's own
+  # name and hardware_flight_approved flag are read straight from the YAML;
+  # the approval test mirrors the node's rule — only a literal `true` approves
+  # (a quoted "true" does not), so the log never disagrees with the gate.
+  ROUTE_MAP_NAME="$(sed -n 's/^[[:space:]]\{2\}name:[[:space:]]*//p' \
+    "$ROUTE_MAP" | head -n1)"
+  if grep -Eq '^[[:space:]]*hardware_flight_approved:[[:space:]]*true[[:space:]]*(#.*)?$' \
+      "$ROUTE_MAP"; then
+    MAP_APPROVED_IN_YAML=1
   else
-    echo "run_px4: route map approval gate active (ROUTE_MAP_APPROVED is not 1)"
+    MAP_APPROVED_IN_YAML=0
+  fi
+  echo "run_px4: route map: ${ROUTE_MAP_NAME:-<unnamed>}"
+  echo "run_px4:   file: $ROUTE_MAP"
+  # A map approved in its own YAML (the drone-relative field/maze) always flies.
+  # Otherwise it needs the override, which either ROUTE_MAP_APPROVED=1 or naming
+  # the map on the command line supplies — so `run_px4 trailer cju` auto-approves
+  # the way `run_px4 trailer field` does. The one thing that stays loud is that a
+  # NOT-in-YAML-approved map is a real, unmeasured site.
+  if [[ "$MAP_APPROVED_IN_YAML" == "1" ]]; then
+    echo "run_px4:   approval: APPROVED in map (hardware_flight_approved: true)" \
+         "— props-on, no override needed"
+  elif [[ "${ROUTE_MAP_APPROVED:-0}" == "1" || "$MAP_NAMED" == "1" ]]; then
+    MISSION_ARGS+=(-p allow_unapproved_route_map:=true)
+    echo "run_px4:   approval: OVERRIDE — flying an UNAPPROVED map"
+    echo "run_px4:   *** you assert its origin, heading and every obstacle were" \
+         "field-checked ***"
+  else
+    echo "run_px4:   approval: NOT approved — append the map name (field|maze|cju)" \
+         "or set ROUTE_MAP_APPROVED=1 to fly it, or survey it and set" \
+         "hardware_flight_approved: true"
   fi
 fi
 # --- legacy mpc_landing_node gates ------------------------------------------

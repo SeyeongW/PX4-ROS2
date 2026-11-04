@@ -36,7 +36,9 @@ from path_plan.bspline_optimizer import BsplineOptimizer
 from path_plan.mpc_ros import UnicycleMPC, Weights
 from path_plan.world_model import WorldModel, _find_buildings
 
-REPO = Path(__file__).resolve().parents[2]
+REPO = Path(__file__).resolve().parents[3] / "simulation"
+if not (REPO / "gazebo").exists():
+    REPO = Path(__file__).resolve().parents[2]
 OUT = Path(__file__).resolve().parents[1] / "figures"
 DEFAULT_SCENARIO = REPO / "gazebo/maps/city_uav_trailer_loop.yaml"
 _CORNER_S = {"SE": 0.0, "NE": 2.0, "NW": 4.0, "SW": 6.0}   # x H units along the loop
@@ -429,49 +431,209 @@ def _fig_mpc(log, splines_log, out_path):
     print(f"Figure 7 (MPC): {out_path}")
 
 
-def animate(log, world, trailer, splines_log, gif=None, live=False):
+def animate(log, world, trailer, splines_log, mpc_log=None, gif=None, live=False):
     import matplotlib.pyplot as plt
     from matplotlib import animation
     from matplotlib.patches import Rectangle
-    dx = np.array([r["drone_x"] for r in log]); dy = np.array([r["drone_y"] for r in log])
-    tx = np.array([r["trailer_x"] for r in log]); ty = np.array([r["trailer_y"] for r in log])
-    step = max(1, len(log) // 400)
-    fig, ax = plt.subplots(figsize=(8, 8))
-    for lo, hi in zip(world.boxes_min, world.boxes_max):
-        ax.add_patch(Rectangle((lo[0], lo[1]), hi[0]-lo[0], hi[1]-lo[1],
-                               facecolor="#9aa4ad", edgecolor="none", alpha=0.5))
-    s = np.linspace(0, 8*trailer.half, 400)
-    loop = np.array([square_loop_pos(v, trailer.half) for v in s])
-    ax.plot(loop[:, 0], loop[:, 1], ":", color="#c92a2a", lw=1)
-    
-    old_splines = []
-    for _ in splines_log:
-        line, = ax.plot([], [], "-", color=C_BSPL, alpha=0.5, lw=1)
-        old_splines.append(line)
+    from matplotlib.lines import Line2D
 
-    dline, = ax.plot([], [], "-", color=C_MPC, lw=2)
-    ddot, = ax.plot([], [], "o", color=C_MPC, ms=8)
-    tdot, = ax.plot([], [], "*", color=C_TRAIL, ms=16)
-    
-    ax.set_aspect("equal"); ax.set_xlim(-650, 650); ax.set_ylim(-650, 650)
-    ax.set_xlabel("E x [m]"); ax.set_ylabel("N y [m]"); ax.grid(alpha=0.3)
+    dx = np.array([r["drone_x"] for r in log])
+    dy = np.array([r["drone_y"] for r in log])
+    tx = np.array([r["trailer_x"] for r in log])
+    ty = np.array([r["trailer_y"] for r in log])
+    captured = log[-1]["captured"]
+    step = max(1, len(log) // 300)
+
+    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(22, 7))
+    fig.subplots_adjust(wspace=0.22, top=0.88, bottom=0.1)
+
+    s = np.linspace(0, 8 * trailer.half, 400)
+    loop = np.array([square_loop_pos(v, trailer.half) for v in s])
+
+    # -----------------------------------------------------------------
+    # Subplot 1: A* Global Path Search
+    # -----------------------------------------------------------------
+    for lo, hi in zip(world.boxes_min, world.boxes_max):
+        ax1.add_patch(Rectangle((lo[0], lo[1]), hi[0]-lo[0], hi[1]-lo[1],
+                                facecolor=C_OBST, edgecolor="none", alpha=0.4, zorder=1))
+    ax1.plot(loop[:, 0], loop[:, 1], ":", color=C_TRAIL, lw=1.2, zorder=1)
+    ax1.plot([dx[0]], [dy[0]], "^", color="#2b8a3e", ms=9, zorder=6)
+    tdot1, = ax1.plot([], [], "*", color=C_TRAIL, ms=12, zorder=6)
+
+    # -----------------------------------------------------------------
+    # Subplot 2: B-Spline Path Optimization
+    # -----------------------------------------------------------------
+    for lo, hi in zip(world.boxes_min, world.boxes_max):
+        ax2.add_patch(Rectangle((lo[0], lo[1]), hi[0]-lo[0], hi[1]-lo[1],
+                                facecolor=C_OBST, edgecolor="none", alpha=0.4, zorder=1))
+    ax2.plot(loop[:, 0], loop[:, 1], ":", color=C_TRAIL, lw=1.2, zorder=1)
+    ax2.plot([dx[0]], [dy[0]], "^", color="#2b8a3e", ms=9, zorder=6)
+    tdot2, = ax2.plot([], [], "*", color=C_TRAIL, ms=12, zorder=6)
+
+    # -----------------------------------------------------------------
+    # Subplot 3: MPC Closed-Loop Pursuit Tracking
+    # -----------------------------------------------------------------
+    for lo, hi in zip(world.boxes_min, world.boxes_max):
+        ax3.add_patch(Rectangle((lo[0], lo[1]), hi[0]-lo[0], hi[1]-lo[1],
+                                facecolor=C_OBST, edgecolor="none", alpha=0.4, zorder=1))
+    ax3.plot(loop[:, 0], loop[:, 1], ":", color=C_TRAIL, lw=1.2, zorder=1)
+    ax3.plot([dx[0]], [dy[0]], "^", color="#2b8a3e", ms=9, zorder=6)
+
+    replan_items = []
+    for t_gen, sp_tp, corridor, wp in splines_log:
+        # Ax1: A* waypoints line
+        line_a1, = ax1.plot([], [], "-o", color=C_ASTAR, ms=5, lw=2.2, alpha=1.0, zorder=5)
+
+        # Ax2: B-spline curve + A* reference line
+        line_b2, = ax2.plot([], [], "-", color=C_BSPL, lw=3.2, alpha=1.0, zorder=5)
+        line_w2, = ax2.plot([], [], ":o", color=C_ASTAR, ms=3, lw=1.2, alpha=0.5, zorder=4)
+
+        # Ax3: B-spline background ref
+        line_b3, = ax3.plot([], [], "-", color=C_BSPL, lw=1.5, alpha=0.4, zorder=3)
+
+        replan_items.append({
+            "t_gen": t_gen,
+            "sp_tp": sp_tp,
+            "wp": wp,
+            "line_a1": line_a1,
+            "line_b2": line_b2,
+            "line_w2": line_w2,
+            "line_b3": line_b3,
+        })
+
+    # Subplot 3 Dynamic Elements ONLY (Drone Pursuit Trace)
+    dline3, = ax3.plot([], [], "--", color=C_MPC, lw=2.5, zorder=5)
+    ddot3, = ax3.plot([], [], "o", color=C_MPC, ms=9, zorder=7)
+    mpc_pred_line, = ax3.plot([], [], "o-", color="#15aabf", ms=3, lw=1.8, zorder=6)
+    tline3, = ax3.plot([], [], "-", color=C_TRAIL, lw=2.0, zorder=4)
+    tdot3, = ax3.plot([], [], "*", color=C_TRAIL, ms=14, zorder=7)
+
+    for ax, title in zip(
+        [ax1, ax2, ax3],
+        ["1. A* Global Path Search", "2. B-Spline Path Optimization", "3. MPC Closed-Loop Pursuit"]
+    ):
+        ax.set_aspect("equal")
+        ax.set_xlim(-650, 650)
+        ax.set_ylim(-650, 650)
+        ax.set_xlabel("E x [m]", fontweight="bold")
+        ax.set_ylabel("N y [m]", fontweight="bold")
+        ax.set_title(title, fontsize=13, fontweight="bold", pad=10)
+        ax.grid(alpha=0.3)
+
+    # Subplot Legends
+    ax1.legend(handles=[
+        Line2D([0], [0], color=C_ASTAR, marker="o", ls="-", ms=5, lw=2.2, label="A* active path"),
+        Line2D([0], [0], color=C_ASTAR, marker="o", ls="-", ms=3, lw=1.0, alpha=0.35, label="A* past paths"),
+        Line2D([0], [0], color=C_TRAIL, marker="*", ls="", ms=8, label="trailer target"),
+        Line2D([0], [0], color="#2b8a3e", marker="^", ls="", ms=8, label="drone start"),
+    ], loc="upper left", framealpha=0.9, fontsize=9)
+
+    ax2.legend(handles=[
+        Line2D([0], [0], color=C_BSPL, ls="-", lw=3.2, label="B-spline active path"),
+        Line2D([0], [0], color=C_BSPL, ls="-", lw=1.2, alpha=0.35, label="B-spline past paths"),
+        Line2D([0], [0], color=C_ASTAR, ls=":", lw=1.2, label="A* reference"),
+        Line2D([0], [0], color=C_TRAIL, marker="*", ls="", ms=8, label="trailer target"),
+    ], loc="upper left", framealpha=0.9, fontsize=9)
+
+    ax3.legend(handles=[
+        Line2D([0], [0], color=C_MPC, ls="--", lw=2.5, label="MPC tracked path"),
+        Line2D([0], [0], color=C_MPC, marker="o", ls="", ms=7, label="drone position"),
+        Line2D([0], [0], color="#15aabf", marker="o", ls="-", ms=3, lw=1.8, label="MPC prediction horizon"),
+        Line2D([0], [0], color=C_BSPL, ls="-", lw=1.5, alpha=0.4, label="B-spline reference"),
+        Line2D([0], [0], color=C_TRAIL, marker="*", ls="-", ms=8, label="trailer path"),
+    ], loc="upper left", framealpha=0.9, fontsize=9)
+
     idx = list(range(0, len(log), step)) + [len(log) - 1]
 
     def upd(i):
         t_curr = log[i]['t_s']
-        for (t_gen, sp_tp, _, _), line in zip(splines_log, old_splines):
-            if t_curr >= t_gen:
-                line.set_data(sp_tp[:, 0], sp_tp[:, 1])
+
+        # Determine current active replan index
+        active_idx = 0
+        for idx_r, item in enumerate(replan_items):
+            if t_curr >= item["t_gen"]:
+                active_idx = idx_r
+
+        # Subplot 1: A* paths (active = bold, past = light/faded, future = hidden)
+        for idx_r, item in enumerate(replan_items):
+            if idx_r < active_idx:
+                item["line_a1"].set_data(item["wp"][:, 0], item["wp"][:, 1])
+                item["line_a1"].set_linewidth(1.0)
+                item["line_a1"].set_markersize(3)
+                item["line_a1"].set_alpha(0.35)
+                item["line_a1"].set_zorder(3)
+                item["line_a1"].set_visible(True)
+            elif idx_r == active_idx:
+                item["line_a1"].set_data(item["wp"][:, 0], item["wp"][:, 1])
+                item["line_a1"].set_linewidth(2.2)
+                item["line_a1"].set_markersize(5)
+                item["line_a1"].set_alpha(1.0)
+                item["line_a1"].set_zorder(5)
+                item["line_a1"].set_visible(True)
             else:
-                line.set_data([], [])
-                
-        dline.set_data(dx[:i+1], dy[:i+1])
-        ddot.set_data([dx[i]], [dy[i]]); tdot.set_data([tx[i]], [ty[i]])
-        ax.set_title(f"t={log[i]['t_s']:.1f}s  dist={log[i]['dist_xy_m']:.1f} m")
-        return [dline, ddot, tdot] + old_splines
+                item["line_a1"].set_visible(False)
+
+        # Subplot 2: B-Spline paths (active = bold, past = light/faded, future = hidden)
+        for idx_r, item in enumerate(replan_items):
+            if idx_r < active_idx:
+                item["line_b2"].set_data(item["sp_tp"][:, 0], item["sp_tp"][:, 1])
+                item["line_w2"].set_data(item["wp"][:, 0], item["wp"][:, 1])
+                item["line_b2"].set_linewidth(1.2)
+                item["line_b2"].set_alpha(0.35)
+                item["line_b2"].set_zorder(3)
+                item["line_w2"].set_alpha(0.2)
+                item["line_b2"].set_visible(True)
+                item["line_w2"].set_visible(True)
+            elif idx_r == active_idx:
+                item["line_b2"].set_data(item["sp_tp"][:, 0], item["sp_tp"][:, 1])
+                item["line_w2"].set_data(item["wp"][:, 0], item["wp"][:, 1])
+                item["line_b2"].set_linewidth(3.2)
+                item["line_b2"].set_alpha(1.0)
+                item["line_b2"].set_zorder(5)
+                item["line_w2"].set_alpha(0.5)
+                item["line_b2"].set_visible(True)
+                item["line_w2"].set_visible(True)
+            else:
+                item["line_b2"].set_visible(False)
+                item["line_w2"].set_visible(False)
+
+        # Subplot 3: Show active B-spline reference background
+        for idx_r, item in enumerate(replan_items):
+            if idx_r == active_idx:
+                item["line_b3"].set_data(item["sp_tp"][:, 0], item["sp_tp"][:, 1])
+                item["line_b3"].set_visible(True)
+            else:
+                item["line_b3"].set_visible(False)
+
+        # Subplot 3 ONLY: Live drone trajectory & MPC horizon
+        dline3.set_data(dx[:i+1], dy[:i+1])
+        ddot3.set_data([dx[i]], [dy[i]])
+        tline3.set_data(tx[:i+1], ty[:i+1])
+        tdot3.set_data([tx[i]], [ty[i]])
+
+        # Update trailer target markers in Subplots 1 and 2
+        tdot1.set_data([tx[i]], [ty[i]])
+        tdot2.set_data([tx[i]], [ty[i]])
+
+        if mpc_log is not None and i < len(mpc_log):
+            pred = mpc_log[i]
+            if pred is not None and len(pred) > 0:
+                mpc_pred_line.set_data(pred[:, 0], pred[:, 1])
+
+        is_last = (i == len(log) - 1)
+        if captured and is_last:
+            status_text = "STATUS: CAPTURED SUCCESS!"
+        else:
+            status_text = f"Phase: {log[i]['phase']}"
+
+        fig.suptitle(f"Moving-Trailer Pursuit Simulation  |  t = {log[i]['t_s']:.1f}s  |  Distance = {log[i]['dist_xy_m']:.1f} m  |  {status_text}",
+                     fontsize=14, fontweight="bold")
+        return [dline3, ddot3, tline3, tdot3, mpc_pred_line, tdot1, tdot2]
+
     anim = animation.FuncAnimation(fig, upd, frames=idx, interval=40, blit=False)
     if gif:
-        anim.save(gif, writer=animation.PillowWriter(fps=25)); print(f"gif: {gif}")
+        anim.save(gif, writer=animation.PillowWriter(fps=25))
+        print(f"gif saved: {gif}")
     if live:
         plt.show()
     plt.close(fig)
@@ -501,7 +663,7 @@ def main():
     _fig_3d(log, foots, splines_log, trailer, OUT / "8_pursuit_3d.png")
     
     if args.animate or args.gif:
-        animate(log, world, trailer, splines_log, gif=args.gif, live=args.animate)
+        animate(log, world, trailer, splines_log, mpc_log=mpc_log, gif=args.gif, live=args.animate)
 
 
 if __name__ == "__main__":

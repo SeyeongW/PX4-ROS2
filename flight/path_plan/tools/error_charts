@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# error_charts — the tracking-error chart for every run that flew.
+#
+#   ./error_charts        chart anything that has no error chart yet
+#
+# The six-panel PNG that pull_flightlogs writes answers "how did the run go".
+# This writes the one panel a report quotes on its own, at a size that survives
+# being dropped into a document: <run>_error.png beside the run's CSV.
+#
+#   LOCAL_DIR=...   where the runs are  (default: <repo>/flight_logs_analysis)
+#
+# ONE PYTHON PROCESS, NOT ONE PER RUN. matplotlib costs about a second to
+# import and there are dozens of runs; a subprocess each turns a two-second job
+# into a minute of imports.
+set -uo pipefail
+
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+LOCAL_DIR="${LOCAL_DIR:-$REPO/flight_logs_analysis}"
+MAP="${ROUTE_MAP:-$REPO/flight/path_plan/config/drone_field_route.yaml}"
+
+exec python3 - "$REPO/flight/path_plan/tools" "$LOCAL_DIR" "$MAP" <<'PY'
+import sys
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[1])
+tools, root, map_yaml = (Path(a) for a in sys.argv[1:4])
+
+from flightlog import FlightLog
+from flightplots import plot_tracking_error
+
+runs = sorted(root.glob('*_timeseries.csv'))
+if not runs:
+    sys.exit(f'error_charts: no runs under {root}')
+
+made = skipped = kept = 0
+for csv in runs:
+    run = csv.name.replace('_timeseries.csv', '')
+    out = root / f'{run}_error.png'
+    # Same bookkeeping as pull_flightlogs: a run that never armed is not an
+    # error and not a reason to retry it on the next sweep either.
+    marker = Path(f'{out}.skipped')
+    if out.exists() or marker.exists():
+        kept += 1
+        continue
+    try:
+        plot_tracking_error(FlightLog(csv), out,
+                            map_yaml if map_yaml.exists() else None)
+    except ValueError as exc:
+        marker.touch()
+        # the message names the run and so does the line; say it once
+        print(f'  skipped {run} ({exc.args[0].replace(run + chr(32), "", 1)})')
+        skipped += 1
+    else:
+        print(f'  charted {run}_error.png')
+        made += 1
+
+print(f'\nerror_charts: {made} new, {skipped} skipped, '
+      f'{kept} already there, in {root}')
+PY

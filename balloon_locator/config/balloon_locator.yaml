@@ -1,0 +1,38 @@
+# 임시값(TODO)이 많다. 현장에서 반드시 실측/캘리브레이션해서 교체할 것 (README 참고).
+balloon_locator_node:
+  ros__parameters:
+    image_width: 1920.0
+    image_height: 1080.0
+    hfov_deg_at_1x: 80.0          # TODO 데이터시트/캘리브레이션
+    balloon_diameter_m: 0.30      # TODO 실제 풍선 지름
+    base_heading_deg: 0.0         # TODO 짐벌 yaw=0의 방위각(북 기준 시계방향)
+    yaw_sign: 1.0                 # TODO 실기 확인
+    pitch_sign: 1.0               # TODO 실기 확인
+    offset_ned: [0.0, 0.0, 0.0]   # 카메라 회전중심의 NED 위치 (원점이 카메라면 0)
+    position_topic: /balloon/position_ned   # NED 좌표 출력 토픽 (샘플이 들어오면 즉시 발행)
+
+balloon_detector_node:
+  ros__parameters:
+    process_scale: 0.5
+    hsv_ranges: [0, 120, 70, 10, 255, 255, 170, 120, 70, 180, 255, 255]   # 빨강 (TODO 풍선 색에 맞게)
+
+gimbal_tracker_node:
+  ros__parameters:
+    image_width: 1920.0
+    image_height: 1080.0
+    yaw_sign: 1.0                 # TODO 실기 확인
+    pitch_sign: -1.0              # TODO 실기 확인
+
+# 드론 연동 (ground_station.launch.py에 포함하지 않음. ros2 run ... --ros-args --params-file 로 별도 실행)
+# 전제: balloon_locator_node의 offset_ned = [0,0,0]
+mavlink_bridge_node:
+  ros__parameters:
+    topic: /balloon/position_ned
+    min_samples: 30               # 이 이상 샘플이 쌓이고
+    max_sigma_m: 2.0              # 불확실도가 이하일 때만 송신
+    cam_lat_deg: .nan             # TODO 카메라 회전중심 GPS 실측 (미설정이면 노드가 시작하지 않음)
+    cam_lon_deg: .nan             # TODO
+    cam_height_above_home_m: .nan # TODO 카메라 회전중심 높이 - 드론 이륙지점 지면 높이
+    declination_deg: 0.0          # TODO base_heading_deg를 컴퍼스(자북)로 쟀으면 편각 (한국 약 -8.5)
+    device: /dev/ttyUSB0
+    baud: 57600

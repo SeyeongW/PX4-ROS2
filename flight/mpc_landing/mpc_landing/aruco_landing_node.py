@@ -263,6 +263,38 @@ def _publish_observation(node, publisher_name: str, message) -> None:
         pass
 
 
+def _stream_stale_reason(what: str, value, sample_t: float, rx_t: float,
+                         now: float, timeout: float,
+                         sync_tolerance: float) -> str | None:
+    """Which staleness condition a MAVROS stream failed, and by how much.
+
+    Three different faults share one symptom. A receive gap is the link or this
+    node's own executor falling behind; a stamp age is the FCU falling behind;
+    a stamp in the FUTURE is the MAVROS<->PX4 time offset being re-estimated,
+    which has nothing to do with either. Tuning `route_state_timeout_s` against
+    the wrong one of those is guesswork, so the message carries the number that
+    decided it.
+
+    Module-level, not a method, because the route health checks are exercised
+    against a duck-typed namespace rather than a live node.
+    """
+    if value is None or not math.isfinite(sample_t):
+        return f'MAVROS local {what} is missing'
+    rx_gap = now - rx_t
+    if rx_gap > timeout:
+        return (f'MAVROS local {what} not received for {rx_gap:.3f} s '
+                f'(route_state_timeout_s {timeout:.2f})')
+    age = now - sample_t
+    if age > timeout:
+        return (f'MAVROS local {what} is stamped {age:.3f} s old '
+                f'(route_state_timeout_s {timeout:.2f})')
+    if age < -sync_tolerance:
+        return (f'MAVROS local {what} is stamped {-age:.3f} s in the FUTURE '
+                f'(route_pose_fix_sync_s {sync_tolerance:.2f}) — PX4/MAVROS '
+                f'time offset, not a dropout')
+    return None
+
+
 class ArucoLandingNode(Node):
     def __init__(self):
         super().__init__('aruco_landing_node')
@@ -308,12 +340,23 @@ class ArucoLandingNode(Node):
         # Future callback thread.
         self._planner_pool: ProcessPoolExecutor | None = None
         self._plan_future = None
+        # A job already RUNNING in the worker cannot be cancelled, so discarding
+        # its metadata is not enough to discard the job: the result still lands
+        # in `_route_update`. Mark it abandoned instead, and drop the result
+        # quietly there. Without this the pending/future mismatch surfaced as
+        # 'route result has no request metadata' — an ERROR for a routine event.
+        self._plan_abandoned = False
         self._route_pending = None
         self._route_active = None
         self._route_progress = 0.0
+        # The follower's most recent cross-track deviation. A large excursion
+        # replans from the current position rather than fighting to rejoin the
+        # old line — the primary obstacle-field response.
+        self._route_last_cross_track = float('inf')
         self._route_request_seq = 0
         self._route_last_request_t = float('-inf')
         self._route_last_error = ''
+        self._route_follow_fail_t = None
         self._route_map_info = None
         self._route_map_identity = None
         self._route_lib = None
@@ -321,6 +364,9 @@ class ArucoLandingNode(Node):
         self._route_observed_origin = None
         self._route_observed_origin_t = float('nan')
         self._route_observed_origin_rx_t = 0.0
+        # Memo for the trailer goal's nearest-free-point projection.
+        self._trailer_goal_key = None
+        self._trailer_goal_value = None
         self._path_mpc = None
         self._path_reference = None
         self._path_solve_t = None
@@ -520,7 +566,7 @@ class ArucoLandingNode(Node):
         """THE one place any of these numbers may be set."""
         p = self.declare_parameter
         # --- mission geometry
-        p('takeoff_alt_m', 5.0)             # takeoff AND transit altitude
+        p('takeoff_alt_m', 10.0)             # takeoff AND transit altitude
         # SEARCH settles here instead, and the difference is not cosmetic. The
         # camera trades footprint against resolution, and BOTH ends bite:
         #
@@ -625,8 +671,31 @@ class ArucoLandingNode(Node):
         # How much of the flown track to keep. At 2 Hz this is ~8 minutes,
         # longer than the mission and short enough that RViz redraws it freely.
         p('viz_flown_max_points', 1000)
+        # How much of the MPC horizon must be collision-free to command it.
+        #
+        # WHY NOT ALL OF IT. The horizon is 20 steps of 0.1 s = 2.0 s, but
+        # `output_step` commits ONE step: 1.9 s of every solve is discarded and
+        # replaced 0.1 s later, never flown. Certifying the discarded tail
+        # rejects commands whose EXECUTED part is provably safe, and it does so
+        # hardest exactly where the map leaves no room to be wrong — on the
+        # slalom diagonal `clearance()` reads 0.0, so a few centimetres of
+        # prediction overshoot 1.5 s out threw away a perfectly good 0.1 s
+        # command. That is the loop that held route #17-#23 on the ground.
+        #
+        # WHAT STILL PROTECTS THE VEHICLE. The point actually streamed to PX4 is
+        # re-checked every tick against the same exact geometry ('TrackingMPC
+        # streamed reference is unsafe'), and clearance 0.0 is not the barrier:
+        # the map already grew every obstacle by `vehicle_clearance_xy_m`, so
+        # the certified surface sits a full metre off the physical structure.
+        # This window covers the commit step plus enough lead to stop inside it.
+        p('route_horizon_check_s', 0.5)
         p('obstacle_accel_scaling', True)
-        p('obstacle_accel_full_clearance_m', 5.0)
+        # 5.0 m floored the acceleration along the ENTIRE launch->goal diagonal
+        # of the default field map, where clearance is 0.0 by construction. The
+        # tracker was then asked to corner a slalom on a quarter of its
+        # acceleration, which is what produced the overshoot the horizon check
+        # then rejected. Scale over the range the map actually spans.
+        p('obstacle_accel_full_clearance_m', 2.0)
         p('obstacle_accel_min_fraction', 0.25)
         # Within this -> start searching. Tight on purpose: the search footprint
         # at `search_alt_m` is only ~1.5 m in its short axis with the current
@@ -656,7 +725,17 @@ class ArucoLandingNode(Node):
         p('route_gps_timeout_s', 3.0)
         # Local pose/velocity drive route health and MPC collision checks, so they
         # cannot inherit the much slower GPS freshness allowance.
-        p('route_state_timeout_s', 0.2)
+        #
+        # 0.2 s was too tight to fly: a single 200 ms hiccup on any of the three
+        # conditions in `_stream_stale_reason` threw away a certified route, and
+        # the replan/invalidate cycle that followed never converged (route #17
+        # through #23 in 23 s, all HOLD). 1.0 s still bounds the error that
+        # matters — at the cruise speed this flies, one second of unrefreshed
+        # pose is a few metres of uncertainty, against a route already certified
+        # with `vehicle_clearance_xy_m` of margin and flown under a GPS accuracy
+        # limit of the same order. Raise the rate of the MAVROS streams before
+        # lowering this again: the fix for a starved input is more input.
+        p('route_state_timeout_s', 1.0)
         # Reject an unusable absolute fix without reinterpreting the geometric
         # vehicle clearance as a second localization or speed budget.
         #
@@ -683,8 +762,22 @@ class ArucoLandingNode(Node):
         p('route_anchor_timeout_s', 0.3)
         p('route_timeout_s', 300.0)
         p('route_replan_period_s', 2.0)
+        # Deviate off the planned line by more than this and replan from the
+        # current position at the next replan window — do not wait to be fully
+        # stuck. This is the proactive obstacle-field response: re-route from
+        # where the vehicle is instead of fighting back onto a line it has left.
+        # Keep it well above route_cross_track so ordinary tracking never trips
+        # it. Non-positive disables it (stuck-only replanning).
+        p('route_replan_cross_track_m', 3.0)
         p('route_lookahead_m', 6.0)
-        p('route_cross_track_m', 0.25)
+        # How far the vehicle may sit off the planned line before the pure-
+        # pursuit carrot stops looking ahead and only steers straight back.
+        # 0.25 m was simulation-tight: real GPS/pose jitter and wind cross it
+        # constantly, collapsing the lookahead — the vehicle crawls, and in an
+        # obstacle field it triggers repeated stuck-replans. This is a tracking
+        # tolerance, not a safety margin: the carrot is collision-checked
+        # regardless of this value.
+        p('route_cross_track_m', 1.5)
         # The checked-in map is an OSM/simulation snapshot. run_px4 exposes an
         # explicit override for props-off/SITL work; a props-on map should set
         # hardware_flight_approved in the YAML after field measurement.
@@ -793,6 +886,10 @@ class ArucoLandingNode(Node):
         self.publish_viz = bool(g('publish_viz').value)
         self.viz_period = float(g('viz_period_s').value)
         self.viz_flown_max = int(g('viz_flown_max_points').value)
+        self.route_horizon_check_s = float(g('route_horizon_check_s').value)
+        if not (math.isfinite(self.route_horizon_check_s)
+                and self.route_horizon_check_s > 0.0):
+            raise ValueError('route_horizon_check_s must be positive')
         self.obstacle_accel_scaling = bool(g('obstacle_accel_scaling').value)
         self.obstacle_accel_full = float(
             g('obstacle_accel_full_clearance_m').value)
@@ -831,6 +928,8 @@ class ArucoLandingNode(Node):
             g('route_replan_period_s').value)
         self.route_lookahead = float(g('route_lookahead_m').value)
         self.route_cross_track = float(g('route_cross_track_m').value)
+        self.route_replan_cross_track = float(
+            g('route_replan_cross_track_m').value)
         self.allow_unapproved_route_map = bool(
             g('allow_unapproved_route_map').value)
         if self.planned_cruise and not self.cruise:
@@ -935,7 +1034,22 @@ class ArucoLandingNode(Node):
 
     def _update_route_site_origin(self) -> None:
         """Remember the newest genuinely synchronized local/global anchor."""
-        if (not self.planned_cruise or self.pose is None
+        if not self.planned_cruise:
+            return
+        # A drone-relative map is centred on the vehicle's own local ENU origin:
+        # the map origin is (0, 0) by definition, no matter where the drone
+        # launched. There is nothing to synchronize against a global fix, so the
+        # anchor is always fresh and never drifts — which is exactly what removes
+        # the GPS/pose-jitter HOLD loop the surveyed CJU map suffered from.
+        if self._route_map_info.drone_relative:
+            if self.pose is None:
+                return
+            now = self._now()
+            self._route_observed_origin = np.zeros(2)
+            self._route_observed_origin_t = now
+            self._route_observed_origin_rx_t = now
+            return
+        if (self.pose is None
                 or self.vehicle_fix is None
                 or not math.isfinite(self.pose_t)
                 or not math.isfinite(self.vehicle_fix_t)
@@ -1267,6 +1381,32 @@ class ArucoLandingNode(Node):
     def _target_range(self) -> float:
         return self._range_to(self.target)
 
+    def _reached_last_trailer_coordinate(self) -> bool:
+        """True once the vehicle is over the LAST-known trailer coordinate.
+
+        Freshness-independent, unlike `_route_arrival_safe`: it is asked during a
+        coordinate dropout, when there is deliberately no fresh target. Planned
+        cruise still requires the last exact chord to be map-safe; a legacy
+        direct cruise has no map and checks range only.
+        """
+        if self.pose is None or self.target is None:
+            return False
+        if not self.planned_cruise:
+            return self._range_to(self.target[:2]) <= self.cruise_arrive
+        # The goal we actually fly to is the trailer's nearest-free projection,
+        # not the raw coordinate it may have wandered into — arrive there.
+        goal = self._route_goal_local(trailer_goal=True)
+        if goal is None or self._range_to(goal) > self.cruise_arrive:
+            return False
+        current = np.array([
+            self.pose.pose.position.x, self.pose.pose.position.y], float)
+        origin = (self._route_active[1] if self._route_active is not None
+                  else self._route_synchronized_site_origin())
+        if origin is None:
+            return False
+        return self._route_lib.segment_is_free(
+            self.route_map_yaml, origin, current, goal)
+
     def _on_ground(self) -> bool:
         """True once the vehicle has actually settled — never a geometric guess."""
         if self.state and not self.state.armed:
@@ -1277,6 +1417,35 @@ class ArucoLandingNode(Node):
     def _reset_mpc_output(self) -> None:
         self._last_mpc_acceleration = np.zeros(3)
         self._last_mpc_acceleration_t = None
+
+    def _resync_path_mpc(self) -> None:
+        """Point the tracker at a newly committed route WITHOUT a cold start.
+
+        A COMMIT IS NOT A DISCONTINUITY. `splice_route_from_current` builds
+        every accepted route to begin at the vehicle's present position, and
+        the joining chord is certified before the route is committed — so the
+        vehicle is still moving exactly as it was a tick earlier, and every
+        piece of tracker continuity remains physically correct.
+
+        `_reset_path_mpc` was called here anyway, and it zeroes
+        `_last_mpc_acceleration`. That is the stutter: `_send_pva` jerk-slews
+        from the remembered acceleration, and the MPC is handed
+        `applied_acceleration` too, so a commit told both of them the vehicle
+        was coasting at zero. Both then had to ramp back up under the jerk
+        limit — a/j seconds of not accelerating after EVERY replan, which from
+        the outside is a vehicle that keeps stopping on the way.
+
+        It also explains why replanning faster makes it worse rather than
+        better: the stall is triggered BY the commit, so shortening
+        `route_replan_period_s` shortens the gap between stalls. At a period
+        near the jerk ramp the vehicle would never finish accelerating at all.
+
+        All this does is force a solve against the new arc on the next tick.
+        The previous horizon keeps streaming until that lands — it is world
+        frame, already certified, and re-checked against the new route's own
+        geometry every tick like any other streamed sample.
+        """
+        self._path_last_solve_t = None
 
     # ------------------------------------------------------- PX4 flight limits
     def _flight_limits_ready(self) -> bool:
@@ -1308,6 +1477,22 @@ class ArucoLandingNode(Node):
 
     def _stamp(self):
         return self.get_clock().now().to_msg()
+
+    def _viz_origin_epsilon(self) -> float:
+        """Redraw tolerance: a fraction of the SMALLEST thing being drawn.
+
+        An anchor error the size of an obstacle makes the picture lie about
+        which side of it the route passed, so this is derived from the map
+        rather than fixed. Quarter of the narrowest box, capped so a map of
+        large buildings still redraws on a jitter a viewer would notice.
+        """
+        try:
+            boxes = self._route_lib.obstacle_boxes(self.route_map_yaml)
+            narrowest = min(min(float(size[0]), float(size[1]))
+                            for _name, _centre, size in boxes)
+        except (ValueError, TypeError, OSError):
+            return 0.25
+        return float(min(0.5, max(0.05, 0.25 * narrowest)))
 
     def _obstacle_markers(self, origin) -> MarkerArray:
         """The virtual field, twice: what is there and what is avoided.
@@ -1399,10 +1584,23 @@ class ArucoLandingNode(Node):
             return
         # Republish the field when the origin MOVES, not on a timer: the origin
         # is re-derived from the fix pair every tick, so it jitters by
-        # centimetres, and redrawing 50 markers for that is noise. A metre is a
-        # different anchor and a different picture.
-        if (self._viz_origin is None
-                or float(np.linalg.norm(origin - self._viz_origin)) > 1.0):
+        # centimetres, and redrawing 50 markers for that is noise.
+        #
+        # THE THRESHOLD MUST BE SMALLER THAN AN OBSTACLE. It was 1.0 m, which is
+        # wider than the 0.6 m pillars this map is made of, and the route is
+        # redrawn on every new seq while the field is not — so the route slid up
+        # to a metre against stale markers and a route legitimately clearing a
+        # pillar by its full `vehicle_clearance_xy_m` was DRAWN going straight
+        # through one. The flown route was never in question; the picture was.
+        # Scale to the field being drawn, and redraw whenever a new route is
+        # published so the two can never be anchored a replan apart.
+        redraw = (self._viz_origin is None
+                  or float(np.linalg.norm(origin - self._viz_origin))
+                  > self._viz_origin_epsilon())
+        if self._route_active is not None:
+            plan, _origin, _goal, seq, _committed = self._route_active
+            redraw = redraw or seq != self._viz_route_seq
+        if redraw:
             self._viz_origin = np.asarray(origin, float).copy()
             self.obstacle_pub.publish(self._obstacle_markers(origin))
         if self._route_active is not None:
@@ -1754,18 +1952,16 @@ class ArucoLandingNode(Node):
                 or self.ekf.h_acc > self.route_max_hacc):
             return (f'GPS horizontal accuracy {self.ekf.h_acc:.2f} m exceeds '
                     f'route limit {self.route_max_hacc:.2f} m')
-        pose_age = now - self.pose_t
-        if (self.pose is None or not math.isfinite(self.pose_t)
-                or now - self.pose_rx_t > self.route_state_timeout
-                or pose_age > self.route_state_timeout
-                or pose_age < -self.route_sync_tolerance):
-            return 'MAVROS local pose is missing or stale'
-        velocity_age = now - self.velocity_t
-        if (self.velocity is None or not math.isfinite(self.velocity_t)
-                or now - self.velocity_rx_t > self.route_state_timeout
-                or velocity_age > self.route_state_timeout
-                or velocity_age < -self.route_sync_tolerance):
-            return 'MAVROS local velocity is missing or stale'
+        stale = _stream_stale_reason(
+            'pose', self.pose, self.pose_t, self.pose_rx_t, now,
+            self.route_state_timeout, self.route_sync_tolerance)
+        if stale is not None:
+            return stale
+        stale = _stream_stale_reason(
+            'velocity', self.velocity, self.velocity_t, self.velocity_rx_t, now,
+            self.route_state_timeout, self.route_sync_tolerance)
+        if stale is not None:
+            return stale
         measured_velocity = (
             self.velocity.twist.linear.x, self.velocity.twist.linear.y)
         if not all(math.isfinite(float(value)) for value in measured_velocity):
@@ -1820,8 +2016,28 @@ class ArucoLandingNode(Node):
         use_trailer = (self._route_uses_trailer_goal()
                        if trailer_goal is None else bool(trailer_goal))
         if use_trailer:
-            return (None if self.target is None else
-                    np.asarray(self.target[:2], float).copy())
+            if self.target is None:
+                return None
+            target_xy = np.asarray(self.target[:2], float).copy()
+            if not self.planned_cruise:
+                return target_xy
+            origin = self._route_synchronized_site_origin()
+            if origin is None:
+                return target_xy
+            # A moving trailer can wander into a (virtual) obstacle keep-out;
+            # approach the nearest free point instead of rejecting an otherwise
+            # reachable target and landing short. Memoised on the (target,
+            # origin) pair — _route_goal_local is asked several times per tick
+            # and the ring search is not free. None (nothing free nearby) keeps
+            # the existing "goal unavailable" fallback rather than inventing one.
+            key = (round(float(target_xy[0]), 2), round(float(target_xy[1]), 2),
+                   round(float(origin[0]), 2), round(float(origin[1]), 2))
+            if self._trailer_goal_key != key:
+                self._trailer_goal_key = key
+                self._trailer_goal_value = self._route_lib.nearest_free_point(
+                    self.route_map_yaml, origin, target_xy)
+            return (None if self._trailer_goal_value is None
+                    else np.asarray(self._trailer_goal_value, float).copy())
         origin = self._route_synchronized_site_origin()
         if origin is None:
             return None
@@ -1839,17 +2055,25 @@ class ArucoLandingNode(Node):
         if health_reason is not None:
             return health_reason
         now = self._now()
-        fix_age = now - self.vehicle_fix_t
-        if (self.vehicle_fix is None or not math.isfinite(self.vehicle_fix_t)
-                or now - self.vehicle_fix_rx_t > self.route_gps_timeout
-                or fix_age > self.route_gps_timeout
-                or fix_age < -self.route_sync_tolerance):
-            return f'{self.route_vehicle_fix_topic} is missing or stale'
-        if self.vehicle_fix.status.status < NavSatStatus.STATUS_FIX:
-            return 'vehicle NavSatFix has no valid fix'
-        fix_values = (self.vehicle_fix.latitude, self.vehicle_fix.longitude)
-        if not all(math.isfinite(float(v)) for v in fix_values):
-            return 'vehicle NavSatFix latitude/longitude is non-finite'
+        # A drone-relative map is anchored on the vehicle's own local ENU origin,
+        # not on a global fix, so it needs no GPS to place the map. The fixed
+        # goal is a pure local-frame offset from (0, 0); the trailer goal already
+        # arrives in local ENU. Skip the global-fix and anchor/target time
+        # alignment gates that only exist to bound a surveyed WGS84 anchor.
+        drone_relative = self._route_map_info.drone_relative
+        if not drone_relative:
+            fix_age = now - self.vehicle_fix_t
+            if (self.vehicle_fix is None
+                    or not math.isfinite(self.vehicle_fix_t)
+                    or now - self.vehicle_fix_rx_t > self.route_gps_timeout
+                    or fix_age > self.route_gps_timeout
+                    or fix_age < -self.route_sync_tolerance):
+                return f'{self.route_vehicle_fix_topic} is missing or stale'
+            if self.vehicle_fix.status.status < NavSatStatus.STATUS_FIX:
+                return 'vehicle NavSatFix has no valid fix'
+            fix_values = (self.vehicle_fix.latitude, self.vehicle_fix.longitude)
+            if not all(math.isfinite(float(v)) for v in fix_values):
+                return 'vehicle NavSatFix latitude/longitude is non-finite'
         if self._route_synchronized_site_origin() is None:
             return 'vehicle local pose/global fix pair is not coherent or fresh'
         use_trailer = (self._route_uses_trailer_goal()
@@ -1857,7 +2081,8 @@ class ArucoLandingNode(Node):
         if use_trailer:
             if not math.isfinite(self.target_sample_t):
                 return 'trailer target has no trustworthy source timestamp'
-            if (abs(self._route_observed_origin_t - self.target_sample_t)
+            if (not drone_relative
+                    and abs(self._route_observed_origin_t - self.target_sample_t)
                     > self.route_sync_tolerance):
                 return ('vehicle local/global anchor and trailer target are not '
                         'time-aligned '
@@ -1968,9 +2193,13 @@ class ArucoLandingNode(Node):
         self._route_pending = None
         self._route_progress = 0.0
         self._reset_path_mpc()
-        if self._plan_future is not None and self._plan_future.cancel():
-            self._plan_future = None
+        if self._plan_future is not None:
+            if self._plan_future.cancel():
+                self._plan_future = None
+            else:
+                self._plan_abandoned = True
         self._route_last_error = reason
+        self._route_follow_fail_t = None
         if had_route:
             self.get_logger().warn(
                 f'route invalidated — {reason}; HOLD until a new anchor is planned')
@@ -1982,9 +2211,13 @@ class ArucoLandingNode(Node):
         self._route_progress = 0.0
         self._route_last_request_t = float('-inf')
         self._route_last_error = ''
+        self._route_follow_fail_t = None
         self._reset_path_mpc()
-        if self._plan_future is not None and self._plan_future.cancel():
-            self._plan_future = None
+        if self._plan_future is not None:
+            if self._plan_future.cancel():
+                self._plan_future = None
+            else:
+                self._plan_abandoned = True
         self._to(phase)
 
     def _begin_return(self) -> None:
@@ -2004,9 +2237,19 @@ class ArucoLandingNode(Node):
         if self._plan_future is not None and self._plan_future.done():
             future = self._plan_future
             pending = self._route_pending
+            abandoned = self._plan_abandoned
             route_observation = None
             self._plan_future = None
+            self._plan_abandoned = False
             self._route_pending = None
+            if abandoned:
+                # Its inputs were already ruled unsafe when the route was
+                # invalidated; the worker simply finished afterwards. Not an
+                # error, and deliberately not a HOLD reason of its own.
+                self.get_logger().info(
+                    'discarded a route planned before the last invalidation',
+                    throttle_duration_sec=5.0)
+                return
             try:
                 planned = future.result()
                 if pending is None:
@@ -2042,9 +2285,10 @@ class ArucoLandingNode(Node):
                     np.asarray(requested_goal, float).copy(),
                     int(seq), self._now())
                 self._route_progress = 0.0
-                self._reset_path_mpc()
+                self._resync_path_mpc()
                 self._route_last_error = ''
                 route_observation = (planned, joined)
+                self._route_follow_fail_t = None
                 self.get_logger().info(
                     f'route #{seq} certified: {joined.arc_m[-1]:.1f} m, '
                     f'{len(joined.path_local_xy)} points, '
@@ -2096,7 +2340,22 @@ class ArucoLandingNode(Node):
         now = self._now()
         if now - self._route_last_request_t < self.route_replan_period:
             return
-        if self._route_active is not None:
+        # A live route whose goal has not moved is normally kept. The exception
+        # is a follower that has stopped producing commands: the vehicle is then
+        # off a path it can no longer legally rejoin, and holding on it until
+        # `route_timeout` is a deadlock, not a safety measure. Replanning from
+        # where the vehicle actually is stays exact-safe — A* starts at this
+        # position and the splice still has to certify the joining chord.
+        # Deviated = the vehicle has drifted off the line by more than the
+        # replan threshold. Then re-route from where it actually is instead of
+        # steering it back across an obstacle field to the old line — the
+        # proactive response, before it fully stalls.
+        deviated = (self.route_replan_cross_track > 0.0
+                    and math.isfinite(self._route_last_cross_track)
+                    and self._route_last_cross_track
+                    > self.route_replan_cross_track)
+        if (self._route_active is not None and not self._route_follow_stuck()
+                and not deviated):
             _plan, _origin, active_goal, _seq, _committed = self._route_active
             if float(np.linalg.norm(goal - active_goal)) < max(
                     0.5, self.route_cross_track):
@@ -2105,6 +2364,14 @@ class ArucoLandingNode(Node):
         start = np.array([
             self.pose.pose.position.x, self.pose.pose.position.y], float)
         origin = self._route_site_origin_local()
+        # The obstacles are virtual, so the real vehicle can sit inside a
+        # keep-out the map calls blocked; a stuck-replan from there would fail on
+        # a blocked start. Plan from the nearest free point so A* has a valid
+        # start; the splice still certifies the chord from the true position.
+        projected_start = self._route_lib.nearest_free_point(
+            self.route_map_yaml, origin, start)
+        if projected_start is not None:
+            start = np.asarray(projected_start, float)
         self._route_request_seq += 1
         seq = self._route_request_seq
         self._route_pending = (
@@ -2120,12 +2387,18 @@ class ArucoLandingNode(Node):
             self.get_logger().error(
                 self._route_last_error, throttle_duration_sec=2.0)
             return
+        trigger = ('stuck' if self._route_follow_stuck()
+                   else f'deviated {self._route_last_cross_track:.1f} m'
+                   if deviated else 'goal moved')
         self.get_logger().info(
-            f'route #{seq} planning: local ({start[0]:.1f},{start[1]:.1f}) '
-            f'-> ({goal[0]:.1f},{goal[1]:.1f})')
+            f'route #{seq} planning ({trigger}): local '
+            f'({start[0]:.1f},{start[1]:.1f}) -> ({goal[0]:.1f},{goal[1]:.1f})')
 
     def _route_carrot(self) -> tuple[np.ndarray | None, float]:
         """Current exact-safe local-ENU target and cross-track error."""
+        # Reset the recorded deviation; only a real follow attempt below sets a
+        # finite value, so a health/pose failure cannot look like a deviation.
+        self._route_last_cross_track = float('inf')
         # The route is already anchored: require live absolute-EKF health, but
         # do not demand a new pose/fix timestamp pair merely to follow it.
         reason = self._route_flight_health_reason()
@@ -2133,6 +2406,9 @@ class ArucoLandingNode(Node):
             self._route_last_error = f'route input rejected: {reason}'
             return None, float('inf')
         if self._route_active is None or self.pose is None:
+            self._route_last_error = (
+                'no certified route to follow yet' if self._route_active is None
+                else 'no local pose to follow the route with')
             return None, float('inf')
         plan, origin, _goal, _seq, _committed = self._route_active
         current = np.array([
@@ -2148,7 +2424,30 @@ class ArucoLandingNode(Node):
                 self._route_last_error, throttle_duration_sec=2.0)
             return None, float('inf')
         self._route_progress = progress
+        self._route_last_cross_track = cross_track
+        if target is None:
+            self._route_last_error = (
+                f'no collision-free chord from the vehicle to the route '
+                f'(cross-track {cross_track:.2f} m, lookahead '
+                f'{self.route_lookahead:.1f} m)')
         return target, cross_track
+
+    def _route_prediction_unsafe_reason(self, predicted_positions) -> str | None:
+        """Why a horizon may not be commanded, in the caller's own words.
+
+        TWO DIFFERENT FAULTS USED TO SHARE ONE MESSAGE. A stale pose and a
+        horizon aimed through a barrier both made this return False, and the
+        caller reported the geometric one — so a flight logged 'TrackingMPC
+        horizon leaves the mapped clearance' 0.75 s before 'MAVROS local pose
+        is missing or stale', which were the same fault described two ways.
+        They want opposite fixes, so they get separate sentences.
+        """
+        if self.pose is None:
+            return 'no local pose to check the horizon against'
+        health = self._route_flight_health_reason()
+        if health is not None:
+            return f'route input rejected: {health}'
+        return None
 
     def _route_prediction_is_safe(self, predicted_positions) -> bool:
         """Require every MPC horizon chord to retain the runtime clearance."""
@@ -2171,12 +2470,28 @@ class ArucoLandingNode(Node):
             self.route_map_yaml, origin, a, b)
             for a, b in zip(chain[:-1], chain[1:]))
 
+    def _route_follow_stuck(self) -> bool:
+        """True once the follower has commanded nothing for a whole period."""
+        return (self._route_follow_fail_t is not None
+                and self._now() - self._route_follow_fail_t
+                >= self.route_replan_period)
+
+    def _route_follow_failed(self, error: str,
+                             cross_track: float) -> tuple[bool, float]:
+        """Record why the follower commanded nothing, and since when."""
+        self._route_last_error = error
+        if self._route_follow_fail_t is None:
+            self._route_follow_fail_t = self._now()
+        return False, cross_track
+
     def _route_mpc_command(self) -> tuple[bool, float]:
         """Track the certified B-spline with Wang TrackingMPC over MAVROS."""
         carrot, cross_track = self._route_carrot()
         if (carrot is None or self.pose is None or self.velocity is None
                 or self._path_mpc is None or self._path_reference is None):
-            return False, cross_track
+            return self._route_follow_failed(
+                self._route_last_error or 'route follower has no live inputs',
+                cross_track)
         plan = self._route_active[0]
         position = np.array([
             self.pose.pose.position.x, self.pose.pose.position.y,
@@ -2230,22 +2545,44 @@ class ArucoLandingNode(Node):
                 except Exception:
                     pass
             except Exception as exc:
-                self._route_last_error = f'TrackingMPC solve failed: {exc}'
                 self._reset_path_mpc()
                 self._path_last_solve_t = now
-                return False, cross_track
-            accepted = (
-                result.success
-                and np.all(np.isfinite(np.column_stack((
+                return self._route_follow_failed(
+                    f'TrackingMPC solve failed: {exc}', cross_track)
+            # Three separate causes, reported separately. Bundling them says
+            # only that the tracker refused, which does not distinguish a QP
+            # that never converged from a converged one aimed through a barrier
+            # — and those two want opposite fixes.
+            rejection = None
+            if not result.success:
+                rejection = 'TrackingMPC QP did not converge'
+            elif not np.all(np.isfinite(np.column_stack((
                     result.predicted_pos, result.predicted_vel,
-                    result.predicted_acc))))
-                and self._route_prediction_is_safe(result.predicted_pos))
-            if not accepted:
-                self._route_last_error = (
-                    'TrackingMPC rejected its solve or predicted horizon')
+                    result.predicted_acc)))):
+                rejection = 'TrackingMPC returned a non-finite horizon'
+            else:
+                # Only the part that will actually be flown. Everything past
+                # `route_horizon_check_s` is replaced by the next solve before
+                # the vehicle reaches it — see the parameter's note in
+                # `_declare` for why certifying it grounded the mission.
+                checked_steps = max(
+                    output_step + 1,
+                    int(math.ceil(self.route_horizon_check_s
+                                  / self._path_mpc.dt)))
+                committed = result.predicted_pos[:checked_steps]
+                input_reason = self._route_prediction_unsafe_reason(committed)
+                if input_reason is not None:
+                    rejection = f'TrackingMPC horizon not checkable: {input_reason}'
+                elif not self._route_prediction_is_safe(committed):
+                    rejection = (
+                        'TrackingMPC horizon leaves the mapped clearance within '
+                        f'{self.route_horizon_check_s:.1f} s '
+                        f'(cross-track {cross_track:.2f} m to a carrot the '
+                        'vehicle cannot reach in a straight line)')
+            if rejection is not None:
                 self._reset_path_mpc()
                 self._path_last_solve_t = now
-                return False, cross_track
+                return self._route_follow_failed(rejection, cross_track)
             zeros = np.zeros(3)
             self._path_reference.set_plan(
                 position, velocity,
@@ -2256,17 +2593,21 @@ class ArucoLandingNode(Node):
 
         if (not self._path_reference.ready()
                 or self._path_solve_t is None):
-            return False, cross_track
+            return self._route_follow_failed(
+                'TrackingMPC has no streamable reference yet', cross_track)
 
         pos, vel, acc = self._path_reference.sample(
             self._now() - self._path_solve_t)
         if not self._route_prediction_is_safe(np.asarray([pos])):
-            self._route_last_error = 'TrackingMPC streamed reference is unsafe'
             self._reset_path_mpc()
             self._path_last_solve_t = now
-            return False, cross_track
-        return (self._send_pva(
-            pos, vel, acc, self._path_mpc.j_max), cross_track)
+            return self._route_follow_failed(
+                'TrackingMPC streamed reference is unsafe', cross_track)
+        if not self._send_pva(pos, vel, acc, self._path_mpc.j_max):
+            return self._route_follow_failed(
+                'MAVROS setpoint stream rejected the reference', cross_track)
+        self._route_follow_fail_t = None
+        return True, cross_track
 
     def _route_arrival_safe(self, *, trailer_goal: bool | None = None) -> bool:
         """Require arrival at the selected goal and completion of its route."""
@@ -2755,7 +3096,7 @@ class ArucoLandingNode(Node):
             self._hold(vz)
             self.get_logger().error(
                 'no exact-safe TrackingMPC reference to the mission goal — '
-                'HOLDING, no straight-line fallback',
+                f'HOLDING, no straight-line fallback: {self._route_last_error}',
                 throttle_duration_sec=2.0)
         if self._due('mission_log', self.cruise_log_period):
             self.get_logger().info(
@@ -2804,7 +3145,13 @@ class ArucoLandingNode(Node):
                         f'searching for the marker from here')
                     self._to(Phase.SEARCH)
             else:
-                self._hold()      # brief dropout: stop, wait for the coordinate
+                # Planned cruise with no active route yet: hold rather than fly
+                # a straight line the map never certified.
+                self._hold(vz)
+            self.get_logger().warn(
+                f'trailer coordinate paused {gone:.1f} s ago — continuing to its '
+                f'last position, {self._target_range():.1f} m to go',
+                throttle_duration_sec=3.0)
             return
 
         timeout = self.route_timeout if self.planned_cruise else self.cruise_timeout
@@ -2831,7 +3178,12 @@ class ArucoLandingNode(Node):
             self._hold()
             return
 
-        if distance <= self.cruise_arrive and self._route_arrival_safe():
+        # Arrival is judged at the route goal, which for a trailer inside a
+        # virtual keep-out is the nearest free point we actually fly to — not
+        # the blocked coordinate the vehicle can never legally reach.
+        arrival_range = (self._route_goal_range(trailer_goal=True)
+                         if self.planned_cruise else distance)
+        if arrival_range <= self.cruise_arrive and self._route_arrival_safe():
             self._hold()
             self.get_logger().info(
                 f'over the trailer coordinate ({distance:.1f} m) — searching '
@@ -2851,7 +3203,8 @@ class ArucoLandingNode(Node):
                 self._hold(vz)
                 self.get_logger().error(
                     'no exact-safe TrackingMPC reference — HOLDING, no '
-                    'straight-line fallback', throttle_duration_sec=2.0)
+                    f'straight-line fallback: {self._route_last_error}',
+                    throttle_duration_sec=2.0)
         else:
             self._fly_to(
                 self.target, kp=self.cruise_kp, v_max=self.cruise_v_max,

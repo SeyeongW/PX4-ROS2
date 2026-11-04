@@ -47,7 +47,9 @@ from path_plan.bspline_optimizer import BsplineOptimizer
 from path_plan.mpc_ros import UnicycleMPC, Weights
 from path_plan.world_model import WorldModel, _find_buildings
 
-REPO = Path(__file__).resolve().parents[2]
+REPO = Path(__file__).resolve().parents[3] / "simulation"
+if not (REPO / "gazebo").exists():
+    REPO = Path(__file__).resolve().parents[2]
 DEFAULT_MAP = REPO / "gazebo/maps/city_coordinates_uav.yaml"
 OUT = Path(__file__).resolve().parents[1] / "figures"
 
