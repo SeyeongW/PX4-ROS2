@@ -67,7 +67,7 @@ def detect_balloons(bgr: np.ndarray, ranges: Sequence[HsvRange], *, min_diameter
         c = max(originals, key=cv2.contourArea) + np.array([[[x0, y0]]])
         x, y, w, h = cv2.boundingRect(c)
         if (x <= x0 or y <= y0 or x+w >= x1 or y+h >= y1
-                or x <= 0 or y <= 0 or x+w >= bgr.shape[1] or y+h >= bgr.shape[0] or len(c) < 10):
+                or x <= 0 or y <= 0 or x+w >= bgr.shape[1] or y+h >= bgr.shape[0] or len(c) < 6):
             continue  # A truncated silhouette cannot provide a known diameter.
         area = cv2.contourArea(c)
         if area < 1.0:

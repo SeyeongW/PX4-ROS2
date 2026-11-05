@@ -43,27 +43,31 @@ NORTH_YAW     = math.pi / 2
 HOME_WORLD    = [-2.0, 0.0, 0.2]
 PX4_UDP       = 'udpin:0.0.0.0:14540'
 
-TAKEOFF_ALT      = 5.0    # 이륙 고도 (m)
-FORWARD_ACC      = 12.0   # 성공했던 전방 가속도 [m/s^2] 복원 (atan(12 / 9.8) ≈ 50.7° 기울기)
-MAX_ACC          = 18.0   # 성공했던 최대 가속도 클램프 [m/s^2] 복원
-PN_GAIN          = 3.5    # 성공했던 비전 LOS 비례항법(PN) 이득 복원
-COAST_TIMEOUT    = 0.8    # 비전 일시 소실 시 마지막 LOS 방향 유지 시간 (s)
+TAKEOFF_ALT        = 5.0    # 이륙 고도 (m)
+MIN_TILT_ACC       = 6.0    # 근접 시에도 ~35° 이상 전방 기울기를 유지하기 위한 최소 전방 가속도 [m/s^2]
+MAX_FWD_ACC        = 8.5    # 초기 출발 시 과도한 폭주 없이 안정적인 전방 기울기(~40°)를 만드는 최대 전방 가속도 [m/s^2]
+KP_DIST_ACC        = 0.03   # 거리 오차(dist_3d) 비례 전방 가속도 이득: a_fwd = clip(6.0 + 0.03 * d, 6.0, 8.5)
+MAX_APPROACH_SPEED = 22.0   # 접근 최대 속도 제한 [m/s] (초과 시 가속도를 부드럽게 줄여 폭주 및 EKF 리셋 방지)
+MAX_ACC            = 12.0   # 전체 가속도 벡터 클램프 [m/s^2]
+MAX_PERP_ACC       = 3.5    # 경로/LOS 수직 보정 가속도 최대치 [m/s^2] (전방 가속을 압도해 공중 회전하는 현상 방지)
+PN_GAIN            = 3.0    # 비전 LOS 비례항법(PN) 이득
+COAST_TIMEOUT      = 0.8    # 비전 일시 소실 시 마지막 LOS 방향 유지 시간 (s)
 
 # ── "풍선 지났다!" (Pass-through) 판정 파라미터 (30cm 풍선 기준) ──
 # [조건 1] 풍선 디텍팅 유실점 파악 (풍선 크기가 커졌다가 갑자기 사라졌는지)
-PASS_MIN_DIAM_PX    = 16.0   # 30cm 풍선 기준 약 9m 이내 근접 시 픽셀 크기 (초기 ~4px 대비 4배 확대)
+PASS_MIN_DIAM_PX    = 14.0   # 30cm 풍선 기준 약 10m 이내 근접 시 픽셀 크기 (초기 ~3.5px 대비 4배 확대)
 PASS_GROWTH_RATIO   = 1.4    # 최초 검출 대비 최소 1.4배 이상 커졌을 때 (확대 확인)
 PASS_LOST_FRAMES    = 3      # 풍선이 커진 상태에서 연속 N프레임(~0.1초) 갑자기 사라지면 유실점 판정
-PASS_IMPACT_DIAM_PX = 90.0   # 30cm 풍선 초근접(~1.6m 이내) 시 즉시 유실/통과 판정
+PASS_IMPACT_DIAM_PX = 80.0   # 30cm 풍선 초근접(~1.8m 이내) 시 즉시 유실/통과 판정
 
 # [조건 2] 목표점을 통과했는지 (조건 1과 동시 판정용)
 LOCK_DIST           = 15.0   # 목표점 근접 감시 시작 거리 (m)
-OVERSHOOT_DIST      = 2.0    # 최근접 거리 찍고 이만큼 멀어지면 목표점 통과 판정 (m)
-PAST_PLANE_DIST     = 1.0    # 목표점 수직 평면(path_dir 기준)을 이 거리(m) 이상 넘어가면 목표점 통과 판정 (m)
+OVERSHOOT_DIST      = 1.0    # 최근접 거리 찍고 이만큼 멀어지면 목표점 통과 판정 (m)
+PAST_PLANE_DIST     = 0.5    # 목표점 수직 평면(path_dir 기준)을 이 거리(m) 이상 넘어가면 목표점 통과 판정 (m)
 
 # [무조건 RTL 안전 조건] 목표점을 지나치거나 일정 거리 이상 멀어지면 조건 1 무관 무조건 RTL
-FORCE_PAST_PLANE_DIST = 3.0  # 목표점 수직 평면을 3.0m 이상 지나치면 무조건 RTL (m)
-FORCE_OVERSHOOT_DIST  = 4.0  # 최근접 거리 대비 4.0m 이상 멀어지면 무조건 RTL (m)
+FORCE_PAST_PLANE_DIST = 1.5  # 목표점 수직 평면을 1.5m 이상 지나치면 무조건 RTL (m)
+FORCE_OVERSHOOT_DIST  = 2.0  # 최근접 거리 대비 2.0m 이상 멀어지면 무조건 RTL (m)
 
 # 온보드 카메라 파라미터: Raspberry Pi Camera Module 3 Standard (수직 노즈콘 고정)
 # sensor_rpy = [pi/2, -pi/2, 0]:
@@ -122,6 +126,34 @@ def clamp_vec(vec, max_mag):
     if mag > max_mag and mag > 1e-6:
         return vec * (max_mag / mag)
     return vec
+
+
+def enforce_forward_tilt(a_cmd, yaw):
+    """수직 보정 가속도(a_cross / a_align) 때문에 전방 가속이 상쇄되거나 뒤로 꺾여
+    기체가 공중에서 뒤집히거나(한바퀴 회전) 수직으로 서버리는 현상을 원천 차단.
+
+    물리식: tan(tilt) = a_horiz_fwd / (9.81 - a_D)
+    - a_D를 [-4.2, +2.0] 범위로 제한하고,
+    - 진행 방향(yaw) 수평 가속도가 최소 0.65 * (9.81 - a_D) 이상이 되도록 보장하여
+      기체 기울기(Tilt)가 항상 전방 33°~48° 범위 안에 안정적으로 유지되게 함.
+    """
+    out = np.array(a_cmd, dtype=float)
+    out[2] = max(-4.2, min(2.0, float(out[2])))
+
+    fwd_h = np.array([math.cos(yaw), math.sin(yaw)], dtype=float)
+    lat_h = np.array([-math.sin(yaw), math.cos(yaw)], dtype=float)
+    a_h = out[:2]
+
+    a_fwd_h = float(np.dot(a_h, fwd_h))
+    a_lat_h = float(np.dot(a_h, lat_h))
+
+    min_fwd_h = max(5.2, 0.65 * (9.81 - out[2]))
+    if a_fwd_h < min_fwd_h:
+        a_fwd_h = min_fwd_h
+    a_lat_h = max(-3.5, min(3.5, a_lat_h))
+
+    out[:2] = fwd_h * a_fwd_h + lat_h * a_lat_h
+    return clamp_vec(out, MAX_ACC)
 
 
 class VisionListener:
@@ -455,75 +487,90 @@ def main():
 
         # ★ 2) 목표점을 확실히 지나치거나 최근접 거리 대비 일정 거리 이상 멀어지면 무조건 RTL!
         force_plane_passed = along_past >= FORCE_PAST_PLANE_DIST
-        force_overshoot = (dist_3d - global_min_dist) >= FORCE_OVERSHOOT_DIST
+        force_overshoot = target_locked and ((dist_3d - min_dist_after_lock) >= FORCE_OVERSHOOT_DIST)
         if force_plane_passed or force_overshoot:
             print(
                 f'★ 목표점 통과/이탈 감지로 무조건 RTL! '
-                f'(최근접거리={global_min_dist:.2f}m -> 현재거리={dist_3d:.2f}m, 목표평면 진행초과={along_past:+.2f}m) -> RTL 복귀 시작!',
+                f'(최근접거리={min_dist_after_lock:.2f}m -> 현재거리={dist_3d:.2f}m, 목표평면 진행초과={along_past:+.2f}m) -> RTL 복귀 시작!',
                 flush=True)
             break
 
-        if det_fresh:
-            # ── 3단계: 풍선 검출됨 -> 아까 성공했던 3D LOS + 비례항법(PN) 가속도 제어 복원 ──
-            if not vision_locked:
-                print(f'★ 풍선 검출! (px=({u:.0f}, {v:.0f}), 지름={diam:.1f}px, 거리={dist_3d:.1f}m) -> LOS 가속도 추적 전환',
-                      flush=True)
-                vision_locked = True
+        # 거리 오차(dist_3d)에 비례하는 전방 가속도 크기 (출발 시 8.5 m/s^2 -> 근접 시 6.0 m/s^2)
+        # 과도한 초기 가속(13.5 m/s^2)으로 인한 속도 폭주(60m/s)를 막고,
+        # ~36°~43°의 안정적인 전방 기울기를 유지하며 거리에 비례해 가속도를 조절함.
+        a_fwd_mag = min(MAX_FWD_ACC, max(MIN_TILT_ACC, MIN_TILT_ACC + KP_DIST_ACC * dist_3d))
+        cur_spd_now = float(np.linalg.norm(vel_ned))
+        if cur_spd_now > MAX_APPROACH_SPEED:
+            a_fwd_mag = MIN_TILT_ACC
 
-            los_ned = pixel_to_los_ned(u, v, R_bn)
-            last_los_ned = los_ned
+        if det_fresh and dist_3d > 2.5:
+            # ── 3단계: 풍선 검출됨 -> 거리 오차 비례 전방 가속 + 3D LOS/PN 유도 ──
+            los_candidate = pixel_to_los_ned(u, v, R_bn)
 
-            if math.hypot(los_ned[0], los_ned[1]) > 0.1:
-                yaw = math.atan2(los_ned[1], los_ned[0])
+            # 풍선 바로 밑/옆을 스쳐 지나갈 때 LOS 벡터가 진행 방향(path_dir) 대비 40° 이상 꺾이면
+            # 공중에서 한바퀴 회전하지 않도록 즉시 직진 통과(PASS_THROUGH)로 넘김!
+            if float(np.dot(los_candidate, path_dir)) >= 0.76:
+                if not vision_locked:
+                    print(f'★ 풍선 검출! (px=({u:.0f}, {v:.0f}), 지름={diam:.1f}px, 거리={dist_3d:.1f}m) -> LOS 비례 가속 추적 전환',
+                          flush=True)
+                    vision_locked = True
 
-            # 1) 속도 벡터가 LOS 방향을 향하도록 만드는 횡방향 속도 정렬 가속도 (성공했던 이득 2.5 복원)
-            speed = float(np.linalg.norm(vel_ned))
-            vel_along_los = float(np.dot(vel_ned, los_ned)) * los_ned
-            vel_perp_los = vel_ned - vel_along_los
-            a_align = -vel_perp_los * 2.5
+                los_ned = los_candidate
+                last_los_ned = los_ned
 
-            # 2) LOS 각속도 기반 PN(비례항법) 보정 가속도 (성공했던 조건 복원)
-            a_pn = np.zeros(3)
-            if prev_los_ned is not None and prev_los_t is not None:
-                dt_vis = det_t - prev_los_t
-                if 1e-3 < dt_vis < 0.5:
-                    los_rate = np.cross(prev_los_ned, los_ned) / dt_vis
-                    closing_speed = max(float(-np.dot(vel_ned, los_ned)), 5.0)
-                    a_pn = np.cross(los_rate, los_ned) * (PN_GAIN * closing_speed)
-            prev_los_ned, prev_los_t = los_ned, det_t
+                # 1) 접근 속도(closing_speed) 및 남은 거리(dist_3d)에 비례해 LOS 중심 정렬
+                closing_speed = min(float( MAX_APPROACH_SPEED ), max(float(np.dot(vel_ned, los_ned)), 5.0))
+                vel_along_los = float(np.dot(vel_ned, los_ned)) * los_ned
+                vel_perp_los = vel_ned - vel_along_los
+                align_gain = min(2.6, max(1.5, 2.0 * closing_speed / max(dist_3d, 6.0)))
+                a_align = -vel_perp_los * align_gain
 
-            # 3) LOS 방향으로 지속 전방 가속(FORWARD_ACC = 12.0) -> 기체 기울기 유지!
-            a_cmd = los_ned * FORWARD_ACC + a_align + a_pn
-            a_cmd = clamp_vec(a_cmd, MAX_ACC)
+                # 2) LOS 각속도 기반 PN(비례항법) 보정 가속도
+                a_pn = np.zeros(3)
+                if prev_los_ned is not None and prev_los_t is not None:
+                    dt_vis = det_t - prev_los_t
+                    if 1e-3 < dt_vis < 0.5:
+                        los_rate = np.cross(prev_los_ned, los_ned) / dt_vis
+                        a_pn = np.cross(los_rate, los_ned) * (PN_GAIN * closing_speed)
+                prev_los_ned, prev_los_t = los_ned, det_t
 
-            send_acc(conn, a_cmd[0], a_cmd[1], a_cmd[2], yaw)
-            mode_str = f'LOS_PURSUIT(px={u-CX:+.0f},{v-CY:+.0f} d={diam:.0f}px)'
+                # 3) 수직 보정 가속도가 전방 가속을 압도해 기체가 뒤집히는 현상 방지
+                a_perp = clamp_vec(a_align + a_pn, MAX_PERP_ACC)
+                a_cmd = enforce_forward_tilt(los_ned * a_fwd_mag + a_perp, yaw)
+
+                send_acc(conn, a_cmd[0], a_cmd[1], a_cmd[2], yaw)
+                mode_str = f'LOS_PURSUIT(px={u-CX:+.0f},{v-CY:+.0f} d={diam:.0f}px a={a_fwd_mag:.1f})'
+            else:
+                # 근접 통과 중 시선이 급격히 꺾임 -> 회전 방지, 직진 통과!
+                coast_dir = last_los_ned if last_los_ned is not None else path_dir
+                a_cmd = enforce_forward_tilt(coast_dir * a_fwd_mag, yaw)
+                send_acc(conn, a_cmd[0], a_cmd[1], a_cmd[2], yaw)
+                mode_str = 'PASS_THROUGH_GUARD'
 
         elif vision_locked and det_coast and last_los_ned is not None:
-            # ── 비전 일시 소실 시 Coast: 마지막 LOS 방향으로 가속 유지 ──
-            a_cmd = clamp_vec(last_los_ned * FORWARD_ACC, MAX_ACC)
+            # ── 비전 일시 소실 시 Coast: 마지막 LOS 방향으로 거리 비례 가속 유지 ──
+            a_cmd = enforce_forward_tilt(last_los_ned * a_fwd_mag, yaw)
             send_acc(conn, a_cmd[0], a_cmd[1], a_cmd[2], yaw)
             mode_str = 'LOS_COAST'
 
         elif target_locked or case1_vision_passed:
-            # ── 풍선 초근접 통과 구간: 조건 1(디텍팅 유실점) 달성 후 조건 2(목표점 통과)까지 마지막 진행 방향으로 그대로 관통 ──
+            # ── 풍선 초근접 통과 구간: 조건 1(디텍팅 유실점) 달성 후 조건 2(목표점 통과)까지 마지막 진행 방향으로 그대로 통과 ──
             coast_dir = last_los_ned if last_los_ned is not None else path_dir
-            a_cmd = clamp_vec(coast_dir * FORWARD_ACC, MAX_ACC)
+            a_cmd = enforce_forward_tilt(coast_dir * a_fwd_mag, yaw)
             send_acc(conn, a_cmd[0], a_cmd[1], a_cmd[2], yaw)
             mode_str = 'PASS_THROUGH'
 
         else:
-            # ── 2단계: 풍선 미검출 -> 대각선 직선 경로를 따라 가속도(ACC_ONLY) 비행 ──
+            # ── 2단계: 풍선 미검출 구간 -> 거리 비례 전방 가속(a_fwd_mag)으로 안정적으로 기울여 대각선 상승! ──
             if vision_locked:
                 print('비전 신호 소실 -> 대각선 가속 비행으로 복귀', flush=True)
                 vision_locked = False
             prev_los_ned = prev_los_t = None
 
-            if dist_2d > 0.5:
-                yaw = math.atan2(diff_to_target[1], diff_to_target[0])
-
-            # 현재 위치에서 목표(target_ned)를 향하는 단위벡터
+            # 현재 위치에서 목표(target_ned)를 향하는 단위벡터 (근접 시 뒤로 꺾이지 않게 path_dir 보호)
             unit_to_target = diff_to_target / max(dist_3d, 0.1)
+            if float(np.dot(unit_to_target, path_dir)) < 0.7:
+                unit_to_target = path_dir
 
             # 5m 이륙 지점(start_ned)과 풍선 좌표(target_ned)를 잇는 3D 대각선 직선으로부터의 이탈 오차(cross-track error)
             prog = float(np.dot(pos_ned - start_ned, path_dir))
@@ -531,18 +578,18 @@ def main():
             closest_pt = start_ned + prog * path_dir
             cross_pos_err = closest_pt - pos_ned
 
-            # 속도 벡터 중 대각선 경로에 수직인 성분(이탈 속도) 감쇠
-            vel_along = np.dot(vel_ned, unit_to_target) * unit_to_target
+            # 속도 벡터를 대각선 진행 성분과 이탈 성분으로 분해
+            speed_along = float(np.dot(vel_ned, unit_to_target))
+            vel_along = speed_along * unit_to_target
             vel_perp = vel_ned - vel_along
 
-            # 핵심: 목표 대각선 방향으로 FORWARD_ACC(12 m/s^2)를 계속 인가해
-            # 기체가 수평으로 서지 않고 ~50° 앞으로 숙인 채 대각선 직선을 타고 올라가게 함!
-            a_forward = unit_to_target * FORWARD_ACC
-            a_cross = cross_pos_err * 3.0 - vel_perp * 2.5
-            a_cmd = clamp_vec(a_forward + a_cross, MAX_ACC)
+            # 대각선 경로 이탈 보정(a_cross)이 전방 가속을 상쇄해 기체가 공중에서 뒤로 젖혀지는 현상 원천 차단!
+            a_forward = unit_to_target * a_fwd_mag
+            a_cross = clamp_vec(cross_pos_err * 1.6 - vel_perp * 1.4, MAX_PERP_ACC)
+            a_cmd = enforce_forward_tilt(a_forward + a_cross, yaw)
 
             send_acc(conn, a_cmd[0], a_cmd[1], a_cmd[2], yaw)
-            mode_str = 'DIAGONAL_ACC'
+            mode_str = f'DIAGONAL_ACC(a={a_fwd_mag:.1f})'
 
         now = time.monotonic()
         if now - last_log > 0.4:
@@ -555,6 +602,34 @@ def main():
                   f'기체기울기(Tilt) {tilt_deg:4.1f}° (카메라앙각 {nose_elev_deg:4.1f}°)', flush=True)
             last_log = now
 
+        time.sleep(0.02)
+
+    # ── 풍선 통과 후 감속 제동(Braking) -> 안정화 후 RTL 전환 ──
+    # 고속 상태에서 곧바로 RTL을 걸면 200m 이상 밀려나며 PX4 EKF2 위치 리셋이 발생해 공중에서 헤매므로,
+    # 먼저 Offboard 상태에서 부드럽게 감속해 속도를 2.5m/s 이하로 낮춘 뒤 RTL을 호출함!
+    print('풍선 통과 완료 -> 공중 감속 제동(Braking) 시작 ...', flush=True)
+    brake_start = time.monotonic()
+    while time.monotonic() - brake_start < 4.5:
+        while True:
+            msg = conn.recv_match(type=['LOCAL_POSITION_NED'], blocking=False)
+            if msg is None:
+                break
+            pos_ned = np.array([msg.x, msg.y, msg.z])
+            vel_ned = np.array([msg.vx, msg.vy, msg.vz])
+
+        cur_spd = float(np.linalg.norm(vel_ned))
+        if cur_spd < 2.5:
+            print(f'  감속 완료 (현재 속도 {cur_spd:.1f}m/s) -> 안전하게 RTL 전환!', flush=True)
+            break
+
+        # 현재 속도의 반대 방향으로 최대 6.0 m/s^2 부드러운 역추진 감속 (급격한 뒤집힘 방지)
+        a_brake = clamp_vec(-vel_ned * 1.4, 6.0)
+        send_acc(conn, a_brake[0], a_brake[1], a_brake[2], yaw)
+        time.sleep(0.02)
+
+    # 0.4초간 현재 위치 호버링 명령으로 자세 수평 안정화
+    for _ in range(20):
+        send_pos(conn, pos_ned[0], pos_ned[1], pos_ned[2], yaw)
         time.sleep(0.02)
 
     # ── 풍선 통과 후 RTL (Return to Launch) ──
