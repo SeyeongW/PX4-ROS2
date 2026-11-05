@@ -1,0 +1,46 @@
+<!-- Gazebo Classic station geometry, SI units. Only the camera gimbal moves. -->
+<model name="fixed_turret">
+  <pose>0 0 0 0 0 0</pose><static>false</static><self_collide>false</self_collide>
+  <link name="base">
+    <gravity>false</gravity><kinematic>true</kinematic>
+    <inertial><mass>100</mass><inertia><ixx>10</ixx><iyy>10</iyy><izz>10</izz></inertia></inertial>
+    <visual name="station_box"><pose>0 0 .35 0 0 0</pose><geometry><box><size>.72 .62 .70</size></box></geometry><material><ambient>.28 .32 .37 1</ambient><diffuse>.40 .45 .51 1</diffuse></material></visual>
+    <collision name="station_box_collision"><pose>0 0 .35 0 0 0</pose><geometry><box><size>.72 .62 .70</size></box></geometry></collision>
+    <!-- Exactly diameter30mm / height100mm, directly behind the camera. -->
+    <visual name="lidar_mast_visual"><pose>.10 -.145 .750 0 0 0</pose><geometry><cylinder><radius>.015</radius><length>.100</length></cylinder></geometry><material><diffuse>.24 .30 .36 1</diffuse></material></visual>
+    <collision name="lidar_mast_collision"><pose>.10 -.145 .750 0 0 0</pose><geometry><cylinder><radius>.015</radius><length>.100</length></cylinder></geometry></collision>
+    <visual name="lidar_mast_cap_visual"><pose>.10 -.145 .804 0 0 0</pose><geometry><box><size>.090 .090 .008</size></box></geometry><material><diffuse>.24 .30 .36 1</diffuse></material></visual>
+    <collision name="lidar_mast_cap_collision"><pose>.10 -.145 .804 0 0 0</pose><geometry><box><size>.090 .090 .008</size></box></geometry></collision>
+  </link>
+  <joint name="base_fixed" type="fixed"><parent>world</parent><child>base</child></joint>
+  <link name="gimbal_yaw">
+    <pose>.25 -.145 .760 0 0 0</pose><gravity>false</gravity><kinematic>true</kinematic>
+    <inertial><mass>.1</mass><inertia><ixx>.001</ixx><iyy>.001</iyy><izz>.001</izz></inertia></inertial>
+    <visual name="gimbal_yaw_base"><pose>0 0 -.050 0 0 0</pose><geometry><box><size>.080 .084 .020</size></box></geometry><material><diffuse>.12 .15 .19 1</diffuse></material></visual>
+    <visual name="camera_yoke_left"><pose>.042 .045 0 0 0 0</pose><geometry><box><size>.084 .0096 .054</size></box></geometry><material><diffuse>.18 .23 .28 1</diffuse></material></visual>
+    <visual name="camera_yoke_right"><pose>.042 -.045 0 0 0 0</pose><geometry><box><size>.084 .0096 .054</size></box></geometry><material><diffuse>.18 .23 .28 1</diffuse></material></visual>
+    <visual name="camera_yoke_back"><pose>0 0 -.012 0 0 0</pose><geometry><box><size>.0084 .0996 .033</size></box></geometry><material><diffuse>.18 .23 .28 1</diffuse></material></visual>
+    <visual name="camera_tray"><pose>.042 0 -.0396 0 0 0</pose><geometry><box><size>.084 .108 .0096</size></box></geometry><material><diffuse>.28 .33 .39 1</diffuse></material></visual>
+  </link>
+  <joint name="gimbal_yaw_joint" type="revolute"><parent>base</parent><child>gimbal_yaw</child><axis><xyz>0 0 1</xyz><limit><lower>-1e16</lower><upper>1e16</upper></limit></axis></joint>
+  <link name="gimbal_pitch">
+    <pose>.25 -.145 .760 0 0 0</pose><gravity>false</gravity><kinematic>true</kinematic>
+    <inertial><mass>.1</mass><inertia><ixx>.001</ixx><iyy>.001</iyy><izz>.001</izz></inertia></inertial>
+    <visual name="gimbal_camera_ball"><pose>.045 0 0 0 0 0</pose><geometry><sphere><radius>.0354</radius></sphere></geometry><material><ambient>.76 .79 .83 1</ambient><diffuse>.76 .79 .83 1</diffuse></material></visual>
+    <visual name="camera_lens_barrel"><pose>.0768 0 0 0 1.57079632679 0</pose><geometry><cylinder><radius>.0162</radius><length>.0078</length></cylinder></geometry><material><diffuse>.07 .10 .14 1</diffuse></material></visual>
+    <visual name="camera_lens_glass"><pose>.0822 0 0 0 1.57079632679 0</pose><geometry><cylinder><radius>.0132</radius><length>.0024</length></cylinder></geometry><material><diffuse>.035 .13 .20 1</diffuse></material></visual>
+    <visual name="camera_pitch_axle_left"><pose>.045 .0438 0 1.57079632679 0 0</pose><geometry><cylinder><radius>.0108</radius><length>.0108</length></cylinder></geometry><material><diffuse>.35 .40 .46 1</diffuse></material></visual>
+    <visual name="camera_pitch_axle_right"><pose>.045 -.0438 0 1.57079632679 0 0</pose><geometry><cylinder><radius>.0108</radius><length>.0108</length></cylinder></geometry><material><diffuse>.35 .40 .46 1</diffuse></material></visual>
+    $CAMERA
+  </link>
+  <joint name="gimbal_pitch_joint" type="revolute"><parent>gimbal_yaw</parent><child>gimbal_pitch</child><axis><xyz>0 1 0</xyz><limit><lower>-.5235987755982988</lower><upper>.5235987755982988</upper></limit></axis></joint>
+  <link name="lidar_head">
+    <!-- Manufacturer CAD origin O is47mm above its mounting face. -->
+    <pose>.10 -.145 .855 0 0 0</pose><gravity>false</gravity><kinematic>true</kinematic>
+    <inertial><mass>.265</mass><inertia><ixx>.001</ixx><iyy>.001</iyy><izz>.001</izz></inertia></inertial>
+    <visual name="mid360_manufacturer_cad"><geometry><mesh><uri>$MID360_MESH</uri><scale>1 1 1</scale></mesh></geometry></visual>
+  </link>
+  <joint name="lidar_mount_joint" type="fixed"><parent>base</parent><child>lidar_head</child></joint>
+  <plugin name="jol_mid360" filename="libjol_mid360.so"><ros><namespace>/jol</namespace></ros><scan_file>$SCAN_FILE</scan_file><seed>$SEED</seed></plugin>
+  <plugin name="jol_gimbal" filename="libjol_turret.so"><ros><namespace>/jol</namespace></ros><camera_mount>gimbal</camera_mount><camera_pose>.084 0 0 0 0 0</camera_pose><motion>false</motion><survey>false</survey><initial_pitch>0</initial_pitch><lidar_mount_mode>payload</lidar_mount_mode></plugin>
+</model>

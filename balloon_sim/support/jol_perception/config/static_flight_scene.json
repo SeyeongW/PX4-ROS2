@@ -1,0 +1,9 @@
+{
+  "frame_id": "world",
+  "scope": "Known fixed simulation infrastructure only; target geometry is from known-size monocular camera estimation, never ground truth.",
+  "obstacles": [
+    {"name": "fixed_sensor_pedestal", "min": [-0.40,-0.35,0], "max": [0.40,0.35,0.88]},
+    {"name": "rotated_background_crate", "min": [16.29,-12.35,0], "max": [19.71,-9.65,3]},
+    {"name": "background_column", "min": [-18.2,17.8,0], "max": [-15.8,20.2,5]}
+  ]
+}
