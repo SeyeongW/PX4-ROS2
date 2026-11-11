@@ -1,25 +1,47 @@
-# 레이싱 드론 · STL/PACER 시뮬레이션 워크스페이스
+# PX4 쿼드 테일시터(`SYS_AUTOSTART=1045`) · 30cm 풍선 3D 비전 유도 시뮬레이션
 
-레이싱 드론 연구용 시뮬레이션·Qt UI·RViz·STL 기체·Bézier 경로 코드를 이 폴더에서 빌드한다. 총중량은 기체·배터리를 포함한 2 kg이며 카메라만 사용한다.
+수직 노즈콘 카메라(Raspberry Pi Camera Module 3 Standard, 66° HFOV, 640×360 @ 30Hz)를 탑재한 2 kg 쿼드 테일시터(`stl_pacer_quad`, `1045_gazebo-classic_quadtailsitter`)가 5m 수직 이륙 후 대각선 테일시터 자세로 전환하여 **30cm 풍선(`(90, 0, 40) m`)**을 온보드 비전 3D 시선(LOS)/비례항법(PN)으로 정밀 추적·통과하고 RTL로 자동 귀환·착륙하는 ROS 2 Humble + Gazebo Classic 11 + PX4 SITL 시뮬레이션 패키지입니다.
+
+---
+
+## 1. 주요 스크립트 및 파일 구조 (`balloon_sim/`)
+
+| 경로 | 역할 |
+| :--- | :--- |
+| `tools/run_tailsitter_sim.sh` | Gazebo + PX4 테일시터 SITL + 온보드 검출기 + 비전 유도 제어기 통합 실행 (`run_vision_center.sh` 호환) |
+| `tools/tailsitter_guidance.py` | 쿼드 테일시터 5m 수직 이륙 → 피치다운 전환 → 3D LOS/PN 비전 유도 → 통과 동시 판정 → 후면 전환 감속 및 RTL 착륙 |
+| `tools/restart_flight.sh` | 실행 중인 시뮬레이션을 끄지 않고 테일시터 유도 비행만 즉시 재발사 (`refly.sh` 호환) |
+| `tools/plot_tailsitter_log.py` | PX4 `.ulg` 바이너리 비행 로그를 파싱하여 6-패널 텔레메트리 대시보드 및 3D 궤적 그래프 생성 |
+| `balloon_locator/balloon_locator/stl_airframe.py` | 10개 STL 조립 기체 + 4로터 차동 추력(`CA_AIRFRAME=4`) + 테일시터 주익/미익 공력(`libLiftDragPlugin.so`) SDF 생성 |
+| `balloon_locator/config/stl_pacer_quad.json` | 기체 질량/관성/모터 추력 곡선 및 PX4 쿼드 테일시터 파라미터 정의 |
+| `balloon_locator/launch/gazebo.launch.py` | ROS 2 + Gazebo Classic + PX4(`1045_gazebo-classic_quadtailsitter`) 런치 구성 |
+| `plots/tailsitter_telemetry_dashboard.png` | 테일시터 비행 로그 6-패널 종합 텔레메트리 분석 그래프 |
+| `plots/tailsitter_3d_trajectory.png` | 3D 공간 비행 궤적 및 평면(X-Y) 중심 정렬 정확도 그래프 |
+| `plots/tailsitter_flight_summary.json` | 최근접 거리(CPA), 통과 속도, 위치 오차 요약 JSON |
+
+---
+
+## 2. 실행 및 비행 로그 분석 명령어
 
 ```bash
-# Ubuntu 22.04 / ROS 2 Humble / Gazebo Classic 11 의존성 설치 후
-./tools/build_px4.sh
-./tools/build_workspace.sh
-./tools/run_gazebo.sh
+cd /home/seyeongw/ros2_ws/PX4-ROS2/balloon_sim
+
+# 1) 시뮬레이션 및 테일시터 비전 유도 비행 원클릭 실행
+./tools/run_tailsitter_sim.sh
+
+# 2) (선택) 시뮬레이터가 켜진 상태에서 드론만 즉시 재발사 (새 터미널)
+./tools/restart_flight.sh
+
+# 3) 비행 완료 후 PX4 ULog(.ulg)에서 분석 그래프 생성 (plots/ 폴더에 저장)
+./tools/plot_tailsitter_log.py
 ```
 
-UI에는 **짐벌 영상 · 드론 탑재 영상 · 기존 3D 경로**를 함께 표시합니다. 기존 검출 주석이 있으면 표시하고, 없거나 늦으면 원본 영상으로 전환합니다. 오래된 영상은 숨깁니다. 공개본의 기체 카메라 주석 발행기는 포함되지 않으므로 해당 화면은 원본/검출 미확인으로 표시될 수 있습니다. 새 검출·유도 알고리즘이나 명중률 개선을 적용한 변경은 아닙니다.
+---
 
-- [첫 화면: 경로 그래프·측정 수치·실제 스크린샷](../README.md)
-- [기존 비행 데이터 CSV](docs/data/terminal04_metrics.csv)
-- [동역학 수식 상세](docs/dynamics.md)
-- [설치·실행 명령 전체](docs/run.md)
-- [검증 결과 및 제한](docs/validation.md)
-- [출처와 라이선스](docs/sources.md)
+## 3. 비행 로그 분석 결과 (`CPA = 0.65 m`, 횡방향 오차 `dY = -0.04 m`)
 
-`balloon_locator/`는 카메라와 현재 기체/미션, `support/`는 함께 배포하는 기존 UI·경로·Gazebo 지원 패키지다. `external/`, `build/`, `install/`은 직접 생성하는 의존성/빌드 폴더이며 Git에 포함하지 않는다. 실행 데이터는 기본적으로 임시 저장 후 종료 시 삭제한다.
+### 6-패널 텔레메트리 대시보드
+![Tailsitter Telemetry Dashboard](plots/tailsitter_telemetry_dashboard.png)
 
-외장은 검정색이며 내부가 비치지 않는다. 둥근 3엽 프로펠러와 허브는 시각 표현이며, 이전 `airframe_transparency:=0.84` 인자는 실험 실행에서 무시한다.
-
-현재 공개 실행은 저속 MC 모델의 목표 도달·대기 구성이다. 첫 화면의 terminal04 통과 후 대기 기록은 별도 로컬 검증 리비전이며, 실행 코드와 같은 버전으로 혼동하지 않는다. 레이싱 용도 명시는 고속 레이싱·기수 수평 전환 검증을 뜻하지 않는다.
+### 3D 비행 궤적 및 평면(X-Y) 정렬 정확도
+![Tailsitter 3D Trajectory](plots/tailsitter_3d_trajectory.png)

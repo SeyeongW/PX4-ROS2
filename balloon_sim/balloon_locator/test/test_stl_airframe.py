@@ -170,10 +170,11 @@ def test_force_motors_and_sensor_plugins_drive_model(assembled):
     plugins = [p.get('filename') for p in model.iter('plugin')]
     assert any(p.endswith('libgazebo_imu_plugin.so') for p in plugins)
     assert any(p.endswith('libgazebo_gps_plugin.so') for p in plugins)
-    assert not any('LiftDrag' in p or 'airspeed' in p for p in plugins)
-    assert report['px4_parameters']['SYS_AUTOSTART'] == 10015
-    assert report['px4_parameters']['CA_AIRFRAME'] == 0
-    assert report['px4_sim_model'] == 'gazebo-classic_iris'
+    assert any('LiftDrag' in p for p in plugins)
+    assert not any('airspeed' in p for p in plugins)
+    assert report['px4_parameters']['SYS_AUTOSTART'] == 1045
+    assert report['px4_parameters']['CA_AIRFRAME'] == 4
+    assert report['px4_sim_model'] == 'gazebo-classic_quadtailsitter'
     assert report['hover_allocation_rank'] == 4
     assert report['max_static_thrust_to_weight'] > 3
     assert report['flight_verified'] is False

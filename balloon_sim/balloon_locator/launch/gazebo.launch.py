@@ -34,9 +34,9 @@ def start_stl_mavros(context,report,perception,existing,watch,mavros_enabled=Tru
     etc=root/'build/px4_sitl_default/etc'
     if not binary.is_file() or not etc.is_dir():raise ValueError('Local PX4 SITL build required')
     rootfs=Path(tempfile.mkdtemp(prefix='px4_rootfs_',dir=value('static_output')))
-    etc=existing['prepare_px4_parameter_overrides'](etc,rootfs,'10015_gazebo-classic_iris',report['px4_parameters'])
+    etc=existing['prepare_px4_parameter_overrides'](etc,rootfs,'1045_gazebo-classic_quadtailsitter',report['px4_parameters'])
     px4=ExecuteProcess(cmd=[str(binary),'-d',str(etc)],cwd=str(rootfs),output='screen',
-        additional_env={'PX4_SIM_MODEL':'gazebo-classic_iris','PX4_SYS_AUTOSTART':'10015'})
+        additional_env={'PX4_SIM_MODEL':'gazebo-classic_quadtailsitter','PX4_SYS_AUTOSTART':'1045'})
     if not mavros_enabled:
         return [watch(px4),px4]
     mavros=Node(package='mavros',executable='mavros_node',namespace='mavros',output='screen',
@@ -121,7 +121,7 @@ def setup(context):
     rviz=Node(package='rviz2',executable='rviz2',output='screen',condition=IfCondition(LaunchConfiguration('rviz')),
         arguments=['-d',str(perception/'config/static_flight.rviz')],parameters=[{'use_sim_time':True}])
     workspace_root=os.environ.get('BALLOON_WORKSPACE_ROOT','')
-    fly_script=Path(workspace_root)/'tools/fly_to_target.py' if workspace_root else None
+    fly_script=Path(workspace_root)/'tools/tailsitter_guidance.py' if workspace_root else None
     fly_to_target=ExecuteProcess(
         cmd=['python3',str(fly_script)],output='screen',
         additional_env={

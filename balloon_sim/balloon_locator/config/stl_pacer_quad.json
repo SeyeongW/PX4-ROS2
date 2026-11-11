@@ -203,6 +203,8 @@
   "px4_parameters": {
     "COM_RC_IN_MODE": 4,
     "COM_RCL_EXCEPT": 4,
+    "SYS_HAS_NUM_ASPD": 0,
+    "FW_USE_AIRSPD": 0,
     "THR_MDL_FAC": 1.0,
     "MPC_THR_HOVER": 0.2834135861012246,
     "MPC_THR_MIN": 0.05,
