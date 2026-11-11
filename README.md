@@ -1,198 +1,43 @@
-# 레이싱 드론 · 카메라 기반 3D 경로 추종 시뮬레이션
+# PX4-ROS2 자율비행 드론 프로젝트
 
-**레이싱 드론의 카메라 기반 좌표 추정과 3차 Bézier 경로 추종을 연구하는 프로젝트입니다.** 사용자 STL 10개를 조립한 기체이며, 총중량은 배터리를 포함한 **2 kg**입니다. ROS 2 Humble · Gazebo Classic · PX4 SITL · MAVROS를 사용하며 **LiDAR는 사용하지 않습니다.**
+**ROS 2**와 **PX4 Autopilot**(및 ArduPilot), **Gazebo 시뮬레이터**를 활용한 자율비행 드론 연구 및 시뮬레이션 레포지토리입니다.  
+지상 관측 시스템과 드론 온보드 비전 간의 다중 폐루프(Closed-Loop) 협력 유도 제어, 3차원 표적 좌표 추정(UKF), 쿼드 테일시터(Quad-Tailsitter) 기동 제어, 정밀 착륙 등을 다룹니다.
 
-현재 검증 모델은 **저속 멀티콥터(MC)**입니다. ‘레이싱 드론’은 기체의 사용 목적이며, 고속 레이싱 성능·수평 기수 전환·실기체 비행까지 검증했다는 뜻은 아닙니다.
+---
 
-**현재 외관:** 검은색 외장과 둥근 3엽 프로펠러·허브를 적용했습니다. 내부가 비치지 않으며, 이전 `airframe_transparency:=0.84` 옵션은 실험 실행에서 무시합니다.
+## 팀원 (Team Members)
 
-UI에는 **짐벌 영상 · 드론 탑재 영상 · 기존 3D 경로**를 함께 표시합니다. 기존 검출 주석이 있으면 표시하고, 없거나 늦으면 원본 영상으로 전환합니다. 오래된 영상은 숨깁니다. 공개본의 기체 카메라 주석 발행기는 포함되지 않으므로 해당 화면은 원본/검출 미확인으로 표시될 수 있습니다. 새 검출·유도 알고리즘이나 명중률 개선을 적용한 변경은 아닙니다.
+- **왕세영 (Seyeong Wang)** — [@SeyeongW](https://github.com/SeyeongW)
+- **조태현 (Taehyeon Cho)** — [@mandu38](https://github.com/mandu38)
+- **서영욱 (Yeonguk Seo)** — [@YeongukSeo](https://github.com/YeongukSeo)
 
-## 시스템 화면
+---
 
-| 관제 UI · 비무장 대기 | Gazebo · 기체와 지상 관제 장치 |
-|---|---|
-| ![실제 Qt 관제 UI의 비무장 대기 화면](balloon_sim/docs/assets/ui_idle.png) | ![실제 Gazebo 실험 환경의 정지 화면](balloon_sim/docs/assets/gazebo_scene.png) |
+## 주요 패키지 및 문서 안내
 
-**비행 전 대기 화면**입니다. UI는 이번 공개 패키지의 두 카메라 표시를 실제 실행해 갱신했고, 오른쪽 Gazebo 전체 장면은 외관 수정 전 로컬 캡처입니다. 아래 검정 기체 근접 화면은 최신 외관입니다. 비행 성공 화면을 합성한 것이 아닙니다.
+| 경로 | 설명 |
+| :--- | :--- |
+| **[`balloon_sim/`](balloon_sim/README.md)** | **지상 카메라 6-DOF UKF + 쿼드 테일시터(`SYS_AUTOSTART=1045`) 온보드 3D LOS/PN 비전 유도 시뮬레이션 패키지** (시뮬레이션 실행 방법 및 결과 수록) |
+| **[`balloon_sim/ALGORITHMS.md`](balloon_sim/ALGORITHMS.md)** | **`balloon_sim`에 적용된 수학적 알고리즘 및 제어·추정 수식 상세 문서** (6-DOF UKF, 비주얼 서보잉, 테일시터 SO(3) 자세·추력 분리 제어, 3D 비례항법 유도 등) |
+| `flight/` · `camera/` · `simulation/` · `gcs/` | 드론 비행 제어, 카메라 비전 처리, 시뮬레이션 환경 및 지상 관제(GCS) 관련 모듈 |
 
-## 생성 경로와 기록된 비행 궤적
+---
 
-![3차원 계획 경로, EKF 추정 궤적, Gazebo 실제 궤적과 경로 추종 오차](balloon_sim/docs/assets/flight_path.png)
+## 빠른 시작 (시뮬레이션 실행)
 
-**20261030_terminal04 · 최종 로컬 수정본의 시뮬레이션 1회.** 3 m 수직 이륙, 곡선 경로, 가상 풍선 지점 통과와 약 3 m 뒤 대기 구간을 표시했습니다. 생성 경로·PX4 EKF 추정·Gazebo 정답 궤적을 구분하며 정답 좌표는 평가에만 사용했습니다. 1,584개 행은 한 비행의 연속 표본입니다.
-
-> **버전 구분:** 이 그래프는 별도 로컬 검증 빌드의 기록입니다. 현재 `cho` 실행 코드의 기본 동작은 목표 좌표 도달·대기입니다. 그래프 게시 당시 문서·시각자료·기록 분석 도구를 추가했으며, 이번 외관/UI 갱신에도 로컬의 통과 후 대기 제어 변경은 공개 실행 코드에 동기화하지 않았습니다. 데이터에 당시 소스 SHA를 포함합니다.
-
-[큰 PNG](balloon_sim/docs/assets/flight_path.png) · [벡터 SVG](balloon_sim/docs/assets/flight_path.svg) · [수치 CSV](balloon_sim/docs/data/terminal04_metrics.csv) · [원자료 ZIP](balloon_sim/docs/data/terminal04_inputs.zip) · [Python 그래프 코드](balloon_sim/tools/plot_flight_path.py)
-
-## 측정 결과
-
-| 지표 | PX4 EKF 기준 | Gazebo 정답 기준 |
-|---|---:|---:|
-| 수직 상승량 | 3.008 m | 3.053 m |
-| 계획 대비 추종 오차 RMSE | 0.133 m | 0.233 m |
-| 계획 대비 최대 추종 오차 | 0.283 m | 0.574 m |
-| 최대 기체 기울기 | 1.381° | 0.919° |
-
-| 추가 지표 | 측정값 | 해석 |
-|---|---:|---|
-| 지상 카메라의 목표 좌표 오차 | 0.114 m | 락 좌표와 가상 표식 정답 비교 |
-| 기체 중심과 표식 중심의 최근접 거리 | 0.135 m | Gazebo 실제 궤적의 선분 근사; 정확한 중심 일치는 아님 |
-| 락한 추정 목표점 뒤 실제 대기 거리 | 2.903 m | 계획은 3 m; 접근 방향으로 투영한 거리 |
-| 실제 대기 위치와 계획 호버점 차이 | 0.274 m | Gazebo 대기 위치 평균 기준 |
-| 이륙 단계 시작→도달 | 74.05 s | 시뮬레이션 시각 |
-| 기체 카메라 확인 | 0회 | 고정 상향 카메라에서 표적을 확인하지 못함 |
-| 기체 카메라의 최소 광축 오차 | 75.96° | 시야 밖; 영상 유도 성공을 뜻하지 않음 |
-
-기울기 수치는 **관측된 자세**이며 PX4 제한각이 아닙니다. 현재 검출은 **OpenCV HSV·윤곽·타원 방식**이며 YOLO가 아닙니다. 최종 로컬 패키지는 당시 빌드와 **286개 테스트**를 통과했지만, 앞선 시험의 OFFBOARD 이탈 원인은 미확정이고 반복 비행 신뢰도·실기체 성능은 미검증입니다. 이번 게시 작업에서는 비행 시험을 추가하지 않았습니다.
-
-## 코드와 실행 문서
-
-현재 작업은 [`balloon_sim/`](balloon_sim)에 모았습니다. 월드·짐벌·Qt UI·RViz 설정·기체 STL·경로/비행 코드가 포함됩니다. 기존 `flight/`, `camera/`, `simulation/`은 별도 착륙 프로젝트이며 이 실행에 사용하지 않습니다.
-
-- [동역학·좌표변환·경로 수식 상세](balloon_sim/docs/dynamics.md)
-- [설치·빌드·실행 명령](balloon_sim/docs/run.md)
-- [검증 결과와 미검증 항목](balloon_sim/docs/validation.md)
-- [구성 요소와 출처](balloon_sim/docs/sources.md)
-
-## 실행 명령
-
-Ubuntu 22.04, ROS 2 Humble, Gazebo Classic 11 기준입니다. 최초 의존성 설치는 [실행 문서](balloon_sim/docs/run.md)를 확인하세요. **이 명령은 시뮬레이션만 실행합니다.**
+현재 메인 시뮬레이션 패키지인 [`balloon_sim/`](balloon_sim/README.md) 실행 방법입니다:
 
 ```bash
-git clone --branch cho --single-branch https://github.com/SeyeongW/PX4-ROS2.git
-cd PX4-ROS2/balloon_sim
-./tools/build_px4.sh
-./tools/build_workspace.sh
-./tools/run_gazebo.sh
+cd balloon_sim
+
+# 1) 지상 카메라 탐색/UKF + 테일시터 비전 유도 시뮬레이션 실행
+./tools/run_tailsitter_sim.sh
+
+# 2) 지상 카메라가 풍선을 락온하면, 카메라 뷰어 창에서 [SPACE] 또는 [ENTER] 키를 누르거나 아래 스크립트로 출격 승인
+./tools/approve_launch.sh
+
+# 3) 비행 후 PX4 ULog(.ulg) 텔레메트리 및 3D 궤적 그래프 생성
+./tools/plot_tailsitter_log.py
 ```
 
-GUI가 필요 없는 점검:
-
-```bash
-./tools/run_gazebo.sh gui:=false ui:=false rviz:=false
-```
-
-UI 순서: **탐지 시작 → 유효 좌표 확인 → 락 → 자동 경로 미리보기 → 발사 → 수직 이륙 → 곡선 추종 → 도달·대기**. 발사에는 좌표·경로·FCU 준비가 모두 필요합니다. 중단은 현재 위치에서 착륙하며 자동 귀환을 뜻하지 않습니다. 종료는 실행 터미널에서 `Ctrl+C`입니다. 실행 로그·데이터는 기본적으로 임시 폴더에 생성되고 종료 후 삭제됩니다.
-
-## 노즈 카메라와 내부 배치
-
-![실제 Gazebo에서 본 사용자 STL 레이싱 드론 모델](balloon_sim/docs/assets/drone_detail.png)
-
-2026-11-01 공개 패키지를 비무장 실행해 캡처한 최신 외관입니다. 내부가 비치지 않는 검정 외장과 둥근 3엽 프로펠러·허브를 확인했습니다.
-
-사용자 단면도를 참고해 노즈 개구부 뒤에 **Camera Module 3 표준형**의 PCB·렌즈·커넥터와 개념 장착 레일을 추가하고, 배터리·ESC/FC·Pi 5·무선모듈·GPS 내부 배치를 표현했습니다. 원본 STL 10개와 총질량 2 kg·중앙 CG·관성 가정은 유지했습니다. 추가 부품은 시각적 배치이며 실측 질량 배분이나 제작 승인 결과가 아닙니다.
-
-기체 카메라는 **640×360, 15 Hz, 수평 66°** 설정으로 `/jol/onboard_camera/image_raw`와 `/jol/onboard_camera/camera_info`를 발행합니다. 기수인 body +Z를 보므로 직립 시에는 위를 봅니다. TF는 EKF 기체 프레임 `jol/observer_body` 아래 연결되며, 풍선 락·비행 좌표 입력은 기존 짐벌 카메라가 담당합니다.
-
-실험 실행은 내부 보기 없이 검은 외장만 표시합니다. 이전 투명도 인자가 남아 있어도 외장 표시를 유지하며, 원본 STL·질량·충돌·센서·비행 설정은 바꾸지 않았습니다.
-
-기존 브래킷 직접 체결 시 렌즈 중심 약 7.4 mm 불일치, PCB 반경 여유 약 0.333 mm, 후면 커넥터 여유 0.25 mm와 도면 치수 기준점 해석 차이 0.45 mm는 미해결 기구 검토 항목입니다. [공식 기구 도면](https://datasheets.raspberrypi.com/camera/camera-module-3-standard-mechanical-drawing.pdf)을 참고했으며, 공차·배선·체결 강도·실제 광학 중심은 검증하지 않았습니다.
-
-## 시스템 구성
-
-```mermaid
-flowchart LR
-    C[짐벌 영상 + CameraInfo + 촬영 시각 TF] --> D[풍선 검출 / 픽셀 중심·크기]
-    D --> E[알려진 지름으로 거리·3D 좌표 추정]
-    E --> L[좌표 품질 확인 / 사용자 락]
-    L --> P[3m 수직 이륙 + Bézier / 시간 매개화]
-    P --> M[MAVROS 위치·속도·가속도 목표]
-    M --> F[PX4 위치·자세·각속도 제어]
-    F --> G[Gazebo 모터 추력·토크 / 강체 운동]
-    G --> O[IMU·GPS / PX4 EKF 자기 위치]
-    O --> F
-    U[Qt UI / RViz 3D 경로] --- L
-    U --- P
-    G -. 오차 평가만 .-> V[Gazebo 정답 위치]
-```
-
-기본 표적은 시스템 오른쪽 **수평 40 m, 높이 10 m**, 월드 좌표 `(0, -40, 10)`입니다. 기체 모델 기준점 초기 위치는 `(-2, 0, 0.2045)` m입니다. 실제 계획 시작점은 준비된 FCU 자기 위치에서 정합니다. 카메라는 미검출 시 yaw 탐색을 하고 검출 후 화면 중심에 정렬합니다.
-
-## 적용된 동역학 수식
-
-### 1. 강체 운동과 모터
-
-월드 W는 ENU, 기체 B는 FLU, R은 기체→월드 회전입니다. Ω는 기체 각속도, ωᵢ는 모터 각속도입니다.
-
-$$
-\dot{\mathbf p}_W=\mathbf v_W,\qquad
-m\dot{\mathbf v}_W=m\mathbf g_W+R_{WB}\sum_{i=1}^{4}T_i\mathbf a_i+\mathbf F_{contact}
-$$
-
-$$
-J\dot{\boldsymbol\Omega}+\boldsymbol\Omega\times(J\boldsymbol\Omega)
-=\sum_{i=1}^{4}\left[(\mathbf r_i-\mathbf c)\times T_i\mathbf a_i+s_iQ_i\mathbf a_i\right]+\boldsymbol\tau_{contact},
-\qquad \dot R_{WB}=R_{WB}[\boldsymbol\Omega]_\times
-$$
-
-$$
-T_i=k_T\omega_i^2,\qquad Q_i=k_Q\omega_i^2,\qquad
-\dot\omega_i=\frac{\omega_{cmd,i}-\omega_i}{\tau_{up/down}}
-$$
-
-로터 축은 기체 +Z이며 rᵢ는 모터 위치, c는 CG입니다. 반작용 토크 부호 sᵢ는 CCW에서 −1, CW에서 +1입니다. 실제 시간 적분과 접촉은 Gazebo가 처리합니다. 기체 위치를 강제로 바꾸는 방식으로 비행하지 않습니다. 현재 동체 양력·항력 모델은 적용하지 않습니다.
-
-| 항목 | 현재 값 | 근거 |
-|---|---:|---|
-| 총질량 | 2 kg, 기체·배터리 포함 | 사용자 지정 |
-| CG | 기체 중심 | 사용자 가정 |
-| 관성 J | diag(0.02, 0.02, 0.01) kg·m² | 실측 전 가정 |
-| 모터/시험 조건 | PACER P2207 V3, 1950 KV, 6S, P49436-3 | 제조사 정적 시험표 |
-| kT | 약 1.447756 × 10⁻⁶ N/(rad/s)² | 원점 통과 최소제곱 적합 |
-| kQ | 0.01 kT | 반작용 토크 가정, 실측 아님 |
-| 상승/하강 응답시간 | 0.025 s / 0.05 s | 가정 |
-| 모터 최대 회전수 | 33,011 RPM | 시험표 상한 |
-
-[물리 설정 JSON](balloon_sim/balloon_locator/config/stl_pacer_quad.json), [모델 생성 코드](balloon_sim/balloon_locator/balloon_locator/stl_airframe.py), [T-MOTOR 공식 시험표](https://www.tmotorhobby.com/images/20220411/1649663656357709.jpg).
-
-### 2. 카메라 좌표와 NED 변환
-
-알려진 풍선 지름 D, 검출 지름 dpx, 초점거리 fx, fy로 **작은 시야각 근사 거리**를 구합니다. 크기 미상의 물체 절대 거리를 단안 영상만으로 알아내는 방법은 아닙니다.
-
-$$
-\rho\approx\frac{D(f_x+f_y)}{2d_{px}},\qquad
-\hat{\mathbf r}_C=\frac{K^{-1}(u,v,1)^T}{\|K^{-1}(u,v,1)^T\|},\qquad
-\mathbf p_{N,station}=\mathbf t_{NC}+\rho R_{NC}\hat{\mathbf r}_C
-$$
-
-K는 보정 행렬이고 카메라 변환에는 촬영 시각의 짐벌 자세·장착 변환이 포함됩니다. 지상국 NED와 FCU NED는 원점이 다르므로 월드 좌표를 거쳐 정합합니다. 세계좌표에서의 북방향을 ψN, FCU 원점을 oW라 하면:
-
-$$
-R_{NW}=\begin{bmatrix}\cos\psi_N&\sin\psi_N&0\\\sin\psi_N&-\cos\psi_N&0\\0&0&-1\end{bmatrix},\qquad
-\mathbf p_{N,FCU}=R_{NW}(\mathbf p_W-\mathbf o_W)
-$$
-
-현재 북방향은 ψN = π/2입니다. 정지 EKF 위치와 선언된 시뮬레이션 spawn을 이용해 원점을 정합합니다. **MAVROS의 ROS 입력은 ENU**이므로 어댑터가 NED→ENU로 변환하고, MAVROS가 MAVLink NED로 변환합니다. 자세한 기준은 [수식 문서](balloon_sim/docs/dynamics.md)를 따릅니다. Gazebo 정답 표적 좌표는 오차 평가에만 사용합니다.
-
-### 3. 3 m 수직 이륙과 3차 Bézier 경로
-
-초기 위치 H, 곡선 시작점 P₀ = H + 3ez, 목표 P₃ = G로 둡니다. 현재 수직 핸들은 h = min(4, (Gz−P₀z)/2)이며 P₁ = P₀ + h ez, P₂ = P₀ + 2h ez입니다. 목표 높이 등 유효성 조건은 코드에서 검사합니다.
-
-$$
-B(u)=(1-u)^3P_0+3(1-u)^2uP_1+3(1-u)u^2P_2+u^3P_3,\qquad 0\le u\le1
-$$
-
-$$
-\mathbf v=B'(u)\dot u,\qquad
-\mathbf a=B''(u)\dot u^2+B'(u)\ddot u
-$$
-
-$$
-\mathbf j=B'''(u)\dot u^3+3B''(u)\dot u\ddot u+B'(u)\dddot u
-$$
-
-3차는 **공간 곡선의 차수**이고 시간 함수 u(t)는 별도의 **5차 다항식**입니다. 수직 구간과 곡선 구간을 계획상 위치·속도·가속도 연속으로 연결하며, 연결 상승 속도는 0.35 m/s입니다. 최대 속도 1.5 m/s, 가속도 0.6 m/s², jerk 1.2 m/s³를 계획 기준으로 사용합니다. 실제 높이 도달 여부에 따른 미션 시각 제한과 기체 응답까지 완벽한 연속성을 보장하는 것은 아닙니다.
-
-### 4. 경로를 추종하는 제어 구조
-
-Python 미션은 위치·속도·가속도 목표를 MAVROS로 전달합니다. PX4가 EKF 자기 위치를 이용해 **위치 P → 속도 PID → 추력 방향·자세 목표 → 자세 P → 각속도 PID → 모터 배분**을 수행합니다. 이는 제어 구조 요약이며 제한·보상·적분 항은 PX4 구현을 따릅니다.
-
-**현재 STL 멀티콥터 분기는 yaw 목표를 명시하지 않습니다.** 기체가 기울어져 전진하는 물리 운동과, 기수가 항상 경로 접선 방향으로 향하는 제어는 구분해야 합니다. 고정익 전환·수평 기수 비행은 현재 기본 모델에 구현되지 않았습니다.
-
-## 확인된 결과와 남은 제한
-
-이전 로컬 전체 실행 `20261030_stl_pacer_05`에서 수직 상승 **3.009 m**, 최대 EKF 경로 오차 **0.288 m**, 도달 대기 후 실제 Gazebo 위치→락 목표 오차 **0.291 m**를 확인했습니다. 실제 최대 가속도 **0.809 m/s²**는 기준 0.6 m/s²를 초과했습니다. 실기체 성능이나 모든 운동 제한을 검증한 결과가 아닙니다.
-
-기본 실험은 **목표 좌표 도달 후 정지·대기**입니다. 사각 게이트 통과 판정 코드는 남아 있지만 기본 비활성입니다. 2 kg 조건의 모터 장착 간섭, CG·관성 실측, 배터리 전압 강하, 실물 카메라 40 m 정확도는 미검증입니다. 공개 패키지의 새 빌드/실행 확인과 이전 비행 결과는 [검증 문서](balloon_sim/docs/validation.md)에서 구분합니다.
+자세한 실행 절차와 아키텍처는 **[`balloon_sim/README.md`](balloon_sim/README.md)** 및 **[`balloon_sim/ALGORITHMS.md`](balloon_sim/ALGORITHMS.md)**를 참고하세요.

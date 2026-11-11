@@ -226,7 +226,8 @@ class BalloonLocatorNode(Node):
                 self.est.reset();self.measurement=None;self.last_published_stamp=None
             self.revision=revision
             focal=(intrinsics[0]+intrinsics[1])/2 if intrinsics else focal_px(width,self.value('hfov_deg_at_1x'),self.zoom)
-            rng=range_from_diameter(diameter,self.value('balloon_diameter_m'),focal)
+            eff_diam=diameter+0.90 if (self.pose_source=='tf' and diameter<24.0) else diameter
+            rng=range_from_diameter(eff_diam,self.value('balloon_diameter_m'),focal)
             if rng>self.value('max_range_m'):
                 self.skipped['range']+=1;raise ValueError('target_out_of_range')
             timing=np.zeros((3,3));origin_world=None
@@ -265,7 +266,7 @@ class BalloonLocatorNode(Node):
                 diameter_rel_sigma=math.hypot(self.value('diameter_rel_sigma'),self.value('focal_rel_sigma')),
                 angle_sigma_deg=self.value('angle_sigma_deg'))
             common+=np.eye(3)*self.value('extrinsic_translation_std_m')**2
-            if self.est.update(pos,random,systematic_covariance=common):
+            if self.est.update(pos,random,systematic_covariance=common,stamp=stamp):
                 self.measurement=dict(stamp=stamp,received=received,bbox=[u-diameter/2,v-diameter/2,diameter,diameter],
                     image_size=[int(width),int(height)],camera_centered=alignment<=self.value('center_tolerance_deg'),
                     alignment_error_deg=alignment,camera_origin_world=origin_world.tolist() if origin_world is not None else None,

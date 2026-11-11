@@ -83,15 +83,15 @@ def setup(context):
     locator=Node(package='balloon_locator',executable='balloon_locator_node',output='screen',parameters=[{
         'use_sim_time':True,'pose_source':'tf','fixed_frame':'world','camera_info_topic':'/jol/camera/camera_info',
         'calibration_valid':True,'balloon_diameter_m':0.3,'diameter_rel_sigma':0.0,
-        'pixel_sigma_px':.5,'focal_rel_sigma':0.0,'angle_sigma_deg':.1,'min_samples':3,'max_sigma_m':.5,
-        'max_measurement_age_sec':2.0,'center_tolerance_deg':30.,'forget':0.8,'min_gate_samples':30,
-        'camera_mount_parent':'jol/ground_gimbal',
-        'camera_mount_child':'jol/camera_optical',
+        'pixel_sigma_px':.5,'focal_rel_sigma':0.0,'angle_sigma_deg':.1,'min_samples':3,'max_sigma_m':2.5,
+        'max_measurement_age_sec':2.0,'center_tolerance_deg':2.5,'forget':0.88,'min_gate_samples':8,
+        'camera_mount_parent':'',
+        'camera_mount_child':'',
         'camera_mount_xyz':[0.084,0.,0.],
         'camera_mount_rpy':[-math.pi/2,0.,-math.pi/2]}])
     tracker=Node(package='balloon_locator',executable='gimbal_tracker_node',output='screen',parameters=[{
-        'use_sim_time':True,'image_width':640.,'image_height':360.,'deadband':.003,
-        'yaw_sign':1.,'pitch_sign':-1.}])
+        'use_sim_time':True,'image_width':1280.,'image_height':960.,'deadband':.003,
+        'yaw_sign':-1.,'pitch_sign':1.}])
     mode=value('mode')
     auto_start=value('ui').lower() not in ('true','1','yes')
     bridge=Node(package='balloon_locator',executable='gazebo_bridge',output='screen',parameters=[{'use_sim_time':True,'auto_start':auto_start}])
@@ -133,8 +133,8 @@ def setup(context):
         'use_sim_time':True}])
     use_mavros = mode not in ('pymav',)
     if mode=='pymav':
-        ground_nodes=[server,onboard_detector,detection_viewer]+([fly_to_target] if fly_to_target else [])
-        watched=[server,onboard_detector]
+        ground_nodes=[server,detector,locator,tracker,bridge,onboard_detector,detection_viewer]+([fly_to_target] if fly_to_target else [])
+        watched=[server,detector,locator,tracker,bridge,onboard_detector]
     elif mode=='vision_center':
         ground_nodes=[server,onboard_detector,vision_center]
         watched=[server,onboard_detector,vision_center]

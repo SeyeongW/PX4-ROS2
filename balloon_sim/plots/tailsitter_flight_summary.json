@@ -7,21 +7,21 @@
     40.0
   ],
   "balloon_diameter_m": 0.3,
-  "duration_s": 118.86,
-  "cpa_time_s": 8.7,
-  "cpa_dist_3d_m": 0.649,
+  "duration_s": 76.48,
+  "cpa_time_s": 10.43,
+  "cpa_dist_3d_m": 0.497,
   "cpa_world_m": [
-    89.9,
-    -0.044,
-    40.64
+    89.75,
+    -0.006,
+    40.429
   ],
   "cpa_error_xyz_m": [
-    -0.1,
-    -0.044,
-    0.64
+    -0.25,
+    -0.006,
+    0.429
   ],
-  "cpa_speed_m_s": 26.22,
-  "max_approach_speed_m_s": 31.61,
-  "dashboard_png": "plots/tailsitter_telemetry_dashboard.png",
-  "trajectory_3d_png": "plots/tailsitter_3d_trajectory.png"
+  "cpa_speed_m_s": 13.27,
+  "max_approach_speed_m_s": 17.44,
+  "dashboard_png": "/home/seyeongw/ros2_ws/PX4-ROS2/balloon_sim/plots/tailsitter_telemetry_dashboard.png",
+  "trajectory_3d_png": "/home/seyeongw/ros2_ws/PX4-ROS2/balloon_sim/plots/tailsitter_3d_trajectory.png"
 }

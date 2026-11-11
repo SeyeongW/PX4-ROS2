@@ -24,15 +24,19 @@ from tf2_ros import TransformBroadcaster
 from geometry_msgs.msg import TransformStamped
 
 NED_TO_WORLD=np.array([[0.,1.,0.],[1.,0.,0.],[0.,0.,-1.]])
+GIMBAL_ORIGIN_WORLD=(0.25,-0.145,0.760)
+GROUND_CAM_W=1280.0
+GROUND_CAM_H=960.0
+GROUND_CAM_FX=GROUND_CAM_W/(2.0*math.tan(math.radians(12.0)/2.0))
 
 
-def mission_estimate(status,now,started_at,status_age=0.):
+def mission_estimate(status,now,started_at,status_age=0.,max_age=.8,max_var=.25):
     """Reject stale/unready coordinates before adapting the documented station basis."""
     if status.get('valid') is not True:raise ValueError(status.get('reason','balloon_coordinate_invalid'))
     stamp=float(status['measurement_stamp'])
-    if not started_at<=stamp<=now or now-stamp>2.0:raise ValueError('balloon_measurement_stale')
+    if not started_at<=stamp<=now or now-stamp>max_age:raise ValueError('balloon_measurement_stale')
     wall_age=float(status['measurement_wall_age'])
-    if not 0<=status_age<=2.0 or not 0<=wall_age+status_age<=2.0:
+    if not 0<=status_age<=max_age or not 0<=wall_age+status_age<=max_age:
         raise ValueError('balloon_measurement_wall_stale')
     if (status.get('calibration_valid') is not True or not isinstance(status.get('calibration_revision'),str)
             or not status['calibration_revision']):raise ValueError('balloon_calibration_unconfirmed')
@@ -43,7 +47,7 @@ def mission_estimate(status,now,started_at,status_age=0.):
     point=np.asarray(status['ned'],float);cov=np.asarray(status['covariance'],float)
     if point.shape!=(3,) or cov.shape!=(3,3) or not np.isfinite(point).all() or not np.isfinite(cov).all():
         raise ValueError('invalid_balloon_coordinate')
-    if not np.allclose(cov,cov.T) or np.linalg.eigvalsh(cov).min()<0 or np.linalg.eigvalsh(cov).max()>.25:
+    if not np.allclose(cov,cov.T) or np.linalg.eigvalsh(cov).min()<0 or np.linalg.eigvalsh(cov).max()>max_var:
         raise ValueError('balloon_coordinate_uncertainty')
     # These fields also reach UI drawing and allow_nan=False JSON publication.
     for name,size in (('bbox',4),('image_size',2),('camera_origin_world',3)):
@@ -81,7 +85,8 @@ class GazeboBridge(Node):
         self.last_visual=None;self.rate=None;self.rate_wall=0.;self.last_tick=None
         self.reset_generation=0;self.pending_reset=None;self.last_clock=None;self.stage='waiting_start';self.reason='waiting_for_acquisition_start'
         self.images=deque(maxlen=12);self.last_detection_stamp=None
-        self.search_yaw=0.;self.search_pitch=-0.8;self.search_yaw_speed=0.3
+        self.search_yaw=-0.36;self.search_pitch=-0.14;self.search_yaw_speed=0.3
+        self.track_yaw=None;self.track_pitch=None;self.last_servo_stamp=None
         self.gimbal_tf_br=TransformBroadcaster(self)
         self.estimate_pub=self.create_publisher(String,'/jol/static_target/estimate',10)
         self.status_pub=self.create_publisher(String,'/jol/static_target/status',10)
@@ -106,12 +111,27 @@ class GazeboBridge(Node):
             if not isinstance(packet,dict):raise ValueError('status_must_be_object')
             self.status=packet;self.status_wall=time.monotonic()
         except(ValueError,TypeError):self.status={}
+    def _broadcast_gimbal_tf(self,yaw,pitch,stamp_msg=None):
+        if not hasattr(self,'gimbal_tf_br') or self.gimbal_tf_br is None:return
+        t=TransformStamped()
+        t.header.stamp=stamp_msg if stamp_msg is not None else self.get_clock().now().to_msg()
+        t.header.frame_id='world';t.child_frame_id='jol/ground_gimbal'
+        t.transform.translation.x=float(GIMBAL_ORIGIN_WORLD[0])
+        t.transform.translation.y=float(GIMBAL_ORIGIN_WORLD[1])
+        t.transform.translation.z=float(GIMBAL_ORIGIN_WORLD[2])
+        hy,hp=yaw/2,pitch/2
+        chy,shy=math.cos(hy),math.sin(hy)
+        chp,shp=math.cos(hp),math.sin(hp)
+        t.transform.rotation.w=chy*chp;t.transform.rotation.x=-shy*shp
+        t.transform.rotation.y=chy*shp;t.transform.rotation.z=shy*chp
+        self.gimbal_tf_br.sendTransform(t)
     def receive_joints(self,msg):
         values=dict(zip(msg.name,msg.position))
         if all(k in values and math.isfinite(values[k]) for k in ('gimbal_yaw_joint','gimbal_pitch_joint')):
             self.joints=[values['gimbal_yaw_joint'],values['gimbal_pitch_joint']]
             self.joint_stamp=msg.header.stamp.sec+msg.header.stamp.nanosec*1e-9
             if self.initial is None:self.initial=self.joints.copy()
+            self._broadcast_gimbal_tf(self.joints[0],self.joints[1],msg.header.stamp)
     def receive_rate(self,msg):
         if np.isfinite([msg.x,msg.y]).all():self.rate=[msg.x,msg.y];self.rate_wall=time.monotonic()
     def receive_image(self,msg):
@@ -132,7 +152,22 @@ class GazeboBridge(Node):
             rows.append(dict(bbox=[b.center.position.x-b.size_x/2,b.center.position.y-b.size_y/2,b.size_x,b.size_y],
                 confidence=score,class_name='balloon'))
         self.detection_pub.publish(String(data=json.dumps(dict(stamp=stamp,frame_id=msg.header.frame_id,detections=rows),allow_nan=False)))
-        if rows:self.last_visual=stamp
+        if rows:
+            self.last_visual=stamp
+            b0=rows[0]['bbox']
+            cx=b0[0]+b0[2]*0.5;cy=b0[1]+b0[3]*0.5
+            joints=getattr(self,'joints',None)
+            if joints is not None:
+                ex_px=cx-GROUND_CAM_W*0.5
+                ey_px=cy-GROUND_CAM_H*0.5
+                if math.hypot(ex_px,ey_px)>10.0 or getattr(self,'track_yaw',None) is None:
+                    dyaw=-math.atan2(ex_px,GROUND_CAM_FX)
+                    dpitch=math.atan2(ey_px,GROUND_CAM_FX)
+                    tgt_yaw=math.remainder(joints[0]+0.65*dyaw,2*math.pi)
+                    tgt_pitch=max(-math.pi/6,min(math.pi/6,joints[1]+0.65*dpitch))
+                    self.track_yaw=tgt_yaw
+                    self.track_pitch=tgt_pitch
+                    self.last_servo_stamp=stamp
         for original in reversed(self.images):
             image_stamp=original.header.stamp.sec+original.header.stamp.nanosec*1e-9
             if abs(stamp-image_stamp)>1e-6 or original.header.frame_id!=msg.header.frame_id:continue
@@ -169,38 +204,42 @@ class GazeboBridge(Node):
         now=self.now();wall=time.monotonic();dt=min(.05,max(0.,now-(self.last_tick or now)));self.last_tick=now
         if self.last_clock is not None and now<self.last_clock:
             self.reset_generation+=1;self.pending_reset=None;self.started=False;self.stage='waiting_start';self.status={}
-            self.last_detection_stamp=self.last_visual=self.start_stamp=self.rate=None;self.images.clear()
+            self.last_detection_stamp=self.last_visual=self.start_stamp=self.rate=None
+            self.track_yaw=self.track_pitch=self.last_servo_stamp=None;self.images.clear()
         self.last_clock=now
         if (self.auto_start and not self.started and not self.restoring
                 and self.pending_reset is None and self.stage=='waiting_start'
-                and now>2. and self.reset_client.service_is_ready()):
+                and now>10.0 and self.reset_client.service_is_ready()):
             self.reset_generation+=1;generation=self.reset_generation
             self.status={};self.stage='starting';self.pending_reset=self.reset_client.call_async(Trigger.Request())
             self.pending_reset.add_done_callback(lambda future:self.started_after_reset(future,generation))
-            self.get_logger().info('auto_start: acquisition triggered')
+            self.get_logger().info('auto_start: ground camera sky search & UKF acquisition triggered')
         joint_fresh=bool(self.joints is not None and self.joint_stamp is not None and 0<=now-self.joint_stamp<=.3)
+        if not self.started and not self.restoring and joint_fresh:
+            # 탐색 시작 전에는 풍선이 없는 좌측 하단(-20.6°, 앙각 +8.0°) 방향을 바라보며 대기
+            self.command([-0.36,-0.14])
         if self.restoring and joint_fresh:
             if max(abs(math.remainder(self.initial[0]-self.joints[0],2*math.pi)),abs(self.initial[1]-self.joints[1]))<math.radians(1):
                 self.restoring=False;self.stage='waiting_start'
             else:self.command(self.initial)
         if self.started and joint_fresh:
-            self.command([0.,0.])
+            visual_fresh=bool(self.last_visual is not None and 0<=now-self.last_visual<=1.5)
+            if visual_fresh and self.track_yaw is not None and self.track_pitch is not None:
+                self.command([self.track_yaw,self.track_pitch])
+            else:
+                # 좌측 하단(yaw=-20.6°, elev=+8.0°)에서 출발해 상공을 대각선/좌우로 스캔하다가 풍선 발견 시 즉시 락온
+                t_search=max(0.,now-(self.start_stamp or now))
+                omega=0.55
+                cmd_yaw=-0.36*math.cos(omega*t_search)
+                cmd_pitch=-0.14-0.2725*math.sin(omega*t_search)
+                self.command([cmd_yaw,max(-math.pi/6,min(math.pi/6,cmd_pitch))])
         if joint_fresh and self.joints is not None:
-            yaw,pitch=self.joints
-            t=TransformStamped()
-            t.header.stamp=self.get_clock().now().to_msg()
-            t.header.frame_id='world';t.child_frame_id='jol/ground_gimbal'
-            hy,hp=yaw/2,pitch/2
-            chy,shy=math.cos(hy),math.sin(hy)
-            chp,shp=math.cos(hp),math.sin(hp)
-            t.transform.rotation.w=chy*chp;t.transform.rotation.x=-shy*shp
-            t.transform.rotation.y=chy*shp;t.transform.rotation.z=shy*chp
-            self.gimbal_tf_br.sendTransform(t)
+            self._broadcast_gimbal_tf(self.joints[0],self.joints[1])
         try:
             if not self.started:raise ValueError('waiting_for_acquisition_start')
             if wall-self.status_wall>2.0:raise ValueError('balloon_status_wall_stale')
             if not joint_fresh:raise ValueError('gimbal_feedback_stale')
-            packet=mission_estimate(self.status,now,self.start_stamp,wall-self.status_wall)
+            packet=mission_estimate(self.status,now,self.start_stamp,wall-self.status_wall,max_age=2.0,max_var=6.25)
             self.reason='ready';self.stage='ready' if packet['evidence']['gimbal_centered'] else 'visual_centering'
         except(ValueError,KeyError,TypeError)as error:
             prev=self.reason;self.reason=str(error)
