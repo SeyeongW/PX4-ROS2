@@ -19,6 +19,8 @@
 | :--- | :--- |
 | **[`balloon_sim/`](balloon_sim/README.md)** | **지상 카메라 6-DOF UKF + 쿼드 테일시터(`SYS_AUTOSTART=1045`) 온보드 3D LOS/PN 비전 유도 시뮬레이션 패키지** (시뮬레이션 실행 방법 및 결과 수록) |
 | **[`balloon_sim/ALGORITHMS.md`](balloon_sim/ALGORITHMS.md)** | **`balloon_sim`에 적용된 수학적 알고리즘 및 제어·추정 수식 상세 문서** (6-DOF UKF, 비주얼 서보잉, 테일시터 SO(3) 자세·추력 분리 제어, 3D 비례항법 유도 등) |
+| **[`balloon_sim/HARDWARE_GUIDE.md`](balloon_sim/HARDWARE_GUIDE.md)** | **실기체(SIYI A8 mini + SiK 라디오 + 쿼드 테일시터 온보드) 전환 및 현장 운용 매뉴얼** |
+| **[`balloon_sim/PX4_PARAMETERS.md`](balloon_sim/PX4_PARAMETERS.md)** | **PX4 쿼드 테일시터(`SYS_AUTOSTART=13003/1045`, `CA_AIRFRAME=4`) 전체 파라미터 표 및 QGC 설정 파일** |
 | `flight/` · `camera/` · `simulation/` · `gcs/` | 드론 비행 제어, 카메라 비전 처리, 시뮬레이션 환경 및 지상 관제(GCS) 관련 모듈 |
 
 ---

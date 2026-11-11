@@ -66,6 +66,7 @@ class BalloonLocatorNode(Node):
         self.skipped=dict(no_att=0,range=0,small=0,stale=0,invalid=0,tf=0)
         self.pub_pt=self.create_publisher(PointStamped,self.value('position_topic'),10)
         self.pub_est=self.create_publisher(PoseWithCovarianceStamped,'/balloon/estimate',10)
+        self.pub_vel=self.create_publisher(Vector3Stamped,'/balloon/estimated_velocity',10)
         self.pub_status=self.create_publisher(String,'/balloon/status',10)
         self.create_subscription(Detection2DArray,'/balloon/detections',self._on_det,10)
         self.create_subscription(Vector3Stamped,'/gimbal/attitude',self._on_att,50)
@@ -296,16 +297,22 @@ class BalloonLocatorNode(Node):
             'uncertainty_exceeded' if self.est.n and self.est.sigma>self.value('max_sigma_m') else
             'insufficient_samples' if measurement and self.est.n<self.value('min_samples') else self.reason)
         mean,cov=self.est.mean,self.est.cov
+        vel=getattr(self.est,'velocity',None)
         if valid and source_stamp!=self.last_published_stamp:
             pt=PointStamped();pt.header.stamp=Time(nanoseconds=round(source_stamp*1e9)).to_msg()
             pt.header.frame_id=self.value('frame_id');pt.point.x,pt.point.y,pt.point.z=map(float,mean)
             self.pub_pt.publish(pt)
             pc=PoseWithCovarianceStamped();pc.header=pt.header;pc.pose.pose.position=pt.point;pc.pose.pose.orientation.w=1.
             full=np.zeros((6,6));full[:3,:3]=cov;pc.pose.covariance=full.flatten().tolist();self.pub_est.publish(pc)
+            if vel is not None:
+                vv=Vector3Stamped();vv.header=pt.header
+                vv.vector.x,vv.vector.y,vv.vector.z=map(float,vel)
+                self.pub_vel.publish(vv)
             self.last_published_stamp=source_stamp
         status=dict(stamp=current,valid=valid,reason=reason,measurement_stamp=source_stamp,
             measurement_wall_age=wall_age,n=self.est.n,sigma_m=self.est.sigma if self.est.n else None,
             rejects=self.est.rejects,skipped=self.skipped,zoom=self.zoom,ned=mean.tolist() if mean is not None else None,
+            velocity_ned=vel.tolist() if vel is not None else None,
             covariance=cov.tolist() if cov is not None else None,frame_id=self.value('frame_id'),
             calibration_revision=self.revision,calibration_valid=bool(self.value('calibration_valid')),
             pose_source=self.pose_source,ground_truth_used=False,

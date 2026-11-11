@@ -48,7 +48,11 @@ flowchart LR
 | `balloon_locator/balloon_locator/gazebo_bridge.py` | 지상 짐벌 상공 탐색 스윕(`STAGE 1`) → 풍선 검출 시 비주얼 서보잉 중앙 락온(`STAGE 2`) 제어 브릿지 |
 | `balloon_locator/balloon_locator/detection_viewer_node.py` | 좌측 지상 짐벌 카메라 + 우측 드론 온보드 카메라 듀얼 뷰어 및 키보드(`SPACE`/`ENTER`) 출격 승인 트리거 HUD |
 | `balloon_locator/balloon_locator/stl_airframe.py` | 10개 STL 조립 기체 + 4로터 차동 추력(`CA_AIRFRAME=4`) + 테일시터 주익/미익 공력(`libLiftDragPlugin.so`) SDF 생성 |
+| `tools/run_hardware_gcs.sh` | **실기체 지상국(SIYI A8 mini + 6-DOF UKF + 발진 승인 뷰어 + SiK 라디오 브리지) 통합 실행 스크립트** |
+| `balloon_locator/onboard/tailsitter_onboard.py` | **실기체 쿼드 테일시터 온보드(Jetson/RPi) 50Hz $\text{SO}(3)$ 자세/추력 및 3D LOS/PN 종말 유도 제어기** |
 | [`ALGORITHMS.md`](ALGORITHMS.md) | **시스템에 사용된 수학적 알고리즘 및 제어·추정 수식 상세 문서** |
+| [`HARDWARE_GUIDE.md`](HARDWARE_GUIDE.md) | **실기체(SIYI A8 mini + SiK 텔레메트리 + 쿼드 테일시터 온보드) 전환 및 운용 가이드** |
+| [`PX4_PARAMETERS.md`](PX4_PARAMETERS.md) | **PX4 쿼드 테일시터 FC 파라미터 전체 표 및 QGC `.params` 설정 파일 안내** |
 
 ---
 

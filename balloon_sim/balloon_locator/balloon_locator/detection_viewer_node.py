@@ -42,6 +42,7 @@ class DetectionViewerNode(Node):
         self.approved = False
 
         self.approve_pub = self.create_publisher(Bool, '/mission/approve_launch', 10)
+        self.approve_pub_hw = self.create_publisher(Bool, '/balloon/launch_approved', 10)
 
         self.create_subscription(
             Image,
@@ -67,6 +68,11 @@ class DetectionViewerNode(Node):
             Bool,
             '/mission/approve_launch',
             self._on_approve_msg, 10)
+        self.create_subscription(
+            Bool,
+            '/balloon/launch_approved',
+            self._on_approve_msg, 10)
+        self.create_timer(0.05, self._render_dashboard)
 
     def _on_approve_msg(self, msg):
         if msg.data:
@@ -227,6 +233,7 @@ class DetectionViewerNode(Node):
             except Exception:
                 pass
             self.approve_pub.publish(Bool(data=True))
+            self.approve_pub_hw.publish(Bool(data=True))
             self.get_logger().info('USER APPROVED LAUNCH via OpenCV window key!')
 
 
