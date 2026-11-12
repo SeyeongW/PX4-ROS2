@@ -1,0 +1,436 @@
+{
+  "schema_version": 1,
+  "aircraft": "stl_pacer_quad",
+  "data_status": "manufacturer_static_thrust_plus_unmeasured_airframe_assumptions",
+  "sources": {
+    "mass": "User confirmed total mass 2kg including airframe and battery. Component masses and inertia unmeasured.",
+    "inertia": "Unmeasured central equivalent uniform cylinder r=.10m h=.30m, total2kg. Conservative engineering assumption, not inferred from shell volume or weighing.",
+    "rotor": "Assumed .004kg per propeller, uniform three-blade disc inertia. Motor bell inertia omitted.",
+    "motor": "T-MOTOR official P2207 V3 1950KV / 6S / P49436-3 thrust-RPM table. Reaction torque = thrust * .01m is an UNMEASURED assumption; response time constants also assumed.",
+    "aerodynamics": "No identified airframe lift/drag. Rotor-supported low-speed MC only; no fixed-wing transition or aerodynamic similarity claim.",
+    "geometry": "User ten STL parts share assembly coordinates; units assumed millimeters. Rx(+90deg), centered at raw [0,1013.5,0]. Rotor plane rawY998.5mm is assumed, not mounting confirmation."
+  },
+  "mass_kg": 2.0,
+  "center_of_mass_body_m": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "inertia_body_kg_m2": [
+    [
+      0.02,
+      0.0,
+      0.0
+    ],
+    [
+      0.0,
+      0.02,
+      0.0
+    ],
+    [
+      0.0,
+      0.0,
+      0.010000000000000002
+    ]
+  ],
+  "rotor_mass_kg": 0.004,
+  "rotor_inertia_kg_m2": [
+    [
+      3.8725729e-06,
+      0.0,
+      0.0
+    ],
+    [
+      0.0,
+      3.8725729e-06,
+      0.0
+    ],
+    [
+      0.0,
+      0.0,
+      7.7451458e-06
+    ]
+  ],
+  "rotor_positions_body_m": [
+    [
+      0.0,
+      -0.12,
+      -0.015
+    ],
+    [
+      0.0,
+      0.12,
+      -0.015
+    ],
+    [
+      0.12,
+      0.0,
+      -0.015
+    ],
+    [
+      -0.12,
+      0.0,
+      -0.015
+    ]
+  ],
+  "rotor_axes_body": [
+    [
+      0.0,
+      0.0,
+      1.0
+    ],
+    [
+      0.0,
+      0.0,
+      1.0
+    ],
+    [
+      0.0,
+      0.0,
+      1.0
+    ],
+    [
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "rotor_spin_directions": [
+    "ccw",
+    "ccw",
+    "cw",
+    "cw"
+  ],
+  "motor": {
+    "model": "T-MOTOR PACER P2207 V3",
+    "kv_rpm_per_volt": 1950,
+    "battery_cells": 6,
+    "propeller": "T-MOTOR P49436-3",
+    "test_voltage_V": [
+      25.2,
+      25.2,
+      25.1,
+      24.9,
+      24.8
+    ],
+    "test_current_A": [
+      2.6,
+      9.2,
+      16.9,
+      28.1,
+      43.8
+    ],
+    "test_thrust_gf": [
+      259.3,
+      634.4,
+      928.1,
+      1378.8,
+      1760.1
+    ],
+    "motor_mass_kg": 0.0343,
+    "outer_diameter_m": 0.0281,
+    "max_rpm": 33011,
+    "time_constant_up_s": 0.025,
+    "time_constant_down_s": 0.05,
+    "reaction_torque_model": "assumed_Q_over_T_0.01m_NOT_measured",
+    "rpm_thrust_torque_samples": [
+      [
+        13110,
+        2.542864345,
+        0.02542864345
+      ],
+      [
+        19960,
+        6.22133876,
+        0.0622133876
+      ],
+      [
+        24042,
+        9.101551865000001,
+        0.09101551865000002
+      ],
+      [
+        28976,
+        13.52140902,
+        0.1352140902
+      ],
+      [
+        33011,
+        17.260684665,
+        0.17260684665
+      ]
+    ],
+    "source_url": "https://www.tmotorhobby.com/goods-1181-T-MOTORHOBBY%2BP2207%2BV3.html",
+    "specification_image_url": "https://www.tmotorhobby.com/images/20220411/1649663656669244.jpg",
+    "thrust_table_image_url": "https://www.tmotorhobby.com/images/20220411/1649663656357709.jpg"
+  },
+  "geometry": {
+    "stl_scale_m": 0.001,
+    "stl_origin_source": [
+      0.0,
+      1013.5,
+      0.0
+    ],
+    "propeller_diameter_m": 0.12446,
+    "pod_inner_diameter_m": 0.027,
+    "body_height_m": 0.409
+  },
+  "home_world": [
+    -2.0,
+    0.0,
+    0.2045
+  ],
+  "home_yaw_world": 0.0,
+  "flight_parameters": {
+    "max_speed": 4.0,
+    "max_acceleration": 2.0,
+    "max_jerk": 6.0,
+    "takeoff_height": 3.0,
+    "takeoff_min_duration": 6.0,
+    "continuous_takeoff": true,
+    "takeoff_join_speed": 0.15,
+    "path_kind": "spline",
+    "heading_offset_rad": 0.0,
+    "overrun_distance": 0.0,
+    "target_is_virtual_waypoint": true,
+    "standoff": 0.0,
+    "target_is_pass_through_gate": false,
+    "body_radius": 0.3,
+    "controller_profile": "aggressive_multicopter",
+    "vision_vel_gain": 0.4,
+    "vision_max_speed": 5.0
+  },
+  "px4_parameters": {
+    "COM_RC_IN_MODE": 4,
+    "COM_RCL_EXCEPT": 4,
+    "SYS_HAS_NUM_ASPD": 0,
+    "FW_USE_AIRSPD": 0,
+    "THR_MDL_FAC": 1.0,
+    "MPC_THR_HOVER": 0.2834135861012246,
+    "MPC_THR_MIN": 0.05,
+    "MPC_LAND_SPEED": 0.3,
+    "COM_SPOOLUP_TIME": 0.5,
+    "MPC_TKO_RAMP_T": 0.5,
+    "MPC_ACC_HOR": 3.0,
+    "MPC_ACC_HOR_MAX": 5.0,
+    "MPC_ACC_DOWN_MAX": 5.0,
+    "MPC_ACC_UP_MAX": 6.0,
+    "MPC_JERK_MAX": 8.0,
+    "MPC_JERK_AUTO": 8.0,
+    "MPC_TILTMAX_AIR": 25,
+    "MPC_XY_VEL_MAX": 5.0,
+    "MPC_XY_P": 0.95,
+    "MPC_XY_VEL_P_ACC": 1.8,
+    "MPC_XY_VEL_I_ACC": 0.4,
+    "MPC_XY_VEL_D_ACC": 0.2,
+    "MPC_Z_P": 1.0,
+    "MPC_Z_VEL_P_ACC": 4.0,
+    "MPC_Z_VEL_I_ACC": 2.0
+  },
+  "physics_numerics": {
+    "contact_stiffness_N_m": 100000.0,
+    "contact_damping_N_s_m": 1000.0
+  },
+  "limitations": [
+    "User confirms total2kg including battery/airframe, not 2kg additional payload.",
+    "No measured CG/inertia, motor reaction torque, battery sag/endurance, rotor inflow or body aerodynamic model.",
+    "Official 28.1mm motor diameter exceeds STL pod 27mm inner diameter. Physical fit is NOT verified.",
+    "No fixed-wing conversion: wings/fins have no measured polar for the new load.",
+    "Simulation only: no hardware launch, no ground-truth target control, no pose teleporting.",
+    "Camera and avionics are visual-only partitions within the existing assumed 2kg total; no measured component mass or updated inertia is claimed.",
+    "Camera Module 3 bracket adapter and cable route are concept visuals; narrow nominal clearances are not a manufacturing fit verification.",
+    "Camera drawing total 11.3mm and interpreted sub-dimensions 2.75+1.12+6.98=10.85mm differ by 0.45mm; the optical origin is a simulation assumption pending mechanical datum and entrance-pupil measurement."
+  ],
+  "mass_specification": "User confirmed 2kg TOTAL including airframe and battery; component mass split not measured.",
+  "onboard_camera": {
+    "model": "Raspberry Pi Camera Module 3 standard (concept mounting)",
+    "source_url": "https://datasheets.raspberrypi.com/camera/camera-module-3-standard-mechanical-drawing.pdf",
+    "placement_source": "User assembly section; official PCB/lens dimensions; adapter, optical center and component mounting are simulation assumptions, NOT manufacturing approval.",
+    "pcb_center_source_mm": [
+      0,
+      1205.56,
+      -2.469
+    ],
+    "pcb_size_mm": [
+      25,
+      1.12,
+      23.862
+    ],
+    "optical_center_source_mm": [
+      0,
+      1213.2,
+      0
+    ],
+    "horizontal_fov_deg": 66.0,
+    "width": 640,
+    "height": 360,
+    "update_rate_hz": 30,
+    "near_clip_m": 0.001,
+    "far_clip_m": 500,
+    "namespace": "/jol",
+    "camera_name": "onboard_camera",
+    "frame_name": "jol/onboard_camera_optical",
+    "mount_status": "Concept adapter: old holes x=+/-10.5,z=-5 only; rails y1202..1203,z-13.9..1.6; new posts z=-12.4,+.1 y1203..1205. Original 1.8mm holes are not verified M2 clearance.",
+    "clearance_status": "Ideal mesh envelope only: PCB-to-shell approx0.333mm, rear connector-to-bracket0.25mm. Tolerances, wiring, cooling and mechanical strength unverified.",
+    "optics_status": "Ideal fixed-focus pinhole, 66deg nominal horizontal FOV, 640x360 downsampled simulation. No measured calibration, autofocus, distortion, exposure or rolling shutter."
+  },
+  "internal_visuals": {
+    "status": "VISUAL ONLY: approximate placement read from user section; no component mass/inertia addition, actual dimensions and mounting must be measured.",
+    "boxes_source_mm": [
+      {
+        "name": "battery_pack",
+        "center": [
+          0,
+          934,
+          0
+        ],
+        "size": [
+          36,
+          120,
+          34
+        ],
+        "color": ".16 .18 .21 1"
+      },
+      {
+        "name": "battery_label",
+        "center": [
+          0,
+          934,
+          17.1
+        ],
+        "size": [
+          26,
+          58,
+          0.2
+        ],
+        "color": ".65 .24 .12 1"
+      },
+      {
+        "name": "esc_board",
+        "center": [
+          0,
+          1010,
+          0
+        ],
+        "size": [
+          40,
+          2,
+          40
+        ],
+        "color": ".13 .18 .22 1"
+      },
+      {
+        "name": "flight_controller_board",
+        "center": [
+          0,
+          1023,
+          0
+        ],
+        "size": [
+          40,
+          2,
+          40
+        ],
+        "color": ".10 .40 .28 1"
+      },
+      {
+        "name": "flight_controller_chip",
+        "center": [
+          0,
+          1025,
+          0
+        ],
+        "size": [
+          12,
+          2,
+          12
+        ],
+        "color": ".08 .09 .10 1"
+      },
+      {
+        "name": "raspberry_pi5_board",
+        "center": [
+          2,
+          1081,
+          0
+        ],
+        "size": [
+          1.6,
+          86,
+          56
+        ],
+        "color": ".12 .43 .25 1"
+      },
+      {
+        "name": "raspberry_pi5_heatsink",
+        "center": [
+          8,
+          1080,
+          0
+        ],
+        "size": [
+          10,
+          48,
+          25
+        ],
+        "color": ".53 .56 .59 1"
+      },
+      {
+        "name": "radio_module",
+        "center": [
+          -14,
+          1074,
+          0
+        ],
+        "size": [
+          10,
+          44,
+          24
+        ],
+        "color": ".15 .19 .23 1"
+      },
+      {
+        "name": "bec_module",
+        "center": [
+          -15,
+          1042,
+          0
+        ],
+        "size": [
+          12,
+          12,
+          16
+        ],
+        "color": ".21 .25 .29 1"
+      },
+      {
+        "name": "gps_board",
+        "center": [
+          8,
+          1168,
+          0
+        ],
+        "size": [
+          24,
+          1.6,
+          24
+        ],
+        "color": ".12 .42 .23 1"
+      },
+      {
+        "name": "gps_patch",
+        "center": [
+          8,
+          1172,
+          0
+        ],
+        "size": [
+          20,
+          6,
+          20
+        ],
+        "color": ".84 .79 .63 1"
+      }
+    ]
+  }
+}

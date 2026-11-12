@@ -1,0 +1,58 @@
+<?xml version="1.0"?>
+<sdf version="1.6">
+<world name="jol_monitor">
+  <gravity>0 0 -9.81</gravity>
+  <physics name="ode" type="ode"><max_step_size>0.001</max_step_size><real_time_update_rate>1000</real_time_update_rate></physics>
+  <scene><ambient>0.55 0.55 0.55 1</ambient><background>0.70 0.81 0.94 1</background><shadows>false</shadows></scene>
+  <light name="sun" type="directional"><cast_shadows>false</cast_shadows><pose>0 0 30 0 0 0</pose><diffuse>0.9 0.9 0.9 1</diffuse><specular>0.1 0.1 0.1 1</specular><direction>-0.4 0.2 -0.9</direction></light>
+  <gui><camera name="user_camera"><pose>8 -12 7 0 0.35 2.1</pose></camera></gui>
+  <model name="ground"><static>true</static><link name="ground_link">
+    <collision name="ground_collision"><geometry><plane><normal>0 0 1</normal><size>180 180</size></plane></geometry></collision>
+    <visual name="ground_visual"><geometry><plane><normal>0 0 1</normal><size>180 180</size></plane></geometry><material><ambient>0.28 0.34 0.27 1</ambient><diffuse>0.4 0.46 0.38 1</diffuse></material></visual>
+  </link></model>
+  <model name="fixed_turret"><static>false</static><self_collide>false</self_collide>
+  <link name="base"><gravity>false</gravity><kinematic>true</kinematic>
+    <inertial><mass>100</mass><inertia><ixx>10</ixx><iyy>10</iyy><izz>10</izz></inertia></inertial>
+    <visual name="pedestal_visual"><pose>0 0 0.35 0 0 0</pose><geometry><cylinder><radius>0.52</radius><length>0.7</length></cylinder></geometry><material><ambient>0.2 0.24 0.25 1</ambient><diffuse>0.25 0.3 0.31 1</diffuse></material></visual>
+    <collision name="pedestal"><pose>0 0 0.35 0 0 0</pose><geometry><cylinder><radius>0.52</radius><length>0.7</length></cylinder></geometry></collision>
+  </link>
+  <joint name="base_fixed" type="fixed"><parent>world</parent><child>base</child></joint>
+  <link name="yaw"><pose>0 0 0.7 0 0 0</pose><gravity>false</gravity><kinematic>true</kinematic>
+    <inertial><mass>10</mass><inertia><ixx>1</ixx><iyy>1</iyy><izz>1</izz></inertia></inertial>
+    <visual name="yaw_ring"><geometry><cylinder><radius>0.4</radius><length>0.12</length></cylinder></geometry><material><diffuse>0.18 0.2 0.17 1</diffuse></material></visual>
+  </link>
+  <joint name="yaw_joint" type="revolute"><parent>base</parent><child>yaw</child><axis><xyz>0 0 1</xyz><limit><lower>-1e16</lower><upper>1e16</upper></limit></axis></joint>
+  <link name="pitch"><pose>0 0 1 0 0 0</pose><gravity>false</gravity><kinematic>true</kinematic>
+    <inertial><mass>20</mass><inertia><ixx>5</ixx><iyy>5</iyy><izz>5</izz></inertia></inertial>
+    <visual name="turret_visual"><pose>0 0 0 0 0 0</pose><geometry><box><size>1 0.9 0.6</size></box></geometry><material><ambient>0.22 0.29 0.2 1</ambient><diffuse>0.29 0.37 0.25 1</diffuse></material></visual>
+    <collision name="turret"><pose>0 0 0 0 0 0</pose><geometry><box><size>1 0.9 0.6</size></box></geometry></collision>
+    <visual name="electronics_box_visual"><pose>0 0 0.65 0 0 0</pose><geometry><box><size>0.72 0.62 0.7</size></box></geometry><material><ambient>0.4 0.42 0.46 1</ambient><diffuse>0.55 0.57 0.61 1</diffuse></material></visual>
+    <collision name="electronics_box"><pose>0 0 0.65 0 0 0</pose><geometry><box><size>0.72 0.62 0.7</size></box></geometry></collision>
+    $CAMERA
+  </link>
+  <joint name="pitch_joint" type="revolute"><parent>yaw</parent><child>pitch</child><axis><xyz>0 1 0</xyz><limit><lower>-0.5235987755982988</lower><upper>0.5235987755982988</upper></limit></axis></joint>
+  $LIDAR
+  <!-- 팔과 yaw 고정 장착부는 포탑 관절 모델에 포함된다. -->
+  $ARM
+  <plugin name="jol_turret" filename="libjol_turret.so">
+    <ros><namespace>/jol</namespace></ros>
+    <motion>$TURRET_MOTION</motion><survey>$TURRET_SURVEY</survey><yaw_amplitude>$TURRET_YAW_AMPLITUDE</yaw_amplitude>
+    <pitch_amplitude>$TURRET_PITCH_AMPLITUDE</pitch_amplitude><period>$TURRET_PERIOD</period>
+    <survey_elevation>$TURRET_SURVEY_ELEVATION</survey_elevation>
+    <lidar_mount_mode>$LIDAR_MOUNT_MODE</lidar_mount_mode>
+    <camera_mount>$CAMERA_MOUNT</camera_mount>
+  </plugin>
+  </model>
+  <model name="background_crate"><static>true</static><pose>18 -11 1.5 0 0 0.25</pose><link name="body"><visual name="v"><geometry><box><size>3 2 3</size></box></geometry><material><diffuse>0.48 0.34 0.21 1</diffuse></material></visual><collision name="c"><geometry><box><size>3 2 3</size></box></geometry></collision></link></model>
+  <model name="background_column"><static>true</static><pose>-17 19 2.5 0 0 0</pose><link name="body"><visual name="v"><geometry><cylinder><radius>1.2</radius><length>5</length></cylinder></geometry><material><diffuse>0.6 0.63 0.67 1</diffuse></material></visual><collision name="c"><geometry><cylinder><radius>1.2</radius><length>5</length></cylinder></geometry></collision></link></model>
+  $OCCLUDER
+  $DRONES
+  $OBSERVER
+  <plugin name="jol_scenario" filename="libjol_scenario.so">
+    <ros><namespace>/jol</namespace></ros><scenario>$SCENARIO</scenario><trajectory>$TRAJECTORY</trajectory>
+    <radius>$RADIUS</radius><speed>$SPEED</speed><altitude>$ALTITUDE</altitude>
+    <empty_seconds>$EMPTY_SECONDS</empty_seconds><wait_for_background>$WAIT_BACKGROUND</wait_for_background>
+    <scenario_start_seconds>$SCENARIO_START_SECONDS</scenario_start_seconds>
+  </plugin>
+</world>
+</sdf>

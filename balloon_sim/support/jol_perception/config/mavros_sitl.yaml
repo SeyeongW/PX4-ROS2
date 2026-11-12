@@ -1,0 +1,23 @@
+/**:
+  ros__parameters:
+    use_sim_time: true
+    fcu_url: "udp://:14540@127.0.0.1:14580"
+    gcs_url: ""
+    tgt_system: 1
+    tgt_component: 1
+    fcu_protocol: "v2.0"
+    plugin_allowlist:
+      - sys_status
+      - sys_time
+      - command
+      - local_position
+      - setpoint_raw
+      - imu
+      - global_position
+      - home_position
+      - param
+      - vfr_hud
+/**/time:
+  ros__parameters:
+    timesync_mode: PASSTHROUGH
+    timesync_rate: 0.0

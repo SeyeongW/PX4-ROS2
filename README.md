@@ -1,5 +1,52 @@
 # PX4-ROS2 — JO 도심 고속환경
 
+## 2026-11-12 추가 — 카메라 기반 레이싱 드론 실험
+
+`jo`의 기존 도심 실험은 유지하고, **레이싱 드론이 지정 지점을 통과하는 실험**용 [`balloon_sim`](balloon_sim/README.md)을 추가했습니다. 지상 짐벌 카메라의 풍선 검출·좌표 추정, 사용자 승인, 드론 카메라와 PX4/Gazebo 연동 코드를 포함합니다. 두 실험의 런처·설정·빌드 범위는 별개입니다.
+
+### 이번 변경사항
+
+| 구분 | 변경 내용 |
+|---|---|
+| 승인·취소 | 실기체 좌표 송신 승인에 기본 **30초 유효기간** 적용. 중복 승인으로 연장하지 않으며, 취소·만료·좌표 상실·송신 실패 뒤 재승인 필요. 브리지 재시작 시 미승인 |
+| UI 상태 | 승인 요청, 브리지의 실제 로컬 송신, FC HEARTBEAT의 무장 상태를 구분. 오래된 영상·상태는 미확인 표시 |
+| 좌표 동기 처리 | 좌표·상태 메시지 도착 순서가 엇갈리면 해당 송신만 건너뛰며, 실제 데이터 만료·무효일 때 승인 철회 |
+| 짐벌 장애 대응 | 기본 하드웨어 탐색 설정에서 영상·자세 미수신/만료·NaN·시계 역행 시 0속도 명령. 정지 송신 실패는 재시도 |
+| 시뮬레이션 분리 | `/tmp/balloon_launch_approved`와 `approve_launch.sh`는 기존 시뮬레이션 전용. 실기체는 `/balloon/launch_approved` 사용 |
+| 실행 환경 | `balloon_sim` 자체 설치본만 사용하도록 경로 검사. `.params` 설치 누락·의존성 선언·오래된 테스트 수정 |
+| 문서 | PX4 `COM_OBL_RC_ACT`의 v1.17 의미를 **3=Return, 4=Land**로 정정. 실제 FC 버전·설정과 시뮬레이션 가정을 구분 |
+
+**검증:** ROS 2 Humble에서 3개 패키지 빌드 및 **354개 테스트 통과**. 모의 MAVLink/UDP, ROS 노드, 모델 생성과 실행기 stub 검사 결과입니다. 이번 변경에서 실제 장비 연결·GUI·Gazebo 동역학 비행·지점 통과 성공률은 검증하지 않았습니다. 기존 그래프는 이전 실행 자료이며 이번 검사 결과가 아닙니다.
+
+**조작 의미:** 실기체 뷰어의 `SPACE`/`ENTER`는 유효한 좌표 송신 승인, `C`/`ESC`는 승인 취소입니다. 취소는 후속 좌표 송신을 중단하며 FC 비행 중단·착륙 명령이 아닙니다. FC의 `ARMED` 표시도 실제 비행·정지 완료 확인을 뜻하지 않습니다. 센서 사전검사 실패에 따른 기동 차단(`hardware_check ... || true`)은 이번 변경 범위에서 제외했습니다.
+
+### 빌드와 시뮬레이션 진입점
+
+ROS 2 Humble, Gazebo Classic 및 PX4 의존성이 준비된 환경에서 저장소 루트 기준으로 실행합니다.
+
+```bash
+cd balloon_sim
+./tools/build_workspace.sh
+
+# 레이싱 시뮬레이션: 기존 PX4/Gazebo 실행 환경 준비 필요
+./tools/run_tailsitter_sim.sh
+```
+
+`run_tailsitter_sim.sh`의 현재 기본 표적은 거리 90m·고도 40m입니다. 기존 40m·고도 10m·오른쪽 배치 실험을 선택하려면 다음과 같이 명시합니다. 아래 명령은 이번 게시 작업에서 비행 실행하지 않았습니다.
+
+```bash
+./tools/run_tailsitter_sim.sh target_range:=40.0 target_height:=10.0 target_azimuth:=-90.0
+```
+
+- [패키지와 기존 실행 자료](balloon_sim/README.md)
+- [실기체 구성·승인 상태·미검증 항목](balloon_sim/HARDWARE_GUIDE.md)
+- [PX4 파라미터와 버전 주의사항](balloon_sim/PX4_PARAMETERS.md)
+- [수식 및 알고리즘](balloon_sim/ALGORITHMS.md)
+
+---
+
+## 기존 JO 도심 실험
+
 `applepark_city_uav` 도심맵에서 7 m/s 트레일러 순찰과
 `A* → SFC → B-spline → MPC` 경로계획을 검증하는 ROS 2 / PX4 연구
 workspace다. 청주대 운동장 실기 적용 프로파일은 `PX4-ROS2-wang`에서
