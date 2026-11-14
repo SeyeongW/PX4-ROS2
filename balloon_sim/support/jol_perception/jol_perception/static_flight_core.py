@@ -326,7 +326,7 @@ def build_static_plan(home, target, *, path_kind='spline', takeoff_height=3., st
                     right_world=np.cross([0.,0.,1.],direction).tolist(),up_world=[0.,0.,1.],
                     width_m=width,height_m=gate_height,body_radius_m=body_radius,
                     exit_distance_m=exit_distance,
-                    center_source='locked_camera_bbox_lidar_estimate',
+                    center_source='locked_sensor_estimate',
                     orientation_source='horizontal_takeoff_to_locked_sensor_target',
                     dimensions_source='experiment_configuration',
                     crossing_policy='forward_measured_segment_plane_intersection_with_body_margin')

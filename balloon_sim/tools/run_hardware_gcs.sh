@@ -49,9 +49,9 @@ echo " [1/3] 오프라인 하드웨어 설정 점검 (hardware_check)"
 echo "       설정 파일: ${CONFIG_FILE}"
 echo "========================================================================"
 if [ "${WITH_BRIDGE}" -eq 1 ]; then
-  ros2 run balloon_locator hardware_check --config "${CONFIG_FILE}" --bridge || true
+  ros2 run balloon_locator hardware_check --config "${CONFIG_FILE}" --bridge
 else
-  ros2 run balloon_locator hardware_check --config "${CONFIG_FILE}" || true
+  ros2 run balloon_locator hardware_check --config "${CONFIG_FILE}"
 fi
 
 PIDS=()

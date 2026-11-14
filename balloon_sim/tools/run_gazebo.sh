@@ -7,12 +7,13 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 exec {simulation_lock}< .
 flock -n "$simulation_lock" || { echo 'Balloon simulation is already running in this workspace.' >&2; exit 75; }
 source /opt/ros/humble/setup.bash
-[[ -f install/local_setup.bash ]] || { echo 'Build first: ./tools/build_workspace.sh' >&2; exit 1; }
-source install/local_setup.bash
+install_root="$(realpath -m "${BALLOON_INSTALL_ROOT:-$PWD/install}")"
+[[ -f "$install_root/local_setup.bash" ]] || { echo 'Build first: ./tools/build_workspace.sh' >&2; exit 1; }
+source "$install_root/local_setup.bash"
 export BALLOON_WORKSPACE_ROOT="$PWD"
 for package in jol_sim jol_perception balloon_locator; do
   prefix="$(ros2 pkg prefix "$package")"
-  [[ "$prefix" == "$PWD/install/"* ]] || { echo "Wrong overlay for $package: $prefix. Rebuild this workspace." >&2; exit 1; }
+  [[ "$prefix" == "$install_root/"* ]] || { echo "Wrong overlay for $package: $prefix. Rebuild this workspace." >&2; exit 1; }
 done
 export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-73}"
 export ROS_LOCALHOST_ONLY=1 GAZEBO_IP=127.0.0.1

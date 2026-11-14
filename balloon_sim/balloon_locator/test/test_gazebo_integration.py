@@ -13,7 +13,7 @@ def sample():
         north_yaw_world_rad=math.pi/2,ned=[-40.,0.,-10.],covariance=np.diag([.04,.01,.09]).tolist(),
         bbox=[620.,460.,40.,40.],image_size=[1280,960],camera_centered=True,alignment_error_deg=.01,
         calibration_revision='calibrated-sim',calibration_valid=True,measurement_wall_age=.1,
-        camera_origin_world=[0.,0.,.8])
+        camera_origin_world=[0.,0.,.8],camera_tf_stamp=4.)
 
 
 def test_station_ned_is_transformed_to_world_before_px4_alignment():
@@ -22,6 +22,7 @@ def test_station_ned_is_transformed_to_world_before_px4_alignment():
     np.testing.assert_allclose(result['covariance'],np.diag([.01,.04,.09]))
     assert result['stamp']==4. and result['evidence']['estimator']=='balloon_locator'
     assert not result['evidence']['ground_truth_used']
+    assert result['evidence']['camera_tf_stamp']==4.
 
 
 @pytest.mark.parametrize('change',['stale','before_start','invalid','wrong_frame','frame_label','uncertain'])
@@ -129,3 +130,50 @@ def test_truncated_image_is_discarded_before_overlay_reshape():
 def test_status_queue_delay_counts_toward_measurement_wall_age():
     with pytest.raises(ValueError,match='wall_stale'):
         mission_estimate(sample(),4.1,3.,status_age=.75)
+
+
+@pytest.mark.parametrize('tf_stamp',[None,1.1,4.1,float('nan')])
+def test_mission_requires_actual_exposure_time_tf_evidence(tf_stamp):
+    status=sample();status['camera_tf_stamp']=tf_stamp
+    with pytest.raises(ValueError,match='camera_tf'):
+        mission_estimate(status,4.1,3.)
+
+
+def test_tick_does_not_refresh_timestamp_of_old_gimbal_feedback():
+    import time
+    from types import SimpleNamespace
+    from balloon_locator.gazebo_bridge import GazeboBridge
+    broadcasts=[]
+    publisher=SimpleNamespace(publish=lambda msg:None)
+    state=SimpleNamespace(now=lambda:4.1,last_tick=4.,last_clock=4.,auto_start=False,started=False,
+        restoring=False,joints=[0.,0.],joint_stamp=4.,status={},status_wall=time.monotonic(),
+        stage='waiting_start',reason='waiting_for_acquisition_start',command=lambda position:None,
+        _broadcast_gimbal_tf=lambda *args:broadcasts.append(args),
+        estimate_pub=publisher,status_pub=publisher)
+    GazeboBridge.tick(state)
+    assert not broadcasts
+
+
+def test_search_can_find_right_side_target_without_truth_and_stale_joints_cannot_drive():
+    import time
+    from types import SimpleNamespace
+    from balloon_locator.gazebo_bridge import GazeboBridge
+    commands=[];publisher=SimpleNamespace(publish=lambda msg:None)
+    state=SimpleNamespace(now=lambda:1.,last_tick=1.,last_clock=1.,auto_start=False,started=True,
+        start_stamp=1.,restoring=False,joints=[-.36,-.14],joint_stamp=1.,status={},status_wall=time.monotonic(),
+        last_visual=None,track_yaw=None,track_pitch=None,search_yaw=-.36,search_pitch=-.14,search_yaw_speed=.3,
+        stage='camera_search',reason='searching',command=commands.append,estimate_pub=publisher,status_pub=publisher)
+    for stamp in np.arange(1.,23.,.1):
+        state.now=lambda:float(stamp);state.joint_stamp=float(stamp)
+        GazeboBridge.tick(state)
+    yaw,pitch=np.asarray(commands).T
+    assert yaw.min()<-3. and yaw.max()>3.
+    assert np.all(np.abs(pitch)<=math.pi/6)
+    # Generic search sees the requested right-side, 40 m / 10 m marker;
+    # neither the bridge state nor the search receives the marker position.
+    elevation=math.atan2(10.-.760,40.-.145)
+    assert np.any((np.abs(yaw+math.pi/2)<math.radians(5.))
+        & (np.abs(pitch+elevation)<math.radians(4.)))
+    count=len(commands);state.now=lambda:24.
+    GazeboBridge.tick(state)
+    assert len(commands)==count

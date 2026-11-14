@@ -34,11 +34,11 @@ def locator():
     finally:node.destroy_node();rclpy.shutdown()
 
 
-def feed(node,stamp):
+def feed(node,stamp,diameter=45.):
     node.get_clock().set_ros_time_override(Time(nanoseconds=round(stamp*1e9)))
     msg=Detection2DArray();msg.header.frame_id='optical';msg.header.stamp=Time(nanoseconds=round(stamp*1e9)).to_msg()
     det=Detection2D();det.bbox.center.position.x=639.5;det.bbox.center.position.y=479.5
-    det.bbox.size_x=det.bbox.size_y=45.;msg.detections=[det]
+    det.bbox.size_x=det.bbox.size_y=diameter;msg.detections=[det]
     node._on_det(msg);node._process_pending();node._publish()
     return msg
 
@@ -48,6 +48,7 @@ def test_exposure_tf_to_station_ned_and_expiration_keep_source_time(locator):
     for stamp in (2.,2.1,2.2):feed(node,stamp)
     assert statuses[-1]['valid']
     assert statuses[-1]['measurement_stamp']==pytest.approx(2.2)
+    assert statuses[-1]['camera_tf_stamp']==pytest.approx(2.2)
     np.testing.assert_allclose(statuses[-1]['ned'],[0.,1.,-42.],atol=1e-6)
     assert points[-1].header.stamp==Time(nanoseconds=2200000000).to_msg()
     assert statuses[-1]['camera_centered'] and statuses[-1]['ground_truth_used'] is False
@@ -136,6 +137,56 @@ def test_hardware_rejects_intrinsics_from_another_camera_frame(locator):
     feed(node, 2.)
     assert not points and not statuses[-1]['valid']
     assert statuses[-1]['reason'] == 'camera_frame_mismatch'
+
+
+def test_old_dynamic_tf_cannot_be_disguised_as_exposure_time(locator):
+    from tf2_ros import Buffer
+    node,points,statuses=locator
+    node.tf=Buffer()
+    transform=TransformStamped();transform.header.frame_id='world';transform.child_frame_id='optical'
+    transform.header.stamp=Time(seconds=1.1).to_msg();transform.transform.rotation.w=1.
+    node.tf.set_transform(transform,'old_gimbal_feedback')
+    for stamp in (2.,2.1,2.2):feed(node,stamp)
+    assert not points and not statuses[-1]['valid'] and node.est.n==0
+    assert statuses[-1]['reason']=='waiting_for_exposure_tf'
+    # A delayed but correctly stamped transform may complete the queued observation.
+    for stamp in (2.1,2.3):
+        transform.header.stamp=Time(seconds=stamp).to_msg()
+        node.tf.set_transform(transform,'delayed_gimbal_feedback')
+    node._process_pending();node._publish()
+    assert node.est.n==1
+    assert statuses[-1]['camera_tf_stamp']==pytest.approx(2.2)
+
+
+def test_hardware_camera_time_uncertainty_uses_measured_gimbal_rate(locator):
+    node,_,_=locator
+    node.pose_source='gimbal'
+    def covariance(rate,time_std):
+        node.est.reset();node.measurement=node.last_seen_stamp=None;node.att.clear()
+        node.set_parameters([Parameter('camera_time_std_s',value=time_std)])
+        for stamp in (1.9,2.1):
+            attitude=Vector3Stamped();attitude.header.stamp=Time(seconds=stamp).to_msg()
+            attitude.vector.x=(stamp-2.)*rate
+            node._on_att(attitude)
+        feed(node,2.)
+        assert node.est.n==1
+        return node.est.cov.copy()
+    baseline=covariance(0.,.02)
+    low=covariance(18.,.01)-baseline
+    high=covariance(18.,.02)-baseline
+    np.testing.assert_allclose(low[1,1],(40.*np.radians(18.)*.01)**2,rtol=1e-6)
+    np.testing.assert_allclose(high,4.*low,atol=1e-10)
+    np.testing.assert_allclose(covariance(0.,.2),baseline,atol=1e-10)
+
+
+def test_camera_range_is_continuous_at_24_pixel_diameter(locator):
+    node,_,_=locator
+    ranges=[]
+    for stamp,diameter in ((2.,23.999),(2.1,24.),(2.2,24.001)):
+        feed(node,stamp,diameter)
+        ranges.append(node.measurement['range_m'])
+        assert ranges[-1]==pytest.approx(.3*6000./diameter)
+    assert max(ranges)-min(ranges)<.01
 
 
 def test_mavlink_bridge_uses_source_age_not_repeated_receipt_time():

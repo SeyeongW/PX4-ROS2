@@ -42,6 +42,9 @@ def mission_estimate(status,now,started_at,status_age=0.,max_age=.8,max_var=.25)
             or not status['calibration_revision']):raise ValueError('balloon_calibration_unconfirmed')
     if status.get('frame_id')!='local_ned':raise ValueError('station_frame_label_mismatch')
     if status.get('pose_source')!='tf':raise ValueError('simulation_requires_measured_camera_tf')
+    tf_stamp=status.get('camera_tf_stamp')
+    if (type(tf_stamp) not in (int,float) or not math.isfinite(tf_stamp)
+            or abs(tf_stamp-stamp)>1e-6):raise ValueError('camera_tf_not_at_exposure')
     if status.get('station_origin_world')!=[0.,0.,0.] or not math.isclose(status.get('north_yaw_world_rad',0.),math.pi/2):
         raise ValueError('station_frame_unconfirmed')
     point=np.asarray(status['ned'],float);cov=np.asarray(status['covariance'],float)
@@ -69,7 +72,7 @@ def mission_estimate(status,now,started_at,status_age=0.,max_age=.8,max_var=.25)
         observed_diameter_px=status.get('observed_diameter_px'),
         evidence=dict(estimator='balloon_locator',image_size=status['image_size'],
             gimbal_centered=status['camera_centered'],gimbal_tracking=True,
-            camera_alignment_error_deg=status['alignment_error_deg'],camera_tf_stamp=stamp,
+            camera_alignment_error_deg=status['alignment_error_deg'],camera_tf_stamp=tf_stamp,
             image_source_stamp=stamp,exposure_stamp=stamp,target_is_static=True,
             lidar_used=False,ground_truth_used=False,camera_origin_world=status.get('camera_origin_world')))
 
@@ -111,10 +114,10 @@ class GazeboBridge(Node):
             if not isinstance(packet,dict):raise ValueError('status_must_be_object')
             self.status=packet;self.status_wall=time.monotonic()
         except(ValueError,TypeError):self.status={}
-    def _broadcast_gimbal_tf(self,yaw,pitch,stamp_msg=None):
+    def _broadcast_gimbal_tf(self,yaw,pitch,stamp_msg):
         if not hasattr(self,'gimbal_tf_br') or self.gimbal_tf_br is None:return
         t=TransformStamped()
-        t.header.stamp=stamp_msg if stamp_msg is not None else self.get_clock().now().to_msg()
+        t.header.stamp=stamp_msg
         t.header.frame_id='world';t.child_frame_id='jol/ground_gimbal'
         t.transform.translation.x=float(GIMBAL_ORIGIN_WORLD[0])
         t.transform.translation.y=float(GIMBAL_ORIGIN_WORLD[1])
@@ -227,14 +230,12 @@ class GazeboBridge(Node):
             if visual_fresh and self.track_yaw is not None and self.track_pitch is not None:
                 self.command([self.track_yaw,self.track_pitch])
             else:
-                # 좌측 하단(yaw=-20.6°, elev=+8.0°)에서 출발해 상공을 대각선/좌우로 스캔하다가 풍선 발견 시 즉시 락온
+                # Continuous yaw is supported by the rig; a narrow +/-20 degree
+                # sweep never sees a marker beside the station. Search uses no truth.
                 t_search=max(0.,now-(self.start_stamp or now))
-                omega=0.55
-                cmd_yaw=-0.36*math.cos(omega*t_search)
-                cmd_pitch=-0.14-0.2725*math.sin(omega*t_search)
+                cmd_yaw=math.remainder(self.search_yaw-self.search_yaw_speed*t_search,2*math.pi)
+                cmd_pitch=self.search_pitch-(math.pi/6+self.search_pitch)*(1-math.cos(.15*t_search))/2
                 self.command([cmd_yaw,max(-math.pi/6,min(math.pi/6,cmd_pitch))])
-        if joint_fresh and self.joints is not None:
-            self._broadcast_gimbal_tf(self.joints[0],self.joints[1])
         try:
             if not self.started:raise ValueError('waiting_for_acquisition_start')
             if wall-self.status_wall>2.0:raise ValueError('balloon_status_wall_stale')

@@ -130,7 +130,7 @@ def start_mavros(context):
     px4=ExecuteProcess(cmd=[str(binary),'-d',str(etc)],cwd=str(rootfs),output='screen',
         additional_env=px4_env)
     share=Path(get_package_share_directory('jol_perception'))
-    mavros=Node(package='mavros',executable='mavros_node',namespace='mavros',output='screen',
+    mavros=Node(package='mavros',executable='mavros_node',namespace='',output='screen',
         parameters=[str(share/'config/mavros_sitl.yaml')])
     adapter=Node(package='jol_perception',executable='mavros_adapter',output='screen',
         parameters=[{'use_sim_time':True,'home_world':profile.get('home_world',[-5.,-6.,.1]),

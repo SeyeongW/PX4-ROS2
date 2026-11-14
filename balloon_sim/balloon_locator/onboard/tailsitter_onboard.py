@@ -2,16 +2,17 @@
 """실기체 쿼드 테일시터(Quad-Tailsitter) 온보드 폐루프 유도 제어기 (ROS 의존성 없음).
 
 지상 관측 시스템(SIYI A8 mini + 6-DOF UKF + mavlink_bridge_node)으로부터 SiK 텔레메트리 모뎀을 통해
-수신한 풍선 좌표(COMMAND_INT, MAV_CMD_USER_1)와 온보드 노즈콘 카메라(detector.py, UDP 16B)의
-실시간 검출 결과를 결합하여 전 과정을 폐루프로 수행합니다.
+수신한 유효 풍선 좌표(COMMAND_INT, MAV_CMD_USER_1)로 접근합니다.
+온보드 검출 UDP 16B에는 원영상 노출 시각·보정 식별자가 없어 최신 자세와 결합할 수 없습니다.
+검출 수신은 유지하지만 픽셀 기반 종말 조향은 비활성화합니다. 원노출 시각, 해당 시각의
+기체 자세 및 실측 카메라 외부·내부 보정이 갖춰지기 전에는 영상으로 좌표 만료를 우회하지 않습니다.
 
 동작 단계 (State Machine):
   0) WAIT_TARGET     : 지상 대기 — 지상국에서 발진 승인된 유효 6-DOF UKF 표적(COMMAND_INT) 수신 대기
   1) TAKEOFF         : 수직 호버링 자세(Pitch=0°) 스트리밍 -> OFFBOARD 진입 & ARM -> 목표 고도 수직 상승
   2) TRANSITION      : 표적 방위각으로 기수 숙임(Pitch -25° -> -55°) 전진 가속 천이 비행 (2.2초)
   3) TS_UKF_APPROACH : 지상 10Hz UKF 좌표/속도 실시간 수신 + 50Hz SO(3) 쿼터니언/추력 폐루프 중기 유도
-  4) TS_LOS_PURSUIT  : 40m 이내 온보드 카메라 포착 시 3D LOS 단위벡터 + 광학 거리(R_opt) + 3D 비례항법(PN) 종말 유도
-  5) TS_BRAKE_TO_HOVER: 동시 통과 판정(Cond 1 AND Cond 2) 시 기수 들기(+18°) 역천이 제동(2.5초) -> AUTO.RTL 복귀
+  4) TS_BRAKE_TO_HOVER: 좌표 기반 근접 및 전방 평면 통과 시 역천이 제동(2.5초) -> AUTO.RTL 인계
 
 안전 장치:
   - 기본 실행(플래그 없음)은 오프라인 파라미터 검증만 수행하며, 명시적 --execute 인자에서만 하드웨어 I/O 시작
@@ -86,16 +87,13 @@ def nose_dir_to_quat_frd(nose_ned: np.ndarray, yaw_fallback: float = 0.0) -> np.
     else:
         yaw = yaw_fallback
 
-    h_dir = np.array([math.cos(yaw), math.sin(yaw), 0.0])
-    y_b = np.cross(z_b, h_dir)
-    yn = float(np.linalg.norm(y_b))
-    if yn < 1e-6:
-        y_b = np.array([-math.sin(yaw), math.cos(yaw), 0.0])
-    else:
-        y_b = y_b / yn
-
+    # Same wings-level construction as tools/tailsitter_guidance.py: crossing
+    # the horizontal plane must not reverse the right-wing axis by 180 degrees.
+    y_b = np.array([-math.sin(yaw), math.cos(yaw), 0.0])
     x_b = np.cross(y_b, z_b)
     x_b = x_b / np.linalg.norm(x_b)
+    y_b = np.cross(z_b, x_b)
+    y_b = y_b / np.linalg.norm(y_b)
     R = np.column_stack((x_b, y_b, z_b))
     return rotmat_to_quat(R)
 
@@ -220,6 +218,33 @@ def send_attitude_target(mav, q_wxyz, thrust: float):
     )
 
 
+def confirm_auto_mode(mav, submode, log):
+    """Stop setpoints and bound the wait for FCU ACK *and* observed AUTO mode.
+
+    A confirmed handoff is not proof of a completed return or landing. If the
+    link fails, no stale attitude setpoints keep PX4's Offboard stream alive.
+    """
+    commands = CommandWatchdog()
+    commands.request(mav, time.monotonic(), M.MAV_CMD_DO_SET_MODE,
+                     M.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED, PX4_AUTO, submode)
+    while True:
+        msg = mav.recv_match(blocking=False)
+        if (msg is not None and msg.get_srcSystem() == mav.target_system
+                and msg.get_srcComponent() == mav.target_component):
+            if msg.get_type() == 'COMMAND_ACK':
+                commands.receive(msg)
+            elif msg.get_type() == 'HEARTBEAT':
+                commands.observe(msg)
+        failure = commands.failure(time.monotonic())
+        if failure:
+            log(f'AUTO handoff unconfirmed: {failure}')
+            return False
+        if commands.pending is None and commands.waiting_state is None:
+            log(f'AUTO handoff confirmed: submode={submode}; return/landing not verified')
+            return True
+        time.sleep(.01)
+
+
 def parse_args(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     add_execution_options(ap)
@@ -296,6 +321,7 @@ def run(a, resources):
     resources.callback(mav.close)
     wait_fcu(mav, timeout=a.connect_timeout, expected_system=a.system_id)
     log(f'FCU 연결 완료: sys={mav.target_system} comp={mav.target_component}')
+    log('onboard_pixel_guidance_disabled: exposure_timestamp_and_calibrated_pose_history_required')
 
     request_streams(mav, [
         (M.MAVLINK_MSG_ID_GLOBAL_POSITION_INT, 50),
@@ -325,6 +351,8 @@ def run(a, resources):
     armed = False
     was_offboard = False
     offboard_requested = False
+    offboard_stream_started = None
+    takeoff_origin = None
 
     # 지상국 UKF 표적 상태
     target_global = None      # (lat_deg, lon_deg, rel_alt_m)
@@ -362,7 +390,10 @@ def run(a, resources):
                 if (not all(math.isfinite(v) for v in (det_flag, _dx, _dy, _rad))
                         or det_flag not in (0., 1.) or _rad < 0 or (det_flag == 1. and _rad <= 0)):
                     continue
-                t_vis = time.monotonic()
+                next_vis = time.monotonic()
+                if next_vis - t_vis > .25:
+                    vis_streak = 0
+                t_vis = next_vis
                 detected, dx_px, dy_px, radius_px = det_flag, _dx, _dy, _rad
                 if det_flag == 1.0:
                     vis_streak += 1
@@ -391,7 +422,9 @@ def run(a, resources):
 
             if typ == 'COMMAND_INT' and target_message_ok(msg, a):
                 t = (msg.x * 1e-7, msg.y * 1e-7, msg.z + a.alt_offset)
-                if home is None or pos_global is None:
+                if (home is None or pos_global is None or not has_local_ned
+                        or not telemetry_fresh(received, now, a.telemetry_timeout,
+                                               attitude=True, local_position=True)):
                     pass
                 elif not target_ok(t, home, a.max_dist, a.min_alt, a.max_alt):
                     if now - t_log > 2.0:
@@ -413,16 +446,11 @@ def run(a, resources):
                     if target_ned is None:
                         target_ned = new_ned
                         log(f'첫 UKF 표적 수신 완료 (#{ukf_rx_count}): local_ned=({new_ned[0]:.1f}, {new_ned[1]:.1f}, {new_ned[2]:.1f})m')
-                    elif stage != 'TS_LOS_PURSUIT':
+                    else:
                         target_ned = 0.35 * new_ned + 0.65 * target_ned
 
             elif from_fcu and typ == 'GLOBAL_POSITION_INT':
                 pos_global = (msg.lat * 1e-7, msg.lon * 1e-7, msg.relative_alt * 1e-3)
-                if not has_local_ned and home is not None:
-                    pos_ned[0] = math.radians(pos_global[0] - home[0]) * EARTH_R
-                    pos_ned[1] = math.radians(pos_global[1] - home[1]) * EARTH_R * math.cos(math.radians(home[0]))
-                    pos_ned[2] = -pos_global[2]
-                vel_ned = np.array([msg.vx * 1e-2, msg.vy * 1e-2, msg.vz * 1e-2], dtype=float)
 
             elif from_fcu and typ == 'LOCAL_POSITION_NED':
                 if all(math.isfinite(v) for v in (msg.x, msg.y, msg.z, msg.vx, msg.vy, msg.vz)):
@@ -437,8 +465,8 @@ def run(a, resources):
                 next_home, next_alt = home_position(msg)
                 if commands.started and home is not None and (next_home != home or next_alt != home_alt_amsl):
                     log('home_reference_changed_after_control_start_restart_required')
-                    if was_offboard or landed == M.MAV_LANDED_STATE_IN_AIR:
-                        command(mav, M.MAV_CMD_DO_SET_MODE, M.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED, PX4_AUTO, PX4_AUTO_LOITER)
+                    if was_offboard or offboard_requested or armed or landed == M.MAV_LANDED_STATE_IN_AIR:
+                        confirm_auto_mode(mav, PX4_AUTO_LOITER, log)
                     return 1
                 home, home_alt_amsl = next_home, next_alt
 
@@ -477,25 +505,37 @@ def run(a, resources):
         t_next = now + 1.0 / a.rate
 
         failure = commands.failure(now)
-        feedback_ok = telemetry_fresh(received, now, a.telemetry_timeout, attitude=True)
+        feedback_ok = telemetry_fresh(received, now, a.telemetry_timeout,
+                                      attitude=True, local_position=True)
         if failure or not feedback_ok:
-            if failure or was_offboard or commands.started or now - t_start > a.connect_timeout:
+            if failure or stage != 'WAIT_TARGET' or was_offboard or commands.started or now - t_start > a.connect_timeout:
                 log(failure or 'FCU telemetry stale: 제어 종료')
-                if was_offboard or landed == M.MAV_LANDED_STATE_IN_AIR:
-                    command(mav, M.MAV_CMD_DO_SET_MODE, M.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED, PX4_AUTO, PX4_AUTO_LOITER)
+                if was_offboard or offboard_requested or armed or landed == M.MAV_LANDED_STATE_IN_AIR:
+                    confirm_auto_mode(mav, PX4_AUTO_LOITER, log)
                 return 1
             continue
 
         age = math.inf if t_rx is None else now - t_rx
-        fresh = age < a.timeout
+        fresh = 0. <= age < a.timeout
+        if not 0. <= now - t_vis <= .25 or detected != 1.0:
+            vis_streak = 0
+        guidance_stale = (stage in ('TAKEOFF', 'TRANSITION', 'TS_UKF_APPROACH') and not fresh)
+        if guidance_stale:
+            log(f'guidance_stale:{stage}: target_age={age:.3f}s; 제어 종료')
+            if was_offboard or offboard_requested or armed or landed == M.MAV_LANDED_STATE_IN_AIR:
+                confirm_auto_mode(mav, PX4_AUTO_LOITER, log)
+            return 1
 
         # 4. 쿼드 테일시터 상태기계 실행 (50 Hz)
         if stage == 'WAIT_TARGET':
             # 지상 대기 중에도 수직 호버링 쿼터니언을 스트리밍하여 즉시 OFFBOARD 전환 가능하도록 준비
             q_up = nose_dir_to_quat_frd(np.array([0.0, 0.0, -1.0]), yaw_fallback=last_yaw)
             send_attitude_target(mav, q_up, 0.15 if not armed else a.hover_thrust)
+            if offboard_stream_started is None:
+                offboard_stream_started = now
 
             if fresh and target_ned is not None:
+                takeoff_origin = pos_ned.copy()
                 dp = target_ned - pos_ned
                 last_yaw = math.atan2(float(dp[1]), float(dp[0]))
                 stage = 'TAKEOFF'
@@ -504,11 +544,11 @@ def run(a, resources):
             continue
 
         if stage == 'TAKEOFF':
-            alt_curr = -float(pos_ned[2])
+            alt_curr = float(takeoff_origin[2] - pos_ned[2])
             alt_err = a.takeoff_alt - alt_curr
             # 수직 상승: 코 방향은 수직 하늘([0, 0, -1]) + 수평 드리프트 억제
-            kx = float(np.clip(-0.08 * pos_ned[0] - 0.12 * vel_ned[0], -0.15, 0.15))
-            ky = float(np.clip(-0.08 * pos_ned[1] - 0.12 * vel_ned[1], -0.15, 0.15))
+            kx = float(np.clip(-0.08 * (pos_ned[0] - takeoff_origin[0]) - 0.12 * vel_ned[0], -0.15, 0.15))
+            ky = float(np.clip(-0.08 * (pos_ned[1] - takeoff_origin[1]) - 0.12 * vel_ned[1], -0.15, 0.15))
             nose_up = np.array([kx, ky, -1.0], dtype=float)
             q_cmd = nose_dir_to_quat_frd(nose_up, yaw_fallback=last_yaw)
             vz_des = float(np.clip(0.8 * alt_err, -1.5, 4.0))
@@ -518,7 +558,9 @@ def run(a, resources):
 
             if now - t_cmd >= 1.0:
                 if not was_offboard:
-                    if commands.request(mav, now, M.MAV_CMD_DO_SET_MODE, M.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED, PX4_OFFBOARD):
+                    if (now - offboard_stream_started >= 1.
+                            and commands.request(mav, now, M.MAV_CMD_DO_SET_MODE,
+                                                 M.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED, PX4_OFFBOARD)):
                         offboard_requested = True
                         t_cmd = now
                         log('OFFBOARD 모드 전환 요청')
@@ -558,13 +600,7 @@ def run(a, resources):
                 log(f'[STAGE -> TS_UKF_APPROACH] 중기 10Hz UKF 폐루프 유도 개시 (거리={float(np.linalg.norm(dp)):.1f}m)')
             continue
 
-        if stage in ('TS_UKF_APPROACH', 'TS_LOS_PURSUIT'):
-            # 지상국 신호가 장시간 끊겼고 아직 온보드 비전 락온 전이면 안전 Hold 전환
-            if stage == 'TS_UKF_APPROACH' and age > a.lost:
-                log(f'지상국 표적 {age:.1f}s 두절 -> 안전 Hold(AUTO.LOITER) 전환')
-                command(mav, M.MAV_CMD_DO_SET_MODE, M.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED, PX4_AUTO, PX4_AUTO_LOITER)
-                return 1
-
+        if stage == 'TS_UKF_APPROACH':
             dp = target_ned - pos_ned
             dist = float(np.linalg.norm(dp))
             if dist < min_dist_to_target:
@@ -572,36 +608,11 @@ def run(a, resources):
             if dist <= a.pass_radius:
                 entered_hit_zone = True
 
-            vis_fresh = (now - t_vis) <= 0.25 and detected == 1.0
-            if stage == 'TS_UKF_APPROACH' and dist <= a.terminal_dist and vis_fresh and vis_streak >= 2:
-                stage = 'TS_LOS_PURSUIT'
-                stage_t0 = now
-                log(f'[STAGE -> TS_LOS_PURSUIT] 온보드 카메라 풍선 락온! 종말 3D LOS/PN 비전 유도 전환 (거리={dist:.1f}m)')
-
-            los_ray = None
-            if stage == 'TS_LOS_PURSUIT' and vis_fresh:
-                los_ray = pixel_to_los_ned(dx_px, dy_px, a.fx, a.fy, R_ned_from_frd)
-                diam_px = 2.0 * radius_px
-                if diam_px >= 12.0:
-                    r_opt = (a.fx * a.balloon_diameter) / diam_px
-                    if 0.8 <= r_opt <= 45.0:
-                        opt_target_ned = pos_ned + r_opt * los_ray
-                        alpha_opt = 0.35 if diam_px >= 22.0 else 0.18
-                        target_ned = (1.0 - alpha_opt) * target_ned + alpha_opt * opt_target_ned
-                        dp = target_ned - pos_ned
-                        dist = float(np.linalg.norm(dp))
-                        if dist < min_dist_to_target:
-                            min_dist_to_target = dist
-                        if dist <= a.pass_radius:
-                            entered_hit_zone = True
-
             # 동시 만족 통과 판정 (Condition 1 AND Condition 2)
             rel_from_target = pos_ned - target_ned
             along_track = float(np.dot(rel_from_target, approach_unit_vec))
             cond1_hit = entered_hit_zone and (min_dist_to_target <= a.pass_radius)
-            cond2_passed = (along_track > 0.3) or (
-                not vis_fresh and max_diam_seen_px >= 25.0 and dist > min_dist_to_target + 0.5
-            )
+            cond2_passed = along_track > 0.3
             if cond1_hit and cond2_passed:
                 stage = 'TS_BRAKE_TO_HOVER'
                 stage_t0 = now
@@ -617,10 +628,10 @@ def run(a, resources):
                 target_ned=target_ned,
                 desired_speed=a.cruise_speed,
                 hover_thrust=a.hover_thrust,
-                los_ray_ned=los_ray,
+                los_ray_ned=None,
                 yaw_fallback=last_yaw,
                 target_vel_ned=target_vel_ned,
-                allow_dive=(stage == 'TS_LOS_PURSUIT'),
+                allow_dive=False,
             )
             send_attitude_target(mav, q_cmd, thrust_cmd)
             continue
@@ -638,9 +649,8 @@ def run(a, resources):
             send_attitude_target(mav, q_brake, a.hover_thrust * 0.85)
 
             if dt_brake >= 2.5:
-                log('[STAGE -> RTL] 역천이 감속 완료 -> AUTO.RTL 자동 귀환 및 수직 착륙 명령 전송!')
-                command(mav, M.MAV_CMD_NAV_RETURN_TO_LAUNCH)
-                return 0
+                log('[STAGE -> RTL] 역천이 감속 완료 -> AUTO.RTL 제어권 인계 요청')
+                return 0 if confirm_auto_mode(mav, 5, log) else 1
 
 
 if __name__ == '__main__':

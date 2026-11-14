@@ -8,6 +8,10 @@
 #
 set -eo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
+[[ "${FLY_EXPERIMENTAL_TAILSITTER:-0}" == 1 ]] || {
+    echo 'Legacy tailsitter only. For the default MC mission, land and use UI reset/lock/launch.' >&2
+    exit 2
+}
 
 PX4_PID="$(pgrep -n -x px4 || true)"
 if [[ -z "$PX4_PID" ]]; then

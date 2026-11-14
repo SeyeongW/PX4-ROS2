@@ -75,6 +75,8 @@ def record_telemetry(msg,received,boot_times,now):
     if kind=='GLOBAL_POSITION_INT':
         if (not -900000000<msg.lat<900000000 or not -1800000000<=msg.lon<=1800000000
                 or not all(math.isfinite(v) for v in (msg.relative_alt,msg.vx,msg.vy,msg.vz))):return False
+    elif kind=='LOCAL_POSITION_NED':
+        if not all(math.isfinite(v) for v in (msg.x,msg.y,msg.z,msg.vx,msg.vy,msg.vz)):return False
     elif kind=='ATTITUDE_QUATERNION':
         q=(msg.q1,msg.q2,msg.q3,msg.q4)
         if not all(math.isfinite(v) for v in q) or abs(sum(v*v for v in q)-1.)>.01:return False
@@ -88,17 +90,18 @@ def record_telemetry(msg,received,boot_times,now):
             if stamp<=boot_times.get(kind,-1):return False
             boot_times[kind]=stamp
     elif kind not in ('HEARTBEAT','EXTENDED_SYS_STATE'):return False
-    if hasattr(msg,'time_boot_ms'):
-        stamp=msg.time_boot_ms
-        if stamp<=boot_times.get(kind,-1):return False
+    if kind in ('GLOBAL_POSITION_INT','LOCAL_POSITION_NED','ATTITUDE_QUATERNION'):
+        stamp=getattr(msg,'time_boot_ms',None)
+        if type(stamp) is not int or not 0<=stamp<2**32 or stamp<=boot_times.get(kind,-1):return False
         boot_times[kind]=stamp
     received[kind]=now
     return True
 
 
-def telemetry_fresh(received,now,timeout,*,attitude=False):
+def telemetry_fresh(received,now,timeout,*,attitude=False,local_position=False):
     limits={'GLOBAL_POSITION_INT':timeout,'HEARTBEAT':2.,'EXTENDED_SYS_STATE':2.}
     if attitude:limits['ATTITUDE_QUATERNION']=timeout
+    if local_position:limits['LOCAL_POSITION_NED']=timeout
     return all(kind in received and 0<=now-received[kind]<=age for kind,age in limits.items())
 
 

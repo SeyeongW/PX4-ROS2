@@ -139,17 +139,20 @@ class BalloonLocatorNode(Node):
                 and (not self.att or stamp>self.att[-1][0])):
             self.att.append((stamp,msg.vector.x,msg.vector.y,msg.vector.z))
 
-    def _attitude_at(self,t):
+    def _attitude_at(self,t,with_rate=False):
         if len(self.att)<2:return None
         i=bisect.bisect_left([a[0] for a in self.att],t)
         if i==0:
-            return self.att[0][1:] if abs(self.att[0][0]-t)<1e-9 else None
+            if abs(self.att[0][0]-t)>=1e-9:return None
+            i=1
         if i>=len(self.att):return None
         (t0,y0,p0,r0),(t1,y1,p1,r1)=self.att[i-1],self.att[i]
         if t1-t0>self.value('max_attitude_gap_sec'):return None
         a=(t-t0)/(t1-t0);dy=(y1-y0+180.)%360.-180.
         dr=(r1-r0+180.)%360.-180.
-        return y0+a*dy,p0+a*(p1-p0),r0+a*dr
+        pose=(y0+a*dy,p0+a*(p1-p0),r0+a*dr)
+        rate=np.array([dy,p1-p0,dr])/(t1-t0)
+        return (pose,rate) if with_rate else pose
 
     def _on_det(self,msg):
         current=self._now();stamp=Time.from_msg(msg.header.stamp).nanoseconds*1e-9
@@ -174,12 +177,13 @@ class BalloonLocatorNode(Node):
 
     def _tf_pose(self,frame,stamp):
         if not frame or frame==self.value('fixed_frame'):raise ValueError('optical_frame_required')
-        try:
-            return self._matrix(self.tf.lookup_transform(self.value('fixed_frame'),frame,
-                Time(nanoseconds=round(stamp*1e9))))
-        except TransformException:
-            return self._matrix(self.tf.lookup_transform(self.value('fixed_frame'),frame,
-                Time()))
+        if not math.isfinite(stamp) or stamp<=0:raise ValueError('invalid_camera_tf_time')
+        transform=self.tf.lookup_transform(self.value('fixed_frame'),frame,
+            Time(nanoseconds=round(stamp*1e9)))
+        tf_stamp=Time.from_msg(transform.header.stamp).nanoseconds*1e-9
+        if abs(tf_stamp-stamp)>1e-6:raise ValueError('camera_tf_time_mismatch')
+        rotation,origin=self._matrix(transform)
+        return rotation,origin,tf_stamp
 
     def _calibration_ready(self):
         if self.value('calibration_valid'):return True
@@ -221,24 +225,23 @@ class BalloonLocatorNode(Node):
                 configuration={name:self.value(name) for name in ('balloon_diameter_m','diameter_rel_sigma',
                 'focal_rel_sigma','diameter_bias_sigma_px','angle_sigma_deg','extrinsic_translation_std_m','hfov_deg_at_1x','base_heading_deg',
                 'yaw_sign','yaw_zero_deg','pitch_sign','pitch_zero_deg','roll_sign','roll_zero_deg',
-                'gimbal_rotation_order','offset_ned')})
+                'gimbal_rotation_order','offset_ned','camera_time_std_s')})
             revision=hashlib.sha256(json.dumps(calibration,sort_keys=True).encode()).hexdigest()
             if self.revision and revision!=self.revision:
                 self.est.reset();self.measurement=None;self.last_published_stamp=None
             self.revision=revision
             focal=(intrinsics[0]+intrinsics[1])/2 if intrinsics else focal_px(width,self.value('hfov_deg_at_1x'),self.zoom)
-            eff_diam=diameter+0.90 if (self.pose_source=='tf' and diameter<24.0) else diameter
-            rng=range_from_diameter(eff_diam,self.value('balloon_diameter_m'),focal)
+            rng=range_from_diameter(diameter,self.value('balloon_diameter_m'),focal)
             if rng>self.value('max_range_m'):
                 self.skipped['range']+=1;raise ValueError('target_out_of_range')
-            timing=np.zeros((3,3));origin_world=None
+            timing=np.zeros((3,3));origin_world=None;tf_stamp=None
             if self.pose_source=='tf':
                 ray_optical=optical_ray(u,v,intrinsics)
-                rotation,origin_world=self._tf_pose(msg.header.frame_id,stamp)
+                rotation,origin_world,tf_stamp=self._tf_pose(msg.header.frame_id,stamp)
                 ray_world=rotation@ray_optical;world=origin_world+rng*ray_world
                 enu_ned=np.array([[0.,1.,0.],[1.,0.,0.],[0.,0.,-1.]])
                 ray=enu_ned@ray_world;pos=enu_ned@world
-                old_rotation,old_origin=self._tf_pose(msg.header.frame_id,stamp-.02)
+                old_rotation,old_origin,_=self._tf_pose(msg.header.frame_id,stamp-.02)
                 # Differentiate the same measured optical lever, including both
                 # camera-origin motion and image-pose timing during a slew.
                 motion=(origin_world-old_origin+(rotation-old_rotation)@(rng*ray_optical))/.02
@@ -246,18 +249,25 @@ class BalloonLocatorNode(Node):
                 timing=np.outer(motion,motion)*self.value('camera_time_std_s')**2
                 alignment=math.degrees(math.acos(np.clip(ray_optical[2],-1.,1.)))
             else:
-                ya=self._attitude_at(stamp)
-                if ya is None:self.reason='waiting_for_exposure_attitude';self.skipped['no_att']+=1;return
-                az,el=gimbal_to_azel(ya[0],ya[1],self.value('base_heading_deg'),self.value('yaw_sign'),
-                    self.value('yaw_zero_deg'),self.value('pitch_sign'),self.value('pitch_zero_deg'))
-                # SIYI uses 312 (yaw, roll, pitch), also implemented by
-                # ArduPilot/libraries/AP_Mount/AP_Mount_Siyi.cpp. Signs and
-                # mounting zeros still require this physical unit's calibration.
-                roll=self.value('roll_sign')*(ya[2]-self.value('roll_zero_deg'))
-                pos,_,rng=locate_balloon(u,v,diameter,width_px=width,height_px=height,
-                    hfov_deg_at_1x=self.value('hfov_deg_at_1x'),zoom=self.zoom,az_deg=az,el_deg=el,
-                    balloon_diameter_m=self.value('balloon_diameter_m'),offset_ned=self.value('offset_ned'),intrinsics=intrinsics,
-                    roll_deg=roll,rotation_order=self.value('gimbal_rotation_order'))
+                attitude=self._attitude_at(stamp,with_rate=True)
+                if attitude is None:self.reason='waiting_for_exposure_attitude';self.skipped['no_att']+=1;return
+                ya,rate=attitude
+                def locate(angles):
+                    az,el=gimbal_to_azel(angles[0],angles[1],self.value('base_heading_deg'),self.value('yaw_sign'),
+                        self.value('yaw_zero_deg'),self.value('pitch_sign'),self.value('pitch_zero_deg'))
+                    # SIYI 312: the calibrated yaw/roll/pitch signs and zeros also
+                    # apply to the timing derivative below.
+                    roll=self.value('roll_sign')*(angles[2]-self.value('roll_zero_deg'))
+                    return locate_balloon(u,v,diameter,width_px=width,height_px=height,
+                        hfov_deg_at_1x=self.value('hfov_deg_at_1x'),zoom=self.zoom,az_deg=az,el_deg=el,
+                        balloon_diameter_m=self.value('balloon_diameter_m'),offset_ned=self.value('offset_ned'),intrinsics=intrinsics,
+                        roll_deg=roll,rotation_order=self.value('gimbal_rotation_order'))[0]
+                pos=locate(ya)
+                # Differentiate the measured interpolation segment, including all
+                # three calibrated rotation axes. Timing jitter is not zero during slew.
+                step=1e-4
+                motion=(locate(np.asarray(ya)+rate*step)-locate(np.asarray(ya)-rate*step))/(2*step)
+                timing=np.outer(motion,motion)*self.value('camera_time_std_s')**2
                 ray=(pos-np.asarray(self.value('offset_ned')))/rng
                 cx,cy=(intrinsics[2],intrinsics[3]) if intrinsics else (width/2,height/2)
                 alignment=math.degrees(math.atan2(math.hypot(u-cx,v-cy),focal))
@@ -271,7 +281,7 @@ class BalloonLocatorNode(Node):
                 self.measurement=dict(stamp=stamp,received=received,bbox=[u-diameter/2,v-diameter/2,diameter,diameter],
                     image_size=[int(width),int(height)],camera_centered=alignment<=self.value('center_tolerance_deg'),
                     alignment_error_deg=alignment,camera_origin_world=origin_world.tolist() if origin_world is not None else None,
-                    observed_diameter_px=diameter,range_m=rng)
+                    observed_diameter_px=diameter,range_m=rng,camera_tf_stamp=tf_stamp)
                 self.reason='ready'
             else:
                 self.reason='measurement_rejected'

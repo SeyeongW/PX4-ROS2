@@ -208,7 +208,17 @@ def main(args=None):
         def active(self):return self.phase in ('arming','takeoff','spline_tracking','vision_tracking','arrived','abort_braking','abort_landing','autopilot_landing')
         def grounded(self,now):
             own=causal_odometry(self.own_history,now)
-            return bool(own and own['position'][2]<=.25 and np.linalg.norm(own['velocity'])<=.15)
+            if own is None or not np.linalg.norm(own['velocity'])<=.15:return False
+            if self.backend!='mavros':return bool(own['position'][2]<=.25)
+            # EKF world altitude can retain an offset after landing. Require
+            # actual fresh FC landing feedback instead of an absolute Z plane.
+            state=next((packet for packet in reversed(self.controller_history)
+                        if 0<=now-packet['stamp']<=.3),None)
+            return bool(state and state.get('controller_ready') is True
+                        and state.get('connected') is True and state.get('armed') is False
+                        and state.get('landed_state')==1 and state.get('landed') is True
+                        and type(state.get('fcu_state_stamp')) in (int,float)
+                        and 0<=now-state['fcu_state_stamp']<=2.)
         def lock_estimate(self,now):
             latest=self.estimate(now)
             if latest is None:raise ValueError('no_valid_sensor_coordinate')
@@ -282,7 +292,6 @@ def main(args=None):
             self.events.append(dict(stamp=self.now(),phase=phase,reason=reason))
             self.get_logger().info('Static flight '+phase+': '+reason)
             self.save()
-            if phase=='aborted' and self.samples:self.auto_plot()
         def prepare_plan(self,now):
             if getattr(self,'lock_revision_changed',False) or self.calibration_changed(now):
                 raise ValueError('calibration_changed_unlock_and_relock_required')
@@ -423,7 +432,7 @@ def main(args=None):
                     self.begin_landing('user_abort')
                 elif action=='reset':
                     if self.active():raise ValueError('abort_and_land_before_reset')
-                    if self.own is None or np.linalg.norm(self.own['velocity'])>.15 or self.own['position'][2]>.25:
+                    if not self.grounded(now):
                         raise ValueError('reset_requires_grounded_vehicle_no_pose_teleport')
                     self.locked=None;self.invalidate_plan();self.start=None;self.landing=None
                     self.lock_revision_changed=False;self.sensor_unavailable_since=None
@@ -726,16 +735,6 @@ def main(args=None):
                 failure_behavior='return_to_takeoff_then_land' if record_plan and record_plan.get('gate') else 'land',
                 simulation_only=True,target_source=self.target_source,**self.backend_metadata(),**self.aircraft_metadata(),
                 native_setpoint_frame='jol/flight_ned',samples=len(self.samples)),indent=2))
-        def auto_plot(self):
-            import subprocess as _sp,sys as _sys
-            script=Path(__file__).resolve().parents[2]/'tools'/'plot_flight_data.py'
-            if not script.exists():return
-            try:
-                _sp.Popen([_sys.executable,str(script),'--mission',str(self.output)],
-                    stdout=_sp.DEVNULL,stderr=_sp.DEVNULL)
-                self.get_logger().info('Auto-plot started → balloon_sim/plots/')
-            except Exception as exc:
-                self.get_logger().warning('Auto-plot failed: '+str(exc))
         def tick(self):
             now=self.now()
             if now<=0:return
@@ -780,31 +779,6 @@ def main(args=None):
             if self.phase in ('detecting','coordinate_ready'):
                 self.phase='coordinate_ready' if self.estimate(now) else 'detecting'
                 self.reason='' if self.phase=='coordinate_ready' else 'waiting_for_sensor_coordinate'
-            if self.options.get('continuous_takeoff') and self.phase=='coordinate_ready' and not self.lock_block_reason(now):
-                try:
-                    estimate=self.lock_estimate(now)
-                    self.begin_new_recording()
-                    self.locked=json.loads(json.dumps(estimate));self.plan=None
-                    self.lock_revision_changed=False;self.sensor_unavailable_since=None
-                    self.transition('locked')
-                    try:self.begin_preview(now)
-                    except (ValueError,KeyError,TypeError) as error:
-                        self.invalidate_plan();self.transition('locked','preview_failed: '+str(error))
-                except (ValueError,KeyError,TypeError):pass
-            if self.options.get('continuous_takeoff') and self.phase=='preview_ready' and self.can_launch(now):
-                self.flight_launched=True;self.samples=[];self.flown=[];self.saved_samples=0
-                self.record_plan=self.plan
-                self.transfer_start=None;self.takeoff_settle_dwell=None
-                self.progress_time=0.;self.reference_history=deque(maxlen=4000)
-                self.vtol_stage='multicopter';self.vtol_future=None;self.vtol_stage_start=None;self.fw_observed=False
-                self.checkpoint=dict(outcome='pending');self.gate_feedback=None;self.return_future=None
-                self.sensor_unavailable_since=None;self.emergency_local_landing=False
-                (self.output/'telemetry.jsonl').write_text('')
-                if self.backend=='mavros':
-                    self.arm_retry_count=0;self.arm_retry_at=None
-                    self.arm_future=self.start_client.call_async(Trigger.Request());self.arm_requested=now
-                    self.transition('arming','auto_launch_continuous_takeoff')
-                else:self.start=now;self.transition('takeoff')
             if self.active():
                 if not self.ready(now):
                     self.begin_emergency_landing('own_or_controller_lost_watchdog_descent')
@@ -920,11 +894,8 @@ def main(args=None):
                             else:self.dwell=None
                             if elapsed>self.plan['duration_s']+15 or now-self.start>self.plan['duration_s']+60:
                                 self.begin_landing('arrival_timeout')
-                        if self.phase=='spline_tracking' and self.estimate(now):
-                            self.vision_loss_since=None;self.vision_last_target=np.array(self.estimate(now)['position'])
-                            if self.balloon_reset_client.service_is_ready():
-                                self.balloon_reset_client.call_async(Trigger.Request())
-                            self.transition('vision_tracking','camera_detection_acquired')
+                        # Fresh ground-camera estimates validate the locked
+                        # waypoint; they do not replace its approved spline.
                         if self.phase in ('takeoff','spline_tracking') and np.linalg.norm(p-sample['position'])>(5. if self.options.get('max_speed',1.5)>5. else 2.):self.begin_landing('tracking_error_exceeded')
                         if self.plan.get('continuous_takeoff') and self.phase in ('takeoff','spline_tracking') and now-self.start>self.plan['duration_s']+60:
                             self.begin_landing('continuous_path_progress_timeout')
@@ -950,17 +921,9 @@ def main(args=None):
                         else:self.dwell=None
                         if now-self.start>self.plan['duration_s']+90.:self.begin_landing('vision_tracking_timeout')
                     elif self.phase=='arrived':
-                        hold=self.vision_last_target if self.vision_last_target is not None else self.plan['goal']
-                        hold=hold.tolist() if hasattr(hold,'tolist') else list(hold)
-                        sample=stationary_sample(hold)
-                        if self.backend=='mavros':
-                            if self.dwell is None:self.dwell=now
-                            if now-self.dwell>2. and self.return_client and self.return_client.service_is_ready():
-                                self.return_future=self.return_client.call_async(Trigger.Request())
-                                self.autopilot_land_start=now
-                                self.events.append(dict(stamp=now,action='return_to_launch_after_arrival',
-                                    requested_home_world=self.plan['home']))
-                                self.transition('autopilot_landing','return_to_launch_after_arrival')
+                        # Success holds at the approved post-gate endpoint.
+                        # Operator abort and the existing fault watchdogs own RTL.
+                        sample=stationary_sample(self.plan['goal'])
                     elif self.phase in ('abort_braking','abort_landing'):
                         elapsed=now-self.landing_start;sample=sample_braking_landing(self.landing,elapsed)
                         if sample['phase']=='abort_landing' and self.phase=='abort_braking':

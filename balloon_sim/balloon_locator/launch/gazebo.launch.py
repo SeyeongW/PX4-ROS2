@@ -34,12 +34,15 @@ def start_stl_mavros(context,report,perception,existing,watch,mavros_enabled=Tru
     etc=root/'build/px4_sitl_default/etc'
     if not binary.is_file() or not etc.is_dir():raise ValueError('Local PX4 SITL build required')
     rootfs=Path(tempfile.mkdtemp(prefix='px4_rootfs_',dir=value('static_output')))
-    etc=existing['prepare_px4_parameter_overrides'](etc,rootfs,'1045_gazebo-classic_quadtailsitter',report['px4_parameters'])
+    autostart=str(report['px4_parameters']['SYS_AUTOSTART'])
+    sim_model=report['px4_sim_model']
+    etc=existing['prepare_px4_parameter_overrides'](etc,rootfs,autostart+'_'+sim_model,report['px4_parameters'])
     px4=ExecuteProcess(cmd=[str(binary),'-d',str(etc)],cwd=str(rootfs),output='screen',
-        additional_env={'PX4_SIM_MODEL':'gazebo-classic_quadtailsitter','PX4_SYS_AUTOSTART':'1045'})
+        additional_env={'PX4_SIM_MODEL':sim_model,'PX4_SYS_AUTOSTART':autostart})
     if not mavros_enabled:
         return [watch(px4),px4]
-    mavros=Node(package='mavros',executable='mavros_node',namespace='mavros',output='screen',
+    # MAVROS 2 creates its own /mavros UAS namespace inside the container.
+    mavros=Node(package='mavros',executable='mavros_node',namespace='',output='screen',
         parameters=[str(perception/'config/mavros_sitl.yaml')])
     adapter=Node(package='balloon_locator',executable='stl_mavros_adapter',output='screen',parameters=[{
         'use_sim_time':True,'home_world':report['home_world'],'home_yaw_world':report['home_yaw_world'],
@@ -55,6 +58,12 @@ def setup(context):
     aircraft=value('aircraft_type')
     if aircraft != 'stl_pacer_quad':
         raise ValueError('balloon_gazebo_requires_aircraft_type=stl_pacer_quad (legacy VTOL assets are not bundled)')
+    mode=value('mode')
+    experimental=value('experimental_tailsitter').lower() in ('true','1','yes')
+    if mode not in ('mission','pymav'):
+        raise ValueError('sensor_racing_requires_mission_or_explicit_experimental_pymav')
+    if experimental != (mode=='pymav'):
+        raise ValueError('pymav_requires_experimental_tailsitter_true_and_mission_requires_false')
     sim=Path(get_package_share_directory('jol_sim'));perception=Path(get_package_share_directory('jol_perception'))
     if not value('static_output') or not Path(value('static_output')).is_absolute():
         raise ValueError('Use tools/run_gazebo.sh for private temporary output, or set absolute static_output explicitly')
@@ -65,7 +74,7 @@ def setup(context):
         # Old cutaway command lines must not expose the interior in experiment view.
         model,report=build_model(sim,value('px4_root'),value('px4_plugin_dir'),value('px4_aero_plugin_dir'),
             value('physics_profile_path'),local/'meshes/stl_airframe',
-            shell_transparency=0.0)
+            shell_transparency=0.0,experimental_tailsitter=experimental)
     world=make_world(sim,value('px4_root'),value('px4_plugin_dir'),value('px4_aero_plugin_dir'),value('physics_profile_path'),
         range_m=float(value('target_range')),height_m=float(value('target_height')),azimuth_deg=float(value('target_azimuth')),
         aircraft_model=model)
@@ -92,7 +101,6 @@ def setup(context):
     tracker=Node(package='balloon_locator',executable='gimbal_tracker_node',output='screen',parameters=[{
         'use_sim_time':True,'image_width':1280.,'image_height':960.,'deadband':.003,
         'yaw_sign':-1.,'pitch_sign':1.}])
-    mode=value('mode')
     auto_start=value('ui').lower() not in ('true','1','yes')
     bridge=Node(package='balloon_locator',executable='gazebo_bridge',output='screen',parameters=[{'use_sim_time':True,'auto_start':auto_start}])
     flight=load_profile(value('physics_profile_path'))['flight_parameters'] if report else {}
@@ -128,6 +136,7 @@ def setup(context):
             'FLY_TARGET_X':str(target_world[0]),'FLY_TARGET_Y':str(target_world[1]),
             'FLY_TARGET_Z':str(target_world[2]),'FLY_HOVER_ALT':str(hover_alt),
             'FLY_STARTUP_DELAY':'15','PYTHONUNBUFFERED':'1',
+            'FLY_EXPERIMENTAL_TAILSITTER':'1' if experimental else '0',
         }) if fly_script and fly_script.is_file() else None
     detection_viewer=Node(package='balloon_locator',executable='detection_viewer_node',output='screen',parameters=[{
         'use_sim_time':True,'simulation_mode':True,
@@ -140,9 +149,11 @@ def setup(context):
         ground_nodes=[server,onboard_detector,vision_center]
         watched=[server,onboard_detector,vision_center]
     else:
-        ground_nodes=[server,detector,locator,tracker,bridge,mission,onboard_detector]
+        ground_nodes=[server,detector,locator,tracker,bridge,mission,onboard_detector,onboard_camera_transform(report)]
         watched=[server,detector,locator,tracker,bridge,mission,onboard_detector]
     return [LogInfo(msg=f'Balloon locator mode={mode}: 30cm balloon, upward onboard camera, exact simulated optics.'),
+        *([LogInfo(msg='EXPERIMENTAL: unmeasured tailsitter aerodynamics; not the 2kg MC racing model or hardware validation.')]
+          if experimental else []),
         *([LogInfo(msg='Exterior view: ignoring legacy airframe_transparency; the black shell hides internal parts.')]
           if report and float(value('airframe_transparency'))!=0.0 else []),
         SetEnvironmentVariable('GAZEBO_PLUGIN_PATH',str(Path(get_package_prefix('jol_sim'))/'lib')+os.pathsep+os.environ.get('GAZEBO_PLUGIN_PATH','/opt/ros/humble/lib')),
@@ -154,7 +165,8 @@ def setup(context):
 
 def generate_launch_description():
     paths=runtime_paths()
-    defaults=dict(gui='true',ui='true',rviz='true',mode='mission',target_range='50.0',target_height='4.0',target_azimuth='0.0',
+    defaults=dict(gui='true',ui='true',rviz='true',mode='mission',experimental_tailsitter='false',
+        target_range='40.0',target_height='10.0',target_azimuth='-90.0',
         vertical_handle='4.0',airframe_transparency='0.0',scenario='static_flight',flight_backend='mavros',aircraft_type='stl_pacer_quad',
         static_output=os.environ.get('BALLOON_RUNTIME_DIR',''),px4_root=str(paths['px4_root']),
         px4_binary=str(paths['px4_binary']),

@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import numpy as np
 
 from balloon_locator import stl_mission
 
@@ -80,6 +81,100 @@ def source_method(name):
 
 def source_tick():
     return source_method('tick')
+
+
+def reset_state(height=.4076, backend='mavros'):
+    state = SimpleNamespace(backend=backend, phase='landed', locked={'target_id': 1},
+        plan={'goal': [0., -40., 10.]}, events=[], start=1., landing=object())
+    state.now = lambda: 20.
+    state.own_history = [dict(stamp=20., position=[2., .2, height], velocity=[0., 0., .055])]
+    state.controller_history = [dict(stamp=20., connected=True, armed=False,
+        controller_ready=True, landed=True, landed_state=1, fcu_state_stamp=20.)]
+    state.active = lambda: False
+    state.grounded = lambda now: source_method('grounded')(state, now)
+    state.invalidate_plan = lambda: setattr(state, 'plan', None)
+    state.estimate = lambda now: None
+    state.transition = lambda phase: setattr(state, 'phase', phase)
+    state.publish_status = lambda now: None
+    state.save = lambda: None
+    return state
+
+
+@pytest.mark.parametrize('height', [.4076, 3.5])
+def test_mavros_grounded_reset_uses_fresh_landed_feedback_not_absolute_altitude(height):
+    state = reset_state(height)
+    own_before = deepcopy(state.own_history)
+    assert state.grounded(20.)
+    response = source_method('action')(state, 'reset', SimpleNamespace())
+    assert response.success, response.message
+    assert state.phase == 'detecting'
+    assert state.locked is state.plan is state.start is state.landing is None
+    assert state.own_history == own_before  # Reset must never move the aircraft.
+
+
+@pytest.mark.parametrize('condition', [
+    'stale_controller', 'future_controller', 'missing_controller', 'disconnected',
+    'not_ready', 'armed', 'airborne', 'unknown_landed', 'expired_extended',
+    'stale_fcu', 'future_fcu', 'missing_fcu_stamp', 'moving', 'stale_own', 'future_own',
+])
+def test_mavros_grounded_and_reset_reject_unverified_landing_even_near_world_ground(condition):
+    state = reset_state(.1)
+    controller = state.controller_history[-1]
+    own = state.own_history[-1]
+    if condition == 'stale_controller': controller['stamp'] = 19.69
+    elif condition == 'future_controller': controller['stamp'] = 20.01
+    elif condition == 'missing_controller': state.controller_history.clear()
+    elif condition == 'disconnected': controller['connected'] = False
+    elif condition == 'not_ready': controller['controller_ready'] = False
+    elif condition == 'armed': controller['armed'] = True
+    elif condition == 'airborne': controller.update(landed=False, landed_state=2)
+    elif condition == 'unknown_landed': controller['landed_state'] = 0
+    elif condition == 'expired_extended': controller['landed'] = False
+    elif condition == 'stale_fcu': controller['fcu_state_stamp'] = 17.99
+    elif condition == 'future_fcu': controller['fcu_state_stamp'] = 20.01
+    elif condition == 'missing_fcu_stamp': controller.pop('fcu_state_stamp')
+    elif condition == 'moving': own['velocity'] = [.151, 0., 0.]
+    elif condition == 'stale_own': own['stamp'] = 19.79
+    elif condition == 'future_own': own['stamp'] = 20.01
+    assert not state.grounded(20.)
+    response = source_method('action')(state, 'reset', SimpleNamespace())
+    assert not response.success
+    assert response.message == 'reset_requires_grounded_vehicle_no_pose_teleport'
+    assert state.phase == 'landed' and state.plan and state.locked
+
+
+@pytest.mark.parametrize('height,expected', [(.1, True), (.4076, False), (3.5, False)])
+def test_native_grounded_reset_retains_height_guard(height, expected):
+    state = reset_state(height, backend='native')
+    state.controller_history.clear()
+    assert state.grounded(20.) is expected
+    response = source_method('action')(state, 'reset', SimpleNamespace())
+    assert response.success is expected
+
+
+def test_reset_still_rejects_active_mission_with_landed_feedback():
+    state = reset_state()
+    state.active = lambda: True
+    response = source_method('action')(state, 'reset', SimpleNamespace())
+    assert not response.success
+    assert response.message == 'abort_and_land_before_reset'
+
+
+@pytest.mark.parametrize('phase', ['coordinate_ready', 'preview_ready'])
+def test_continuous_path_never_implies_operator_lock_or_launch(phase):
+    state = tick_state()
+    state.phase = phase
+    state.locked = None
+    state.options['continuous_takeoff'] = True
+    state.estimate = lambda now: {'valid': True}
+    state.lock_block_reason = lambda now: ''
+    state.can_launch = lambda now: True
+    calls = []
+    state.lock_estimate = lambda now: calls.append('lock')
+    state.start_client = SimpleNamespace(call_async=lambda request: calls.append('arm'))
+    source_tick()(state)
+    assert state.phase == phase
+    assert calls == []
 
 
 def tick_state():
@@ -231,3 +326,105 @@ def test_accepted_start_is_not_repeated_and_original_15s_timeout_remains():
     tick_at(state, 35.01)
     assert not state.start_requests
     assert state.landing_reasons == ['PX4_arming_timeout']
+
+
+def flying_gate_state():
+    """Actual planner and tick methods, with ROS publishers/services replaced."""
+    state = tick_state()
+    state.options.update(continuous_takeoff=True, takeoff_join_speed=.15,
+                         target_is_pass_through_gate=True, max_speed=4.,
+                         max_acceleration=2., max_jerk=6., body_radius=.3,
+                         gate_exit_distance=5., standoff=0., controller_profile='aggressive_multicopter')
+    state.plan = stl_mission.build_static_plan([-2., 0., .2], [0., -40., 10.], **state.options)
+    state.start = 20.
+    state.clock = state.start + state.plan['segments'][0]['duration_s'] + .5
+    sample = stl_mission.sample_plan(state.plan, state.clock-state.start)
+    state.own.update(stamp=state.clock, position=sample['position'], velocity=sample['velocity'])
+    state.phase = 'spline_tracking'
+    state.backend = 'mavros'
+    state.active = state.ready = lambda *args: True
+    state.coordinate_matches = lambda now: True
+    state.estimate = lambda now: dict(state.locked, stamp=now)
+    state.controller = dict(origin_world=[0., 0., 0.], north_yaw_world_rad=1.57,
+                            controller_ready=True, setpoint_frame='jol/flight_ned',
+                            armed=True, mode='OFFBOARD')
+    state.lock_frame = dict(origin_world=[0., 0., 0.], north_yaw_world_rad=1.57)
+    state.reference_flight = {}
+    state.reference_history = deque()
+    state.transfer_start = state.clock
+    state.checkpoint = dict(outcome='pending')
+    state.gate_feedback = None
+    state.dwell = None
+    state.events, state.samples, state.flown = [], [], []
+    state.commands, state.return_requests, state.reset_requests = [], [], []
+    state.vision_last_target = None
+    state.return_client = SimpleNamespace(service_is_ready=lambda: True,
+                                         call_async=lambda _: state.return_requests.append(True))
+    state.balloon_reset_client = SimpleNamespace(service_is_ready=lambda: True,
+                                                call_async=lambda _: state.reset_requests.append(True))
+    state.command = lambda sample: state.commands.append(deepcopy(sample))
+    state.publish_status = lambda now, sample=None: None
+    state.aircraft_metadata = lambda: {}
+    state.publish_path = lambda *args: None
+    state.flown_pub = None
+    def transition(phase, reason=''):
+        state.phase, state.reason, state.dwell = phase, reason, None
+        state.events.append(dict(phase=phase, reason=reason))
+    state.transition = transition
+    def landing(reason):
+        state.landing_reasons.append(reason)
+        transition('autopilot_landing', reason)
+    state.begin_landing = landing
+    state.plan_time = lambda now: source_method('plan_time')(state, now)
+    state.check_gate = lambda now: source_method('check_gate')(state, now)
+    return state
+
+
+def test_fresh_ground_estimate_keeps_actual_spline_and_locked_gate():
+    state = flying_gate_state()
+    original = deepcopy(state.plan)
+    expected = stl_mission.sample_plan(state.plan, state.clock-state.start)
+    source_tick()(state)
+    assert state.phase == 'spline_tracking'
+    assert state.plan == original
+    assert state.checkpoint['outcome'] == 'pending'
+    assert not state.reset_requests
+    np.testing.assert_allclose(state.commands[-1]['position'], expected['position'])
+
+
+@pytest.mark.parametrize('checkpoint', ['pending', 'passed'])
+def test_goal_proximity_requires_observed_gate_pass(checkpoint):
+    state = flying_gate_state()
+    state.clock = state.start + state.plan['duration_s'] + .1
+    state.own.update(stamp=state.clock, position=list(state.plan['goal']), velocity=[0., 0., 0.])
+    state.checkpoint = dict(outcome=checkpoint)
+    tick_at(state, state.clock)
+    assert state.phase == 'spline_tracking'
+    for _ in range(12):
+        tick_at(state, state.clock + .1)
+        if state.phase != 'spline_tracking':
+            break
+    if checkpoint == 'passed':
+        assert state.phase == 'arrived'
+    else:
+        assert state.phase == 'autopilot_landing'
+        assert state.landing_reasons == ['checkpoint_crossing_unobserved_return_to_takeoff']
+    assert not state.reset_requests
+
+
+def test_arrived_holds_five_metres_beyond_gate_without_automatic_rtl():
+    state = flying_gate_state()
+    state.phase = 'arrived'
+    state.checkpoint = dict(outcome='passed')
+    state.clock = state.start + state.plan['duration_s'] + .1
+    state.own.update(stamp=state.clock, position=list(state.plan['goal']), velocity=[0., 0., 0.])
+    # A prior camera field must not replace the planned post-gate hold point.
+    state.vision_last_target = np.array(state.locked['position'])
+    tick_at(state, state.clock)
+    tick_at(state, state.clock + 5.1)
+    assert state.phase == 'arrived'
+    assert not state.return_requests
+    assert np.linalg.norm(np.array(state.plan['goal'])-state.locked['position']) == pytest.approx(5.)
+    for command in state.commands:
+        np.testing.assert_allclose(command['position'], state.plan['goal'])
+        np.testing.assert_allclose(command['velocity'], [0., 0., 0.])

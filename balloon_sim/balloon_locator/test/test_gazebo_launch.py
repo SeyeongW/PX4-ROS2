@@ -63,7 +63,7 @@ def test_incompatible_model_or_controller_fails_before_launch(key, value):
         run_path(str(LAUNCH))['setup'](context)
 
 
-def test_default_path_keeps_3m_c2_takeoff_and_horizontal_goal_approach():
+def test_default_path_keeps_3m_c2_takeoff_and_crosses_sensor_gate():
     from jol_perception.static_flight_core import build_static_plan
     from jol_perception.observation_path import sample_plan
 
@@ -71,6 +71,8 @@ def test_default_path_keeps_3m_c2_takeoff_and_horizontal_goal_approach():
     context = LaunchContext()
     defaults = {entity.name: ''.join(s.perform(context) for s in entity.default_value)
                 for entity in description.entities if hasattr(entity, 'default_value')}
+    assert defaults['mode'] == 'mission' and defaults['experimental_tailsitter'] == 'false'
+    assert [float(defaults[k]) for k in ('target_range','target_height','target_azimuth')] == [40.,10.,-90.]
     profile_path=Path(defaults['physics_profile_path'])
     profile = json.loads(profile_path.read_text())
     options = {k: v for k, v in profile['flight_parameters'].items()
@@ -84,6 +86,20 @@ def test_default_path_keeps_3m_c2_takeoff_and_horizontal_goal_approach():
         np.testing.assert_allclose(left[field], right[field], atol=2e-5)
     assert left['velocity'][2] == pytest.approx(profile['flight_parameters']['takeoff_join_speed'],abs=2e-5)
     np.testing.assert_allclose(np.array(curve['control_points'])[0] - plan['home'], [0., 0., 3.])
-    # A remaining upward tangent used to trigger late climb/back-transition errors.
-    assert abs(curve['control_points'][-1][2] - curve['control_points'][-2][2]) < 1e-10
+    points = np.array(curve['control_points'])
+    u = plan['gate']['cubic_parameter_at_center']
+    crossing = (1-u)**3*points[0]+3*(1-u)**2*u*points[1]+3*(1-u)*u*u*points[2]+u**3*points[3]
+    np.testing.assert_allclose(crossing, [0.,-40.,10.], atol=1e-9)
+    assert np.linalg.norm(np.array(plan['goal'])-[0.,-40.,10.]) == pytest.approx(5.)
+    assert plan['gate']['crossing_policy'] == 'forward_measured_segment_plane_intersection_with_body_margin'
     assert plan['motion_validation']['passed']
+
+
+@pytest.mark.parametrize('mode,experimental', [('pymav','false'),('mission','true'),('vision_center','false')])
+def test_controller_and_physics_mismatch_rejected(mode, experimental):
+    launch = run_path(str(LAUNCH))
+    context = LaunchContext()
+    context.launch_configurations.update(scenario='static_flight',flight_backend='mavros',
+        aircraft_type='stl_pacer_quad',mode=mode,experimental_tailsitter=experimental)
+    with pytest.raises(ValueError):
+        launch['setup'](context)

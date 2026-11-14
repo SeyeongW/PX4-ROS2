@@ -281,7 +281,7 @@ def test_sensor_gate_is_interior_checkpoint_with_motion_and_hold_behind(kind):
     assert 0. < gate['planned_crossing_time_s'] < plan['duration_s']
     assert np.linalg.norm(crossing['velocity']) > 1.
     assert gate['dimensions_source'] == 'experiment_configuration'
-    assert gate['center_source'] == 'locked_camera_bbox_lidar_estimate'
+    assert gate['center_source'] == 'locked_sensor_estimate'
     assert plan['arrival_policy'] == 'pass_through_sensor_gate_then_hold_behind'
     assert plan['motion_validation']['passed']
     assert plan['target_surface_safety']['plane_check_applied'] is False

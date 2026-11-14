@@ -234,7 +234,8 @@ def _onboard_visuals(body, config):
                 added_mass_kg=0., total_mass_policy='Included in existing assumed 2kg, not a measured component partition')
 
 
-def build_model(sim_share, px4_root, plugins, aero_plugins, profile_path, assets_dir, *, shell_transparency=0.0):
+def build_model(sim_share, px4_root, plugins, aero_plugins, profile_path, assets_dir, *, shell_transparency=0.0,
+                experimental_tailsitter=False):
     """Return an SDF model and explicit provenance report; build does not prove flight."""
     config = load_profile(profile_path)
     if type(shell_transparency) not in (int, float) or not math.isfinite(shell_transparency) or not 0 <= shell_transparency <= 1:
@@ -362,7 +363,9 @@ def build_model(sim_share, px4_root, plugins, aero_plugins, profile_path, assets
     liftdrag_lib = '/usr/lib/x86_64-linux-gnu/gazebo-11/plugins/libLiftDragPlugin.so'
     if not Path(liftdrag_lib).is_file():
         liftdrag_lib = 'libLiftDragPlugin.so'
-    for ld_name, ld_cfg in (
+    if type(experimental_tailsitter) is not bool:
+        raise ValueError('experimental_tailsitter_must_be_boolean')
+    for ld_name, ld_cfg in ((
         ('tailsitter_wing_pitch', dict(
             a0=0.14, cla=4.8, cda=0.45, cma=-0.15,
             alpha_stall=0.45, cla_stall=-3.5, cda_stall=1.2, cma_stall=0.0,
@@ -373,11 +376,13 @@ def build_model(sim_share, px4_root, plugins, aero_plugins, profile_path, assets
             alpha_stall=0.45, cla_stall=-3.0, cda_stall=1.0, cma_stall=0.0,
             cp='0 0 -0.04', area=0.15, air_density=1.2041,
             forward='0 0 1', upward='0 1 0', link_name='base_link', robotNamespace='')),
-    ):
+    ) if experimental_tailsitter else ()):
         ld_plugin = ET.SubElement(model, 'plugin', name=ld_name, filename=liftdrag_lib)
         for k, v in ld_cfg.items():
             put(ld_plugin, k, v)
-    parameters = dict(SYS_AUTOSTART=1045, CA_AIRFRAME=4, CA_ROTOR_COUNT=4, CA_SV_CS_COUNT=0)
+    autostart, allocation = (1045, 4) if experimental_tailsitter else (10015, 0)
+    sim_model = 'gazebo-classic_quadtailsitter' if experimental_tailsitter else 'gazebo-classic_iris'
+    parameters = dict(SYS_AUTOSTART=autostart, CA_AIRFRAME=allocation, CA_ROTOR_COUNT=4, CA_SV_CS_COUNT=0)
     flu_to_frd = np.array([1., -1., -1.])
     for index in range(4):
         for axis, value in zip('XYZ', (positions[index]-center)*flu_to_frd):
@@ -391,15 +396,16 @@ def build_model(sim_share, px4_root, plugins, aero_plugins, profile_path, assets
             if key not in parameters or value != parameters[key]:
                 raise ValueError('rotor_geometry_or_multicopter_configuration_override: '+key)
     parameters.update(overrides)
-    if parameters['SYS_AUTOSTART'] != 1045 or parameters['CA_AIRFRAME'] != 4:
-        raise ValueError('stl_airframe_requires_tailsitter_autostart_and_allocation')
+    if parameters['SYS_AUTOSTART'] != autostart or parameters['CA_AIRFRAME'] != allocation:
+        raise ValueError('stl_airframe_requires_matching_autostart_and_allocation')
     # The planner envelope includes conservative contacts and rotating propellers.
     envelope = math.hypot(collision_radius_xy, max(abs(low[2]), abs(high[2])))
     envelope = max(envelope, max(math.hypot(np.linalg.norm(p[:2])+prop_radius, abs(p[2])) for p in positions))
     planning_radius = config.get('flight_parameters', {}).get('body_radius')
     if planning_radius is not None and planning_radius < envelope:
         raise ValueError('planning_body_radius_smaller_than_actual_collision_envelope')
-    report = dict(model_name='stl_pacer_quad', vehicle_kind='tailsitter', px4_sim_model='gazebo-classic_quadtailsitter',
+    report = dict(model_name='stl_pacer_quad', vehicle_kind='tailsitter' if experimental_tailsitter else 'multicopter',
+                  px4_sim_model=sim_model, experimental_unmeasured_aerodynamics=experimental_tailsitter,
                   px4_parameters=parameters, home_world=home, home_yaw_world=yaw,
                   total_mass_kg=mass, body_mass_kg=base_mass, payload_mass_kg=config.get('payload_mass_kg'),
                   center_of_mass_body_m=center.tolist(), inertia_body_kg_m2=inertia.tolist(),

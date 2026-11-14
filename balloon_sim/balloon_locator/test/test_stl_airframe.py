@@ -184,11 +184,13 @@ def test_force_motors_and_sensor_plugins_drive_model(assembled):
     plugins = [p.get('filename') for p in model.iter('plugin')]
     assert any(p.endswith('libgazebo_imu_plugin.so') for p in plugins)
     assert any(p.endswith('libgazebo_gps_plugin.so') for p in plugins)
-    assert any('LiftDrag' in p for p in plugins)
+    assert not any('LiftDrag' in p for p in plugins)
     assert not any('airspeed' in p for p in plugins)
-    assert report['px4_parameters']['SYS_AUTOSTART'] == 1045
-    assert report['px4_parameters']['CA_AIRFRAME'] == 4
-    assert report['px4_sim_model'] == 'gazebo-classic_quadtailsitter'
+    assert report['px4_parameters']['SYS_AUTOSTART'] == 10015
+    assert report['px4_parameters']['CA_AIRFRAME'] == 0
+    assert report['px4_sim_model'] == 'gazebo-classic_iris'
+    assert report['vehicle_kind'] == 'multicopter'
+    assert report['experimental_unmeasured_aerodynamics'] is False
     assert report['hover_allocation_rank'] == 4
     assert report['max_static_thrust_to_weight'] > 3
     assert report['flight_verified'] is False
@@ -196,6 +198,16 @@ def test_force_motors_and_sensor_plugins_drive_model(assembled):
     assert report['vehicle_pose_actuation'] is False
     assert 'flight_parameters' not in report
     assert len(model.findall("plugin[@name='mavlink_interface']/control_channels/channel")) == 4
+
+
+def test_legacy_tailsitter_physics_requires_explicit_opt_in(assembled):
+    model, report = stl_airframe.build_model(SIM, PX4, PLUGINS, PLUGINS, PROFILE, ASSETS,
+                                            experimental_tailsitter=True)
+    assert report['experimental_unmeasured_aerodynamics'] is True
+    assert report['vehicle_kind'] == 'tailsitter'
+    assert report['px4_parameters']['SYS_AUTOSTART'] == 1045
+    assert report['px4_parameters']['CA_AIRFRAME'] == 4
+    assert len([p for p in model.findall('plugin') if 'LiftDrag' in p.get('filename', '')]) == 2
 
 
 def test_contact_and_propeller_envelope_not_smaller_than_geometry(assembled):

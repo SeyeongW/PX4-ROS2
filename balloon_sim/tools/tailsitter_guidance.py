@@ -1,36 +1,18 @@
 #!/usr/bin/env python3
-"""지상 관측 카메라 UKF 탐색·락온 + 사용자 출격 승인 트리거 + PX4 쿼드 테일시터(1045) 다중 폐루프 유도 제어기.
+"""Explicit legacy tailsitter simulation; not the default MC/Bezier flight path.
 
-폐루프(Closed-Loop) 협력 시퀀스:
-  1. [지상 카메라 상공 탐색(Search) -> 풍선 식별 및 6-DOF UKF 락온(Lock)]
-     - 지상 짐벌 카메라(/jol/camera/image_raw, 1280x960, HFOV 12°)가 초기 오프셋 방향(좌측 -20.6°, 저앙각 +8.0°)에서
-       출발하여 상공을 대각선으로 스캔합니다.
-     - 풍선의 색상(HSV) + 원형도(Circularity >= 0.6) + 채움비(Fill >= 0.55) 조건을 통과한 객체를 발견하면
-       즉시 짐벌 비주얼 서보잉으로 화면 중앙에 고정(Lock)하고, 6자유도 무향 칼만 필터(UKF)로 3D 좌표 (X, Y, Z)를
-       10 Hz(0.1초 주기)로 추정·브로드캐스트합니다.
-       * n : UKF가 누적 융합한 유효 관측 프레임(샘플) 개수
-       * s (sigma) : 3x3 위치 오차 공분산 행렬의 최대 방향 표준편차(불확실도) [m]
+Consumes only validated camera estimates. Approval can be cancelled, source
+measurements and FC telemetry expire, and passage requires a bounded plane
+crossing. Onboard detections are display-only until exposure-matched vehicle
+poses are available. A miss or failed guard requests RTL; a valid crossing requests HOLD
+behind the target. Mode acknowledgement never implies a completed landing.
 
-  2. [사용자 출격 승인 트리거(Launch Approval Trigger)]
-     - 지상 카메라가 풍선을 락온(n >= 3, s <= 2.8m)하면 드론은 지상에서 대기하며 사용자 승인을 요청합니다.
-     - 승인 방법 (택 1):
-       (A) 카메라 뷰어 창(onboard)을 클릭하고 키보드 [SPACE] 또는 [ENTER] 또는 [y] 키 입력
-       (B) 터미널에서 ./tools/approve_launch.sh 실행
-
-  3. [승인 즉시 수직 이륙 -> 중기 지상 UKF 실시간 유도(10 Hz) -> 종말 온보드 3D LOS/PN 유도(50 Hz)]
-     - 승인 즉시 ARM 및 5m 수직 이륙 후 지체 없이 테일시터 전진 피치다운 전환을 수행합니다.
-     - 비행 중 온보드 카메라 포착 전까지는 지상 UKF가 10 Hz(초당 10회)로 보내주는 최신 3D 좌표를 계속 반영하며,
-       온보드 노즈콘 카메라(/balloon/onboard/detections)에 풍선이 포착되는 순간 온보드 3D LOS/PN 종말 비전 유도로
-       전환하여 풍선 정중앙을 통과한 뒤 후면 전환 감속 및 RTL 착륙합니다.
-
-실행:
-    ./tools/run_tailsitter_sim.sh
+Run only through run_gazebo.sh mode:=pymav experimental_tailsitter:=true.
 """
 import json
 import math
 import os
 from pathlib import Path
-import sys
 import threading
 import time
 
@@ -54,11 +36,10 @@ FALLBACK_TARGET_WORLD = [
     float(os.environ.get('FLY_TARGET_Y', '0.0')),
     float(os.environ.get('FLY_TARGET_Z', '40.0')),
 ]
-HOVER_ALT = float(os.environ.get('FLY_HOVER_ALT', '5.0'))
 AUTO_APPROVE = os.environ.get('AUTO_APPROVE', '0').lower() in ('1', 'true', 'yes')
 APPROVAL_FLAG_FILE = Path('/tmp/balloon_launch_approved')
 
-UKF_LOCK_SIGMA_M = 2.8     # 지상 UKF 락온 인정 최대 표준편차 s (sigma) [m]
+UKF_LOCK_SIGMA_M = 0.5     # 지상 UKF 락온 인정 최대 표준편차 s (sigma) [m]
 UKF_MIN_SAMPLES  = 3       # 지상 UKF 락온 최소 누적 샘플 수 n
 
 NORTH_YAW  = math.pi / 2.0
@@ -80,18 +61,15 @@ MAX_PATH_LEAD_DEG = 22.0   # 대각선 경로 추종 시 최대 리드각 [deg]
 COAST_TIMEOUT     = 0.8    # 비전 일시 소실 시 마지막 LOS 유지 시간 [s]
 BALLOON_DIAM_M    = 0.30   # 목표 풍선 실제 지름 [m]
 
-# "풍선 지났다!" 통과 판정 파라미터 (30cm 풍선 기준)
-PASS_MIN_DIAM_PX      = 16.0  # [조건 1] 최소 확대 픽셀 지름 (~9m 이내 접근 시 도달)
-PASS_GROWTH_RATIO     = 1.5   # [조건 1] 최초 검출 대비 최소 확대 비율
-PASS_LOST_FRAMES      = 3     # [조건 1] 확대 후 연속 유실 프레임 수
-PASS_IMPACT_DIAM_PX   = 72.0  # [조건 1] 초근접(~2.0m 이내) 즉시 통과 인정 픽셀 지름
-
-LOCK_DIST             = 15.0  # [조건 2] 통과 감시 활성화 거리 게이트 [m]
-OVERSHOOT_DIST        = 0.8   # [조건 2] 최근접 거리(CPA) 이후 거리 증가량 [m]
-PAST_PLANE_DIST       = 0.4   # [조건 2] 목표 수직 평면 통과 거리 [m]
-
-FORCE_PAST_PLANE_DIST = 1.5   # [무조건 RTL] 목표 수직 평면 강제 복귀 거리 [m]
-FORCE_OVERSHOOT_DIST  = 2.0   # [무조건 RTL] 최근접 거리 대비 강제 복귀 거리 증가량 [m]
+# A visual disappearance is not evidence of a waypoint crossing.
+LOCK_DIST = 15.0
+PASS_RADIUS_M = BALLOON_DIAM_M / 2.0
+PASS_HOLD_DISTANCE_M = 2.0
+TARGET_MAX_AGE = 0.8
+TELEMETRY_MAX_AGE = 0.5
+HEARTBEAT_MAX_AGE = 2.0
+APPROVAL_TTL = 30.0
+MISSION_TIMEOUT = 90.0
 
 # 온보드 노즈콘 카메라 광학 파라미터 (Raspberry Pi Camera Module 3 Standard, 640x360, HFOV 66°)
 IMG_W    = 640
@@ -272,6 +250,7 @@ class VisionListener:
         self.initial_diam = 0.0
         self.max_diam = 0.0
         self.last_rx = 0.0
+        self.detection_stamp = -math.inf
         self.lost_frames = 0
 
         # 지상 UKF 추정 상태 (10 Hz 수신)
@@ -286,9 +265,20 @@ class VisionListener:
 
         # 사용자 출격 승인 상태
         self.launch_approved = False
+        self.approved_at = 0.0
+        self.approval_edge = False
+        self.cancel_requested = False
+        self.mission_started = False
+        self.approval_file_used = False
+        self.started_wall = time.time()
+        self.ukf_source_stamp = -math.inf
 
-    def update(self, u, v, diam):
+    def update(self, u, v, diam, stamp, source_now):
         with self.lock:
+            if not (all(math.isfinite(x) for x in (u, v, diam, stamp, source_now))
+                    and diam > 0 and stamp > self.detection_stamp and 0 <= source_now - stamp <= .25):
+                return False
+            self.detection_stamp = stamp
             self.u = u
             self.v = v
             self.diam = diam
@@ -296,7 +286,7 @@ class VisionListener:
                 self.initial_diam = diam
             if diam > self.max_diam:
                 self.max_diam = diam
-            self.last_rx = time.monotonic()
+            self.last_rx = time.monotonic() - (source_now - stamp)
             self.lost_frames = 0
 
     def mark_lost(self):
@@ -304,32 +294,98 @@ class VisionListener:
             if self.last_rx > 0.0:
                 self.lost_frames += 1
 
-    def update_ground_ukf(self, world_xyz, sigma_m, n_samples, valid, reason):
+    def update_estimate(self, packet, source_now):
+        """Only the validated Gazebo bridge contract may provide a flight target."""
+        try:
+            stamp = float(packet['stamp'])
+            position = np.asarray(packet['position'], dtype=float)
+            covariance = np.asarray(packet['covariance'], dtype=float)
+            evidence = packet['evidence']
+            sigma = float(packet['maximum_position_std_m'])
+            if (packet.get('valid') is not True or packet.get('frame_id') != 'world'
+                    or packet.get('source') != 'camera_monocular_size'
+                    or packet.get('position_semantics') != 'known_sphere_center'
+                    or not packet.get('calibration_revision')
+                    or packet.get('calibration_source') != 'gazebo_balloon_locator_camera_info_tf'
+                    or evidence.get('ground_truth_used') is not False
+                    or evidence.get('target_is_static') is not True
+                    or evidence.get('image_source_stamp') != stamp
+                    or evidence.get('camera_tf_stamp') != stamp
+                    or not 0 <= source_now - stamp <= TARGET_MAX_AGE
+                    or position.shape != (3,) or not np.isfinite(position).all()
+                    or covariance.shape != (3, 3) or not np.isfinite(covariance).all()
+                    or not np.allclose(covariance, covariance.T)
+                    or not math.isfinite(sigma) or not 0 <= sigma <= UKF_LOCK_SIGMA_M):
+                raise ValueError('invalid_estimate')
+            eigenvalues = np.linalg.eigvalsh(covariance)
+            if eigenvalues.min() < 0 or eigenvalues.max() > UKF_LOCK_SIGMA_M ** 2:
+                raise ValueError('invalid_covariance')
+        except (KeyError, TypeError, ValueError, AttributeError):
+            with self.lock:
+                self.ukf_valid = False
+                self.ukf_reason = 'invalid_estimate'
+            return False
         with self.lock:
+            if stamp <= self.ukf_source_stamp:
+                # Publication heartbeats must not renew the lifetime of a measurement.
+                return False
             now_t = time.monotonic()
-            if world_xyz is not None and len(world_xyz) == 3 and all(math.isfinite(c) for c in world_xyz):
-                if self.ukf_last_rx > 0.0 and now_t > self.ukf_last_rx:
-                    dt_rx = now_t - self.ukf_last_rx
-                    if 0.01 < dt_rx < 1.0:
-                        self.ukf_hz = 0.8 * self.ukf_hz + 0.2 * (1.0 / dt_rx)
-                self.ukf_world = [float(world_xyz[0]), float(world_xyz[1]), float(world_xyz[2])]
-                self.ukf_last_rx = now_t
-                self.ukf_rx_count += 1
-            if sigma_m is not None and math.isfinite(sigma_m):
-                self.ukf_sigma_m = float(sigma_m)
-            self.ukf_n = int(n_samples)
-            self.ukf_valid = bool(valid)
-            self.ukf_reason = str(reason)
+            if self.ukf_last_rx > 0 and 0.01 < now_t - self.ukf_last_rx < 1.0:
+                self.ukf_hz = .8 * self.ukf_hz + .2 / (now_t - self.ukf_last_rx)
+            self.ukf_world = position.tolist()
+            self.ukf_last_rx = now_t - (source_now - stamp)
+            self.ukf_source_stamp = stamp
+            self.ukf_sigma_m = max(sigma, math.sqrt(float(eigenvalues.max())))
+            self.ukf_n = UKF_MIN_SAMPLES  # bridge validity already includes estimator convergence
+            self.ukf_rx_count += 1
+            self.ukf_valid = True
+            self.ukf_reason = 'ready'
+            return True
 
-    def set_approved(self):
+    def set_approved(self, approved=True):
         with self.lock:
-            self.launch_approved = True
+            if not approved:
+                self.launch_approved = False
+                self.cancel_requested = True
+                self.approval_edge = False
+            elif not self.approval_edge and not self.mission_started:
+                self.launch_approved = True
+                self.cancel_requested = False
+                self.approved_at = time.monotonic()
+                self.approval_edge = True
 
     def is_approved(self):
-        if APPROVAL_FLAG_FILE.is_file() or AUTO_APPROVE:
-            return True
         with self.lock:
-            return self.launch_approved
+            if self.cancel_requested:
+                return False
+            if AUTO_APPROVE:
+                return True
+            if self.launch_approved:
+                return 0 <= time.monotonic() - self.approved_at <= APPROVAL_TTL
+            try:
+                modified = APPROVAL_FLAG_FILE.stat().st_mtime
+                return (modified > self.started_wall
+                        and 0 <= time.time() - modified <= APPROVAL_TTL)
+            except OSError:
+                return False
+
+    def begin_mission(self):
+        if not self.is_approved():
+            raise GuidanceAbort('approval_missing_or_expired')
+        with self.lock:
+            self.mission_started = True
+            self.approval_file_used = not self.launch_approved and not AUTO_APPROVE
+
+    def cancellation_pending(self):
+        with self.lock:
+            return (self.cancel_requested or (self.mission_started and self.approval_file_used
+                    and not APPROVAL_FLAG_FILE.is_file()))
+
+    def target_ready(self):
+        world, sigma, n, valid, _, age, _, _ = self.get_ground_ukf()
+        return (valid and world is not None and n >= UKF_MIN_SAMPLES
+                and math.isfinite(sigma) and sigma <= UKF_LOCK_SIGMA_M
+                and 0 <= age <= TARGET_MAX_AGE)
 
     def get(self):
         with self.lock:
@@ -362,12 +418,13 @@ class VisionListener:
 
 def start_ros_vision_thread(vision_state):
     if not HAS_ROS2:
-        print('WARNING: rclpy를 불러올 수 없어 비전 검출 없이 실행합니다.', flush=True)
-        return
+        raise RuntimeError('ROS 2 validated target input is required')
 
     def _spin():
         rclpy.init()
-        node = rclpy.create_node('tailsitter_cooperative_guidance_listener')
+        from rclpy.parameter import Parameter
+        node = rclpy.create_node('tailsitter_cooperative_guidance_listener',
+            parameter_overrides=[Parameter('use_sim_time', value=True)])
 
         def _on_onboard_det(msg):
             if not msg.detections:
@@ -378,47 +435,22 @@ def start_ros_vision_thread(vision_state):
             v = float(det.bbox.center.position.y)
             diam = float((det.bbox.size_x + det.bbox.size_y) * 0.5)
             if math.isfinite(u) and math.isfinite(v) and diam > 2.5:
-                vision_state.update(u, v, diam)
+                stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+                vision_state.update(u, v, diam, stamp, node.get_clock().now().nanoseconds * 1e-9)
             else:
                 vision_state.mark_lost()
 
-        def _on_ground_status(msg):
-            try:
-                data = json.loads(msg.data)
-                ned = data.get('ned')
-                world_xyz = station_ned_to_world(ned[0], ned[1], ned[2]) if (ned and len(ned) == 3) else None
-                vision_state.update_ground_ukf(
-                    world_xyz=world_xyz,
-                    sigma_m=data.get('sigma_m'),
-                    n_samples=data.get('n', 0),
-                    valid=data.get('valid', False),
-                    reason=data.get('reason', 'unknown'),
-                )
-            except Exception:
-                pass
-
         def _on_ground_estimate(msg):
             try:
-                data = json.loads(msg.data)
-                if data.get('valid') and data.get('position'):
-                    pos = data['position']
-                    _, cur_sig, cur_n, _, _, _, _, _ = vision_state.get_ground_ukf()
-                    vision_state.update_ground_ukf(
-                        world_xyz=pos,
-                        sigma_m=data.get('maximum_position_std_m', cur_sig),
-                        n_samples=max(cur_n, 3),
-                        valid=True,
-                        reason='ready',
-                    )
-            except Exception:
-                pass
+                packet = json.loads(msg.data)
+            except (ValueError, TypeError):
+                packet = {}
+            vision_state.update_estimate(packet, node.get_clock().now().nanoseconds * 1e-9)
 
         def _on_approve(msg):
-            if msg.data:
-                vision_state.set_approved()
+            vision_state.set_approved(msg.data)
 
         node.create_subscription(Detection2DArray, '/balloon/onboard/detections', _on_onboard_det, 10)
-        node.create_subscription(String, '/balloon/status', _on_ground_status, 10)
         node.create_subscription(String, '/jol/static_target/estimate', _on_ground_estimate, 10)
         node.create_subscription(Bool, '/mission/approve_launch', _on_approve, 10)
         try:
@@ -433,11 +465,132 @@ def start_ros_vision_thread(vision_state):
     threading.Thread(target=_spin, daemon=True).start()
 
 
+class GuidanceAbort(RuntimeError):
+    """Stop Offboard setpoints and request a confirmed FC recovery mode."""
+
+
+class TelemetryState:
+    def __init__(self, system, component):
+        self.system, self.component = system, component
+        self.received = {}
+        self.boot_stamps = {}
+        self.pos = self.vel = self.rotation = None
+        self.armed = False
+        self.offboard = False
+
+    def accept(self, message, now):
+        if (message.get_srcSystem() != self.system
+                or message.get_srcComponent() != self.component):
+            return False
+        kind = message.get_type()
+        if kind == 'HEARTBEAT':
+            if message.autopilot != mavutil.mavlink.MAV_AUTOPILOT_PX4:
+                return False
+            self.armed = bool(message.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED)
+            self.offboard = ((message.custom_mode >> 16) & 0xff) == 6
+        elif kind in ('LOCAL_POSITION_NED', 'ATTITUDE_QUATERNION'):
+            stamp = message.time_boot_ms
+            if type(stamp) is not int or stamp <= self.boot_stamps.get(kind, -1):
+                return False
+            if kind == 'LOCAL_POSITION_NED':
+                values = np.array([message.x, message.y, message.z, message.vx, message.vy, message.vz])
+                if not np.isfinite(values).all():
+                    return False
+                self.pos, self.vel = values[:3], values[3:]
+            else:
+                q = np.array([message.q1, message.q2, message.q3, message.q4], dtype=float)
+                norm = float(np.linalg.norm(q))
+                if not np.isfinite(q).all() or not .9 <= norm <= 1.1:
+                    return False
+                self.rotation = quat_to_rot_ned(*(q / norm))
+            self.boot_stamps[kind] = stamp
+        else:
+            return False
+        self.received[kind] = now
+        return True
+
+    def drain(self, conn):
+        # Bounded work: a flooded socket must not delay cancellation/watchdog checks.
+        for _ in range(256):
+            message = conn.recv_match(type=['LOCAL_POSITION_NED', 'ATTITUDE_QUATERNION', 'HEARTBEAT'], blocking=False)
+            if message is None:
+                break
+            self.accept(message, time.monotonic())
+
+    def require_fresh(self, now, armed=False):
+        for kind, max_age in (('LOCAL_POSITION_NED', TELEMETRY_MAX_AGE),
+                              ('ATTITUDE_QUATERNION', TELEMETRY_MAX_AGE),
+                              ('HEARTBEAT', HEARTBEAT_MAX_AGE)):
+            if not 0 <= now - self.received.get(kind, -math.inf) <= max_age:
+                raise GuidanceAbort('telemetry_stale:' + kind)
+        if armed and (not self.armed or not self.offboard):
+            raise GuidanceAbort('fc_left_armed_offboard')
+
+
+def require_guidance(conn, telemetry, vision, *, armed=False, target=True):
+    telemetry.drain(conn)
+    if vision.cancellation_pending():
+        raise GuidanceAbort('approval_cancelled')
+    telemetry.require_fresh(time.monotonic(), armed=armed)
+    if target and not vision.target_ready():
+        raise GuidanceAbort('target_invalid_or_stale')
+
+
+def plane_crossing(previous, current, target, normal, radius=PASS_RADIUS_M):
+    """Interpolate the measured segment at the fixed target plane, then bound radial miss."""
+    previous, current, target, normal = (np.asarray(v, float) for v in (previous, current, target, normal))
+    if (any(v.shape != (3,) or not np.isfinite(v).all() for v in (previous, current, target, normal))
+            or not math.isfinite(radius) or radius <= 0 or np.linalg.norm(normal) < 1e-9):
+        return False, math.inf
+    normal = normal / np.linalg.norm(normal)
+    before, after = float((previous - target) @ normal), float((current - target) @ normal)
+    if not before < 0 <= after:
+        return False, math.inf
+    crossing = previous + (current - previous) * (-before / (after - before))
+    radial = float(np.linalg.norm(crossing - target))
+    return radial <= radius, radial
+
+
+def transfer_to_px4(conn, mode='RTL', timeout=4.0):
+    """Stop all Offboard setpoints; report ACK and observed mode independently."""
+    if mode not in ('RTL', 'HOLD'):
+        raise ValueError('unsupported_recovery_mode')
+    submode = 5 if mode == 'RTL' else 3
+    started, last_request = time.monotonic(), -math.inf
+    acknowledged = observed = False
+    while time.monotonic() - started < timeout:
+        if time.monotonic() - last_request >= 1.0:
+            conn.mav.command_long_send(conn.target_system, conn.target_component,
+                mavutil.mavlink.MAV_CMD_DO_SET_MODE, 0,
+                mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED, 4, submode, 0, 0, 0, 0)
+            last_request = time.monotonic()
+        message = conn.recv_match(type=['COMMAND_ACK', 'HEARTBEAT'], blocking=True, timeout=.1)
+        if message is None:
+            continue
+        if (message.get_srcSystem() != conn.target_system
+                or message.get_srcComponent() != conn.target_component):
+            continue
+        if message.get_type() == 'COMMAND_ACK' and message.command == mavutil.mavlink.MAV_CMD_DO_SET_MODE:
+            acknowledged = message.result == mavutil.mavlink.MAV_RESULT_ACCEPTED
+            if message.result not in (mavutil.mavlink.MAV_RESULT_ACCEPTED, mavutil.mavlink.MAV_RESULT_IN_PROGRESS):
+                break
+        elif message.get_type() == 'HEARTBEAT':
+            observed = (message.autopilot == mavutil.mavlink.MAV_AUTOPILOT_PX4
+                        and ((message.custom_mode >> 16) & 0xff) == 4
+                        and ((message.custom_mode >> 24) & 0xff) == submode)
+            if observed:
+                break
+    print(f'{mode} 전환: 명령 승인={acknowledged}, FC 모드 확인={observed}; 착륙/정지 완료는 미확인', flush=True)
+    return observed
+
+
 def heartbeat_thread(conn):
     while True:
-        conn.mav.heartbeat_send(
-            mavutil.mavlink.MAV_TYPE_ONBOARD_CONTROLLER,
-            mavutil.mavlink.MAV_AUTOPILOT_INVALID, 0, 0, 0)
+        try:
+            conn.mav.heartbeat_send(mavutil.mavlink.MAV_TYPE_ONBOARD_CONTROLLER,
+                mavutil.mavlink.MAV_AUTOPILOT_INVALID, 0, 0, 0)
+        except (OSError, RuntimeError):
+            return
         time.sleep(1.0)
 
 
@@ -491,39 +644,7 @@ def set_param(conn, name, value):
 # ═══════════════════════════════════════════════════════════════════════════
 # 4. 메인 협력 폐루프 비행 시퀀스
 # ═══════════════════════════════════════════════════════════════════════════
-def main():
-    try:
-        if APPROVAL_FLAG_FILE.is_file():
-            APPROVAL_FLAG_FILE.unlink()
-    except Exception:
-        pass
-
-    startup_delay = float(os.environ.get('FLY_STARTUP_DELAY', '0'))
-    if startup_delay > 0:
-        print(f'PX4 및 지상 관측 카메라 초기화 대기 {startup_delay:.0f}초 ...', flush=True)
-        time.sleep(startup_delay)
-
-    vision = VisionListener()
-    start_ros_vision_thread(vision)
-
-    _, _, takeoff_d = world_to_ned(HOME_WORLD[0], HOME_WORLD[1], HOME_WORLD[2] + TAKEOFF_ALT)
-    init_tn, init_te, _ = world_to_ned(*FALLBACK_TARGET_WORLD)
-    yaw = math.atan2(init_te, init_tn)
-
-    print('========================================================================', flush=True)
-    print(' [다중 폐루프 협력 시스템] 지상 짐벌 카메라 탐색/UKF + 사용자 승인 출격 + 비전 유도', flush=True)
-    print('  - n : 지상 UKF에 누적 융합된 유효 풍선 관측 프레임(샘플) 개수', flush=True)
-    print('  - s : 지상 UKF 3D 위치 추정의 최대 방향 표준편차(불확실도, sigma) [m]', flush=True)
-    print('  - 지상->드론 좌표 수신 주기: 10 Hz (0.1초마다 실시간 3D 좌표 패킷 수신)', flush=True)
-    print('========================================================================\n', flush=True)
-
-    print(f'PX4 연결 대기  {PX4_UDP} ...', flush=True)
-    conn = mavutil.mavlink_connection(PX4_UDP)
-    conn.wait_heartbeat(timeout=60)
-    print(f'연결 OK  sysid={conn.target_system}', flush=True)
-
-    threading.Thread(target=heartbeat_thread, args=(conn,), daemon=True).start()
-
+def run_mission(conn, vision):
     request_stream(conn, mavutil.mavlink.MAVLINK_MSG_ID_LOCAL_POSITION_NED, 60)
     request_stream(conn, mavutil.mavlink.MAVLINK_MSG_ID_ATTITUDE_QUATERNION, 60)
 
@@ -533,25 +654,22 @@ def main():
     set_param(conn, 'FD_FAIL_R', 85.0)
     set_param(conn, 'FD_FAIL_P', 85.0)
 
+    telemetry = TelemetryState(conn.target_system, conn.target_component)
+    _, _, takeoff_d = world_to_ned(HOME_WORLD[0], HOME_WORLD[1], HOME_WORLD[2] + TAKEOFF_ALT)
+
     # ── 0단계: 지상 대기 상태에서 지상 카메라 상공 탐색 -> 풍선 락온 -> 사용자 출격 승인 대기 ──
     print('\n[1단계: 지상 카메라 상공 탐색 중] 짐벌이 좌측 하단(-20.6°, +8.0°)에서 상공을 스캔하며 풍선을 찾고 있습니다...', flush=True)
     last_wait_log = 0.0
     locked_banner_printed = False
-    active_target_world = list(FALLBACK_TARGET_WORLD)
+    active_target_world = None
 
     while True:
-        # PX4 버퍼 비우기
-        while conn.recv_match(type=['LOCAL_POSITION_NED', 'ATTITUDE_QUATERNION'], blocking=False) is not None:
-            pass
+        telemetry.drain(conn)
 
         ukf_world, ukf_sigma, ukf_n, ukf_valid, ukf_reason, ukf_age, ukf_rx_cnt, ukf_hz = vision.get_ground_ukf()
         now_w = time.monotonic()
 
-        is_locked = (
-            ukf_world is not None and ukf_age < 2.5 and (
-                ukf_valid or (ukf_n >= UKF_MIN_SAMPLES and ukf_sigma <= UKF_LOCK_SIGMA_M)
-            )
-        )
+        is_locked = vision.target_ready()
 
         if is_locked:
             active_target_world = ukf_world
@@ -576,6 +694,8 @@ def main():
                 print('========================================================================\n', flush=True)
 
             if vision.is_approved():
+                telemetry.require_fresh(now_w)
+                vision.begin_mission()
                 print(
                     f'★ [출격 승인 확인!] 최종 지상 UKF 목표 좌표 World=({active_target_world[0]:.2f}, '
                     f'{active_target_world[1]:.2f}, {active_target_world[2]:.2f})m (n={ukf_n}, s={ukf_sigma:.2f}m) -> 드론 이륙 시작!',
@@ -613,55 +733,51 @@ def main():
 
     print('setpoint 스트림 시작 ...', flush=True)
     for _ in range(35):
+        require_guidance(conn, telemetry, vision)
         send_pos(conn, 0, 0, takeoff_d, yaw)
-        time.sleep(0.04)
+        time.sleep(.04)
 
-    conn.mav.command_long_send(
-        conn.target_system, conn.target_component,
+    # Recheck after the final warm-up sleep, even if FC is already OFFBOARD.
+    require_guidance(conn, telemetry, vision)
+    # An observed FC mode is required before arming; send streams while awaiting it.
+    conn.mav.command_long_send(conn.target_system, conn.target_component,
         mavutil.mavlink.MAV_CMD_DO_SET_MODE, 0,
-        mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
-        6, 0, 0, 0, 0, 0)
-    print('OFFBOARD 요청', flush=True)
-    time.sleep(0.25)
+        mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED, 6, 0, 0, 0, 0, 0)
+    deadline = time.monotonic() + 5.0
+    while not telemetry.offboard:
+        require_guidance(conn, telemetry, vision)
+        if time.monotonic() >= deadline:
+            raise GuidanceAbort('offboard_mode_unconfirmed')
+        send_pos(conn, 0, 0, takeoff_d, yaw)
+        time.sleep(.02)
 
-    conn.mav.command_long_send(
-        conn.target_system, conn.target_component,
-        mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM, 0,
-        1, 0, 0, 0, 0, 0, 0)
-    print('ARM 요청', flush=True)
+    require_guidance(conn, telemetry, vision)
+    if not telemetry.offboard:
+        raise GuidanceAbort('offboard_mode_unconfirmed')
+    conn.mav.command_long_send(conn.target_system, conn.target_component,
+        mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM, 0, 1, 0, 0, 0, 0, 0, 0)
+    deadline = time.monotonic() + 5.0
+    while not telemetry.armed:
+        require_guidance(conn, telemetry, vision)
+        if not telemetry.offboard or time.monotonic() >= deadline:
+            raise GuidanceAbort('armed_offboard_unconfirmed')
+        send_pos(conn, 0, 0, takeoff_d, yaw)
+        time.sleep(.02)
+    print(f'ARM/OFFBOARD 확인 — {TAKEOFF_ALT:.1f}m 수직 이륙 시작', flush=True)
 
-    armed = False
-    for _ in range(80):
-        msg = conn.recv_match(type='HEARTBEAT', blocking=True, timeout=0.2)
-        if msg and msg.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED:
-            armed = True
+    deadline = time.monotonic() + 20.0
+    while True:
+        require_guidance(conn, telemetry, vision, armed=True)
+        pos_ned, vel_ned, R_bn = telemetry.pos.copy(), telemetry.vel.copy(), telemetry.rotation.copy()
+        if abs(pos_ned[2] - takeoff_d) < .4 and abs(vel_ned[2]) < .8:
+            print(f'수직 이륙 고도 확인: {-pos_ned[2]:.2f}m', flush=True)
             break
+        if time.monotonic() >= deadline:
+            raise GuidanceAbort('takeoff_altitude_timeout')
         send_pos(conn, 0, 0, takeoff_d, yaw)
-    if not armed:
-        print('ERROR: arm 실패', flush=True)
-        sys.exit(1)
-    print('ARM 완료 — 5m 수직 이륙 시작 (Tailsitter Hover 모드)', flush=True)
+        time.sleep(.02)
 
-    pos_ned = np.array([0.0, 0.0, 0.0])
-    vel_ned = np.array([0.0, 0.0, 0.0])
-    R_bn = np.eye(3)
-
-    for _ in range(300):
-        send_pos(conn, 0, 0, takeoff_d, yaw)
-        msg = conn.recv_match(type=['LOCAL_POSITION_NED', 'ATTITUDE_QUATERNION'], blocking=True, timeout=0.05)
-        if msg:
-            if msg.get_type() == 'LOCAL_POSITION_NED':
-                pos_ned = np.array([msg.x, msg.y, msg.z])
-                vel_ned = np.array([msg.vx, msg.vy, msg.vz])
-                if abs(msg.z - takeoff_d) < 0.4 and abs(msg.vz) < 0.8:
-                    print(f'5m 이륙 완료! 현재고도 {-msg.z:.2f}m (목표 {-takeoff_d:.2f}m)', flush=True)
-                    break
-            elif msg.get_type() == 'ATTITUDE_QUATERNION':
-                R_bn = quat_to_rot_ned(msg.q1, msg.q2, msg.q3, msg.q4)
-    else:
-        print('WARNING: 이륙 고도 도달 시간 초과, 다음 단계로 진행', flush=True)
-
-    # ── 2단계 & 3단계: 지상 UKF 실시간 수신(10 Hz) + 테일시터 대각선 비행 -> 온보드 풍선 검출 시 3D LOS/PN 추적 ──
+    # 검증된 지상 카메라 좌표만 사용한다. 온보드 영상은 검출/표시용으로 유지한다.
     start_ned = pos_ned.copy()
     target_ned = np.array([tn, te, t_d], dtype=float)
     path_vec = target_ned - start_ned
@@ -673,37 +789,29 @@ def main():
 
     trans_start_t = time.monotonic()
     last_log = 0.0
-    last_los_ned = None
     smoothed_nose_ned = np.array([0.0, 0.0, -1.0], dtype=float)
-    vision_locked = False
     target_locked = False
     min_dist_after_lock = math.inf
-    case1_vision_passed = False
-    case2_target_passed = False
+    passed = False
+    crossing_error = math.inf
+    crossing_previous = pos_ned.copy()
+    pass_target_ned = target_ned.copy()
+    pass_normal = path_dir.copy()
     last_ukf_update_n = 0
 
     while True:
-        while True:
-            msg = conn.recv_match(type=['LOCAL_POSITION_NED', 'ATTITUDE_QUATERNION'], blocking=False)
-            if msg is None:
-                break
-            if msg.get_type() == 'LOCAL_POSITION_NED':
-                pos_ned = np.array([msg.x, msg.y, msg.z])
-                vel_ned = np.array([msg.vx, msg.vy, msg.vz])
-            elif msg.get_type() == 'ATTITUDE_QUATERNION':
-                R_bn = quat_to_rot_ned(msg.q1, msg.q2, msg.q3, msg.q4)
-
+        require_guidance(conn, telemetry, vision, armed=True)
+        pos_ned, vel_ned, R_bn = telemetry.pos.copy(), telemetry.vel.copy(), telemetry.rotation.copy()
         now = time.monotonic()
+        if now - trans_start_t > MISSION_TIMEOUT:
+            raise GuidanceAbort('mission_timeout')
         trans_alpha = min(1.0, max(0.0, (now - trans_start_t) / TRANSITION_DUR))
 
-        u, v, diam, init_diam, max_diam, lost_frames, det_age, _ = vision.get()
-        det_fresh = (lost_frames == 0) and (det_age < 0.25)
-        det_coast = det_age < COAST_TIMEOUT
-
-        # 중기 유도 구간(온보드 비전 포착 전)에서 지상 카메라 UKF가 10Hz로 보내주는 최신 3D 좌표를 실시간 반영!
+        # 노출시각과 일치하는 기체 자세 이력이 없어 픽셀 기반 종말 유도는 사용하지 않는다.
+        # 최신 R_bn을 과거 영상에 적용하지 않고 검증된 지상 좌표를 계속 사용한다.
         ukf_world, ukf_sigma, ukf_n, ukf_valid, _, ukf_age, ukf_rx_cnt, ukf_hz = vision.get_ground_ukf()
-        if (not vision_locked and not target_locked and ukf_world is not None
-                and ukf_age < 1.0 and ukf_n >= UKF_MIN_SAMPLES and ukf_n != last_ukf_update_n):
+        if (not target_locked and ukf_world is not None
+                and vision.target_ready() and ukf_rx_cnt != last_ukf_update_n):
             new_tn, new_te, new_td = world_to_ned(*ukf_world)
             new_target_ned = np.array([new_tn, new_te, new_td], dtype=float)
             if float(np.linalg.norm(new_target_ned - target_ned)) < 25.0:
@@ -713,131 +821,45 @@ def main():
                 path_len = float(np.linalg.norm(path_vec))
                 if path_len > 1e-3:
                     path_dir = path_vec / path_len
-                last_ukf_update_n = ukf_n
+                last_ukf_update_n = ukf_rx_cnt
 
         diff_to_target = target_ned - pos_ned
         dist_3d = float(np.linalg.norm(diff_to_target))
 
-        # ── "풍선 지났다!" 동시 판정(조건 1 AND 조건 2) 및 무조건 RTL 안전 조건 ──
-        along_past = float(np.dot(pos_ned - target_ned, path_dir))
         if not target_locked and dist_3d <= LOCK_DIST:
             target_locked = True
+            pass_target_ned, pass_normal = target_ned.copy(), path_dir.copy()
+            crossing_previous = pos_ned.copy()
             min_dist_after_lock = dist_3d
-            print(f'▶ 표적 {LOCK_DIST:.0f}m 이내 진입 (dist={dist_3d:.2f}m): 풍선/목표점 통과 감시 활성화', flush=True)
-        elif target_locked and dist_3d < min_dist_after_lock:
-            min_dist_after_lock = dist_3d
+        if target_locked:
+            min_dist_after_lock = min(min_dist_after_lock, dist_3d)
+            crossed, radial = plane_crossing(crossing_previous, pos_ned, pass_target_ned, pass_normal)
+            if math.isfinite(radial):
+                if not crossed:
+                    raise GuidanceAbort(f'waypoint_missed:radial_error={radial:.3f}m')
+                passed, crossing_error = True, radial
+                print(f'목표 평면 통과 확인: 반경 오차 {radial:.3f}m', flush=True)
+            crossing_previous = pos_ned.copy()
+            along_past = float((pos_ned - pass_target_ned) @ pass_normal)
+            if passed and along_past >= PASS_HOLD_DISTANCE_M:
+                break
+            if not passed and (along_past > 0 or dist_3d - min_dist_after_lock > 2.0):
+                raise GuidanceAbort('waypoint_departed_without_valid_crossing')
 
-        grew_large = (
-            target_locked and
-            max_diam >= PASS_MIN_DIAM_PX and
-            (init_diam <= 0.0 or max_diam >= init_diam * PASS_GROWTH_RATIO)
-        )
-        suddenly_disappeared = (lost_frames >= PASS_LOST_FRAMES) or (det_age > 0.15)
-        point_blank_impact = target_locked and det_fresh and (diam >= PASS_IMPACT_DIAM_PX)
+        unit_to_target = diff_to_target / max(dist_3d, 0.1)
+        if float(np.dot(unit_to_target, path_dir)) < 0.75:
+            unit_to_target = path_dir
 
-        if not case1_vision_passed and ((grew_large and suddenly_disappeared) or point_blank_impact):
-            case1_vision_passed = True
-            print(
-                f'✔ [조건 1 달성: 풍선 디텍팅 유실점 확인] '
-                f'(초기 {init_diam:.1f}px -> 최대 {max_diam:.1f}px 확대 후 유실, 현재 목표점 거리={dist_3d:.2f}m)',
-                flush=True)
-
-        overshoot_passed = target_locked and ((dist_3d - min_dist_after_lock) >= OVERSHOOT_DIST)
-        plane_passed = target_locked and (along_past >= PAST_PLANE_DIST)
-
-        if not case2_target_passed and (overshoot_passed or plane_passed):
-            case2_target_passed = True
-            print(
-                f'✔ [조건 2 달성: 목표점 통과 확인] '
-                f'(최근접거리={min_dist_after_lock:.2f}m -> 현재거리={dist_3d:.2f}m, 목표평면 진행초과={along_past:+.2f}m)',
-                flush=True)
-
-        if case1_vision_passed and case2_target_passed:
-            print('★ 풍선 지났다! [조건 1(풍선 확대 후 디텍팅 유실) & 조건 2(목표점 통과) 동시 만족!] -> RTL 복귀 시작!', flush=True)
-            break
-
-        force_plane_passed = target_locked and (along_past >= FORCE_PAST_PLANE_DIST)
-        force_overshoot = target_locked and ((dist_3d - min_dist_after_lock) >= FORCE_OVERSHOOT_DIST)
-        if force_plane_passed or force_overshoot:
-            print(
-                f'★ 목표점 통과/이탈 감지로 무조건 RTL! '
-                f'(최근접거리={min_dist_after_lock:.2f}m -> 현재거리={dist_3d:.2f}m, 목표평면 진행초과={along_past:+.2f}m) -> RTL 복귀 시작!',
-                flush=True)
-            break
-
-        # ── 테일시터 유도 명령 산출 (중기 UKF 유도 -> 종말 온보드 비전 LOS/PN 유도) ──
-        if det_fresh and dist_3d > 1.5:
-            los_candidate = pixel_to_los_ned(u, v, R_bn)
-            if float(np.dot(los_candidate, path_dir)) >= 0.72:
-                if not vision_locked:
-                    print(
-                        f'★ [온보드 노즈콘 카메라 풍선 포착!] (px=({u:.0f}, {v:.0f}), 지름={diam:.1f}px, 거리={dist_3d:.1f}m) '
-                        f'-> 지상 UKF 중기 유도에서 온보드 3D LOS/PN 종말 비전 유도로 전환!',
-                        flush=True)
-                    vision_locked = True
-
-                los_ned = los_candidate
-                last_los_ned = los_ned
-
-                # 온보드 광학 거리(R_opt = FX * D / diam)를 이용해 지상 단안 카메라의 거리 오차를 실시간 보정
-                if 5.0 <= diam <= 70.0:
-                    r_opt = (FX * BALLOON_DIAM_M) / diam
-                    onboard_target_ned = pos_ned + r_opt * los_ned
-                    if float(np.linalg.norm(onboard_target_ned - target_ned)) < 15.0:
-                        target_ned = 0.82 * target_ned + 0.18 * onboard_target_ned
-                        diff_to_target = target_ned - pos_ned
-                        dist_3d = float(np.linalg.norm(diff_to_target))
-
-                vel_along_los = float(np.dot(vel_ned, los_ned)) * los_ned
-                vel_perp_los = vel_ned - vel_along_los
-                pn_gain_eff = min(4.0, max(2.4, 2.8 * float(np.linalg.norm(vel_ned)) / max(dist_3d, 4.0)))
-                a_perp_cmd = -vel_perp_los * pn_gain_eff
-
-                lead_lim = MAX_LOS_LEAD_DEG if dist_3d > 8.0 else max(7.0, MAX_LOS_LEAD_DEG * (dist_3d / 8.0))
-                nose_cmd, thrust_cmd, v_des = compute_tailsitter_cmd(
-                    los_ned, a_perp_cmd, vel_ned, dist_3d, lead_lim, trans_alpha, allow_dive=True)
-                mode_str = f'TS_LOS_PURSUIT(px={u-CX:+.0f},{v-CY:+.0f} d={diam:.0f}px Vd={v_des:.1f})'
-            else:
-                coast_dir = last_los_ned if last_los_ned is not None else path_dir
-                nose_cmd, thrust_cmd, v_des = compute_tailsitter_cmd(
-                    coast_dir, np.zeros(3), vel_ned, dist_3d, MAX_LOS_LEAD_DEG, trans_alpha, allow_dive=True)
-                mode_str = 'TS_PASS_GUARD'
-
-        elif vision_locked and det_coast and last_los_ned is not None:
-            vel_along_los = float(np.dot(vel_ned, last_los_ned)) * last_los_ned
-            vel_perp_los = vel_ned - vel_along_los
-            a_perp_cmd = -vel_perp_los * 2.2
-            nose_cmd, thrust_cmd, v_des = compute_tailsitter_cmd(
-                last_los_ned, a_perp_cmd, vel_ned, dist_3d, MAX_LOS_LEAD_DEG, trans_alpha, allow_dive=True)
-            mode_str = 'TS_LOS_COAST'
-
-        elif target_locked or case1_vision_passed:
-            coast_dir = last_los_ned if last_los_ned is not None else path_dir
-            nose_cmd, thrust_cmd, v_des = compute_tailsitter_cmd(
-                coast_dir, np.zeros(3), vel_ned, dist_3d, MAX_LOS_LEAD_DEG, trans_alpha, allow_dive=True)
-            mode_str = 'TS_PASS_THROUGH'
-
-        else:
-            if vision_locked:
-                print('온보드 비전 신호 일시 소실 -> 지상 UKF 추정 좌표 경로 비행으로 복귀', flush=True)
-                vision_locked = False
-
-            unit_to_target = diff_to_target / max(dist_3d, 0.1)
-            if float(np.dot(unit_to_target, path_dir)) < 0.75:
-                unit_to_target = path_dir
-
-            prog = max(0.0, min(path_len, float(np.dot(pos_ned - start_ned, path_dir))))
-            closest_pt = start_ned + prog * path_dir
-            cross_pos_err = closest_pt - pos_ned
-
-            vel_along = float(np.dot(vel_ned, unit_to_target)) * unit_to_target
-            vel_perp = vel_ned - vel_along
-            a_perp_cmd = cross_pos_err * 1.8 - vel_perp * 1.6
-
-            nose_cmd, thrust_cmd, v_des = compute_tailsitter_cmd(
-                unit_to_target, a_perp_cmd, vel_ned, dist_3d, MAX_PATH_LEAD_DEG, trans_alpha, allow_dive=False)
-            ukf_tag = f'UKF(n={ukf_n},s={ukf_sigma:.1f}m,{ukf_hz:.0f}Hz)' if ukf_n > 0 else 'UKF_INIT'
-            mode_str = f'TS_UKF_GUIDE[{ukf_tag}](Vd={v_des:.1f} thr={thrust_cmd:.2f})'
+        prog = max(0.0, min(path_len, float(np.dot(pos_ned - start_ned, path_dir))))
+        closest_pt = start_ned + prog * path_dir
+        cross_pos_err = closest_pt - pos_ned
+        vel_along = float(np.dot(vel_ned, unit_to_target)) * unit_to_target
+        vel_perp = vel_ned - vel_along
+        a_perp_cmd = cross_pos_err * 1.8 - vel_perp * 1.6
+        nose_cmd, thrust_cmd, v_des = compute_tailsitter_cmd(
+            unit_to_target, a_perp_cmd, vel_ned, dist_3d, MAX_PATH_LEAD_DEG, trans_alpha, allow_dive=False)
+        ukf_tag = f'UKF(n={ukf_n},s={ukf_sigma:.1f}m,{ukf_hz:.0f}Hz)'
+        mode_str = f'TS_GROUND_GUIDE[{ukf_tag}](Vd={v_des:.1f} thr={thrust_cmd:.2f})'
 
         filt_alpha = 0.28 if trans_alpha >= 1.0 else 0.18
         smoothed_nose_ned = (1.0 - filt_alpha) * smoothed_nose_ned + filt_alpha * nose_cmd
@@ -857,67 +879,36 @@ def main():
 
         time.sleep(0.02)
 
-    # ── 4단계: 테일시터 후면 전환(Back-Transition: 수직 자세 복귀 및 감속) -> RTL ──
-    print('풍선 통과 완료 -> 테일시터 수직 호버링 복귀 전환(Back-Transition) 및 감속 시작 ...', flush=True)
-    brake_start = time.monotonic()
-    while time.monotonic() - brake_start < 3.5:
-        while True:
-            msg = conn.recv_match(type=['LOCAL_POSITION_NED', 'ATTITUDE_QUATERNION'], blocking=False)
-            if msg is None:
-                break
-            if msg.get_type() == 'LOCAL_POSITION_NED':
-                pos_ned = np.array([msg.x, msg.y, msg.z])
-                vel_ned = np.array([msg.vx, msg.vy, msg.vz])
-            elif msg.get_type() == 'ATTITUDE_QUATERNION':
-                R_bn = quat_to_rot_ned(msg.q1, msg.q2, msg.q3, msg.q4)
+    print(f'목표 통과 확인(반경 오차 {crossing_error:.3f}m) → 목표 뒤 HOLD 요청', flush=True)
+    if not transfer_to_px4(conn, 'HOLD'):
+        raise GuidanceAbort('post_pass_hold_unconfirmed')
 
-        cur_spd = float(np.linalg.norm(vel_ned))
-        if cur_spd < 2.8:
-            print(f'  테일시터 감속 및 수직 복귀 완료 (현재 속도 {cur_spd:.1f}m/s) -> RTL 전환!', flush=True)
-            break
 
-        horiz_vel = np.array([vel_ned[0], vel_ned[1], 0.0], dtype=float)
-        brake_tilt = clamp_vec(-horiz_vel * 0.08, 0.45)
-        brake_nose = np.array([brake_tilt[0], brake_tilt[1], -1.0], dtype=float)
-        brake_nose /= np.linalg.norm(brake_nose)
-
-        q_brake = nose_dir_to_quat_frd(brake_nose, yaw)
-        vz_err = 0.0 - float(vel_ned[2])
-        brake_thr = max(0.18, min(0.45, 0.284 - 0.04 * vz_err))
-        send_attitude_target(conn, q_brake, brake_thr)
-        time.sleep(0.02)
-
-    for _ in range(25):
-        send_pos(conn, pos_ned[0], pos_ned[1], pos_ned[2], yaw)
-        time.sleep(0.02)
-
-    print('RTL(Return to Launch) 명령 전송 ...', flush=True)
-    for _ in range(5):
-        conn.mav.command_long_send(
-            conn.target_system, conn.target_component,
-            mavutil.mavlink.MAV_CMD_NAV_RETURN_TO_LAUNCH, 0,
-            0, 0, 0, 0, 0, 0, 0)
-        time.sleep(0.1)
-
-    print('RTL 복귀 및 자동 착륙 진행 중 (Ctrl+C로 종료 가능) ...', flush=True)
+def main():
+    if os.environ.get('FLY_EXPERIMENTAL_TAILSITTER') != '1':
+        raise SystemExit('Legacy tailsitter requires explicit experimental_tailsitter:=true; use the default MC spline mission.')
+    startup_delay = float(os.environ.get('FLY_STARTUP_DELAY', '0'))
+    if startup_delay > 0:
+        time.sleep(startup_delay)
+    vision = VisionListener()
+    start_ros_vision_thread(vision)
+    conn = mavutil.mavlink_connection(PX4_UDP)
     try:
-        while True:
-            msg = conn.recv_match(type=['LOCAL_POSITION_NED', 'HEARTBEAT'], blocking=True, timeout=0.5)
-            if msg and msg.get_type() == 'LOCAL_POSITION_NED':
-                now = time.monotonic()
-                if now - last_log > 1.0:
-                    home_dist = math.hypot(msg.x, msg.y)
-                    print(f'  [RTL] 홈까지 수평거리 {home_dist:5.1f}m | 고도 {-msg.z:4.1f}m', flush=True)
-                    last_log = now
-            elif msg and msg.get_type() == 'HEARTBEAT':
-                if not (msg.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED):
-                    print('★ RTL 착륙 및 Disarm 완료!', flush=True)
-                    break
-    except KeyboardInterrupt:
-        pass
-
-    conn.close()
-    print('종료', flush=True)
+        heartbeat = conn.wait_heartbeat(timeout=60)
+        if (heartbeat is None or heartbeat.autopilot != mavutil.mavlink.MAV_AUTOPILOT_PX4
+                or heartbeat.get_srcComponent() != mavutil.mavlink.MAV_COMP_ID_AUTOPILOT1):
+            raise GuidanceAbort('px4_heartbeat_missing')
+        threading.Thread(target=heartbeat_thread, args=(conn,), daemon=True).start()
+        run_mission(conn, vision)
+    except (GuidanceAbort, KeyboardInterrupt, OSError) as exc:
+        print(f'유도 중단: {exc or "user_interrupt"}; 통과 성공으로 처리하지 않습니다.', flush=True)
+        if conn.target_system and conn.target_component:
+            try:
+                transfer_to_px4(conn, 'RTL')
+            except OSError as transport_error:
+                print(f'RTL 전달 실패: {transport_error}; FC 모드/착륙 미확인', flush=True)
+    finally:
+        conn.close()
 
 
 if __name__ == '__main__':
