@@ -12,7 +12,7 @@
 
 | 파라미터 이름 | 설정값 | 단위 | 설명 |
 | :--- | :---: | :---: | :--- |
-| `SYS_AUTOSTART` | **`13003`** *(실기체)*<br>`1045` *(SITL)* | - | **VTOL Tailsitter** $\to$ *Generic Quadrotor X Tailsitter* |
+| `SYS_AUTOSTART` | **실기체 미확정**<br>`1045` *(legacy SITL)* | - | 기존13003은 로컬v1.17에 없음. 13200도2로터2조종면이라 단순 치환 불가 |
 | `CA_AIRFRAME` | **`4`** | - | Control Allocation 기체 타입: `4 = Tailsitter VTOL` |
 | `CA_ROTOR_COUNT` | **`4`** | 개 | 추력 로터(모터) 개수 = 4개 |
 | `CA_SV_CS_COUNT` | **`0`** | 개 | 조종면(Control Surface) 서보 개수 = 0개 (무타면 차동 추력 방식) |

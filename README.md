@@ -1,352 +1,56 @@
-# PX4-ROS2 — JO 도심 고속환경
+# PX4–ROS2 카메라 레이싱 드론
 
-## 2026-11-12 추가 — 카메라 기반 레이싱 드론 실험
+카메라로 풍선 표식의 위치를 추정하고, PX4/MAVROS로 생성 경로를 추종하는 Gazebo 시뮬레이션입니다. 작업 패키지는 [`balloon_sim`](balloon_sim/)입니다.
 
-`jo`의 기존 도심 실험은 유지하고, **레이싱 드론이 지정 지점을 통과하는 실험**용 [`balloon_sim`](balloon_sim/README.md)을 추가했습니다. 지상 짐벌 카메라의 풍선 검출·좌표 추정, 사용자 승인, 드론 카메라와 PX4/Gazebo 연동 코드를 포함합니다. 두 실험의 런처·설정·빌드 범위는 별개입니다.
+**현재 조건:** 사용자 STL 조립 기체·배터리 포함 총 2kg 가정, 멀티콥터 1대, 지름 30cm 정적 풍선 1개, 시스템 오른쪽 40m·높이 10m. LiDAR는 사용하지 않습니다.
 
-### 이번 변경사항
+```text
+카메라 탐색·중심 정렬 → 센서 좌표 확인 → 사용자 락·경로 미리보기 → 발사
+→ 3m 수직 이륙 → 연속 3차 Bézier 추종 → 가상 게이트 통과 → 5m 뒤 대기
+비행 중단·통과 실패 → 이륙점 복귀·착륙
+```
 
-| 구분 | 변경 내용 |
+## 클론 이후 수정·보완한 핵심
+
+- **실행 구성 통일:** STL·모터·총질량과 PX4 멀티콥터 설정을 연결했습니다. 측정되지 않은 테일시터 공력은 기본 모델에서 제외하고 별도 실험 옵션으로 분리했습니다.
+- **락·발사 흐름 수정:** 자동 발사를 제거하고 좌표·경로·제어기 준비가 확인된 경우에만 명시적 발사를 허용합니다. 승인 취소·만료, 중복 발사, 좌표 상실 처리를 보완했습니다.
+- **경로·통과 판정 수정:** 수직 구간과 곡선의 위치·속도·가속도를 연결하고, 추종 중 계획이 다른 유도로 바뀌던 문제를 수정했습니다. 실제 EKF 궤적의 게이트면 교차로 통과를 판정하고 성공 뒤 대기점을 유지합니다.
+- **좌표·시간 검증 강화:** 영상 노출 시각의 TF를 사용하고 오래된 자세·좌표·역순 관측을 거부합니다. 짐벌 시간 불확실도와 단안 거리 추정의 불연속을 보완했습니다. Gazebo 정답 좌표는 오차 평가에만 사용합니다.
+- **PX4·온보드 결함 수정:** MAVROS 중복 네임스페이스, 로컬 NED 수신 누락, 목표 자세의 180° 불연속, 피드백 단절 처리를 수정했습니다. 명령 ACK와 실제 모드 상태를 확인하며, 착륙 후 초기화는 신선한 FC 착륙·비무장·정지 상태로 판단합니다.
+- **UI·장치·저장 정책 정리:** 기존 두 카메라 화면·3D 경로·RViz를 유지합니다. 실물 설정 검사 실패 시 장치 노드를 시작하지 않습니다. 자동 그래프 생성을 제거하고 기본 실행 자료는 종료 시 삭제합니다.
+
+## 확인한 결과
+
+2026-11-14, ROS 2 Humble·Gazebo Classic 11·로컬 PX4 v1.17.0-dirty·MAVROS 2.16.0 기준입니다.
+
+| 항목 | 결과 |
 |---|---|
-| 승인·취소 | 실기체 좌표 송신 승인에 기본 **30초 유효기간** 적용. 중복 승인으로 연장하지 않으며, 취소·만료·좌표 상실·송신 실패 뒤 재승인 필요. 브리지 재시작 시 미승인 |
-| UI 상태 | 승인 요청, 브리지의 실제 로컬 송신, FC HEARTBEAT의 무장 상태를 구분. 오래된 영상·상태는 미확인 표시 |
-| 좌표 동기 처리 | 좌표·상태 메시지 도착 순서가 엇갈리면 해당 송신만 건너뛰며, 실제 데이터 만료·무효일 때 승인 철회 |
-| 짐벌 장애 대응 | 기본 하드웨어 탐색 설정에서 영상·자세 미수신/만료·NaN·시계 역행 시 0속도 명령. 정지 송신 실패는 재시도 |
-| 시뮬레이션 분리 | `/tmp/balloon_launch_approved`와 `approve_launch.sh`는 기존 시뮬레이션 전용. 실기체는 `/balloon/launch_approved` 사용 |
-| 실행 환경 | `balloon_sim` 자체 설치본만 사용하도록 경로 검사. `.params` 설치 누락·의존성 선언·오래된 테스트 수정 |
-| 문서 | PX4 `COM_OBL_RC_ACT`의 v1.17 의미를 **3=Return, 4=Land**로 정정. 실제 FC 버전·설정과 시뮬레이션 가정을 구분 |
+| 빌드·회귀 검사 | 3패키지 빌드, 현행 검사 462개 + 실행 가능한 공유 검사 58개 통과 |
+| Gazebo 검증 | 총 4회: 발견한 토픽·초기화 문제 수정 후 정상 통과·대기 및 중단·귀환·착륙·초기화 확인 |
+| 수직 상승 연결 높이 | 3.034m |
+| 이륙·곡선 추종 오차 | RMS 0.172m / 최대 0.341m |
+| 최대 EKF 속도 | 3.502m/s |
+| 락한 표식 좌표 오차 | 0.119m, Gazebo 배치 정답 대비 |
+| 최종 중단 실험 귀환 오차 | 수평 0.187m |
 
-**검증:** ROS 2 Humble에서 3개 패키지 빌드 및 **354개 테스트 통과**. 모의 MAVLink/UDP, ROS 노드, 모델 생성과 실행기 stub 검사 결과입니다. 이번 변경에서 실제 장비 연결·GUI·Gazebo 동역학 비행·지점 통과 성공률은 검증하지 않았습니다. 기존 그래프는 이전 실행 자료이며 이번 검사 결과가 아닙니다.
+정상 비행 수치는 **성공 실행 1회**의 결과입니다. 통과 판정은 센서 추정 좌표 중심의 **1.2m × 1.2m 가상 게이트**에 기체 반경 0.3m를 반영한 기준이며, 30cm 풍선 자체 관통이나 실기체 성능을 입증하지 않습니다. 구형 보조 검사 일부는 시험 입력·폴더 경로 누락으로 미검증입니다.
 
-**조작 의미:** 실기체 뷰어의 `SPACE`/`ENTER`는 유효한 좌표 송신 승인, `C`/`ESC`는 승인 취소입니다. 취소는 후속 좌표 송신을 중단하며 FC 비행 중단·착륙 명령이 아닙니다. FC의 `ARMED` 표시도 실제 비행·정지 완료 확인을 뜻하지 않습니다. 센서 사전검사 실패에 따른 기동 차단(`hardware_check ... || true`)은 이번 변경 범위에서 제외했습니다.
+## 실행
 
-### 빌드와 시뮬레이션 진입점
-
-ROS 2 Humble, Gazebo Classic 및 PX4 의존성이 준비된 환경에서 저장소 루트 기준으로 실행합니다.
+Ubuntu 22.04, ROS 2 Humble, Gazebo Classic 11, MAVROS 및 패키지 의존성이 설치된 환경에서 실행합니다.
 
 ```bash
-cd balloon_sim
+git clone --branch jo --single-branch https://github.com/SeyeongW/PX4-ROS2.git
+cd PX4-ROS2/balloon_sim
+./tools/build_px4.sh       # PX4·Gazebo 플러그인이 없을 때 최초 빌드
 ./tools/build_workspace.sh
-
-# 레이싱 시뮬레이션: 기존 PX4/Gazebo 실행 환경 준비 필요
 ./tools/run_tailsitter_sim.sh
 ```
 
-`run_tailsitter_sim.sh`의 현재 기본 표적은 거리 90m·고도 40m입니다. 기존 40m·고도 10m·오른쪽 배치 실험을 선택하려면 다음과 같이 명시합니다. 아래 명령은 이번 게시 작업에서 비행 실행하지 않았습니다.
+`run_tailsitter_sim.sh`는 기존 명령 호환 이름이며 기본 비행은 멀티콥터입니다. 기존 로컬 PX4 빌드를 사용하는 명령은 [패키지 실행 안내](balloon_sim/README.md)에 있습니다. 새 PC의 클린 빌드는 별도 비행 검증이 필요합니다. 실행 자료는 기본적으로 임시 저장하며, 명시적 `static_output:=/절대경로` 지정 시에만 보존합니다.
 
-```bash
-./tools/run_tailsitter_sim.sh target_range:=40.0 target_height:=10.0 target_azimuth:=-90.0
-```
+## 남은 작업
 
-- [패키지와 기존 실행 자료](balloon_sim/README.md)
-- [실기체 구성·승인 상태·미검증 항목](balloon_sim/HARDWARE_GUIDE.md)
-- [PX4 파라미터와 버전 주의사항](balloon_sim/PX4_PARAMETERS.md)
-- [수식 및 알고리즘](balloon_sim/ALGORITHMS.md)
+실물 카메라·짐벌·시간 동기화·원점/방위 교정, FC 모델·펌웨어 및 기체 물성 확인, 반복 시험·통신 장애 검증이 필요합니다. 위쪽 고정 카메라의 접근 시야도 확인해야 합니다. **온보드 검출은 유지하지만 시간 동기화가 없는 종말 영상 조향은 비활성화했습니다.** 실물 명목 광학계에서는 40m의 풍선이 약 8~9px로, 시뮬 망원의 약 44px보다 작습니다.
 
----
-
-## 기존 JO 도심 실험
-
-`applepark_city_uav` 도심맵에서 7 m/s 트레일러 순찰과
-`A* → SFC → B-spline → MPC` 경로계획을 검증하는 ROS 2 / PX4 연구
-workspace다. 청주대 운동장 실기 적용 프로파일은 `PX4-ROS2-wang`에서
-관리하며, 이 workspace의 운영 대상은 도심맵이다.
-
-## 현재 범위
-
-| 항목 | JO 계약 |
-|---|---|
-| map | `simulation/gazebo/maps/city_coordinates_uav.yaml` |
-| world | `applepark_city_uav` |
-| drone spawn | trailer WP0 deck, Gazebo ENU `(-150, 507, 2.051)` |
-| takeoff / mission altitude | fixed 10 m |
-| integrated drone speed | mission / TrackingMPC / hard / PX4 cap 12 m/s |
-| trailer | 23-waypoint stop-turn patrol, 7 m/s |
-| trailer acceleration / command rate | 9 m/s² / 50 Hz |
-| landing straight-run alignment reserve | 20 s |
-| planning clearance | raw building AABB + 1.0 m |
-| runtime vehicle/safety-marker radius | 1.0 m |
-
-트레일러 waypoint, stop index, city world/texture와 driver는 JO 고유 계약이다.
-Wang 패치를 이식할 때 이 값들은 변경하지 않는다.
-
-## 2026-08-18 공통 패치 이식
-
-Wang의 다음 공통 기능을 JO 코드에 병합했다.
-
-- raw AABB + rounded XY clearance 계약
-- exact segment broad-phase와 scalar 거리 연산 최적화
-- free convex box로 최종 polyline을 덮는 active-path SFC helper
-- `flight/trailer_link` GPS/MAVLink 수신·좌표변환·fail-closed adapter
-- Gazebo odometry→WGS84→MAVLink→PTY emulator와 회귀시험
-  (도심 one-command의 기본 GPS 입력 경로)
-- MissionManager의 비동기 전체 A*→optimizer SFC→B-spline 재계획,
-  path/SFC 원자 교체, LandingMPC runway/coast/저고도 terminal latch
-- JO의 기존 `ground_contact` 단방향 래치와 접촉 후 재상승 금지 유지
-- JO 트레일러는 `takeoff` clearance에서 출발하는 기존 gate 유지
-
-비활성 CJU fixture는 공통 MissionManager 회귀시험용으로만 Wang과
-동기화했다. JO 운영 맵이나 23개 waypoint를 대체하지 않는다.
-
-## 자동 전체 미션 실행판 두 개
-
-두 실행판은 표준 `city_coordinates_uav.yaml`의 WP0 데크 `(-150, 507)`에
-드론과 트레일러를 함께 배치한다. 드론이 10 m까지 이륙한 뒤 트레일러가
-7 m/s 폐루프 순찰을 시작한다. 미션점은 요청 위치와 가장 가까우면서 건물
-미션 좌표는 건물 사이의 안전한 도심 지점 `(-165, 0)`이며, 다음 순서를 자동
-실행한다.
-
-```text
-TAKEOFF → READY → MISSION_PLAN → MISSION → HOVER(3 s)
-        → RETURN_PLAN ↔ RETURN → LANDING_ACQUIRE → PRECLAND → DONE
-```
-
-귀환은 고정 staging point를 사용하지 않는다. 최신 GPS cue를 향해 2초마다
-`A* → SFC → B-spline`을 다시 만들고, 검증된 새 경로만 원자적으로
-교체하면서 트레일러를 추종한다. mission/RETURN 기준속도, TrackingMPC 상한,
-내부 hard cap, PX4 cruise/velocity cap은 모두 12 m/s다. YAML 23개 waypoint는
-실제 driver와 지도 모두 WP22→WP0까지 연결된
-4028.839 m 폐루프로 취급한다.
-
-실제 화면을 보면서 확인하는 1.00× 기준판:
-
-```bash
-cd ~/PX4-ROS2-jo && ./simulation/gazebo/run_city_landing.sh visual
-```
-
-Gazebo GUI, ArUco 검출 화면, live mission map이 열린다. `DONE`과 자동 무장해제를
-확인한 뒤 `Ctrl-C`로 종료한다.
-
-YAML이 배속과 화면/종료 정책을 소유하는 5.00× 실험판:
-
-```bash
-cd ~/PX4-ROS2-jo && ./simulation/gazebo/run_city_landing.sh fast
-```
-
-이 판은 Gazebo와 ArUco 화면을 숨기고 YAML 경로 live map만 연다. 최신 승인
-경로는 초록색, 교체된 복귀 경로는 보라색으로 누적 표시하며,
-`PRECLAND -> DONE` 뒤 자동 종료한다. 배속은
-`simulation/gazebo/profiles/city_landing_fast.yaml`의
-`simulation_speed_factor` 한 곳에서 바꾼다. 배속은 물리 속도 7/12 m/s를
-곱하지 않고 Gazebo/PX4의 simulation-time 진행률만 바꾼다. 5.00×에서는
-2초 sim-time 요청 주기가 wall-time 0.4초지만 단일 planner가 직렬화하므로,
-승인 경로는 실제 계산이 끝나는 약 1.7~3.3 wall-time 간격으로 교체된다.
-fast 프로필은 이 부하에 맞춰 SITL GPS를 10 Hz로 올리고 cue timeout을 2초로
-확장한다. 물리 기준 성공 판정은 1.00× 시각화판으로 수행한다.
-
-## 도심 GPS 수동 전체 미션
-
-빌드가 끝난 workspace에서 다음 한 줄로 실행한다.
-
-```bash
-cd ~/PX4-ROS2-jo && LANDING_MAP=city ./simulation/gazebo/run_gimbal.sh mission
-```
-
-`city` 프로파일은 별도 환경변수 없이 GPS cue와 Gazebo MAVLink PTY emulator를
-선택한다. 통합 launcher와 PX4의 수평 속도 계층은 모두 12 m/s다. 트레일러는 YAML의
-WP0에서 7 m/s로 실행된다. 드론은 같은 WP0 데크 위에서 시작하고, 10 m 이륙이
-끝난 뒤 트레일러가 출발한다. UI도 함께 열리며 명령 prompt에는 아래 순서대로
-입력한다.
-
-```text
-명령> takeoff   # 트레일러 WP0 데크에서 이륙 후 10 m READY까지 대기
-명령> mission   # YAML goal까지 10 m로 계획·추종 후 3초 HOVER
-명령> land      # 최신 GPS cue로 복귀·추종·착륙 후 DONE까지 대기
-```
-
-도심 비행 authority는 standalone `/path_plan/cmd_vel`이 아니라 MissionManager에
-통합된 다음 경로다.
-
-```text
-GPS local ENU cue + vehicle local ENU
-  → MissionManager current-start/latest-goal snapshot
-  → city Gazebo-world ENU 변환
-  → A* → optimizer SFC → cubic B-spline
-  → exact collision + active-path SFC 검증
-  → path/SFC 원자 교체 → 3-D TrackingMPC → PX4 OFFBOARD
-  → ArUco/LandingMPC → PX4 PRECLAND
-```
-
-`mission`은 YAML goal을 사용하고, `land`의 이동 표적 복귀는 최신 GPS cue를
-목표로 비동기 전체 A*→SFC→B-spline을 재계획한다. 새 path와 SFC가 모두
-검증된 경우에만 같은 plan 번호로 교체하며 실패하면 기존 안전 경로를 유지한다.
-standalone `ros2 launch path_plan path_plan.launch.py`는 별도 planner demo이고
-이 one-command 비행 authority가 아니다.
-
-## City YAML 오프라인 동적경로 10회 실험
-
-논문 그림의 `city-yaml`은 Gazebo/PX4 비행이 아니라
-`city_uav_trailer_loop.yaml`을 사용하는 결정론적 오프라인 롤아웃이다. 드론
-속도 상한과 MPC 기준속도는 12 m/s, 트레일러 속도는 10 m/s로 고정된다.
-A* 동적 재계획, optimizer SFC, B-spline, MPC horizon과 최종 실행경로를 10회
-반복하고 각 실행 결과를 독립 디렉터리에 보존한다.
-
-```bash
-cd ~/PX4-ROS2-jo
-./simulation/gazebo/run_experiments_10x.sh city-yaml 10
-```
-
-기본 CSV 위치는 다음과 같다.
-
-```text
-~/.local/state/px4-ros2-jo/batches/city-yaml_<UTC>/
-├── batch_runs.csv                 # 10회 성공/실패와 개별 파일 위치
-├── batch_summary.csv              # 성공한 실행별 핵심지표 1행
-├── batch_statistics.csv           # 10회 mean/std/min/max
-└── run_01/ ... run_10/
-    ├── data/offline_timeseries_10hz.csv
-    ├── data/path_points.csv
-    ├── tables/offline_plan_attempts.csv
-    ├── tables/offline_replan_metrics.csv
-    ├── tables/offline_sfc_boxes.csv
-    ├── tables/summary_metrics.csv
-    └── figures/{01_pipeline_four_panels,02_pipeline_overlay_four_paths}.png
-```
-
-저장 위치를 고정하려면 `BATCH_ROOT`를 지정한다.
-
-```bash
-cd ~/PX4-ROS2-jo
-BATCH_ROOT="$HOME/Gazebo_filght_planned_10x" \
-  ./simulation/gazebo/run_experiments_10x.sh city-yaml 10
-```
-
-동일 YAML에는 난수나 외란 주입이 없어 10회 경로 형상은 반복되는 것이
-정상이며 A*/B-spline/SFC/MPC wall-clock 계산시간이 주된 반복 통계다.
-`sfc_violation_count`는 optimizer control-point box만으로 차량의 active-path
-이탈을 판정할 수 없어 `N/A`로 기록한다. 퇴화 seed fallback은 raw 최소폭에서
-제외하지 않고 별도 개수·비율과 비퇴화 최소폭/p05를 함께 저장한다. ArUco,
-착륙오차와 touchdown 지표도 이 데이터셋에는 telemetry가 없어 `N/A`다.
-Gazebo/PX4 경로추종 10회 모드는
-`city-path`, 착륙까지 포함한 도심 10회 모드는 `city`를 사용한다.
-
-## GPS cue
-
-실기 수신 경로는 Wang과 같다. 이는 양방향 GPS 교환이 아니라, 트레일러가
-자기 위치를 보내고 드론이 자기 MAVROS 위치와 결합하는 단방향 target cue다.
-
-```text
-Trailer FCU GLOBAL_POSITION_INT
-  → trailer_gps_node
-  → /trailer/fix + /trailer/velocity_enu
-
-Drone MAVROS global fix + local ENU pose
-  + trailer fix/velocity
-  → trailer_target_node
-  → /marker/cue + /marker/cue_velocity
-```
-
-- cue frame: `px4_local_enu`, x=East, y=North, z=Up
-- horizontal velocity: MAVLink `(vx North, vy East)` → `(vy, vx) × 0.01`
-- GNSS 수직속도는 제어 cue에서 사용하지 않는다.
-- deck z는 GNSS altitude가 아니라 실측 `TRAILER_DECK_Z_M`을 사용한다.
-- JO city는 드론 spawn에서 최대 약 1.55 km 떨어지므로 field runner의
-  `GPS_MAX_DISTANCE_M` 기본값은 2000 m다.
-
-### 인수인계용 GPS 핵심 4개
-
-| 파일 | 역할 |
-|---|---|
-| `flight/trailer_link/trailer_link/trailer_gps_node.py` | 트레일러 FCU의 `GLOBAL_POSITION_INT`를 받아 `/trailer/fix`와 ENU `/trailer/velocity_enu`를 같은 수신시각으로 발행한다. |
-| `flight/trailer_link/trailer_link/geodesy.py` | WGS84 두 fix의 차이를 ENU로 바꾸고 `drone local ENU + 상대 ENU`로 트레일러 local 좌표를 계산한다. |
-| `flight/trailer_link/trailer_link/trailer_target_node.py` | 드론 MAVROS global/local과 트레일러 fix/velocity를 검증·결합해 `/marker/cue*`를 발행한다. |
-| `flight/trailer_link/run_gps_cue.sh` | 실기용 reader/adapter를 단일 publisher와 source-rate gate로 기동한다. 전체 hardware mission launcher는 아니다. |
-
-YAML과 UI가 GPS를 직접 해석하지는 않는다. GPS adapter가 기존 ABI인
-`/marker/cue`와 `/marker/cue_velocity`로 변환하고, MissionManager와 UI가 이를
-구독한다. YAML은 맵·장애물·좌표계 계약만 보관한다.
-
-### 실기 GPS cue 실행
-
-MAVROS가 실행 중이고 deck z를 측정한 뒤 cue adapter만 구동한다.
-
-```bash
-cd ~/PX4-ROS2-jo
-source /opt/ros/humble/setup.bash
-source "$HOME/px4_ros2_ws/install/setup.bash"
-source install/setup.bash
-
-read -rp "Measured trailer deck z in PX4 local ENU [m]: " TRAILER_DECK_Z_M
-export TRAILER_DECK_Z_M
-TRAILER_DEV=/dev/ttyUSB0 \
-TRAILER_LINK=1 \
-TRAILER_BAUD=57600 \
-TRAILER_SYSID=1 \
-GPS_MAX_DISTANCE_M=2000 \
-  ./flight/trailer_link/run_gps_cue.sh
-```
-
-`run_gps_cue.sh`는 전체 hardware mission launcher가 아니다. 또한 현재 GPS
-cue는 PX4-local ENU `PointStamped`이며 MissionManager가 city YAML의 spawn,
-origin, heading 계약으로 Gazebo-world ENU planner 좌표로 명시적으로 변환한다.
-외부에서 두 좌표를 섞거나 단순 remap하지 않는다.
-
-### 도심 Gazebo GPS/MAVLink-in-the-loop 내부 경로
-
-위 one-command는 다음 software wiring을 자동으로 구성한다.
-
-```text
-/model/trailer/odometry
-  → simulation/gazebo/tools/trailer_mavlink_emulator.py
-  → WGS84 GLOBAL_POSITION_INT over PTY
-  → trailer_gps_node → /trailer/fix + /trailer/velocity_enu
-  → trailer_target_node → /marker/cue + /marker/cue_velocity
-  → MissionManager + live UI
-```
-
-이는 실기와 같은 reader/adapter 인터페이스를 통과하는 도심 GPS-SITL 시험이지만
-RF·RTK 링크 성능시험은 아니다.
-
-### SITL 전용 착륙 파라미터
-
-city YAML의 `LNDMC_XY_VEL_MAX=12`는 비행 명령 상한이 아니라 PX4 land
-detector가 이동 deck의 7 m/s world-frame 속도를 허용하는 접촉판정 임계값이다.
-`PLD_FAPPR_ALT=0`도 SITL 전용이다. 둘 다 hardware-ready 설정이 아니며 실기체에
-그대로 복사하지 않는다. 실기는 deck-relative 접촉 판정과 속도/고도 전환을
-별도로 검증해야 한다.
-
-## GPS 실기 전 P0
-
-- `GLOBAL_POSITION_INT.time_boot_ms`↔ROS clock mapping과 RF queue latency
-- drone/trailer RTK fixed, hacc/eph, correction age, covariance, 동일 datum gate
-- antenna/EKF origin→landing marker lever arm·yaw와 deck z 측량
-- 실제 radio dropout/fix-loss/reboot/wrap fault injection
-- 외부 PX4 PRECLAND patch와 matching `px4_msgs` revision 고정
-- props-off/HIL, RC takeover/kill, single flight authority 검증
-
-Gazebo MAVLink emulator는 software wiring 시험이지 RF·RTK 성능 시험이 아니다.
-
-## 빌드와 회귀시험
-
-```bash
-cd ~/PX4-ROS2-jo
-source /opt/ros/humble/setup.bash
-source "$HOME/px4_ros2_ws/install/setup.bash"
-
-rosdep install --from-paths flight simulation/landing_mpc \
-  --ignore-src --rosdistro humble -r -y \
-  --skip-keys "px4_msgs ament_python"
-colcon build --symlink-install --packages-select \
-  path_plan trailer_link landing_mpc
-source install/setup.bash
-
-python3 -m pytest \
-  flight/path_plan/test \
-  flight/trailer_link/test \
-  simulation/landing_mpc/test \
-  simulation/gazebo/test -q
-python3 simulation/gazebo/tools/validate_city_uav_expansion.py
-python3 simulation/gazebo/tools/validate_self_contained_maps.py
-```
-
-## 주요 파일
-
-- 도심 map: `simulation/gazebo/maps/city_coordinates_uav.yaml`
-- 착륙 집중 map: `simulation/gazebo/maps/city_coordinates_uav_quick_landing.yaml`
-- 시각화/배속 profile: `simulation/gazebo/profiles/city_landing_{visual,fast}.yaml`
-- 두 profile launcher: `simulation/gazebo/run_city_landing.sh`
-- 도심 route: `simulation/gazebo/trailer_waypoint_driver.py`
-- 도심 planner config: `flight/path_plan/config/city_uav.yaml`
-- collision model: `flight/path_plan/path_plan/world_model.py`
-- MAVLink emulator: `simulation/gazebo/tools/trailer_mavlink_emulator.py`
-- landing state machine: `simulation/landing_mpc/landing_mpc/mission_manager_node.py`
+[경로·제어 수식](balloon_sim/ALGORITHMS.md) · [실기체 준비](balloon_sim/HARDWARE_GUIDE.md) · [PX4 설정과 미확인 사항](balloon_sim/PX4_PARAMETERS.md)
