@@ -56,6 +56,7 @@ FALLBACK_TARGET_WORLD = [
 ]
 HOVER_ALT = float(os.environ.get('FLY_HOVER_ALT', '5.0'))
 AUTO_APPROVE = os.environ.get('AUTO_APPROVE', '0').lower() in ('1', 'true', 'yes')
+DISABLE_ONBOARD_VISION = os.environ.get('DISABLE_ONBOARD_VISION', '0').lower() in ('1', 'true', 'yes')
 APPROVAL_FLAG_FILE = Path('/tmp/balloon_launch_approved')
 
 UKF_LOCK_SIGMA_M = 2.8     # 지상 UKF 락온 인정 최대 표준편차 s (sigma) [m]
@@ -512,9 +513,13 @@ def main():
 
     print('========================================================================', flush=True)
     print(' [다중 폐루프 협력 시스템] 지상 짐벌 카메라 탐색/UKF + 사용자 승인 출격 + 비전 유도', flush=True)
-    print('  - n : 지상 UKF에 누적 융합된 유효 풍선 관측 프레임(샘플) 개수', flush=True)
+    print('  - n : 지상 UKF에 누적 융합된 유효 표적 관측 프레임(샘플) 개수', flush=True)
     print('  - s : 지상 UKF 3D 위치 추정의 최대 방향 표준편차(불확실도, sigma) [m]', flush=True)
     print('  - 지상->드론 좌표 수신 주기: 10 Hz (0.1초마다 실시간 3D 좌표 패킷 수신)', flush=True)
+    if DISABLE_ONBOARD_VISION:
+        print('  - ★ [비교 실험 모드: DISABLE_ONBOARD_VISION=1] 기체 온보드 카메라 종말 유도 OFF (지상 UKF 좌표만 추종)', flush=True)
+    else:
+        print('  - [기본 모드: DISABLE_ONBOARD_VISION=0] 지상 UKF 중기 유도 + 기체 온보드 카메라 3D LOS/PN 종말 유도 ON', flush=True)
     print('========================================================================\n', flush=True)
 
     print(f'PX4 연결 대기  {PX4_UDP} ...', flush=True)
@@ -664,6 +669,7 @@ def main():
     # ── 2단계 & 3단계: 지상 UKF 실시간 수신(10 Hz) + 테일시터 대각선 비행 -> 온보드 풍선 검출 시 3D LOS/PN 추적 ──
     start_ned = pos_ned.copy()
     target_ned = np.array([tn, te, t_d], dtype=float)
+    true_target_ned = np.array(world_to_ned(*FALLBACK_TARGET_WORLD), dtype=float)
     path_vec = target_ned - start_ned
     path_len = float(np.linalg.norm(path_vec))
     path_dir = path_vec / path_len if path_len > 1e-3 else np.array([1.0, 0.0, 0.0])
@@ -678,6 +684,8 @@ def main():
     vision_locked = False
     target_locked = False
     min_dist_after_lock = math.inf
+    min_true_dist_m = math.inf
+    cpa_elapsed_s = 0.0
     case1_vision_passed = False
     case2_target_passed = False
     last_ukf_update_n = 0
@@ -697,8 +705,12 @@ def main():
         trans_alpha = min(1.0, max(0.0, (now - trans_start_t) / TRANSITION_DUR))
 
         u, v, diam, init_diam, max_diam, lost_frames, det_age, _ = vision.get()
-        det_fresh = (lost_frames == 0) and (det_age < 0.25)
-        det_coast = det_age < COAST_TIMEOUT
+        if DISABLE_ONBOARD_VISION:
+            det_fresh = False
+            det_coast = False
+        else:
+            det_fresh = (lost_frames == 0) and (det_age < 0.25)
+            det_coast = det_age < COAST_TIMEOUT
 
         # 중기 유도 구간(온보드 비전 포착 전)에서 지상 카메라 UKF가 10Hz로 보내주는 최신 3D 좌표를 실시간 반영!
         ukf_world, ukf_sigma, ukf_n, ukf_valid, _, ukf_age, ukf_rx_cnt, ukf_hz = vision.get_ground_ukf()
@@ -717,13 +729,17 @@ def main():
 
         diff_to_target = target_ned - pos_ned
         dist_3d = float(np.linalg.norm(diff_to_target))
+        true_dist_3d = float(np.linalg.norm(true_target_ned - pos_ned))
+        if true_dist_3d < min_true_dist_m:
+            min_true_dist_m = true_dist_3d
+            cpa_elapsed_s = now - trans_start_t
 
-        # ── "풍선 지났다!" 동시 판정(조건 1 AND 조건 2) 및 무조건 RTL 안전 조건 ──
+        # ── "표적 지났다!" 동시 판정(조건 1 AND 조건 2) 및 무조건 RTL 안전 조건 ──
         along_past = float(np.dot(pos_ned - target_ned, path_dir))
         if not target_locked and dist_3d <= LOCK_DIST:
             target_locked = True
             min_dist_after_lock = dist_3d
-            print(f'▶ 표적 {LOCK_DIST:.0f}m 이내 진입 (dist={dist_3d:.2f}m): 풍선/목표점 통과 감시 활성화', flush=True)
+            print(f'▶ 표적 {LOCK_DIST:.0f}m 이내 진입 (dist={dist_3d:.2f}m, 실제거리={true_dist_3d:.2f}m): 목표점 통과 감시 활성화', flush=True)
         elif target_locked and dist_3d < min_dist_after_lock:
             min_dist_after_lock = dist_3d
 
@@ -735,10 +751,10 @@ def main():
         suddenly_disappeared = (lost_frames >= PASS_LOST_FRAMES) or (det_age > 0.15)
         point_blank_impact = target_locked and det_fresh and (diam >= PASS_IMPACT_DIAM_PX)
 
-        if not case1_vision_passed and ((grew_large and suddenly_disappeared) or point_blank_impact):
+        if not DISABLE_ONBOARD_VISION and not case1_vision_passed and ((grew_large and suddenly_disappeared) or point_blank_impact):
             case1_vision_passed = True
             print(
-                f'✔ [조건 1 달성: 풍선 디텍팅 유실점 확인] '
+                f'✔ [조건 1 달성: 표적 디텍팅 유실점 확인] '
                 f'(초기 {init_diam:.1f}px -> 최대 {max_diam:.1f}px 확대 후 유실, 현재 목표점 거리={dist_3d:.2f}m)',
                 flush=True)
 
@@ -749,11 +765,14 @@ def main():
             case2_target_passed = True
             print(
                 f'✔ [조건 2 달성: 목표점 통과 확인] '
-                f'(최근접거리={min_dist_after_lock:.2f}m -> 현재거리={dist_3d:.2f}m, 목표평면 진행초과={along_past:+.2f}m)',
+                f'(UKF기준 최근접={min_dist_after_lock:.2f}m | 실제 표적 CPA={min_true_dist_m:.2f}m, 목표평면 진행초과={along_past:+.2f}m)',
                 flush=True)
 
-        if case1_vision_passed and case2_target_passed:
-            print('★ 풍선 지났다! [조건 1(풍선 확대 후 디텍팅 유실) & 조건 2(목표점 통과) 동시 만족!] -> RTL 복귀 시작!', flush=True)
+        if (case1_vision_passed or DISABLE_ONBOARD_VISION) and case2_target_passed:
+            print(
+                f'★ 표적 통과 완료! [실제 표적 CPA = {min_true_dist_m:.2f}m | UKF 목표 CPA = {min_dist_after_lock:.2f}m | '
+                f'도달시간 = {cpa_elapsed_s:.2f}s | 온보드비전={"OFF" if DISABLE_ONBOARD_VISION else "ON"}] -> RTL 복귀 시작!',
+                flush=True)
             break
 
         force_plane_passed = target_locked and (along_past >= FORCE_PAST_PLANE_DIST)
@@ -761,7 +780,8 @@ def main():
         if force_plane_passed or force_overshoot:
             print(
                 f'★ 목표점 통과/이탈 감지로 무조건 RTL! '
-                f'(최근접거리={min_dist_after_lock:.2f}m -> 현재거리={dist_3d:.2f}m, 목표평면 진행초과={along_past:+.2f}m) -> RTL 복귀 시작!',
+                f'(실제 표적 CPA = {min_true_dist_m:.2f}m | UKF 목표 CPA = {min_dist_after_lock:.2f}m | '
+                f'도달시간 = {cpa_elapsed_s:.2f}s | 온보드비전={"OFF" if DISABLE_ONBOARD_VISION else "ON"}) -> RTL 복귀 시작!',
                 flush=True)
             break
 
@@ -837,7 +857,8 @@ def main():
             nose_cmd, thrust_cmd, v_des = compute_tailsitter_cmd(
                 unit_to_target, a_perp_cmd, vel_ned, dist_3d, MAX_PATH_LEAD_DEG, trans_alpha, allow_dive=False)
             ukf_tag = f'UKF(n={ukf_n},s={ukf_sigma:.1f}m,{ukf_hz:.0f}Hz)' if ukf_n > 0 else 'UKF_INIT'
-            mode_str = f'TS_UKF_GUIDE[{ukf_tag}](Vd={v_des:.1f} thr={thrust_cmd:.2f})'
+            vision_tag = 'NO_ONBOARD' if DISABLE_ONBOARD_VISION else 'WAIT_ONBOARD'
+            mode_str = f'TS_UKF_GUIDE[{ukf_tag}|{vision_tag}](Vd={v_des:.1f} thr={thrust_cmd:.2f})'
 
         filt_alpha = 0.28 if trans_alpha >= 1.0 else 0.18
         smoothed_nose_ned = (1.0 - filt_alpha) * smoothed_nose_ned + filt_alpha * nose_cmd
@@ -851,11 +872,30 @@ def main():
             nose_ned = R_bn @ np.array([0.0, 0.0, -1.0])
             tilt_deg = math.degrees(math.acos(max(-1.0, min(1.0, -nose_ned[2]))))
             nose_elev_deg = 90.0 - tilt_deg
-            print(f'  [{mode_str}] 거리 {dist_3d:5.1f}m | 고도 {-pos_ned[2]:4.1f}m | 속도 {cur_spd:4.1f}m/s | '
+            print(f'  [{mode_str}] 거리 {dist_3d:5.1f}m (실제 {true_dist_3d:5.1f}m) | 고도 {-pos_ned[2]:4.1f}m | 속도 {cur_spd:4.1f}m/s | '
                   f'기울기(Tilt) {tilt_deg:4.1f}° (카메라앙각 {nose_elev_deg:4.1f}°)', flush=True)
             last_log = now
 
         time.sleep(0.02)
+
+    # CPA 결과 JSON 자동 저장
+    try:
+        plots_dir = Path(__file__).resolve().parent.parent / 'plots'
+        plots_dir.mkdir(parents=True, exist_ok=True)
+        tag = 'onboard_off' if DISABLE_ONBOARD_VISION else 'onboard_on'
+        cpa_report = {
+            'disable_onboard_vision': bool(DISABLE_ONBOARD_VISION),
+            'true_target_world_m': list(FALLBACK_TARGET_WORLD),
+            'ukf_target_world_m': list(active_target_world),
+            'true_cpa_m': round(float(min_true_dist_m), 4),
+            'ukf_cpa_m': round(float(min_dist_after_lock), 4),
+            'cpa_elapsed_since_transition_s': round(float(cpa_elapsed_s), 3),
+        }
+        out_json = plots_dir / f'cpa_flight_{tag}.json'
+        out_json.write_text(json.dumps(cpa_report, indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
+        print(f'★ [CPA 결과 저장 완료] {out_json} -> 실제 표적 CPA = {min_true_dist_m:.3f} m (도달시간 {cpa_elapsed_s:.2f} s)', flush=True)
+    except Exception as exc:
+        print(f'WARNING: CPA JSON 저장 실패: {exc}', flush=True)
 
     # ── 4단계: 테일시터 후면 전환(Back-Transition: 수직 자세 복귀 및 감속) -> RTL ──
     print('풍선 통과 완료 -> 테일시터 수직 호버링 복귀 전환(Back-Transition) 및 감속 시작 ...', flush=True)

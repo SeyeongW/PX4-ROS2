@@ -128,7 +128,7 @@ def _sky_mask(bgr: np.ndarray) -> np.ndarray:
 
 
 def _refine_drone_roi(bgr: np.ndarray, sky: np.ndarray, x0: int, y0: int, x1: int, y1: int):
-    """Extract exact horizontal span (w_px) and center (cx, cy) of the drone silhouette inside [x0:x1, y0:y1]."""
+    """Extract sub-pixel horizontal span (w_px) and center (cx, cy) of the drone silhouette inside [x0:x1, y0:y1]."""
     h_img, w_img = bgr.shape[:2]
     x0, y0 = max(1, x0), max(1, y0)
     x1, y1 = min(w_img - 1, x1), min(h_img - 1, y1)
@@ -153,11 +153,36 @@ def _refine_drone_roi(bgr: np.ndarray, sky: np.ndarray, x0: int, y0: int, x1: in
     gx1, gy1 = x0 + xmax, y0 + ymax
     if gx0 <= 2 or gy0 <= 2 or gx1 >= w_img - 3 or gy1 >= h_img - 3:
         return None
-    w_px = float(xmax - xmin + 1)
-    h_px = float(ymax - ymin + 1)
+
+    # Sub-pixel edge refinement along sky-to-foreground intensity transition
+    roi_gray = np.mean(bgr[y0:y1, x0:x1].astype(np.float32), axis=2)
+    sky_vals = roi_gray[sub_sky]
+    fg_vals = roi_gray[fg]
+    sky_ref = float(np.median(sky_vals)) if sky_vals.size > 0 else 190.0
+    fg_ref = float(np.percentile(fg_vals, 25)) if fg_vals.size > 0 else 40.0
+    contrast = max(sky_ref - fg_ref, 20.0)
+
+    # Left & right tip fractional sub-pixel extension
+    left_rows = ys[xs == xmin]
+    right_rows = ys[xs == xmax]
+    left_ext = 0.0
+    right_ext = 0.0
+    if xmin > 0 and left_rows.size > 0:
+        darkness_l = np.clip((sky_ref - roi_gray[left_rows, xmin - 1]) / contrast, 0.0, 1.0)
+        darkness_c = np.clip((sky_ref - roi_gray[left_rows, xmin]) / contrast, 0.1, 1.0)
+        left_ext = float(np.max(darkness_l) + 0.5 * (np.max(darkness_c) - 0.5))
+    if xmax + 1 < (x1 - x0) and right_rows.size > 0:
+        darkness_r = np.clip((sky_ref - roi_gray[right_rows, xmax + 1]) / contrast, 0.0, 1.0)
+        darkness_c = np.clip((sky_ref - roi_gray[right_rows, xmax]) / contrast, 0.1, 1.0)
+        right_ext = float(np.max(darkness_r) + 0.5 * (np.max(darkness_c) - 0.5))
+
+    x_left_sub = float(xmin) - np.clip(left_ext, -0.45, 0.95)
+    x_right_sub = float(xmax) + np.clip(right_ext, -0.45, 0.95)
+    w_px = float(x_right_sub - x_left_sub + 1.0)
+    h_px = float(ymax - ymin + 1.0)
     if w_px < 2.0 or h_px < 1.5 or w_px / max(h_px, 1.0) > 6.5 or h_px / max(w_px, 1.0) > 3.5:
         return None
-    cx = float(x0 + 0.5 * (xmin + xmax))
+    cx = float(x0 + 0.5 * (x_left_sub + x_right_sub))
     cy = float(y0 + 0.5 * (ymin + ymax))
     return cx, cy, w_px, h_px, float(gx0), float(gy0)
 

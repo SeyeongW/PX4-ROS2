@@ -126,12 +126,17 @@ def setup(context):
         arguments=['-d',str(perception/'config/static_flight.rviz')],parameters=[{'use_sim_time':True}])
     workspace_root=os.environ.get('BALLOON_WORKSPACE_ROOT','')
     fly_script=Path(workspace_root)/'tools/tailsitter_guidance.py' if workspace_root else None
+    disable_onboard_val = (
+        '1' if (os.environ.get('DISABLE_ONBOARD_VISION','0').lower() in ('1','true','yes')
+                or value('disable_onboard_vision').lower() in ('1','true','yes')) else '0'
+    )
     fly_to_target=ExecuteProcess(
         cmd=['python3',str(fly_script)],output='screen',
         additional_env={
             'FLY_TARGET_X':str(target_world[0]),'FLY_TARGET_Y':str(target_world[1]),
             'FLY_TARGET_Z':str(target_world[2]),'FLY_HOVER_ALT':str(hover_alt),
             'FLY_STARTUP_DELAY':'15','PYTHONUNBUFFERED':'1',
+            'DISABLE_ONBOARD_VISION':disable_onboard_val,
         }) if fly_script and fly_script.is_file() else None
     detection_viewer=Node(package='balloon_locator',executable='detection_viewer_node',output='screen',parameters=[{
         'use_sim_time':True}])
@@ -145,7 +150,7 @@ def setup(context):
     else:
         ground_nodes=[server,detector,locator,tracker,bridge,mission,onboard_detector]
         watched=[server,detector,locator,tracker,bridge,mission,onboard_detector]
-    return [LogInfo(msg=f"Target locator mode={mode} target_type={target_type_val}: PX4 x500 target UAV (span={target_span_m}m), YOLO model={yolo_model_val}."),
+    return [LogInfo(msg=f"Target locator mode={mode} target_type={target_type_val}: PX4 x500 target UAV (span={target_span_m}m), YOLO model={yolo_model_val}, disable_onboard_vision={disable_onboard_val}."),
         *([LogInfo(msg='Exterior view: ignoring legacy airframe_transparency; the black shell hides internal parts.')]
           if report and float(value('airframe_transparency'))!=0.0 else []),
         SetEnvironmentVariable('GAZEBO_PLUGIN_PATH',str(Path(get_package_prefix('jol_sim'))/'lib')+os.pathsep+os.environ.get('GAZEBO_PLUGIN_PATH','/opt/ros/humble/lib')),
@@ -158,7 +163,8 @@ def setup(context):
 def generate_launch_description():
     paths=runtime_paths()
     defaults=dict(gui='true',ui='true',rviz='true',mode='mission',target_range='100.0',target_height='50.0',target_azimuth='0.0',
-        target_type='drone',yolo_model_path=str(Path.home()/'droneD.pt'),vertical_handle='4.0',airframe_transparency='0.0',
+        target_type='drone',yolo_model_path=str(Path.home()/'droneD.pt'),disable_onboard_vision='false',
+        vertical_handle='4.0',airframe_transparency='0.0',
         scenario='static_flight',flight_backend='mavros',aircraft_type='stl_pacer_quad',
         static_output=os.environ.get('BALLOON_RUNTIME_DIR',''),px4_root=str(paths['px4_root']),
         px4_binary=str(paths['px4_binary']),
