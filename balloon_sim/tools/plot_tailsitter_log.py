@@ -30,9 +30,9 @@ import matplotlib.pyplot as plt
 
 HOME_WORLD = np.array([-2.0, 0.0, 0.2], dtype=float)
 TARGET_WORLD = np.array([
-    float(os.environ.get('FLY_TARGET_X', '90.0')),
+    float(os.environ.get('FLY_TARGET_X', '100.0')),
     float(os.environ.get('FLY_TARGET_Y', '0.0')),
-    float(os.environ.get('FLY_TARGET_Z', '40.0')),
+    float(os.environ.get('FLY_TARGET_Z', '50.0')),
 ], dtype=float)
 NORTH_YAW = math.pi / 2.0
 
@@ -253,46 +253,46 @@ def generate_plots(ulog_path, out_dir):
     true_los_elev_deg = np.degrees(np.arctan2(-los_vec_true[:, 2], np.maximum(los_horiz, 0.1)))
 
     # ── Figure 1: 6-Panel 텔레메트리 종합 대시보드 ──
-    plt.style.use('seaborn-v0_8-whitegrid' if 'seaborn-v0_8-whitegrid' in plt.style.available else 'default')
-    fig, axes = plt.subplots(3, 2, figsize=(16, 12.5), dpi=160)
+    plt.style.use('default')
+    fig, axes = plt.subplots(3, 2, figsize=(15, 12), dpi=160)
     fig.suptitle(
-        f'PX4 Quad-Tailsitter (SYS_AUTOSTART=1045) 30cm Balloon Vision Guidance Telemetry\n'
+        f'PX4 Quad-Tailsitter (1045) x500 Target UAV Interception Telemetry\n'
         f'Target World=({TARGET_WORLD[0]:.1f}, {TARGET_WORLD[1]:.1f}, {TARGET_WORLD[2]:.1f})m | '
         f'Closest Approach Distance (CPA) = {cpa_dist:.2f} m @ t = {cpa_time:.2f} s (Speed = {cpa_spd:.1f} m/s)',
-        fontsize=13, fontweight='bold', y=0.985
+        fontsize=12.5, fontweight='bold', y=0.985
     )
 
     ax = axes[0, 0]
-    ax.plot(t_pos, dist_3d, label='3D Distance to Balloon [m]', color='#1f77b4', lw=2.2)
-    ax.plot(t_pos, dist_horiz, label='Horizontal Distance [m]', color='#17becf', lw=1.6, ls='--')
-    ax.axvline(cpa_time, color='#d62728', ls=':', lw=1.8, label=f'Pass / CPA ({cpa_dist:.2f}m @ {cpa_time:.1f}s)')
-    ax.scatter([cpa_time], [cpa_dist], color='#d62728', s=55, zorder=5)
-    ax.axhline(15.0, color='#ff7f0e', ls='-.', lw=1.1, alpha=0.8, label='Lock Gate (15m)')
-    ax.set_title('1. Distance to 30cm Balloon & Pass Point (CPA)', fontweight='bold')
+    ax.plot(t_pos, dist_3d, label='3D Distance to x500 Target [m]', color='#1f77b4', lw=2.0)
+    ax.plot(t_pos, dist_horiz, label='Horizontal Distance [m]', color='#17becf', lw=1.5, ls='--')
+    ax.axvline(cpa_time, color='#d62728', ls=':', lw=1.6, label=f'Intercept / CPA ({cpa_dist:.2f}m @ {cpa_time:.1f}s)')
+    ax.scatter([cpa_time], [cpa_dist], color='#d62728', s=50, zorder=5)
+    ax.axhline(15.0, color='#ff7f0e', ls='-.', lw=1.1, alpha=0.8, label='Terminal Gate (15m)')
+    ax.set_title('(a) Distance to x500 Target UAV & Intercept CPA', fontweight='bold')
     ax.set_xlabel('Time since Arm [s]')
     ax.set_ylabel('Distance [m]')
     ax.grid(True, alpha=0.35)
     ax.legend(loc='upper right', fontsize=8.5)
 
     ax = axes[0, 1]
-    ax.plot(t_pos, wz, label='Drone World Altitude Z [m]', color='#2ca02c', lw=2.2)
-    ax.axhline(TARGET_WORLD[2], color='#d62728', ls='--', lw=1.5, label=f'Balloon Altitude ({TARGET_WORLD[2]:.1f}m)')
+    ax.plot(t_pos, wz, label='Interceptor World Altitude Z [m]', color='#2ca02c', lw=2.0)
+    ax.axhline(TARGET_WORLD[2], color='#d62728', ls='--', lw=1.5, label=f'x500 Target Altitude ({TARGET_WORLD[2]:.1f}m)')
     ax.axhline(HOME_WORLD[2] + 5.0, color='#9467bd', ls=':', lw=1.3, label='Takeoff Hover Alt (5.2m)')
     ax.axvline(cpa_time, color='#d62728', ls=':', lw=1.5)
-    ax.scatter([cpa_time], [cpa_world[2]], color='#d62728', s=55, zorder=5,
+    ax.scatter([cpa_time], [cpa_world[2]], color='#d62728', s=50, zorder=5,
                label=f'Alt at CPA ({cpa_world[2]:.2f}m)')
-    ax.set_title('2. Altitude Profile (Takeoff -> Diagonal Climb -> RTL Landing)', fontweight='bold')
+    ax.set_title('(b) Altitude Profile (Takeoff -> Climb Cruise -> RTL)', fontweight='bold')
     ax.set_xlabel('Time since Arm [s]')
     ax.set_ylabel('World Altitude Z [m]')
     ax.grid(True, alpha=0.35)
     ax.legend(loc='upper right', fontsize=8.5)
 
     ax = axes[1, 0]
-    ax.plot(t_pos, spd_3d, label='3D Total Speed ||v|| [m/s]', color='#d62728', lw=2.1)
-    ax.plot(t_pos, spd_horiz, label='Horizontal Speed [m/s]', color='#ff7f0e', lw=1.6, ls='--')
-    ax.plot(t_pos, climb_rate, label='Climb Rate (+Up) [m/s]', color='#2ca02c', lw=1.5, alpha=0.85)
+    ax.plot(t_pos, spd_3d, label='3D Total Speed ||v|| [m/s]', color='#d62728', lw=2.0)
+    ax.plot(t_pos, spd_horiz, label='Horizontal Speed [m/s]', color='#ff7f0e', lw=1.5, ls='--')
+    ax.plot(t_pos, climb_rate, label='Climb Rate (+Up) [m/s]', color='#2ca02c', lw=1.4, alpha=0.85)
     ax.axvline(cpa_time, color='#d62728', ls=':', lw=1.5)
-    ax.set_title('3. Tailsitter Velocity Profile (Distance-Proportional Speed Control)', fontweight='bold')
+    ax.set_title('(c) Velocity Profile (3D LOS/PN Homing)', fontweight='bold')
     ax.set_xlabel('Time since Arm [s]')
     ax.set_ylabel('Velocity [m/s]')
     ax.grid(True, alpha=0.35)
@@ -303,15 +303,15 @@ def generate_plots(ulog_path, out_dir):
     m_sp_f = t_sp <= t_end_focus
     m_pos_f = (t_pos <= cpa_time) & (dist_3d > 2.0)
     ax.plot(t_sp[m_sp_f], elev_sp_deg[m_sp_f], label='Commanded Nose/Camera Elev [deg]',
-            color='#ff7f0e', lw=1.8, ls='--')
+            color='#ff7f0e', lw=1.7, ls='--')
     ax.plot(t_att[m_att_f], elev_deg[m_att_f], label='Actual Nose/Camera Elev [deg]',
-            color='#1f77b4', lw=2.1)
-    ax.plot(t_pos[m_pos_f], true_los_elev_deg[m_pos_f], label='Geometric LOS Elev to Balloon [deg]',
+            color='#1f77b4', lw=2.0)
+    ax.plot(t_pos[m_pos_f], true_los_elev_deg[m_pos_f], label='Geometric LOS Elev to x500 [deg]',
             color='#d62728', lw=1.5, ls=':')
     ax.plot(t_att[m_att_f], wing_roll_deg[m_att_f], label='Wing Roll Angle (Zero-Roll Lock) [deg]',
             color='#2ca02c', lw=1.4, alpha=0.85)
-    ax.axvline(cpa_time, color='#d62728', ls=':', lw=1.5, label='Balloon Pass (CPA)')
-    ax.set_title('4. Nose Cone (Camera Optical Axis) Elevation & Zero-Roll Tracking', fontweight='bold')
+    ax.axvline(cpa_time, color='#d62728', ls=':', lw=1.5, label='Intercept (CPA)')
+    ax.set_title('(d) Attitude: Nose-Cone Elevation & Zero-Roll Tracking', fontweight='bold')
     ax.set_xlabel('Time since Arm [s] (Approach & Back-Transition Window)')
     ax.set_ylabel('Angle [deg]')
     ax.set_ylim(-25, 95)
@@ -319,16 +319,16 @@ def generate_plots(ulog_path, out_dir):
     ax.legend(loc='upper right', fontsize=8.0)
 
     ax = axes[2, 0]
-    ax.plot(t_sp[m_sp_f], thrust_sp[m_sp_f], label='Normalized Thrust Setpoint', color='#111111', lw=2.2, zorder=4)
+    ax.plot(t_sp[m_sp_f], thrust_sp[m_sp_f], label='Normalized Thrust Setpoint', color='#111111', lw=2.0, zorder=4)
     if 'control' in motors:
         t_mot = (motors['timestamp'] - t0_us) * 1e-6
         m_mot = (t_mot >= -1.0) & (t_mot <= t_end_focus)
         colors_m = ['#1f77b4', '#ff7f0e', '#2ca02c', '#9467bd']
         for i in range(4):
             ax.plot(t_mot[m_mot], motors['control'][m_mot, i],
-                    label=f'Rotor {i} Output', color=colors_m[i], lw=1.1, alpha=0.75)
+                    label=f'Rotor {i+1} Output', color=colors_m[i], lw=1.1, alpha=0.8)
     ax.axvline(cpa_time, color='#d62728', ls=':', lw=1.5)
-    ax.set_title('5. Tailsitter Thrust Setpoint & 4-Rotor Differential Allocation', fontweight='bold')
+    ax.set_title('(e) Motor Control: Thrust Setpoint & 4-Rotor Allocation', fontweight='bold')
     ax.set_xlabel('Time since Arm [s] (Approach & Back-Transition Window)')
     ax.set_ylabel('Normalized Command [0..1]')
     ax.set_ylim(-0.02, 1.02)
@@ -337,12 +337,12 @@ def generate_plots(ulog_path, out_dir):
 
     ax = axes[2, 1]
     idx_pass_end = np.searchsorted(t_pos, cpa_time + 1.5)
-    ax.plot(wx[:idx_pass_end], wz[:idx_pass_end], color='#1f77b4', lw=2.5, label='Approach Trajectory (Tailsitter)')
-    ax.plot(wx[idx_pass_end:], wz[idx_pass_end:], color='#7f7f7f', lw=1.6, ls='--', alpha=0.8, label='Braking & RTL Return Trajectory')
+    ax.plot(wx[:idx_pass_end], wz[:idx_pass_end], color='#1f77b4', lw=2.2, label='Approach Trajectory (Tailsitter)')
+    ax.plot(wx[idx_pass_end:], wz[idx_pass_end:], color='#7f7f7f', lw=1.5, ls='--', alpha=0.8, label='Braking & RTL Return Trajectory')
     ax.plot([HOME_WORLD[0], TARGET_WORLD[0]], [HOME_WORLD[2] + 5.0, TARGET_WORLD[2]],
-            color='#2ca02c', ls=':', lw=1.4, alpha=0.7, label='Ideal 3D Diagonal Line')
+            color='#2ca02c', ls=':', lw=1.4, alpha=0.7, label='Ideal 3D LOS Line')
 
-    sample_times = np.arange(max(2.0, t_pos[0]), cpa_time, 0.9)
+    sample_times = np.arange(max(2.0, t_pos[0]), cpa_time, 1.1)
     for st in sample_times:
         pi = int(np.argmin(np.abs(t_pos - st)))
         ai = int(np.argmin(np.abs(t_att - st)))
@@ -353,13 +353,13 @@ def generate_plots(ulog_path, out_dir):
         ax.annotate(
             '', xy=(wx[pi] + 5.5 * n_wx, wz[pi] + 5.5 * n_wz),
             xytext=(wx[pi], wz[pi]),
-            arrowprops=dict(arrowstyle='->', color='#ff7f0e', lw=1.5, alpha=0.85)
+            arrowprops=dict(arrowstyle='->', color='#ff7f0e', lw=1.4, alpha=0.85)
         )
     ax.plot([], [], color='#ff7f0e', lw=1.5, label='Nose Cone / Camera Optical Axis')
-    ax.scatter([TARGET_WORLD[0]], [TARGET_WORLD[2]], color='#d62728', s=130, marker='o', zorder=6,
-               label=f'30cm Balloon ({TARGET_WORLD[0]:.0f}m, {TARGET_WORLD[2]:.0f}m)')
+    ax.scatter([TARGET_WORLD[0]], [TARGET_WORLD[2]], color='#d62728', s=120, marker='o', zorder=6,
+               label=f'x500 Target ({TARGET_WORLD[0]:.0f}m, {TARGET_WORLD[2]:.0f}m)')
     ax.scatter([HOME_WORLD[0]], [HOME_WORLD[2]], color='#111111', s=70, marker='^', zorder=6, label='Home / Launch')
-    ax.set_title('6. Side-View (World X-Z) Trajectory & Nose Cone Pointing Vectors', fontweight='bold')
+    ax.set_title('(f) Side-View (World X-Z) Trajectory & Nose Pointing Vectors', fontweight='bold')
     ax.set_xlabel('World X [m]')
     ax.set_ylabel('World Z (Altitude) [m]')
     ax.grid(True, alpha=0.35)
@@ -371,21 +371,22 @@ def generate_plots(ulog_path, out_dir):
     plt.close(fig)
 
     # ── Figure 2: 3D 궤적 & 평면도(X-Y) 정렬 정확도 ──
-    fig2 = plt.figure(figsize=(15, 6.5), dpi=160)
+    fig2 = plt.figure(figsize=(14, 6.2), dpi=160)
     fig2.suptitle(
-        f'3D Flight Trajectory & Terminal Approach Accuracy (30cm Target Balloon, CPA = {cpa_dist:.2f} m)',
-        fontsize=13, fontweight='bold', y=0.98
+        f'3D Flight Trajectory & Terminal Interception Accuracy (x500 Target UAV, CPA = {cpa_dist:.2f} m)',
+        fontsize=12.5, fontweight='bold', y=0.98
     )
 
     ax3d = fig2.add_subplot(1, 2, 1, projection='3d')
     ax3d.plot(wx[:idx_pass_end], wy[:idx_pass_end], wz[:idx_pass_end],
-              color='#1f77b4', lw=2.5, label='Tailsitter Approach & Pass')
+              color='#1f77b4', lw=2.2, label='Tailsitter Approach & Intercept')
     ax3d.plot(wx[idx_pass_end:], wy[idx_pass_end:], wz[idx_pass_end:],
-              color='#7f7f7f', lw=1.5, ls='--', label='Back-Transition & RTL')
+              color='#7f7f7f', lw=1.4, ls='--', label='Back-Transition & RTL')
     ax3d.scatter([HOME_WORLD[0]], [HOME_WORLD[1]], [HOME_WORLD[2]],
                  color='#111111', s=60, marker='^', label='Home (-2, 0, 0.2)')
     ax3d.scatter([TARGET_WORLD[0]], [TARGET_WORLD[1]], [TARGET_WORLD[2]],
-                 color='#d62728', s=120, marker='o', label='30cm Balloon (90, 0, 40)')
+                 color='#d62728', s=110, marker='o',
+                 label=f'x500 Target ({TARGET_WORLD[0]:.0f}, {TARGET_WORLD[1]:.0f}, {TARGET_WORLD[2]:.0f})')
     ax3d.set_title('3D Trajectory (World Frame)', fontweight='bold')
     ax3d.set_xlabel('World X [m]')
     ax3d.set_ylabel('World Y [m]')
@@ -394,10 +395,10 @@ def generate_plots(ulog_path, out_dir):
     ax3d.legend(loc='upper left', fontsize=8.5)
 
     ax_xy = fig2.add_subplot(1, 2, 2)
-    ax_xy.plot(wx[:idx_pass_end], wy[:idx_pass_end], color='#1f77b4', lw=2.4, label='Approach Track (X-Y)')
+    ax_xy.plot(wx[:idx_pass_end], wy[:idx_pass_end], color='#1f77b4', lw=2.2, label='Approach Track (X-Y)')
     ax_xy.plot(wx[idx_pass_end:], wy[idx_pass_end:], color='#7f7f7f', lw=1.4, ls='--', alpha=0.75, label='RTL Track (X-Y)')
     ax_xy.axhline(0.0, color='#2ca02c', ls=':', lw=1.2, label='Centerline (Y = 0.0 m)')
-    ax_xy.scatter([TARGET_WORLD[0]], [TARGET_WORLD[1]], color='#d62728', s=120, zorder=6, label='30cm Balloon Center')
+    ax_xy.scatter([TARGET_WORLD[0]], [TARGET_WORLD[1]], color='#d62728', s=110, zorder=6, label='x500 Target Center')
     ax_xy.scatter([cpa_world[0]], [cpa_world[1]], color='#ff7f0e', s=80, marker='x', lw=2.5, zorder=7,
                   label=f'CPA Point ({cpa_world[0]:.2f}, {cpa_world[1]:+.2f}, {cpa_world[2]:.2f})m')
     ax_xy.set_title(
@@ -420,7 +421,7 @@ def generate_plots(ulog_path, out_dir):
         'firmware': '1045_gazebo-classic_quadtailsitter',
         'ca_airframe': 4,
         'target_world_m': TARGET_WORLD.tolist(),
-        'balloon_diameter_m': 0.30,
+        'target_span_m': 0.64,
         'duration_s': round(float(t_pos[-1]), 2),
         'cpa_time_s': round(cpa_time, 2),
         'cpa_dist_3d_m': round(cpa_dist, 3),
