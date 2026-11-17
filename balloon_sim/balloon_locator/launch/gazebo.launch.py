@@ -68,7 +68,7 @@ def setup(context):
             shell_transparency=0.0)
     world=make_world(sim,value('px4_root'),value('px4_plugin_dir'),value('px4_aero_plugin_dir'),value('physics_profile_path'),
         range_m=float(value('target_range')),height_m=float(value('target_height')),azimuth_deg=float(value('target_azimuth')),
-        aircraft_model=model)
+        aircraft_model=model,target_type=value('target_type'))
     world_path=output/'balloon.world';world_path.write_text(world)
     clock_path=output/'clock.yaml';clock_path.write_text(json.dumps({'/gazebo':{'ros__parameters':{'publish_rate':100.}}}))
     existing=run_path(str(perception/'launch/monitor.launch.py'))
@@ -141,7 +141,7 @@ def setup(context):
     else:
         ground_nodes=[server,detector,locator,tracker,bridge,mission,onboard_detector]
         watched=[server,detector,locator,tracker,bridge,mission,onboard_detector]
-    return [LogInfo(msg=f'Balloon locator mode={mode}: 30cm balloon, upward onboard camera, exact simulated optics.'),
+    return [LogInfo(msg=f"Target locator mode={mode} target_type={value('target_type')}: 30cm fuselage core target UAV, upward onboard camera, exact simulated optics."),
         *([LogInfo(msg='Exterior view: ignoring legacy airframe_transparency; the black shell hides internal parts.')]
           if report and float(value('airframe_transparency'))!=0.0 else []),
         SetEnvironmentVariable('GAZEBO_PLUGIN_PATH',str(Path(get_package_prefix('jol_sim'))/'lib')+os.pathsep+os.environ.get('GAZEBO_PLUGIN_PATH','/opt/ros/humble/lib')),
@@ -154,7 +154,7 @@ def setup(context):
 def generate_launch_description():
     paths=runtime_paths()
     defaults=dict(gui='true',ui='true',rviz='true',mode='mission',target_range='50.0',target_height='4.0',target_azimuth='0.0',
-        vertical_handle='4.0',airframe_transparency='0.0',scenario='static_flight',flight_backend='mavros',aircraft_type='stl_pacer_quad',
+        target_type='drone',vertical_handle='4.0',airframe_transparency='0.0',scenario='static_flight',flight_backend='mavros',aircraft_type='stl_pacer_quad',
         static_output=os.environ.get('BALLOON_RUNTIME_DIR',''),px4_root=str(paths['px4_root']),
         px4_binary=str(paths['px4_binary']),
         physics_profile_path=str(Path(get_package_share_directory('balloon_locator'))/'config/stl_pacer_quad.json'),

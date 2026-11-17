@@ -50,6 +50,8 @@ def test_world_has_one_balloon_at40m10m_no_lidar_and_native_motors():
     root=ET.fromstring(world);target=root.find("world/model[@name='static_target']")
     np.testing.assert_allclose(np.fromstring(target.findtext('pose'),sep=' ')[:3],[0.,-40.,10.],atol=1e-10)
     assert float(target.findtext('link/visual/geometry/sphere/radius'))==.15
+    visual_names = {v.get('name') for v in target.findall('link/visual')}
+    assert {'orange_marker', 'drone_arm_p45', 'drone_arm_m45', 'drone_motor_0', 'drone_rotor_disk_0', 'drone_skid_l'}.issubset(visual_names)
     assert not root.findall(".//plugin[@name='jol_mid360']")
     assert len(root.findall("world/model[@name='stl_pacer_quad']"))==1
     assert len([p for p in root.findall('.//plugin') if p.get('filename','').endswith('libgazebo_motor_model.so')])==4
