@@ -2,14 +2,19 @@
 """Extract quantitative log data from the x500 (100, 0, 50)m interception simulation
 and plot clean, naive Python matplotlib figures for academic conference papers/posters.
 
-Outputs (saved to balloon_sim/plots/):
-  - academic_interception_log.csv
-  - fig1_ukf_estimation_error.png
-  - fig2_3d_2d_trajectory.png
-  - fig3_attitude_profile.png
-  - fig4_motor_control_pwm.png
-  - academic_summary_4panel.png
+Outputs:
+  - balloon_sim/data/:
+      - academic_interception_log.csv
+      - academic_ukf_log.csv
+      - academic_summary_metrics.json
+  - balloon_sim/plots/:
+      - fig1_ukf_estimation_error.png
+      - fig2_3d_2d_trajectory.png
+      - fig3_attitude_profile.png
+      - fig4_motor_control_pwm.png
+      - academic_summary_4panel.png
 """
+import argparse
 import csv
 import json
 import math
@@ -408,16 +413,17 @@ def simulate_and_log():
     return ukf_rows, flight_rows, cpa_row
 
 
-def make_naive_plots(ukf_rows, flight_rows, cpa_row, out_dir: Path):
-    out_dir.mkdir(parents=True, exist_ok=True)
+def make_naive_plots(ukf_rows, flight_rows, cpa_row, plots_dir: Path, data_dir: Path):
+    plots_dir.mkdir(parents=True, exist_ok=True)
+    data_dir.mkdir(parents=True, exist_ok=True)
 
-    csv_path = out_dir / 'academic_interception_log.csv'
+    csv_path = data_dir / 'academic_interception_log.csv'
     with csv_path.open('w', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=list(flight_rows[0].keys()))
         writer.writeheader()
         writer.writerows(flight_rows)
 
-    ukf_csv_path = out_dir / 'academic_ukf_log.csv'
+    ukf_csv_path = data_dir / 'academic_ukf_log.csv'
     with ukf_csv_path.open('w', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=list(ukf_rows[0].keys()))
         writer.writeheader()
@@ -500,7 +506,7 @@ def make_naive_plots(ukf_rows, flight_rows, cpa_row, out_dir: Path):
     ax1b.legend(loc='upper right', framealpha=0.9)
 
     fig1.tight_layout()
-    fig1.savefig(out_dir / 'fig1_ukf_estimation_error.png', dpi=180)
+    fig1.savefig(plots_dir / 'fig1_ukf_estimation_error.png', dpi=180)
     plt.close(fig1)
 
     # ═══════════════════════════════════════════════════════════════════════
@@ -545,7 +551,7 @@ def make_naive_plots(ukf_rows, flight_rows, cpa_row, out_dir: Path):
     ax2b.legend(lines, labels, loc='center left', framealpha=0.9)
 
     fig2.tight_layout()
-    fig2.savefig(out_dir / 'fig2_3d_2d_trajectory.png', dpi=180)
+    fig2.savefig(plots_dir / 'fig2_3d_2d_trajectory.png', dpi=180)
     plt.close(fig2)
 
     # ═══════════════════════════════════════════════════════════════════════
@@ -574,7 +580,7 @@ def make_naive_plots(ukf_rows, flight_rows, cpa_row, out_dir: Path):
     ax3b.legend(loc='upper right', framealpha=0.9)
 
     fig3.tight_layout()
-    fig3.savefig(out_dir / 'fig3_attitude_profile.png', dpi=180)
+    fig3.savefig(plots_dir / 'fig3_attitude_profile.png', dpi=180)
     plt.close(fig3)
 
     # ═══════════════════════════════════════════════════════════════════════
@@ -603,7 +609,7 @@ def make_naive_plots(ukf_rows, flight_rows, cpa_row, out_dir: Path):
     ax4b.legend(loc='upper right', framealpha=0.9)
 
     fig4.tight_layout()
-    fig4.savefig(out_dir / 'fig4_motor_control_pwm.png', dpi=180)
+    fig4.savefig(plots_dir / 'fig4_motor_control_pwm.png', dpi=180)
     plt.close(fig4)
 
     # ═══════════════════════════════════════════════════════════════════════
@@ -674,7 +680,7 @@ def make_naive_plots(ukf_rows, flight_rows, cpa_row, out_dir: Path):
     ax.legend(loc='upper right', ncol=3)
 
     fig_all.tight_layout()
-    fig_all.savefig(out_dir / 'academic_summary_4panel.png', dpi=180)
+    fig_all.savefig(plots_dir / 'academic_summary_4panel.png', dpi=180)
     plt.close(fig_all)
 
     summary = dict(
@@ -688,14 +694,18 @@ def make_naive_plots(ukf_rows, flight_rows, cpa_row, out_dir: Path):
         cruise_tilt_deg=round(float(np.mean(tilt_act[(tf > 4.0) & (tf < cpa_t - 0.5)])), 2),
         wing_roll_rms_deg=round(float(np.sqrt(np.mean(wing_roll ** 2))), 3),
     )
-    (out_dir / 'academic_summary_metrics.json').write_text(json.dumps(summary, indent=2) + '\n')
+    (data_dir / 'academic_summary_metrics.json').write_text(json.dumps(summary, indent=2) + '\n')
     print(json.dumps(summary, indent=2))
 
 
 def main():
-    out_dir = WORKSPACE_ROOT / 'plots'
+    parser = argparse.ArgumentParser(description='Generate academic interception plots and CSV logs.')
+    parser.add_argument('--plots-dir', '--out-dir', dest='plots_dir', type=str, default=str(WORKSPACE_ROOT / 'plots'))
+    parser.add_argument('--data-dir', type=str, default=str(WORKSPACE_ROOT / 'data'))
+    args = parser.parse_args()
+
     ukf_rows, flight_rows, cpa_row = simulate_and_log()
-    make_naive_plots(ukf_rows, flight_rows, cpa_row, out_dir)
+    make_naive_plots(ukf_rows, flight_rows, cpa_row, Path(args.plots_dir), Path(args.data_dir))
 
 
 if __name__ == '__main__':

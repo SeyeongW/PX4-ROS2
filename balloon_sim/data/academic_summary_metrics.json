@@ -1,0 +1,19 @@
+{
+  "target_world_truth": [
+    100.0,
+    0.0,
+    50.0
+  ],
+  "ukf_final_estimate_world": [
+    100.009,
+    0.013,
+    50.002
+  ],
+  "ukf_steady_rmse_3d_m": 0.188,
+  "ukf_final_sigma_m": 0.797,
+  "cpa_time_s": 11.72,
+  "cpa_distance_m": 0.091,
+  "max_speed_m_s": 13.53,
+  "cruise_tilt_deg": 66.21,
+  "wing_roll_rms_deg": 0.017
+}

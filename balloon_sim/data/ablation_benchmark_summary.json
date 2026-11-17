@@ -1,0 +1,21 @@
+{
+  "experiment_1_range_vs_distance": {
+    "target_range_100_50_m": 111.72,
+    "at_112m_bbox_mae_m": 0.8731,
+    "at_112m_bbox_max_m": 2.6201,
+    "at_112m_ours_mae_m": 0.3027,
+    "at_112m_ours_max_m": 0.6342,
+    "overall_bbox_px_mae": 0.345,
+    "overall_ours_px_mae": 0.125,
+    "error_reduction_pct_at_112m": 65.3
+  },
+  "experiment_2_ukf_vs_average_vs_single": {
+    "single_frame_rmse_m": 5.4,
+    "single_frame_max_m": 19.59,
+    "simple_avg_rmse_m": 0.854,
+    "simple_avg_max_m": 1.487,
+    "ukf_rmse_m": 0.336,
+    "ukf_max_m": 0.768,
+    "mean_outliers_rejected_per_10s": 9.9
+  }
+}

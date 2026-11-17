@@ -69,7 +69,7 @@ def render_synthetic_target_frame(diameter_px: float, subpixel_dx: float, subpix
     return bgr
 
 
-def run_experiment_1_range_vs_distance(out_dir: Path):
+def run_experiment_1_range_vs_distance(plots_dir: Path, data_dir: Path):
     """실험 ①: 사각 박스 정수 직경 max(w, h) vs 타원 맞춤 서브픽셀 직경 (balloon_detector.py 직접 구동)."""
     hsv_ranges = parse_hsv_ranges([3, 100, 70, 28, 255, 255])
     distances_m = np.arange(30.0, 132.0, 2.0)
@@ -126,7 +126,7 @@ def run_experiment_1_range_vs_distance(out_dir: Path):
         })
 
     # CSV 저장
-    csv_path = out_dir / 'exp1_range_error.csv'
+    csv_path = data_dir / 'exp1_range_error.csv'
     with csv_path.open('w', newline='', encoding='utf-8') as f:
         writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
         writer.writeheader()
@@ -176,7 +176,7 @@ def run_experiment_1_range_vs_distance(out_dir: Path):
     ax2.legend(loc='upper right', fontsize=9.5)
 
     fig.tight_layout()
-    fig.savefig(out_dir / 'exp1_range_error_vs_distance.png')
+    fig.savefig(plots_dir / 'exp1_range_error_vs_distance.png')
     plt.close(fig)
 
     return {
@@ -294,11 +294,11 @@ def simulate_single_trial_ukf_vs_baselines(seed: int, n_steps: int = 100, dt: fl
     return records, ukf.rejects
 
 
-def run_experiment_2_ukf_vs_average_vs_single(out_dir: Path):
+def run_experiment_2_ukf_vs_average_vs_single(plots_dir: Path, data_dir: Path):
     """실험 ②: 1장 역투영 vs 단순 누적 평균 vs 6-DOF UKF (단일 시계열 + 50회 몬테카를로 통계)."""
     records, rejects_rep = simulate_single_trial_ukf_vs_baselines(seed=42, n_steps=100, dt=0.1)
 
-    csv_path = out_dir / 'exp2_position_accuracy.csv'
+    csv_path = data_dir / 'exp2_position_accuracy.csv'
     with csv_path.open('w', newline='', encoding='utf-8') as f:
         writer = csv.DictWriter(f, fieldnames=list(records[0].keys()))
         writer.writeheader()
@@ -374,7 +374,7 @@ def run_experiment_2_ukf_vs_average_vs_single(out_dir: Path):
     ax2.legend(loc='upper right', fontsize=9.0)
 
     fig.tight_layout()
-    fig.savefig(out_dir / 'exp2_ukf_vs_average_vs_single.png')
+    fig.savefig(plots_dir / 'exp2_ukf_vs_average_vs_single.png')
     plt.close(fig)
 
     return {
@@ -390,20 +390,23 @@ def run_experiment_2_ukf_vs_average_vs_single(out_dir: Path):
 
 def main():
     parser = argparse.ArgumentParser(description='Run real detector & UKF comparative experiments (Exp 1 & Exp 2).')
-    parser.add_argument('--out-dir', type=str, default=str(REPO_ROOT / 'plots'))
+    parser.add_argument('--plots-dir', '--out-dir', dest='plots_dir', type=str, default=str(REPO_ROOT / 'plots'))
+    parser.add_argument('--data-dir', type=str, default=str(REPO_ROOT / 'data'))
     args = parser.parse_args()
 
-    out_dir = Path(args.out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    plots_dir = Path(args.plots_dir)
+    data_dir = Path(args.data_dir)
+    plots_dir.mkdir(parents=True, exist_ok=True)
+    data_dir.mkdir(parents=True, exist_ok=True)
 
-    exp1_summary = run_experiment_1_range_vs_distance(out_dir)
-    exp2_summary = run_experiment_2_ukf_vs_average_vs_single(out_dir)
+    exp1_summary = run_experiment_1_range_vs_distance(plots_dir, data_dir)
+    exp2_summary = run_experiment_2_ukf_vs_average_vs_single(plots_dir, data_dir)
 
     summary = {
         'experiment_1_range_vs_distance': exp1_summary,
         'experiment_2_ukf_vs_average_vs_single': exp2_summary,
     }
-    (out_dir / 'ablation_benchmark_summary.json').write_text(
+    (data_dir / 'ablation_benchmark_summary.json').write_text(
         json.dumps(summary, indent=2, ensure_ascii=False) + '\n', encoding='utf-8'
     )
     print(json.dumps(summary, indent=2, ensure_ascii=False))
