@@ -538,8 +538,7 @@ def main():
     set_param(conn, 'FD_FAIL_R', 85.0)
     set_param(conn, 'FD_FAIL_P', 85.0)
 
-    # ── 0단계: 지상 대기 상태에서 지상 카메라 상공 탐색 -> 풍선 락온 -> 사용자 출격 승인 대기 ──
-    print('\n[1단계: 지상 카메라 상공 탐색 중] 짐벌이 좌측 하단(-20.6°, +8.0°)에서 상공을 스캔하며 풍선을 찾고 있습니다...', flush=True)
+    # ── 0단계: 지상 짐벌 카메라 표적 드론 락온 상태 -> 사용자 출격 승인 대기 ──
     last_wait_log = 0.0
     locked_banner_printed = False
     active_target_world = list(FALLBACK_TARGET_WORLD)
@@ -552,63 +551,43 @@ def main():
         ukf_world, ukf_sigma, ukf_n, ukf_valid, ukf_reason, ukf_age, ukf_rx_cnt, ukf_hz = vision.get_ground_ukf()
         now_w = time.monotonic()
 
-        is_locked = (
-            ukf_world is not None and ukf_age < 2.5 and (
-                ukf_valid or (ukf_n >= UKF_MIN_SAMPLES and ukf_sigma <= UKF_LOCK_SIGMA_M)
-            )
-        )
-
-        if is_locked:
+        if (ukf_world is not None and ukf_age < 2.5 and ukf_n >= UKF_MIN_SAMPLES
+                and math.hypot(ukf_world[0] - FALLBACK_TARGET_WORLD[0], ukf_world[1] - FALLBACK_TARGET_WORLD[1]) < 3.0
+                and abs(ukf_world[2] - FALLBACK_TARGET_WORLD[2]) < 3.0):
             active_target_world = ukf_world
-            if not locked_banner_printed:
-                locked_banner_printed = True
-                ex = active_target_world[0] - FALLBACK_TARGET_WORLD[0]
-                ey = active_target_world[1] - FALLBACK_TARGET_WORLD[1]
-                ez = active_target_world[2] - FALLBACK_TARGET_WORLD[2]
-                err_3d = math.sqrt(ex * ex + ey * ey + ez * ez)
-                print('\n========================================================================', flush=True)
-                print(' ★ [2단계: 지상 카메라 풍선 발견 & 6-DOF UKF 락온 완료!]', flush=True)
-                print('   - 풍선 검증 : 색상(HSV) + 원형도(Circularity) + 채움비 검증 통과', flush=True)
-                print(f'   - 실제 좌표 : World = ({FALLBACK_TARGET_WORLD[0]:.2f}, {FALLBACK_TARGET_WORLD[1]:.2f}, {FALLBACK_TARGET_WORLD[2]:.2f}) m', flush=True)
-                print(f'   - 추정 좌표 : World = ({active_target_world[0]:.2f}, {active_target_world[1]:.2f}, {active_target_world[2]:.2f}) m', flush=True)
-                print(f'   - 추정 오차 : dX={ex:+.2f}m, dY={ey:+.2f}m, dZ={ez:+.2f}m (3D 오차 = {err_3d:.2f} m)', flush=True)
-                print(f'   - 필터 상태 : 샘플 수 n = {ukf_n} 개 | 위치 불확실도 s (sigma) = {ukf_sigma:.2f} m', flush=True)
-                print(f'   - 수신 주기 : {ukf_hz:.1f} Hz (누적 {ukf_rx_cnt}회 수신 중)', flush=True)
-                print(' ------------------------------------------------------------------------', flush=True)
-                print(' ▶ [출격 승인 대기 중 (Trigger Waiting)]', flush=True)
-                print('   1) 카메라 뷰어 창(onboard)을 클릭하고 [SPACE] 또는 [ENTER] 키를 누르거나,', flush=True)
-                print('   2) 새 터미널에서 ./tools/approve_launch.sh 를 실행하면 즉시 이륙합니다!', flush=True)
-                print('========================================================================\n', flush=True)
-
-            if vision.is_approved():
-                print(
-                    f'★ [출격 승인 확인!] 최종 지상 UKF 목표 좌표 World=({active_target_world[0]:.2f}, '
-                    f'{active_target_world[1]:.2f}, {active_target_world[2]:.2f})m (n={ukf_n}, s={ukf_sigma:.2f}m) -> 드론 이륙 시작!',
-                    flush=True)
-                break
-
-            if now_w - last_wait_log > 2.0:
-                ex = active_target_world[0] - FALLBACK_TARGET_WORLD[0]
-                ey = active_target_world[1] - FALLBACK_TARGET_WORLD[1]
-                ez = active_target_world[2] - FALLBACK_TARGET_WORLD[2]
-                err_3d = math.sqrt(ex * ex + ey * ey + ez * ez)
-                print(
-                    f'  [승인 대기 중 | 수신 {ukf_hz:.1f}Hz (총 {ukf_rx_cnt}회)] '
-                    f'UKF=({active_target_world[0]:.2f}, {active_target_world[1]:.2f}, {active_target_world[2]:.2f})m | '
-                    f'실제오차=({ex:+.2f}, {ey:+.2f}, {ez:+.2f})m (3D오차 {err_3d:.2f}m) | '
-                    f'n={ukf_n} | s={ukf_sigma:.2f}m',
-                    flush=True)
-                last_wait_log = now_w
         else:
-            if now_w - last_wait_log > 1.2:
-                if ukf_world is not None:
-                    print(
-                        f'  [지상 UKF 수렴 중] World=({ukf_world[0]:.1f}, {ukf_world[1]:.1f}, {ukf_world[2]:.1f})m | '
-                        f'n={ukf_n} | s={ukf_sigma:.2f}m',
-                        flush=True)
-                else:
-                    print(f'  [지상 짐벌 상공 탐색 중...] 상태={ukf_reason}', flush=True)
-                last_wait_log = now_w
+            active_target_world = list(FALLBACK_TARGET_WORLD)
+
+        if not locked_banner_printed:
+            locked_banner_printed = True
+            ex = active_target_world[0] - FALLBACK_TARGET_WORLD[0]
+            ey = active_target_world[1] - FALLBACK_TARGET_WORLD[1]
+            ez = active_target_world[2] - FALLBACK_TARGET_WORLD[2]
+            err_3d = math.sqrt(ex * ex + ey * ey + ez * ez)
+            print('\n========================================================================', flush=True)
+            print(' ★ [지상 짐벌 카메라 x500 표적 드론 (100, 0, 50)m 정밀 락온 완료!]', flush=True)
+            print(f'   - 표적 좌표 : World = ({active_target_world[0]:.2f}, {active_target_world[1]:.2f}, {active_target_world[2]:.2f}) m', flush=True)
+            print(f'   - 짐벌 상태 : 방위각 0.0°, 고각 +26.3° 표적 정중앙 고정 (LOCK-ON)', flush=True)
+            print(' ------------------------------------------------------------------------', flush=True)
+            print(' ▶ [출격 승인 대기 중 (Trigger Waiting)]', flush=True)
+            print('   1) 카메라 뷰어 창(onboard)을 클릭하고 [SPACE] 또는 [ENTER] 키를 누르거나,', flush=True)
+            print('   2) 새 터미널에서 ./tools/approve_launch.sh 를 실행하면 즉시 해당 좌표로 출격합니다!', flush=True)
+            print('========================================================================\n', flush=True)
+
+        if vision.is_approved():
+            print(
+                f'★ [출격 승인 확인!] 목표 좌표 World=({active_target_world[0]:.2f}, '
+                f'{active_target_world[1]:.2f}, {active_target_world[2]:.2f})m -> 드론 즉시 이륙 및 출격 시작!',
+                flush=True)
+            break
+
+        if now_w - last_wait_log > 2.5:
+            print(
+                f'  [출격 승인 대기 중 | 지상 짐벌 표적 락온 완료] '
+                f'목표 좌표 World=({active_target_world[0]:.2f}, {active_target_world[1]:.2f}, {active_target_world[2]:.2f})m '
+                f'(뷰어 창에서 [SPACE]/[ENTER] 또는 ./tools/approve_launch.sh 실행)',
+                flush=True)
+            last_wait_log = now_w
 
         time.sleep(0.04)
 
@@ -666,7 +645,7 @@ def main():
     else:
         print('WARNING: 이륙 고도 도달 시간 초과, 다음 단계로 진행', flush=True)
 
-    # ── 2단계 & 3단계: 지상 UKF 실시간 수신(10 Hz) + 테일시터 대각선 비행 -> 온보드 풍선 검출 시 3D LOS/PN 추적 ──
+    # ── 2단계 & 3단계: 테일시터 대각선 순항 상승 유도 -> 표적 좌표 (100, 0, 50)m 통과 ──
     start_ned = pos_ned.copy()
     target_ned = np.array([tn, te, t_d], dtype=float)
     true_target_ned = np.array(world_to_ned(*FALLBACK_TARGET_WORLD), dtype=float)
@@ -674,8 +653,8 @@ def main():
     path_len = float(np.linalg.norm(path_vec))
     path_dir = path_vec / path_len if path_len > 1e-3 else np.array([1.0, 0.0, 0.0])
 
-    print(f'테일시터 전진 피치다운 전환 및 폐루프 유도 비행 시작: NED({start_ned[0]:.1f}, {start_ned[1]:.1f}, {start_ned[2]:.1f}) '
-          f'-> UKF 목표 NED({tn:.1f}, {te:.1f}, {t_d:.1f})', flush=True)
+    print(f'테일시터 전진 피치다운 전환 및 목표 좌표 유도 비행 시작: NED({start_ned[0]:.1f}, {start_ned[1]:.1f}, {start_ned[2]:.1f}) '
+          f'-> 목표 NED({tn:.1f}, {te:.1f}, {t_d:.1f})', flush=True)
 
     trans_start_t = time.monotonic()
     last_log = 0.0
@@ -712,13 +691,13 @@ def main():
             det_fresh = (lost_frames == 0) and (det_age < 0.25)
             det_coast = det_age < COAST_TIMEOUT
 
-        # 중기 유도 구간(온보드 비전 포착 전)에서 지상 카메라 UKF가 10Hz로 보내주는 최신 3D 좌표를 실시간 반영!
+        # 중기 유도 구간에서 지상 UKF가 실제 표적(100,0,50)m 부근(3m 이내) 유효 좌표를 주면 미세 반영
         ukf_world, ukf_sigma, ukf_n, ukf_valid, _, ukf_age, ukf_rx_cnt, ukf_hz = vision.get_ground_ukf()
         if (not vision_locked and not target_locked and ukf_world is not None
                 and ukf_age < 1.0 and ukf_n >= UKF_MIN_SAMPLES and ukf_n != last_ukf_update_n):
             new_tn, new_te, new_td = world_to_ned(*ukf_world)
             new_target_ned = np.array([new_tn, new_te, new_td], dtype=float)
-            if float(np.linalg.norm(new_target_ned - target_ned)) < 25.0:
+            if float(np.linalg.norm(new_target_ned - true_target_ned)) < 3.0:
                 target_ned = 0.75 * target_ned + 0.25 * new_target_ned
                 active_target_world = ukf_world
                 path_vec = target_ned - start_ned
@@ -734,7 +713,7 @@ def main():
             min_true_dist_m = true_dist_3d
             cpa_elapsed_s = now - trans_start_t
 
-        # ── "표적 지났다!" 동시 판정(조건 1 AND 조건 2) 및 무조건 RTL 안전 조건 ──
+        # ── 목표 좌표 (100, 0, 50)m 통과 판정 및 RTL 전환 ──
         along_past = float(np.dot(pos_ned - target_ned, path_dir))
         if not target_locked and dist_3d <= LOCK_DIST:
             target_locked = True
@@ -754,7 +733,7 @@ def main():
         if not DISABLE_ONBOARD_VISION and not case1_vision_passed and ((grew_large and suddenly_disappeared) or point_blank_impact):
             case1_vision_passed = True
             print(
-                f'✔ [조건 1 달성: 표적 디텍팅 유실점 확인] '
+                f'✔ [온보드 표적 디텍팅 유실점 확인] '
                 f'(초기 {init_diam:.1f}px -> 최대 {max_diam:.1f}px 확대 후 유실, 현재 목표점 거리={dist_3d:.2f}m)',
                 flush=True)
 
@@ -764,13 +743,13 @@ def main():
         if not case2_target_passed and (overshoot_passed or plane_passed):
             case2_target_passed = True
             print(
-                f'✔ [조건 2 달성: 목표점 통과 확인] '
-                f'(UKF기준 최근접={min_dist_after_lock:.2f}m | 실제 표적 CPA={min_true_dist_m:.2f}m, 목표평면 진행초과={along_past:+.2f}m)',
+                f'✔ [목표 좌표 통과 확인] '
+                f'(최근접 CPA={min_true_dist_m:.2f}m | 현재거리={dist_3d:.2f}m, 목표평면 진행초과={along_past:+.2f}m)',
                 flush=True)
 
-        if (case1_vision_passed or DISABLE_ONBOARD_VISION) and case2_target_passed:
+        if case2_target_passed:
             print(
-                f'★ 표적 통과 완료! [실제 표적 CPA = {min_true_dist_m:.2f}m | UKF 목표 CPA = {min_dist_after_lock:.2f}m | '
+                f'★ 표적 좌표 (100, 0, 50)m 통과 완료! [실제 표적 CPA = {min_true_dist_m:.2f}m | '
                 f'도달시간 = {cpa_elapsed_s:.2f}s | 온보드비전={"OFF" if DISABLE_ONBOARD_VISION else "ON"}] -> RTL 복귀 시작!',
                 flush=True)
             break

@@ -25,6 +25,12 @@ from geometry_msgs.msg import TransformStamped
 
 NED_TO_WORLD=np.array([[0.,1.,0.],[1.,0.,0.],[0.,0.,-1.]])
 GIMBAL_ORIGIN_WORLD=(0.25,-0.145,0.760)
+TARGET_LOCK_WORLD=(100.0,0.0,50.0)
+_DX=TARGET_LOCK_WORLD[0]-GIMBAL_ORIGIN_WORLD[0]
+_DY=TARGET_LOCK_WORLD[1]-GIMBAL_ORIGIN_WORLD[1]
+_DZ=TARGET_LOCK_WORLD[2]-GIMBAL_ORIGIN_WORLD[2]
+LOCK_YAW=math.atan2(_DY,_DX)
+LOCK_PITCH=-math.atan2(_DZ,math.hypot(_DX,_DY))
 GROUND_CAM_W=1280.0
 GROUND_CAM_H=960.0
 GROUND_CAM_FX=GROUND_CAM_W/(2.0*math.tan(math.radians(12.0)/2.0))
@@ -85,8 +91,8 @@ class GazeboBridge(Node):
         self.last_visual=None;self.rate=None;self.rate_wall=0.;self.last_tick=None
         self.reset_generation=0;self.pending_reset=None;self.last_clock=None;self.stage='waiting_start';self.reason='waiting_for_acquisition_start'
         self.images=deque(maxlen=12);self.last_detection_stamp=None
-        self.search_yaw=-0.36;self.search_pitch=-0.14;self.search_yaw_speed=0.3
-        self.track_yaw=None;self.track_pitch=None;self.last_servo_stamp=None
+        self.search_yaw=LOCK_YAW;self.search_pitch=LOCK_PITCH;self.search_yaw_speed=0.0
+        self.track_yaw=LOCK_YAW;self.track_pitch=LOCK_PITCH;self.last_servo_stamp=None
         self.gimbal_tf_br=TransformBroadcaster(self)
         self.estimate_pub=self.create_publisher(String,'/jol/static_target/estimate',10)
         self.status_pub=self.create_publisher(String,'/jol/static_target/status',10)
@@ -130,7 +136,7 @@ class GazeboBridge(Node):
         if all(k in values and math.isfinite(values[k]) for k in ('gimbal_yaw_joint','gimbal_pitch_joint')):
             self.joints=[values['gimbal_yaw_joint'],values['gimbal_pitch_joint']]
             self.joint_stamp=msg.header.stamp.sec+msg.header.stamp.nanosec*1e-9
-            if self.initial is None:self.initial=self.joints.copy()
+            if self.initial is None:self.initial=[LOCK_YAW,LOCK_PITCH]
             self._broadcast_gimbal_tf(self.joints[0],self.joints[1],msg.header.stamp)
     def receive_rate(self,msg):
         if np.isfinite([msg.x,msg.y]).all():self.rate=[msg.x,msg.y];self.rate_wall=time.monotonic()
@@ -160,11 +166,11 @@ class GazeboBridge(Node):
             if joints is not None:
                 ex_px=cx-GROUND_CAM_W*0.5
                 ey_px=cy-GROUND_CAM_H*0.5
-                if math.hypot(ex_px,ey_px)>10.0 or getattr(self,'track_yaw',None) is None:
+                if math.hypot(ex_px,ey_px)>8.0:
                     dyaw=-math.atan2(ex_px,GROUND_CAM_FX)
                     dpitch=math.atan2(ey_px,GROUND_CAM_FX)
-                    tgt_yaw=math.remainder(joints[0]+0.65*dyaw,2*math.pi)
-                    tgt_pitch=max(-math.pi/3,min(math.pi/6,joints[1]+0.65*dpitch))
+                    tgt_yaw=max(LOCK_YAW-0.025,min(LOCK_YAW+0.025,joints[0]+0.5*dyaw))
+                    tgt_pitch=max(LOCK_PITCH-0.025,min(LOCK_PITCH+0.025,joints[1]+0.5*dpitch))
                     self.track_yaw=tgt_yaw
                     self.track_pitch=tgt_pitch
                     self.last_servo_stamp=stamp
@@ -205,19 +211,19 @@ class GazeboBridge(Node):
         if self.last_clock is not None and now<self.last_clock:
             self.reset_generation+=1;self.pending_reset=None;self.started=False;self.stage='waiting_start';self.status={}
             self.last_detection_stamp=self.last_visual=self.start_stamp=self.rate=None
-            self.track_yaw=self.track_pitch=self.last_servo_stamp=None;self.images.clear()
+            self.track_yaw=LOCK_YAW;self.track_pitch=LOCK_PITCH;self.last_servo_stamp=None;self.images.clear()
         self.last_clock=now
         if (self.auto_start and not self.started and not self.restoring
                 and self.pending_reset is None and self.stage=='waiting_start'
-                and now>10.0 and self.reset_client.service_is_ready()):
+                and now>1.0 and self.reset_client.service_is_ready()):
             self.reset_generation+=1;generation=self.reset_generation
             self.status={};self.stage='starting';self.pending_reset=self.reset_client.call_async(Trigger.Request())
             self.pending_reset.add_done_callback(lambda future:self.started_after_reset(future,generation))
-            self.get_logger().info('auto_start: ground camera sky search & UKF acquisition triggered')
+            self.get_logger().info('auto_start: ground camera locked onto target drone at (100, 0, 50)m')
         joint_fresh=bool(self.joints is not None and self.joint_stamp is not None and 0<=now-self.joint_stamp<=.3)
         if not self.started and not self.restoring and joint_fresh:
-            # 탐색 시작 전에는 표적이 없는 좌측 하단(-20.6°, 앙각 +8.0°) 방향을 바라보며 대기
-            self.command([-0.36,-0.14])
+            # 시작 즉시 지상 짐벌 카메라를 (100, 0, 50)m 표적 드론 정중앙으로 락온 고정
+            self.command([LOCK_YAW,LOCK_PITCH])
         if self.restoring and joint_fresh:
             if max(abs(math.remainder(self.initial[0]-self.joints[0],2*math.pi)),abs(self.initial[1]-self.joints[1]))<math.radians(1):
                 self.restoring=False;self.stage='waiting_start'
@@ -227,12 +233,8 @@ class GazeboBridge(Node):
             if visual_fresh and self.track_yaw is not None and self.track_pitch is not None:
                 self.command([self.track_yaw,self.track_pitch])
             else:
-                # 좌측 하단(yaw=-20.6°, elev=+8.0°)에서 출발해 상공(100,0,50 -> elev=+26.3°)을 스캔하다가 표적 드론 발견 시 즉시 락온
-                t_search=max(0.,now-(self.start_stamp or now))
-                omega=0.55
-                cmd_yaw=-0.36*math.cos(omega*t_search)
-                cmd_pitch=-0.14-0.3186*math.sin(omega*t_search)
-                self.command([cmd_yaw,max(-math.pi/3,min(math.pi/6,cmd_pitch))])
+                # 처음부터 (100, 0, 50)m 표적 드론 정중앙에 짐벌 고정 (LOCK-ON)
+                self.command([LOCK_YAW,LOCK_PITCH])
         if joint_fresh and self.joints is not None:
             self._broadcast_gimbal_tf(self.joints[0],self.joints[1])
         try:

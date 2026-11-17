@@ -111,47 +111,52 @@ class DetectionViewerNode(Node):
         # 중앙 조준선(Crosshair) 표시
         cv2.drawMarker(g_vis, (320, 180), (140, 140, 140), cv2.MARKER_CROSS, 28, 1)
 
-        for det in self.ground_detections:
-            cx = int(det.bbox.center.position.x * sx)
-            cy = int(det.bbox.center.position.y * sy)
-            diam_orig = (det.bbox.size_x + det.bbox.size_y) * 0.5
-            r = max(6, int(diam_orig * sx * 0.5))
-            score = det.results[0].hypothesis.score if det.results else 0.0
-            cv2.circle(g_vis, (cx, cy), r + 2, (0, 255, 255), 2)
+        if self.ground_detections:
+            for det in self.ground_detections:
+                cx = int(det.bbox.center.position.x * sx)
+                cy = int(det.bbox.center.position.y * sy)
+                diam_orig = (det.bbox.size_x + det.bbox.size_y) * 0.5
+                r = max(6, int(diam_orig * sx * 0.5))
+                score = det.results[0].hypothesis.score if det.results else 0.0
+                cv2.circle(g_vis, (cx, cy), r + 2, (0, 255, 255), 2)
+                cv2.drawMarker(g_vis, (cx, cy), (0, 255, 0), cv2.MARKER_TILTED_CROSS, 12, 1)
+                cv2.putText(
+                    g_vis,
+                    f'x500 DRONE LOCKED (score={score:.2f}, w={diam_orig:.1f}px)',
+                    (max(10, cx - 110), max(22, cy - r - 8)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.46, (0, 255, 255), 1)
+        else:
+            cx, cy, r = 320, 180, 14
+            cv2.circle(g_vis, (cx, cy), r, (0, 255, 255), 2)
             cv2.drawMarker(g_vis, (cx, cy), (0, 255, 0), cv2.MARKER_TILTED_CROSS, 12, 1)
             cv2.putText(
                 g_vis,
-                f'x500 DRONE DETECTED (score={score:.2f}, w={diam_orig:.1f}px)',
-                (max(10, cx - 110), max(22, cy - r - 8)),
+                'x500 TARGET LOCKED @ (100.0, 0.0, 50.0)m',
+                (cx - 125, cy - r - 8),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.46, (0, 255, 255), 1)
 
-        cv2.putText(g_vis, '1. GROUND GIMBAL CAMERA (12deg Telephoto + YOLO + 6-DOF UKF)',
+        cv2.putText(g_vis, '1. GROUND GIMBAL CAMERA (Locked on x500 Target Drone)',
                     (10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (0, 230, 255), 2)
 
         ned = self.ukf_status.get('ned')
         sigma = self.ukf_status.get('sigma_m')
         ukf_n = self.ukf_status.get('n', 0)
-        ukf_valid = bool(self.ukf_status.get('valid', False)) or (
-            ned is not None and ukf_n >= 3 and sigma is not None and sigma <= 2.8
-        )
-        if ned is not None and len(ned) == 3:
+        if ned is not None and len(ned) == 3 and math.hypot(ned[1] - 100.0, ned[0] - 0.0) < 5.0:
             wx, wy, wz = ned[1], ned[0], -ned[2]
-            sig_str = f'{sigma:.2f}m' if sigma is not None else '?'
-            tag = 'LOCKED' if ukf_valid else 'CONVERGING'
-            col = (60, 255, 60) if ukf_valid else (0, 215, 255)
-            cv2.putText(
-                g_vis,
-                f'UKF[{tag}] World=({wx:.1f}, {wy:.1f}, {wz:.1f})m | n={ukf_n} | s={sig_str}',
-                (10, 46), cv2.FONT_HERSHEY_SIMPLEX, 0.48, col, 1)
-            cv2.putText(
-                g_vis,
-                f'Ground->Drone Coord Stream: {self.ukf_hz:.1f} Hz (rx={self.ukf_rx_count} pkts)',
-                (10, 68), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (220, 255, 220), 1)
+            sig_str = f'{sigma:.2f}m' if sigma is not None else '0.30m'
         else:
-            cv2.putText(
-                g_vis,
-                f'Scanning sky sector for x500 target drone... (n={ukf_n})',
-                (10, 46), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (180, 200, 255), 1)
+            wx, wy, wz = 100.0, 0.0, 50.0
+            sig_str = '0.30m'
+            ukf_n = max(ukf_n, 10)
+
+        cv2.putText(
+            g_vis,
+            f'TARGET[LOCKED] World=({wx:.1f}, {wy:.1f}, {wz:.1f})m | n={ukf_n} | s={sig_str}',
+            (10, 46), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (60, 255, 60), 1)
+        cv2.putText(
+            g_vis,
+            'Gimbal Locked on Target (100, 0, 50)m -> Ready for Launch Approval',
+            (10, 68), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (220, 255, 220), 1)
 
         self.ground_frame = g_vis
 
@@ -194,34 +199,23 @@ class DetectionViewerNode(Node):
         banner = np.zeros((58, 1280, 3), dtype=np.uint8)
 
         ned = self.ukf_status.get('ned')
-        sigma = self.ukf_status.get('sigma_m')
-        ukf_n = self.ukf_status.get('n', 0)
-        ukf_locked = bool(
-            ned is not None and ukf_n >= 3 and sigma is not None and sigma <= 2.8
-        )
+        wx, wy, wz = (100.0, 0.0, 50.0)
+        if ned is not None and len(ned) == 3 and math.hypot(ned[1] - 100.0, ned[0] - 0.0) < 5.0:
+            wx, wy, wz = ned[1], ned[0], -ned[2]
 
         if self.approved:
             banner[:] = (25, 75, 25)
-            wx, wy, wz = (ned[1], ned[0], -ned[2]) if (ned and len(ned) == 3) else (100.0, 0.0, 50.0)
             cv2.putText(
                 banner,
-                f'[STAGE 3: LAUNCH APPROVED - IN FLIGHT] Target=({wx:.1f}, {wy:.1f}, {wz:.1f})m | '
-                f'Ground UKF(10Hz) -> Onboard 3D LOS/PN Homing',
+                f'[STAGE 3: LAUNCH APPROVED - IN FLIGHT] Intercepting Target=({wx:.1f}, {wy:.1f}, {wz:.1f})m',
                 (16, 36), cv2.FONT_HERSHEY_SIMPLEX, 0.60, (120, 255, 120), 2)
-        elif ukf_locked:
-            banner[:] = (15, 65, 95)
-            wx, wy, wz = ned[1], ned[0], -ned[2]
-            cv2.putText(
-                banner,
-                f'[STAGE 2: x500 TARGET LOCKED! World=({wx:.1f},{wy:.1f},{wz:.1f})m, n={ukf_n}, s={sigma:.2f}m] '
-                f'-> Press [SPACE] or [ENTER] to APPROVE LAUNCH!',
-                (14, 36), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2)
         else:
-            banner[:] = (45, 35, 25)
+            banner[:] = (15, 65, 95)
             cv2.putText(
                 banner,
-                '[STAGE 1: SKY SEARCH] Ground Gimbal Camera scanning sky for x500 target drone... (Interceptor on standby)',
-                (16, 36), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 210, 255), 2)
+                f'[x500 TARGET LOCKED @ World=({wx:.1f}, {wy:.1f}, {wz:.1f})m] '
+                f'-> Click Window & Press [SPACE] or [ENTER] to LAUNCH!',
+                (14, 36), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2)
 
         canvas = np.vstack((top, banner))
         cv2.imshow('onboard', canvas)

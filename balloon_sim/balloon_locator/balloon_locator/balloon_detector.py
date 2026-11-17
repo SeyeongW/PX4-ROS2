@@ -120,11 +120,11 @@ def _get_yolo_model(model_path: str):
 
 
 def _sky_mask(bgr: np.ndarray) -> np.ndarray:
-    """Boolean mask of Gazebo / outdoor sky pixels (bright blue-ish background)."""
+    """Boolean mask of Gazebo / outdoor sky pixels (bright sky / light-blue background)."""
     b = bgr[:, :, 0].astype(np.int16)
     g = bgr[:, :, 1].astype(np.int16)
     r = bgr[:, :, 2].astype(np.int16)
-    return (b > 145) & (g > 130) & ((b - r) > 12) & ((b - g) > -15)
+    return (b > 115) & (g > 115) & ((b - r) >= -10) & ((b - g) >= -15)
 
 
 def _refine_drone_roi(bgr: np.ndarray, sky: np.ndarray, x0: int, y0: int, x1: int, y1: int):
