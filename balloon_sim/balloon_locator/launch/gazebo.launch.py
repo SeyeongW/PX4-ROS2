@@ -75,14 +75,18 @@ def setup(context):
     watch=run_path(str(sim/'launch/required_process.py'))['watch_required_process']
     server=ExecuteProcess(cmd=['gzserver','--verbose','--lockstep','--seed','360',str(world_path),
         '-s','libgazebo_ros_init.so','-s','libgazebo_ros_factory.so','--ros-args','--params-file',str(clock_path),'--'],output='screen')
+    target_type_val=value('target_type')
+    yolo_model_val=value('yolo_model_path') if 'yolo_model_path' in context.launch_configurations else str(Path.home()/'droneD.pt')
+    target_span_m=0.64 if target_type_val in ('drone','x500') else 0.30
     detector=Node(package='balloon_locator',executable='balloon_detector_node',output='screen',parameters=[{
-        'use_sim_time':True,'process_scale':1.0,'hsv_ranges':[3,100,70,28,255,255]}],
+        'use_sim_time':True,'process_scale':1.0,'target_type':target_type_val,'yolo_model_path':yolo_model_val,
+        'hsv_ranges':[3,100,70,28,255,255]}],
         remappings=[('/camera/image_raw','/jol/camera/image_raw')])
     cam=report.get('onboard_camera',{}) if report else {}
     cam_xyz=cam.get('optical_position_body_m',[0.,0.,0.])
     locator=Node(package='balloon_locator',executable='balloon_locator_node',output='screen',parameters=[{
         'use_sim_time':True,'pose_source':'tf','fixed_frame':'world','camera_info_topic':'/jol/camera/camera_info',
-        'calibration_valid':True,'balloon_diameter_m':0.3,'diameter_rel_sigma':0.0,
+        'calibration_valid':True,'balloon_diameter_m':target_span_m,'diameter_rel_sigma':0.0,
         'pixel_sigma_px':.5,'focal_rel_sigma':0.0,'angle_sigma_deg':.1,'min_samples':3,'max_sigma_m':2.5,
         'max_measurement_age_sec':2.0,'center_tolerance_deg':2.5,'forget':0.88,'min_gate_samples':8,
         'camera_mount_parent':'',
@@ -103,7 +107,7 @@ def setup(context):
         'target_source':'camera_monocular_size','takeoff_height':3.,'vertical_handle':float(value('vertical_handle')),**flight}])
     onboard_detector=Node(package='balloon_locator',executable='balloon_detector_node',
         name='onboard_detector_node',output='screen',parameters=[{
-        'use_sim_time':True,'process_scale':1.0,
+        'use_sim_time':True,'process_scale':1.0,'target_type':target_type_val,'yolo_model_path':yolo_model_val,
         'hsv_ranges':[3,100,70,28,255,255],
         'min_diameter_px':3.0}],
         remappings=[('/camera/image_raw','/jol/onboard_camera/image_raw'),
@@ -141,7 +145,7 @@ def setup(context):
     else:
         ground_nodes=[server,detector,locator,tracker,bridge,mission,onboard_detector]
         watched=[server,detector,locator,tracker,bridge,mission,onboard_detector]
-    return [LogInfo(msg=f"Target locator mode={mode} target_type={value('target_type')}: 30cm fuselage core target UAV, upward onboard camera, exact simulated optics."),
+    return [LogInfo(msg=f"Target locator mode={mode} target_type={target_type_val}: PX4 x500 target UAV (span={target_span_m}m), YOLO model={yolo_model_val}."),
         *([LogInfo(msg='Exterior view: ignoring legacy airframe_transparency; the black shell hides internal parts.')]
           if report and float(value('airframe_transparency'))!=0.0 else []),
         SetEnvironmentVariable('GAZEBO_PLUGIN_PATH',str(Path(get_package_prefix('jol_sim'))/'lib')+os.pathsep+os.environ.get('GAZEBO_PLUGIN_PATH','/opt/ros/humble/lib')),
@@ -153,8 +157,9 @@ def setup(context):
 
 def generate_launch_description():
     paths=runtime_paths()
-    defaults=dict(gui='true',ui='true',rviz='true',mode='mission',target_range='50.0',target_height='4.0',target_azimuth='0.0',
-        target_type='drone',vertical_handle='4.0',airframe_transparency='0.0',scenario='static_flight',flight_backend='mavros',aircraft_type='stl_pacer_quad',
+    defaults=dict(gui='true',ui='true',rviz='true',mode='mission',target_range='100.0',target_height='50.0',target_azimuth='0.0',
+        target_type='drone',yolo_model_path=str(Path.home()/'droneD.pt'),vertical_handle='4.0',airframe_transparency='0.0',
+        scenario='static_flight',flight_backend='mavros',aircraft_type='stl_pacer_quad',
         static_output=os.environ.get('BALLOON_RUNTIME_DIR',''),px4_root=str(paths['px4_root']),
         px4_binary=str(paths['px4_binary']),
         physics_profile_path=str(Path(get_package_share_directory('balloon_locator'))/'config/stl_pacer_quad.json'),

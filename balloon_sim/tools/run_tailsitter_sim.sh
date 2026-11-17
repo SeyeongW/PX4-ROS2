@@ -8,9 +8,9 @@ set -eo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 exec ./tools/run_gazebo.sh \
     mode:=pymav \
-    target_type:=drone \
-    target_range:=90.0 \
-    target_height:=40.0 \
+    target_type:=x500 \
+    target_range:=100.0 \
+    target_height:=50.0 \
     target_azimuth:=0.0 \
     gui:=true \
     ui:=false \

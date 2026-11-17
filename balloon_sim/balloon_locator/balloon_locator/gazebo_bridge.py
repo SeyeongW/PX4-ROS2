@@ -164,7 +164,7 @@ class GazeboBridge(Node):
                     dyaw=-math.atan2(ex_px,GROUND_CAM_FX)
                     dpitch=math.atan2(ey_px,GROUND_CAM_FX)
                     tgt_yaw=math.remainder(joints[0]+0.65*dyaw,2*math.pi)
-                    tgt_pitch=max(-math.pi/6,min(math.pi/6,joints[1]+0.65*dpitch))
+                    tgt_pitch=max(-math.pi/3,min(math.pi/6,joints[1]+0.65*dpitch))
                     self.track_yaw=tgt_yaw
                     self.track_pitch=tgt_pitch
                     self.last_servo_stamp=stamp
@@ -216,7 +216,7 @@ class GazeboBridge(Node):
             self.get_logger().info('auto_start: ground camera sky search & UKF acquisition triggered')
         joint_fresh=bool(self.joints is not None and self.joint_stamp is not None and 0<=now-self.joint_stamp<=.3)
         if not self.started and not self.restoring and joint_fresh:
-            # 탐색 시작 전에는 풍선이 없는 좌측 하단(-20.6°, 앙각 +8.0°) 방향을 바라보며 대기
+            # 탐색 시작 전에는 표적이 없는 좌측 하단(-20.6°, 앙각 +8.0°) 방향을 바라보며 대기
             self.command([-0.36,-0.14])
         if self.restoring and joint_fresh:
             if max(abs(math.remainder(self.initial[0]-self.joints[0],2*math.pi)),abs(self.initial[1]-self.joints[1]))<math.radians(1):
@@ -227,12 +227,12 @@ class GazeboBridge(Node):
             if visual_fresh and self.track_yaw is not None and self.track_pitch is not None:
                 self.command([self.track_yaw,self.track_pitch])
             else:
-                # 좌측 하단(yaw=-20.6°, elev=+8.0°)에서 출발해 상공을 대각선/좌우로 스캔하다가 풍선 발견 시 즉시 락온
+                # 좌측 하단(yaw=-20.6°, elev=+8.0°)에서 출발해 상공(100,0,50 -> elev=+26.3°)을 스캔하다가 표적 드론 발견 시 즉시 락온
                 t_search=max(0.,now-(self.start_stamp or now))
                 omega=0.55
                 cmd_yaw=-0.36*math.cos(omega*t_search)
-                cmd_pitch=-0.14-0.2725*math.sin(omega*t_search)
-                self.command([cmd_yaw,max(-math.pi/6,min(math.pi/6,cmd_pitch))])
+                cmd_pitch=-0.14-0.3186*math.sin(omega*t_search)
+                self.command([cmd_yaw,max(-math.pi/3,min(math.pi/6,cmd_pitch))])
         if joint_fresh and self.joints is not None:
             self._broadcast_gimbal_tf(self.joints[0],self.joints[1])
         try:

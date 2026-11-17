@@ -121,12 +121,12 @@ class DetectionViewerNode(Node):
             cv2.drawMarker(g_vis, (cx, cy), (0, 255, 0), cv2.MARKER_TILTED_CROSS, 12, 1)
             cv2.putText(
                 g_vis,
-                f'BALLOON VERIFIED (score={score:.2f}, d={diam_orig:.1f}px)',
+                f'x500 DRONE DETECTED (score={score:.2f}, w={diam_orig:.1f}px)',
                 (max(10, cx - 110), max(22, cy - r - 8)),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.46, (0, 255, 255), 1)
 
-        cv2.putText(g_vis, '1. GROUND GIMBAL CAMERA (12deg Telephoto + 6-DOF UKF)',
-                    (10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (0, 230, 255), 2)
+        cv2.putText(g_vis, '1. GROUND GIMBAL CAMERA (12deg Telephoto + YOLO + 6-DOF UKF)',
+                    (10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (0, 230, 255), 2)
 
         ned = self.ukf_status.get('ned')
         sigma = self.ukf_status.get('sigma_m')
@@ -150,7 +150,7 @@ class DetectionViewerNode(Node):
         else:
             cv2.putText(
                 g_vis,
-                f'Scanning sky sector for balloon... (n={ukf_n})',
+                f'Scanning sky sector for x500 target drone... (n={ukf_n})',
                 (10, 46), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (180, 200, 255), 1)
 
         self.ground_frame = g_vis
@@ -172,14 +172,14 @@ class DetectionViewerNode(Node):
             r = max(4, int(det.bbox.size_x / 2))
             score = det.results[0].hypothesis.score if det.results else 0.0
             cv2.circle(frame, (cx, cy), r, (0, 255, 0), 2)
-            cv2.putText(frame, f'LOS LOCK {score:.2f} (d={det.bbox.size_x:.0f}px)',
+            cv2.putText(frame, f'x500 LOS LOCK {score:.2f} (w={det.bbox.size_x:.0f}px)',
                         (max(8, cx - r - 20), max(20, cy - r - 6)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.46, (0, 255, 0), 1)
 
         self.frame_count += 1
         n = len(self.latest_detections)
-        cv2.putText(frame, '2. DRONE ONBOARD NOSE-CONE CAMERA (66deg Wide)',
-                    (10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (80, 255, 120), 2)
+        cv2.putText(frame, '2. DRONE ONBOARD NOSE-CONE CAMERA (66deg Wide + YOLO)',
+                    (10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (80, 255, 120), 2)
         cv2.putText(frame, f'Onboard Detections={n}  Frame={self.frame_count}',
                     (10, 46), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (240, 240, 240), 1)
 
@@ -202,7 +202,7 @@ class DetectionViewerNode(Node):
 
         if self.approved:
             banner[:] = (25, 75, 25)
-            wx, wy, wz = (ned[1], ned[0], -ned[2]) if (ned and len(ned) == 3) else (90.0, 0.0, 40.0)
+            wx, wy, wz = (ned[1], ned[0], -ned[2]) if (ned and len(ned) == 3) else (100.0, 0.0, 50.0)
             cv2.putText(
                 banner,
                 f'[STAGE 3: LAUNCH APPROVED - IN FLIGHT] Target=({wx:.1f}, {wy:.1f}, {wz:.1f})m | '
@@ -213,15 +213,15 @@ class DetectionViewerNode(Node):
             wx, wy, wz = ned[1], ned[0], -ned[2]
             cv2.putText(
                 banner,
-                f'[STAGE 2: BALLOON LOCKED! World=({wx:.1f},{wy:.1f},{wz:.1f})m, n={ukf_n}, s={sigma:.2f}m] '
+                f'[STAGE 2: x500 TARGET LOCKED! World=({wx:.1f},{wy:.1f},{wz:.1f})m, n={ukf_n}, s={sigma:.2f}m] '
                 f'-> Press [SPACE] or [ENTER] to APPROVE LAUNCH!',
-                (14, 36), cv2.FONT_HERSHEY_SIMPLEX, 0.56, (0, 255, 255), 2)
+                (14, 36), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2)
         else:
             banner[:] = (45, 35, 25)
             cv2.putText(
                 banner,
-                '[STAGE 1: SKY SEARCH] Ground Gimbal Camera scanning sky for 30cm balloon... (Drone standby on ground)',
-                (16, 36), cv2.FONT_HERSHEY_SIMPLEX, 0.58, (200, 210, 255), 2)
+                '[STAGE 1: SKY SEARCH] Ground Gimbal Camera scanning sky for x500 target drone... (Interceptor on standby)',
+                (16, 36), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 210, 255), 2)
 
         canvas = np.vstack((top, banner))
         cv2.imshow('onboard', canvas)

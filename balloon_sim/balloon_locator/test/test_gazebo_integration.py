@@ -49,13 +49,16 @@ def test_world_has_one_balloon_at40m10m_no_lidar_and_native_motors():
     world=make_world(sim,paths['px4_root'],paths['px4_plugin_dir'],paths['px4_plugin_dir'],profile,aircraft_model=model)
     root=ET.fromstring(world);target=root.find("world/model[@name='static_target']")
     np.testing.assert_allclose(np.fromstring(target.findtext('pose'),sep=' ')[:3],[0.,-40.,10.],atol=1e-10)
-    assert float(target.findtext('link/visual/geometry/sphere/radius'))==.15
     visual_names = {v.get('name') for v in target.findall('link/visual')}
-    assert {'orange_marker', 'drone_arm_p45', 'drone_arm_m45', 'drone_motor_0', 'drone_rotor_disk_0', 'drone_skid_l'}.issubset(visual_names)
+    assert 'orange_marker' not in visual_names
+    assert {'drone_deck', 'drone_arm_p45', 'drone_arm_m45', 'drone_motor_0', 'drone_rotor_disk_0', 'drone_skid_l'}.issubset(visual_names)
     assert not root.findall(".//plugin[@name='jol_mid360']")
     assert len(root.findall("world/model[@name='stl_pacer_quad']"))==1
     assert len([p for p in root.findall('.//plugin') if p.get('filename','').endswith('libgazebo_motor_model.so')])==4
     assert target.findtext('link/collision/surface/contact/collide_without_contact')=='true'
+    world_b=make_world(sim,paths['px4_root'],paths['px4_plugin_dir'],paths['px4_plugin_dir'],profile,aircraft_model=model,target_type='balloon')
+    target_b=ET.fromstring(world_b).find("world/model[@name='static_target']")
+    assert float(target_b.findtext('link/visual/geometry/sphere/radius'))==.15
 
 
 def test_delayed_start_response_cannot_undo_a_user_reset():

@@ -89,3 +89,207 @@ def detect_balloons(bgr: np.ndarray, ranges: Sequence[HsvRange], *, min_diameter
                              circ, circ * fill, (float(x), float(y), float(w), float(h))))
     out.sort(key=lambda d: d.score * d.diameter_px, reverse=True)
     return out
+
+
+_YOLO_CACHE = {}
+_YOLO_WARNED = set()
+
+
+def _get_yolo_model(model_path: str):
+    """Lazily load and cache the Ultralytics YOLO model (e.g., ~/droneD.pt)."""
+    from pathlib import Path
+    if not model_path:
+        return None
+    p = Path(model_path).expanduser()
+    key = str(p)
+    if key in _YOLO_CACHE:
+        return _YOLO_CACHE[key]
+    if not p.is_file():
+        if key not in _YOLO_WARNED:
+            _YOLO_WARNED.add(key)
+        return None
+    try:
+        from ultralytics import YOLO
+        model = YOLO(key)
+        _YOLO_CACHE[key] = model
+        return model
+    except Exception:
+        if key not in _YOLO_WARNED:
+            _YOLO_WARNED.add(key)
+        return None
+
+
+def _sky_mask(bgr: np.ndarray) -> np.ndarray:
+    """Boolean mask of Gazebo / outdoor sky pixels (bright blue-ish background)."""
+    b = bgr[:, :, 0].astype(np.int16)
+    g = bgr[:, :, 1].astype(np.int16)
+    r = bgr[:, :, 2].astype(np.int16)
+    return (b > 145) & (g > 130) & ((b - r) > 12) & ((b - g) > -15)
+
+
+def _refine_drone_roi(bgr: np.ndarray, sky: np.ndarray, x0: int, y0: int, x1: int, y1: int):
+    """Extract exact horizontal span (w_px) and center (cx, cy) of the drone silhouette inside [x0:x1, y0:y1]."""
+    h_img, w_img = bgr.shape[:2]
+    x0, y0 = max(1, x0), max(1, y0)
+    x1, y1 = min(w_img - 1, x1), min(h_img - 1, y1)
+    if x1 - x0 < 3 or y1 - y0 < 3:
+        return None
+    sub_sky = sky[y0:y1, x0:x1]
+    border_sky = np.concatenate([
+        sub_sky[0, :], sub_sky[-1, :], sub_sky[:, 0], sub_sky[:, -1]
+    ])
+    if border_sky.size == 0 or np.mean(border_sky) < 0.85:
+        return None
+    fg = ~sub_sky
+    ys, xs = np.nonzero(fg)
+    if xs.size < 4:
+        return None
+    xmin, xmax = int(xs.min()), int(xs.max())
+    ymin, ymax = int(ys.min()), int(ys.max())
+    # Reject silhouettes clipped by the ROI or image boundary
+    if xmin <= 0 or ymin <= 0 or xmax >= (x1 - x0 - 1) or ymax >= (y1 - y0 - 1):
+        return None
+    gx0, gy0 = x0 + xmin, y0 + ymin
+    gx1, gy1 = x0 + xmax, y0 + ymax
+    if gx0 <= 2 or gy0 <= 2 or gx1 >= w_img - 3 or gy1 >= h_img - 3:
+        return None
+    w_px = float(xmax - xmin + 1)
+    h_px = float(ymax - ymin + 1)
+    if w_px < 2.0 or h_px < 1.5 or w_px / max(h_px, 1.0) > 6.5 or h_px / max(w_px, 1.0) > 3.5:
+        return None
+    cx = float(x0 + 0.5 * (xmin + xmax))
+    cy = float(y0 + 0.5 * (ymin + ymax))
+    return cx, cy, w_px, h_px, float(gx0), float(gy0)
+
+
+def detect_drones(
+    bgr: np.ndarray,
+    *,
+    model_path: str = '',
+    conf_thres: float = 0.12,
+    min_diameter_px: float = 3.0,
+    max_diameter_px: float = 1000.0,
+) -> List[Detection]:
+    """Detect target x500 quadrotor using ~/droneD.pt YOLO model + sub-pixel silhouette span refinement."""
+    if (not isinstance(bgr, np.ndarray) or bgr.dtype != np.uint8 or bgr.ndim != 3
+            or bgr.shape[2] != 3 or min(bgr.shape[:2]) < 2):
+        raise ValueError('invalid_detector_input')
+
+    h_img, w_img = bgr.shape[:2]
+    sky = _sky_mask(bgr)
+    out: List[Detection] = []
+
+    # 1. Primary detector: user's trained YOLO model (~/droneD.pt)
+    model = _get_yolo_model(model_path)
+    if model is not None:
+        try:
+            imgsz = 1280 if max(h_img, w_img) >= 960 else 640
+            results = model.predict(bgr, imgsz=imgsz, conf=conf_thres, verbose=False)
+            boxes_xyxy = []
+            for r in results:
+                if r.boxes is None or len(r.boxes) == 0:
+                    continue
+                xyxy = r.boxes.xyxy.cpu().numpy()
+                confs = r.boxes.conf.cpu().numpy()
+                for (bx1, by1, bx2, by2), sc in zip(xyxy, confs):
+                    boxes_xyxy.append((float(bx1), float(by1), float(bx2), float(by2), float(sc)))
+
+            # If high-res ground camera (1280x960) and full-frame downscale missed a small distant drone,
+            # also run native 1:1 crop around image center
+            if not boxes_xyxy and w_img >= 1000 and h_img >= 700:
+                cw, ch = 640, 640
+                cx0, cy0 = (w_img - cw) // 2, (h_img - ch) // 2
+                crop = bgr[cy0:cy0 + ch, cx0:cx0 + cw]
+                c_res = model.predict(crop, imgsz=640, conf=conf_thres, verbose=False)
+                for r in c_res:
+                    if r.boxes is None or len(r.boxes) == 0:
+                        continue
+                    xyxy = r.boxes.xyxy.cpu().numpy()
+                    confs = r.boxes.conf.cpu().numpy()
+                    for (bx1, by1, bx2, by2), sc in zip(xyxy, confs):
+                        boxes_xyxy.append((
+                            float(bx1 + cx0), float(by1 + cy0),
+                            float(bx2 + cx0), float(by2 + cy0), float(sc)
+                        ))
+
+            for bx1, by1, bx2, by2, sc in boxes_xyxy:
+                bw, bh = bx2 - bx1, by2 - by1
+                pad = max(8, int(0.45 * max(bw, bh)))
+                refined = _refine_drone_roi(
+                    bgr, sky, int(bx1) - pad, int(by1) - pad, int(bx2) + pad, int(by2) + pad
+                )
+                if refined is not None:
+                    cx, cy, w_px, h_px, gx0, gy0 = refined
+                    if min_diameter_px <= w_px <= max_diameter_px:
+                        out.append(Detection(
+                            cx=cx, cy=cy, diameter_px=w_px,
+                            circularity=0.90, score=max(sc, 0.88),
+                            bbox=(gx0, gy0, w_px, h_px),
+                        ))
+                elif (bx1 > 2 and by1 > 2 and bx2 < w_img - 2 and by2 < h_img - 2
+                      and min_diameter_px <= bw <= max_diameter_px):
+                    out.append(Detection(
+                        cx=0.5 * (bx1 + bx2), cy=0.5 * (by1 + by2), diameter_px=float(bw),
+                        circularity=0.85, score=float(sc),
+                        bbox=(float(bx1), float(by1), float(bw), float(bh)),
+                    ))
+        except Exception:
+            pass
+
+    if out:
+        out.sort(key=lambda d: d.score * d.diameter_px, reverse=True)
+        return out
+
+    # 2. Long-range / synthetic sky-contrast silhouette assist (for tiny distant x500 in Gazebo sky)
+    if np.mean(sky) < 0.15:
+        return out
+    fg = (~sky).astype(np.uint8) * 255
+    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(fg, connectivity=8)
+    parts = []
+    for i in range(1, num_labels):
+        x, y, w, h, area = stats[i]
+        if area < 2 or w > int(0.55 * w_img) or h > int(0.55 * h_img):
+            continue
+        if x <= 2 or y <= 2 or (x + w) >= w_img - 2 or (y + h) >= h_img - 2:
+            continue
+        # Check if this component is above the ground horizon (surrounded by sky below it)
+        by_check = min(h_img - 1, y + h + 4)
+        if np.mean(sky[y + h:by_check, max(0, x - 2):min(w_img, x + w + 2)]) < 0.75:
+            continue
+        parts.append((x, y, x + w, y + h, int(area), float(centroids[i][0]), float(centroids[i][1])))
+
+    if not parts:
+        return out
+
+    # Group nearby quadrotor sub-parts (body, arms, 4 rotor disks) into a unified x500 cluster
+    parts.sort(key=lambda item: item[4], reverse=True)
+    used = [False] * len(parts)
+    for i, seed in enumerate(parts):
+        if used[i]:
+            continue
+        used[i] = True
+        cx0, cy0 = seed[5], seed[6]
+        span_est = max(seed[2] - seed[0], seed[3] - seed[1], 12)
+        gx0, gy0, gx1, gy1 = seed[0], seed[1], seed[2], seed[3]
+        for j, other in enumerate(parts):
+            if used[j]:
+                continue
+            if math.hypot(other[5] - cx0, other[6] - cy0) <= max(28.0, 2.5 * span_est):
+                used[j] = True
+                gx0, gy0 = min(gx0, other[0]), min(gy0, other[1])
+                gx1, gy1 = max(gx1, other[2]), max(gy1, other[3])
+
+        pad = 5
+        refined = _refine_drone_roi(bgr, sky, gx0 - pad, gy0 - pad, gx1 + pad, gy1 + pad)
+        if refined is not None:
+            cx, cy, w_px, h_px, rx0, ry0 = refined
+            if min_diameter_px <= w_px <= max_diameter_px:
+                out.append(Detection(
+                    cx=cx, cy=cy, diameter_px=w_px,
+                    circularity=0.90, score=0.92,
+                    bbox=(rx0, ry0, w_px, h_px),
+                ))
+
+    out.sort(key=lambda d: d.score * d.diameter_px, reverse=True)
+    return out
+

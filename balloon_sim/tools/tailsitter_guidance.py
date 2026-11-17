@@ -50,9 +50,9 @@ except ImportError:
 # 1. 비행 및 다중 폐루프 유도 제어 파라미터
 # ═══════════════════════════════════════════════════════════════════════════
 FALLBACK_TARGET_WORLD = [
-    float(os.environ.get('FLY_TARGET_X', '90.0')),
+    float(os.environ.get('FLY_TARGET_X', '100.0')),
     float(os.environ.get('FLY_TARGET_Y', '0.0')),
-    float(os.environ.get('FLY_TARGET_Z', '40.0')),
+    float(os.environ.get('FLY_TARGET_Z', '50.0')),
 ]
 HOVER_ALT = float(os.environ.get('FLY_HOVER_ALT', '5.0'))
 AUTO_APPROVE = os.environ.get('AUTO_APPROVE', '0').lower() in ('1', 'true', 'yes')
@@ -78,13 +78,13 @@ THRUST_MAX        = 0.54   # 비행 중 최대 정규화 추력 (초기 급상�
 MAX_LOS_LEAD_DEG  = 15.0   # 비전 추적 시 LOS 대비 노즈콘 최대 리드각 [deg] (화각 내부 유지 보장)
 MAX_PATH_LEAD_DEG = 22.0   # 대각선 경로 추종 시 최대 리드각 [deg]
 COAST_TIMEOUT     = 0.8    # 비전 일시 소실 시 마지막 LOS 유지 시간 [s]
-BALLOON_DIAM_M    = 0.30   # 목표 풍선 실제 지름 [m]
+BALLOON_DIAM_M    = 0.64   # 표적 x500 드론 수평 스팬(직경) [m]
 
-# "풍선 지났다!" 통과 판정 파라미터 (30cm 풍선 기준)
-PASS_MIN_DIAM_PX      = 16.0  # [조건 1] 최소 확대 픽셀 지름 (~9m 이내 접근 시 도달)
+# "표적 드론 지났다!" 통과 판정 파라미터 (0.64m x500 드론 기준)
+PASS_MIN_DIAM_PX      = 28.0  # [조건 1] 최소 확대 픽셀 스팬 (~11m 이내 접근 시 도달)
 PASS_GROWTH_RATIO     = 1.5   # [조건 1] 최초 검출 대비 최소 확대 비율
 PASS_LOST_FRAMES      = 3     # [조건 1] 확대 후 연속 유실 프레임 수
-PASS_IMPACT_DIAM_PX   = 72.0  # [조건 1] 초근접(~2.0m 이내) 즉시 통과 인정 픽셀 지름
+PASS_IMPACT_DIAM_PX   = 115.0 # [조건 1] 초근접(~2.5m 이내) 즉시 통과 인정 픽셀 스팬
 
 LOCK_DIST             = 15.0  # [조건 2] 통과 감시 활성화 거리 게이트 [m]
 OVERSHOOT_DIST        = 0.8   # [조건 2] 최근접 거리(CPA) 이후 거리 증가량 [m]
@@ -780,7 +780,7 @@ def main():
                 last_los_ned = los_ned
 
                 # 온보드 광학 거리(R_opt = FX * D / diam)를 이용해 지상 단안 카메라의 거리 오차를 실시간 보정
-                if 5.0 <= diam <= 70.0:
+                if 5.0 <= diam <= 140.0:
                     r_opt = (FX * BALLOON_DIAM_M) / diam
                     onboard_target_ned = pos_ned + r_opt * los_ned
                     if float(np.linalg.norm(onboard_target_ned - target_ned)) < 15.0:
