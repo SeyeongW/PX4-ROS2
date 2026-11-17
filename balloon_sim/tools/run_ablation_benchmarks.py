@@ -145,35 +145,35 @@ def run_experiment_1_range_vs_distance(out_dir: Path):
     bbox_px = np.array([r['bbox_px_mae'] for r in rows])
     ours_px = np.array([r['ours_px_mae'] for r in rows])
 
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8.8, 6.8), dpi=200, sharex=True)
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8.4, 6.4), dpi=200, sharex=True)
 
     ax1.plot(dist_arr, bbox_mae, 'r--o', markersize=3.5, linewidth=1.6,
-             label=f'Baseline: Integer Bounding Box max(w, h) (at 111.8m: {r_112["bbox_mae_m"]:.2f}m)')
+             label='Integer Box')
     ax1.fill_between(dist_arr, np.maximum(0.0, bbox_mae - bbox_std), bbox_mae + bbox_std,
                      color='tab:red', alpha=0.15)
 
     ax1.plot(dist_arr, ours_mae, 'b-s', markersize=3.5, linewidth=2.0,
-             label=f'Ours: Sub-Pixel Ellipse/Contour Fit (at 111.8m: {r_112["ours_mae_m"]:.2f}m)')
+             label='Sub-Pixel Fit')
     ax1.fill_between(dist_arr, np.maximum(0.0, ours_mae - ours_std), ours_mae + ours_std,
                      color='tab:blue', alpha=0.18)
 
     ax1.axvline(TRUE_RANGE_100_50, color='tab:green', linestyle=':', linewidth=1.5,
-                label=f'Target (100, 0, 50)m Range = {TRUE_RANGE_100_50:.1f}m')
-    ax1.set_ylabel('Range Estimation MAE [m]')
-    ax1.set_title('(1) Monocular Range Error vs. Target Distance (Actual balloon_detector.py Measurement)')
+                label='Target Range')
+    ax1.set_ylabel('Range MAE [m]')
+    ax1.set_title('Monocular Range Error vs. Target Distance')
     ax1.grid(True, linestyle='--', alpha=0.5)
-    ax1.legend(loc='upper left', fontsize=8.5)
+    ax1.legend(loc='upper left', fontsize=9.5)
 
     ax2.plot(dist_arr, bbox_px, 'r--o', markersize=3.5, linewidth=1.5,
-             label=f'Baseline: Integer Box Span Error [px] (mean={np.mean(bbox_px):.2f} px)')
+             label='Integer Box')
     ax2.plot(dist_arr, ours_px, 'b-s', markersize=3.5, linewidth=1.8,
-             label=f'Ours: Sub-Pixel Fit Span Error [px] (mean={np.mean(ours_px):.2f} px)')
+             label='Sub-Pixel Fit')
     ax2.axvline(TRUE_RANGE_100_50, color='tab:green', linestyle=':', linewidth=1.5)
-    ax2.set_xlabel('True Target Distance R [m]')
-    ax2.set_ylabel('Diameter Error |d_est - d_true| [px]')
-    ax2.set_title('Pixel Span Quantization Error across 36 Sub-Pixel Center Offsets')
+    ax2.set_xlabel('Target Distance [m]')
+    ax2.set_ylabel('Diameter Error [px]')
+    ax2.set_title('Pixel Span Error vs. Target Distance')
     ax2.grid(True, linestyle='--', alpha=0.5)
-    ax2.legend(loc='upper right', fontsize=8.5)
+    ax2.legend(loc='upper right', fontsize=9.5)
 
     fig.tight_layout()
     fig.savefig(out_dir / 'exp1_range_error_vs_distance.png')
@@ -328,50 +328,50 @@ def run_experiment_2_ukf_vs_average_vs_single(out_dir: Path):
     err_ukf = np.array([r['err_ukf_m'] for r in records])
     outlier_mask = np.array([r['is_outlier'] == 1 for r in records])
 
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11.5, 4.6), dpi=200,
-                                   gridspec_kw={'width_ratios': [1.65, 1.0]})
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11.2, 4.5), dpi=200,
+                                   gridspec_kw={'width_ratios': [1.6, 1.0]})
 
     # 좌측 패널: 시간에 따른 3D 위치 오차 비교
     ax1.plot(t_arr, err_single, color='0.65', linestyle=':', linewidth=1.2,
-             label=f'1-Frame Back-Projection (RMSE={np.mean(mc_single_rmse):.2f}m)')
+             label='Single-Frame')
     ax1.scatter(t_arr[outlier_mask], err_single[outlier_mask], color='tab:red', marker='x', s=45, zorder=5,
-                label='Outlier Measurement Spike (Rejected by UKF)')
+                label='Outlier')
     ax1.plot(t_arr, err_avg, color='tab:orange', linestyle='--', linewidth=1.8,
-             label=f'Simple Running Average (RMSE={np.mean(mc_avg_rmse):.2f}m)')
+             label='Simple Average')
     ax1.plot(t_arr, err_ukf, color='tab:blue', linestyle='-', linewidth=2.2,
-             label=f'Ours: 6-DOF UKF (RMSE={np.mean(mc_ukf_rmse):.2f}m)')
+             label='6-DOF UKF')
 
-    ax1.set_xlabel('Time [s] (10 Hz Camera Frame Stream)')
-    ax1.set_ylabel('3D Position Error ||p_est - p_true||_2 [m]')
-    ax1.set_title('(2-a) Real-Time 3D Position Error under Hover Drift & Outliers')
+    ax1.set_xlabel('Time [s]')
+    ax1.set_ylabel('3D Position Error [m]')
+    ax1.set_title('(a) Real-Time 3D Position Error')
     ax1.set_ylim(0.0, max(float(np.max(err_single)) * 1.08, 12.0))
     ax1.grid(True, linestyle='--', alpha=0.5)
-    ax1.legend(loc='upper right', fontsize=8.2)
+    ax1.legend(loc='upper right', ncol=2, fontsize=9.0)
 
     # 우측 패널: 50회 몬테카를로 평균 3D RMSE 및 최대 오차 막대 그래프
-    methods = ['1-Frame\nBack-Proj', 'Simple\nAverage', 'Ours:\n6-DOF UKF']
+    methods = ['Single-Frame', 'Simple Avg', '6-DOF UKF']
     rmse_vals = [float(np.mean(mc_single_rmse)), float(np.mean(mc_avg_rmse)), float(np.mean(mc_ukf_rmse))]
     max_vals = [float(np.mean(mc_single_max)), float(np.mean(mc_avg_max)), float(np.mean(mc_ukf_max))]
 
     x = np.arange(len(methods))
     width = 0.35
-    b1 = ax2.bar(x - width / 2, rmse_vals, width, label='Steady-State 3D RMSE [m]', color=['0.6', 'tab:orange', 'tab:blue'])
-    b2 = ax2.bar(x + width / 2, max_vals, width, label='Max 3D Error [m]', color=['0.8', '#ffcc80', '#90caf9'])
+    b1 = ax2.bar(x - width / 2, rmse_vals, width, label='3D RMSE', color=['0.6', 'tab:orange', 'tab:blue'])
+    b2 = ax2.bar(x + width / 2, max_vals, width, label='Max Error', color=['0.8', '#ffcc80', '#90caf9'])
 
     for bar in b1:
         h = bar.get_height()
-        ax2.text(bar.get_x() + bar.get_width() / 2.0, h + 0.2, f'{h:.2f}m', ha='center', va='bottom', fontsize=8.5, fontweight='bold')
+        ax2.text(bar.get_x() + bar.get_width() / 2.0, h + 0.2, f'{h:.2f}', ha='center', va='bottom', fontsize=8.5, fontweight='bold')
     for bar in b2:
         h = bar.get_height()
-        ax2.text(bar.get_x() + bar.get_width() / 2.0, h + 0.2, f'{h:.2f}m', ha='center', va='bottom', fontsize=8.0)
+        ax2.text(bar.get_x() + bar.get_width() / 2.0, h + 0.2, f'{h:.2f}', ha='center', va='bottom', fontsize=8.0)
 
     ax2.set_xticks(x)
     ax2.set_xticklabels(methods)
     ax2.set_ylabel('3D Error [m]')
-    ax2.set_title('(2-b) 50-Trial Monte Carlo Accuracy Summary')
+    ax2.set_title('(b) Monte Carlo Error Summary')
     ax2.set_ylim(0.0, max(max_vals) * 1.18)
     ax2.grid(True, axis='y', linestyle='--', alpha=0.5)
-    ax2.legend(loc='upper right', fontsize=8.5)
+    ax2.legend(loc='upper right', fontsize=9.0)
 
     fig.tight_layout()
     fig.savefig(out_dir / 'exp2_ukf_vs_average_vs_single.png')
