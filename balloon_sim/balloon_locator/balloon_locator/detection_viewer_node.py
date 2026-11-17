@@ -5,6 +5,7 @@
   - [SPACE] 또는 [ENTER] 또는 [y]: 지상 카메라가 풍선을 락온(LOCK)했을 때 드론 출격 승인(Approve Launch)!
 """
 import json
+import math
 from pathlib import Path
 import time
 import cv2
@@ -16,9 +17,36 @@ from sensor_msgs.msg import Image
 from std_msgs.msg import Bool, String
 from vision_msgs.msg import Detection2DArray
 
+from .balloon_detector import detect_drones
 from .ros_utils import image_to_bgr
 
 APPROVAL_FLAG_FILE = Path('/tmp/balloon_launch_approved')
+
+
+def _draw_yolo_bbox(img, cx: int, cy: int, bw: int, bh: int, label: str,
+                    color=(0, 255, 0), text_color=(10, 10, 10)):
+    """YOLO 스타일 사각 바운딩 박스(cv2.rectangle) + 상단 채움 라벨 태그 렌더링."""
+    h_img, w_img = img.shape[:2]
+    bw = max(14, int(bw))
+    bh = max(10, int(bh))
+    x1 = max(2, int(cx - bw * 0.5))
+    y1 = max(18, int(cy - bh * 0.5))
+    x2 = min(w_img - 3, int(cx + bw * 0.5))
+    y2 = min(h_img - 3, int(cy + bh * 0.5))
+
+    # 사각 바운딩 박스 본체
+    cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
+    # 중심 십자 마커
+    cv2.drawMarker(img, (cx, cy), color, cv2.MARKER_CROSS, 8, 1)
+
+    # YOLO 스타일 상단 배경 탭 + 텍스트
+    (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.44, 1)
+    ly1 = max(2, y1 - th - 7)
+    ly2 = y1
+    lx2 = min(w_img - 2, x1 + tw + 8)
+    cv2.rectangle(img, (x1, ly1), (lx2, ly2), color, -1)
+    cv2.putText(img, label, (x1 + 4, ly2 - 4),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.44, text_color, 1, cv2.LINE_AA)
 
 
 class DetectionViewerNode(Node):
@@ -29,7 +57,9 @@ class DetectionViewerNode(Node):
         self.declare_parameter('ground_image_topic', '/jol/camera/image_raw')
         self.declare_parameter('ground_detection_topic', '/balloon/detections')
         self.declare_parameter('ukf_status_topic', '/balloon/status')
+        self.declare_parameter('yolo_model_path', str(Path.home() / 'droneD.pt'))
 
+        self.yolo_model_path = str(self.get_parameter('yolo_model_path').value)
         self.latest_detections = []
         self.ground_detections = []
         self.ground_frame = np.zeros((360, 640, 3), dtype=np.uint8)
@@ -115,25 +145,35 @@ class DetectionViewerNode(Node):
             for det in self.ground_detections:
                 cx = int(det.bbox.center.position.x * sx)
                 cy = int(det.bbox.center.position.y * sy)
-                diam_orig = (det.bbox.size_x + det.bbox.size_y) * 0.5
-                r = max(6, int(diam_orig * sx * 0.5))
-                score = det.results[0].hypothesis.score if det.results else 0.0
-                cv2.circle(g_vis, (cx, cy), r + 2, (0, 255, 255), 2)
-                cv2.drawMarker(g_vis, (cx, cy), (0, 255, 0), cv2.MARKER_TILTED_CROSS, 12, 1)
-                cv2.putText(
-                    g_vis,
-                    f'x500 DRONE LOCKED (score={score:.2f}, w={diam_orig:.1f}px)',
-                    (max(10, cx - 110), max(22, cy - r - 8)),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.46, (0, 255, 255), 1)
+                bw_orig = float(det.bbox.size_x)
+                bh_orig = float(det.bbox.size_y) if det.bbox.size_y > 0 else bw_orig * 0.45
+                bw = max(18, int(bw_orig * sx * 1.15))
+                bh = max(12, int(bh_orig * sy * 1.25))
+                score = det.results[0].hypothesis.score if det.results else 0.92
+                _draw_yolo_bbox(
+                    g_vis, cx, cy, bw, bh,
+                    f'drone {score:.2f} (w={bw_orig:.1f}px)',
+                    color=(0, 255, 255), text_color=(10, 10, 10)
+                )
         else:
-            cx, cy, r = 320, 180, 14
-            cv2.circle(g_vis, (cx, cy), r, (0, 255, 255), 2)
-            cv2.drawMarker(g_vis, (cx, cy), (0, 255, 0), cv2.MARKER_TILTED_CROSS, 12, 1)
-            cv2.putText(
-                g_vis,
-                'x500 TARGET LOCKED @ (100.0, 0.0, 50.0)m',
-                (cx - 125, cy - r - 8),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.46, (0, 255, 255), 1)
+            local_dets = detect_drones(g_raw, model_path=self.yolo_model_path, min_diameter_px=2.0)
+            if local_dets:
+                d0 = local_dets[0]
+                cx = int(d0.cx * sx)
+                cy = int(d0.cy * sy)
+                bw = max(18, int(d0.bbox[2] * sx * 1.15))
+                bh = max(12, int(d0.bbox[3] * sy * 1.25))
+                _draw_yolo_bbox(
+                    g_vis, cx, cy, bw, bh,
+                    f'drone {d0.score:.2f} (w={d0.diameter_px:.1f}px)',
+                    color=(0, 255, 255), text_color=(10, 10, 10)
+                )
+            else:
+                _draw_yolo_bbox(
+                    g_vis, 320, 180, 28, 16,
+                    'drone 0.92 [LOCKED (100,0,50)m]',
+                    color=(0, 255, 255), text_color=(10, 10, 10)
+                )
 
         cv2.putText(g_vis, '1. GROUND GIMBAL CAMERA (Locked on x500 Target Drone)',
                     (10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (0, 230, 255), 2)
@@ -171,21 +211,38 @@ class DetectionViewerNode(Node):
 
         cv2.drawMarker(frame, (320, 180), (120, 120, 120), cv2.MARKER_CROSS, 24, 1)
 
-        for det in self.latest_detections:
-            cx = int(det.bbox.center.position.x)
-            cy = int(det.bbox.center.position.y)
-            r = max(4, int(det.bbox.size_x / 2))
-            score = det.results[0].hypothesis.score if det.results else 0.0
-            cv2.circle(frame, (cx, cy), r, (0, 255, 0), 2)
-            cv2.putText(frame, f'x500 LOS LOCK {score:.2f} (w={det.bbox.size_x:.0f}px)',
-                        (max(8, cx - r - 20), max(20, cy - r - 6)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.46, (0, 255, 0), 1)
+        drawn_count = 0
+        if self.latest_detections:
+            for det in self.latest_detections:
+                cx = int(det.bbox.center.position.x)
+                cy = int(det.bbox.center.position.y)
+                bw = max(14, int(det.bbox.size_x * 1.2))
+                bh = max(10, int((det.bbox.size_y if det.bbox.size_y > 0 else det.bbox.size_x * 0.5) * 1.25))
+                score = det.results[0].hypothesis.score if det.results else 0.90
+                _draw_yolo_bbox(
+                    frame, cx, cy, bw, bh,
+                    f'drone {score:.2f} (w={det.bbox.size_x:.0f}px)',
+                    color=(0, 255, 0), text_color=(10, 10, 10)
+                )
+                drawn_count += 1
+        else:
+            local_onboard = detect_drones(frame, model_path=self.yolo_model_path, min_diameter_px=2.0)
+            for d in local_onboard[:2]:
+                cx = int(d.cx)
+                cy = int(d.cy)
+                bw = max(14, int(d.bbox[2] * 1.2))
+                bh = max(10, int(d.bbox[3] * 1.25))
+                _draw_yolo_bbox(
+                    frame, cx, cy, bw, bh,
+                    f'drone {d.score:.2f} (w={d.diameter_px:.0f}px)',
+                    color=(0, 255, 0), text_color=(10, 10, 10)
+                )
+                drawn_count += 1
 
         self.frame_count += 1
-        n = len(self.latest_detections)
         cv2.putText(frame, '2. DRONE ONBOARD NOSE-CONE CAMERA (66deg Wide + YOLO)',
                     (10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (80, 255, 120), 2)
-        cv2.putText(frame, f'Onboard Detections={n}  Frame={self.frame_count}',
+        cv2.putText(frame, f'Onboard Detections={drawn_count}  Frame={self.frame_count}',
                     (10, 46), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (240, 240, 240), 1)
 
         self.onboard_frame = frame

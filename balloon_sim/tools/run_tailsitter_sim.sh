@@ -6,6 +6,7 @@
 #
 set -eo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
+./tools/build_workspace.sh
 exec ./tools/run_gazebo.sh \
     mode:=pymav \
     target_type:=x500 \

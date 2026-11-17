@@ -61,7 +61,11 @@ class BalloonDetectorNode(Node):
             det.header = msg.header
             det.bbox.center.position.x = d.cx
             det.bbox.center.position.y = d.cy
-            det.bbox.size_x = det.bbox.size_y = d.diameter_px
+            if len(d.bbox) == 4 and d.bbox[2] > 0.0 and d.bbox[3] > 0.0:
+                det.bbox.size_x = float(d.diameter_px)
+                det.bbox.size_y = float(d.bbox[3])
+            else:
+                det.bbox.size_x = det.bbox.size_y = float(d.diameter_px)
             hyp = ObjectHypothesisWithPose()
             hyp.hypothesis.class_id = 'drone' if target_type in ('drone', 'x500') else 'balloon'
             hyp.hypothesis.score = float(d.score)
