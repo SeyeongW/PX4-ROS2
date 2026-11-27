@@ -31,6 +31,7 @@
 import argparse
 import socket
 import struct
+import sys
 import time
 
 import cv2
@@ -39,13 +40,43 @@ import numpy as np
 from balloon_detector import detect_balloons, parse_hsv_ranges
 
 
+# Camera Module 3(imx708) 전체 화각 센서 모드. 이 모드로 고정해야 출력 해상도별 fx가 정해진다.
+# 640x360 출력이면 fx = fy ≈ 470 px (4.74 mm / 1.4 um / 2304*2 * 640, 데이터시트 기준 근사).
+PICAM_SENSOR_SIZE = (2304, 1296)
+
+
+class Picamera2Capture:
+    """cv2.VideoCapture와 같은 read()/release()를 제공하는 Picamera2 래퍼 (Pi 5 CSI 카메라용)."""
+
+    def __init__(self, width, height, fps):
+        from picamera2 import Picamera2
+        self.cam = Picamera2()
+        cfg = self.cam.create_video_configuration(
+            main={'size': (width, height), 'format': 'RGB888'},   # RGB888 = 메모리상 BGR 순서 (OpenCV와 동일)
+            sensor={'output_size': PICAM_SENSOR_SIZE, 'bit_depth': 10},
+            controls={'FrameRate': float(fps)},
+        )
+        self.cam.configure(cfg)
+        self.cam.start()
+
+    def read(self):
+        return True, self.cam.capture_array('main')
+
+    def release(self):
+        self.cam.stop()
+        self.cam.close()
+
+
 def run(args):
-    cap = cv2.VideoCapture(args.device, cv2.CAP_V4L2)
-    if not cap.isOpened():
-        sys.exit(f'카메라 열기 실패: {args.device}')
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, args.width)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, args.height)
-    cap.set(cv2.CAP_PROP_FPS, args.fps)
+    if args.picamera2:
+        cap = Picamera2Capture(args.width, args.height, args.fps)
+    else:
+        cap = cv2.VideoCapture(args.device, cv2.CAP_V4L2)
+        if not cap.isOpened():
+            sys.exit(f'카메라 열기 실패: {args.device}')
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, args.width)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, args.height)
+        cap.set(cv2.CAP_PROP_FPS, args.fps)
 
     ranges = parse_hsv_ranges(args.hsv_ranges)
 
@@ -110,6 +141,9 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         description=__doc__)
     ap.add_argument('--device', default='/dev/video0')
+    ap.add_argument('--picamera2', action='store_true',
+                    help='Pi CSI 카메라(Camera Module 3 등)를 Picamera2로 읽음. --device 무시. '
+                         '640x360 권장 (interceptor --fx 470 --fy 470)')
     ap.add_argument('--width',  type=int, default=640)
     ap.add_argument('--height', type=int, default=480)
     ap.add_argument('--fps',    type=int, default=30)
